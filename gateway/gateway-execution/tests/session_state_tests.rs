@@ -3,14 +3,22 @@
 //! Integration tests for `SessionStateBuilder::build()`.
 //! Each test creates a temporary database, inserts test data, and verifies
 //! the assembled `SessionState`.
+//!
+//! **Slice 3 (T11 redo):** `extract_response`, `extract_plan`,
+//! `extract_recalled_facts`, and the ward/title fallbacks now read from the
+//! **messages** table and the **sessions** row (not `execution_logs.metadata`,
+//! which is slimmed). Tests therefore write tool-payload data to messages via
+//! the `MessageStore` and ward/title to the sessions row directly.
 
 use std::sync::Arc;
 
 use api_logs::LogService;
+use execution_state::StateService;
 use gateway_execution::session_state::{SessionPhase, SessionStateBuilder};
 use gateway_services::VaultPaths;
 #[allow(deprecated)]
 use tempfile::tempdir;
+use zbot_conversation::{Message, MessageStore, SqliteMessageStore};
 use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
 
 // ============================================================================
@@ -18,21 +26,45 @@ use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
 // ============================================================================
 
 /// Spin up a temp DB with full schema and return the builder + DB handle.
+///
+/// Returns `(builder, db, log_service, conversations, messages, state_service)`.
+/// The MessageStore shares `conversations.db` (the same file
+/// `DatabaseManager` opens) via its own r2d2 pool, mirroring the production
+/// wiring in `AppState::build_conversation_stores`.
 fn setup() -> (
     SessionStateBuilder,
     Arc<DatabaseManager>,
     Arc<LogService<DatabaseManager>>,
     Arc<ConversationRepository>,
+    Arc<dyn MessageStore>,
+    Arc<StateService<DatabaseManager>>,
 ) {
     let dir = tempdir().unwrap();
     #[allow(deprecated)]
     let dir_path = dir.into_path();
     let paths = Arc::new(VaultPaths::new(dir_path));
-    let db = Arc::new(DatabaseManager::new(paths).expect("DB init"));
+    let db = Arc::new(DatabaseManager::new(paths.clone()).expect("DB init"));
     let log_service = Arc::new(LogService::new(db.clone()));
     let conversations = Arc::new(ConversationRepository::new(db.clone()));
-    let builder = SessionStateBuilder::new(log_service.clone(), conversations.clone());
-    (builder, db, log_service, conversations)
+    let messages: Arc<dyn MessageStore> = Arc::new(SqliteMessageStore::new(
+        zbot_conversation::open_conversation_pool(&paths.conversations_db())
+            .expect("conversation pool"),
+    ));
+    let state_service = Arc::new(StateService::new(db.clone()));
+    let builder = SessionStateBuilder::new(
+        log_service.clone(),
+        conversations.clone(),
+        messages.clone(),
+        state_service.clone(),
+    );
+    (
+        builder,
+        db,
+        log_service,
+        conversations,
+        messages,
+        state_service,
+    )
 }
 
 /// Generate a unique session-style ID.
@@ -51,6 +83,30 @@ fn insert_session_row(db: &DatabaseManager, session_id: &str, status: &str, root
         Ok(())
     })
     .expect("insert session row");
+}
+
+/// Set `ward_id` on a session row directly — mirrors the WardChanged handler.
+fn set_session_ward(db: &DatabaseManager, session_id: &str, ward_id: &str) {
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE sessions SET ward_id = ?1 WHERE id = ?2",
+            rusqlite::params![ward_id, session_id],
+        )?;
+        Ok(())
+    })
+    .expect("set session ward");
+}
+
+/// Set `title` on a session row directly — mirrors the SessionTitleChanged handler.
+fn set_session_title(db: &DatabaseManager, session_id: &str, title: &str) {
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE sessions SET title = ?1 WHERE id = ?2",
+            rusqlite::params![title, session_id],
+        )?;
+        Ok(())
+    })
+    .expect("set session title");
 }
 
 /// Insert an agent_executions row so messages can reference it (FK constraint).
@@ -91,13 +147,38 @@ fn insert_message_raw(
     .expect("insert message");
 }
 
+/// Append a message through the MessageStore (the production write path).
+/// `seq` is assigned atomically by the store.
+fn append_message(
+    messages: &Arc<dyn MessageStore>,
+    session_id: &str,
+    role: &str,
+    content: &str,
+    tool_calls: Option<&str>,
+    tool_call_id: Option<&str>,
+) {
+    let msg = Message {
+        id: format!("msg-{}", uid()),
+        execution_id: Some(session_id.to_string()),
+        session_id: session_id.to_string(),
+        role: role.to_string(),
+        content: content.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        token_count: 0,
+        tool_calls: tool_calls.map(String::from),
+        tool_call_id: tool_call_id.map(String::from),
+        seq: 0, // assigned atomically by the store
+    };
+    messages.append(&msg).expect("append message");
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
 
 #[test]
 fn test_completed_session_with_response() {
-    let (builder, db, log_service, conversations) = setup();
+    let (builder, db, log_service, conversations, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -110,7 +191,7 @@ fn test_completed_session_with_response() {
         .log_session_start(&sid, &conv_id, agent, None)
         .unwrap();
 
-    // Intent log
+    // Intent log (un-slimmed — still in execution_logs.metadata)
     log_service
         .log(
             api_logs::ExecutionLog::new(
@@ -125,54 +206,43 @@ fn test_completed_session_with_response() {
         )
         .unwrap();
 
-    // update_plan tool call
+    // Slimmed tool_call logs (only tool_id, tool_name) — derive_phase reads
+    // these to detect respond/delegate/update_plan.
     log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "update_plan",
-            "tc-1",
-            &serde_json::json!({
-                "steps": [
-                    {"text": "Gather data", "status": "completed"},
-                    {"text": "Generate report", "status": "in_progress"}
-                ]
-            }),
-        )
+        .log_tool_call(&sid, &conv_id, agent, "update_plan", "tc-1", &serde_json::json!({}))
         .unwrap();
-
-    // delegate tool call (external tool)
     log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "delegate",
-            "tc-2",
-            &serde_json::json!({"agent": "code-agent"}),
-        )
+        .log_tool_call(&sid, &conv_id, agent, "delegate", "tc-2", &serde_json::json!({}))
         .unwrap();
-
-    // respond tool call
     log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "respond",
-            "tc-3",
-            &serde_json::json!({"message": "Here is your report"}),
-        )
+        .log_tool_call(&sid, &conv_id, agent, "respond", "tc-3", &serde_json::json!({}))
         .unwrap();
 
     // Create agent_execution so messages FK is satisfied
     insert_execution_row(&db, &sid, &conv_id, agent);
 
-    // User message in conversation
+    // User message
     conversations
         .add_message(&sid, "user", "Generate a report", None, None)
         .unwrap();
+
+    // Assistant message with update_plan tool_calls (full args live here
+    // after the slim — extract_plan reads this).
+    let plan_tc = serde_json::json!([{
+        "tool_id": "tc-1",
+        "tool_name": "update_plan",
+        "args": {
+            "steps": [
+                {"text": "Gather data", "status": "completed"},
+                {"text": "Generate report", "status": "in_progress"}
+            ]
+        }
+    }])
+    .to_string();
+    append_message(&messages, &sid, "assistant", "[tool calls]", Some(&plan_tc), None);
+
+    // Final assistant message — extract_response reads this.
+    append_message(&messages, &sid, "assistant", "Here is your report", None, None);
 
     // Build
     let state = builder.build(&sid).unwrap().expect("session should exist");
@@ -180,13 +250,13 @@ fn test_completed_session_with_response() {
     assert_eq!(state.phase, SessionPhase::Completed);
     assert_eq!(state.response.as_deref(), Some("Here is your report"));
     assert!(state.user_message.is_some());
-    assert!(!state.plan.is_empty());
+    assert!(!state.plan.is_empty(), "plan should come from messages");
     assert!(!state.is_live);
 }
 
 #[test]
 fn test_crashed_session() {
-    let (builder, db, log_service, _conversations) = setup();
+    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -198,15 +268,9 @@ fn test_crashed_session() {
         .log_session_start(&sid, &conv_id, agent, None)
         .unwrap();
 
+    // Tool name only — args not needed in slimmed metadata for derive_phase.
     log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "some_tool",
-            "tc-1",
-            &serde_json::json!({"arg": "value"}),
-        )
+        .log_tool_call(&sid, &conv_id, agent, "some_tool", "tc-1", &serde_json::json!({}))
         .unwrap();
 
     let state = builder.build(&sid).unwrap().expect("session should exist");
@@ -218,37 +282,28 @@ fn test_crashed_session() {
 
 #[test]
 fn test_session_not_found() {
-    let (builder, _db, _log_service, _conversations) = setup();
+    let (builder, _db, _log_service, _conversations, _messages, _state_service) = setup();
 
     let result = builder.build("nonexistent").unwrap();
     assert!(result.is_none());
 }
 
 #[test]
-fn test_title_from_tool_call() {
-    let (builder, db, log_service, _conversations) = setup();
+fn test_title_from_sessions_row() {
+    // Slice 3: title comes from sessions.title (persisted by
+    // SessionTitleChanged handler) — set it directly rather than relying on
+    // set_session_title tool args (now slimmed out of execution_logs).
+    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
 
     insert_session_row(&db, &conv_id, "completed", agent);
+    set_session_title(&db, &conv_id, "My Test Session");
 
     log_service
         .log_session_start(&sid, &conv_id, agent, None)
         .unwrap();
-
-    log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "set_session_title",
-            "tc-1",
-            &serde_json::json!({"title": "My Test Session"}),
-        )
-        .unwrap();
-
-    // End session so it has an ended_at
     log_service
         .log_session_end(
             &sid,
@@ -266,7 +321,7 @@ fn test_title_from_tool_call() {
 
 #[test]
 fn test_title_falls_back_to_intent_primary_when_tool_skipped() {
-    let (builder, db, log_service, _conversations) = setup();
+    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -318,13 +373,16 @@ fn test_title_falls_back_to_intent_primary_when_tool_skipped() {
 }
 
 #[test]
-fn test_title_tool_call_wins_over_intent_fallback() {
-    let (builder, db, log_service, _conversations) = setup();
+fn test_title_sessions_row_wins_over_intent_fallback() {
+    // Slice 3: sessions.title (set by SessionTitleChanged handler) takes
+    // priority over the intent-analysis fallback.
+    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
 
     insert_session_row(&db, &conv_id, "completed", agent);
+    set_session_title(&db, &conv_id, "Chosen title");
 
     log_service
         .log_session_start(&sid, &conv_id, agent, None)
@@ -356,17 +414,6 @@ fn test_title_tool_call_wins_over_intent_fallback() {
         .unwrap();
 
     log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "set_session_title",
-            "tc-1",
-            &serde_json::json!({"title": "Chosen title"}),
-        )
-        .unwrap();
-
-    log_service
         .log_session_end(
             &sid,
             &conv_id,
@@ -382,7 +429,7 @@ fn test_title_tool_call_wins_over_intent_fallback() {
 
 #[test]
 fn test_response_skips_tool_calls_message() {
-    let (builder, db, log_service, conversations) = setup();
+    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -405,18 +452,13 @@ fn test_response_skips_tool_calls_message() {
     // Create agent_execution so messages FK is satisfied
     insert_execution_row(&db, &sid, &conv_id, agent);
 
-    // User message
-    conversations
-        .add_message(&sid, "user", "Hello", None, None)
-        .unwrap();
+    // User message via MessageStore (the new write path).
+    append_message(&messages, &sid, "user", "Hello", None, None);
 
-    // All assistant messages are tool-call markers
-    conversations
-        .add_message(&sid, "assistant", "[tool calls]", None, None)
-        .unwrap();
-    conversations
-        .add_message(&sid, "assistant", "[tool calls]", None, None)
-        .unwrap();
+    // All assistant messages are tool-call markers (no respond tool, no real
+    // assistant turn) — extract_response should return None.
+    append_message(&messages, &sid, "assistant", "[tool calls]", None, None);
+    append_message(&messages, &sid, "assistant", "[tool calls]", None, None);
 
     let state = builder.build(&sid).unwrap().expect("session should exist");
 
@@ -426,7 +468,7 @@ fn test_response_skips_tool_calls_message() {
 
 #[test]
 fn test_response_from_child_session() {
-    let (builder, db, log_service, _conversations) = setup();
+    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -453,15 +495,10 @@ fn test_response_from_child_session() {
     log_service
         .log_session_start(&child_sid, &child_sid, child_agent, Some(&root_sid))
         .unwrap();
+    // Slimmed respond tool_call — present so derive_phase recognises the
+    // respond tool, but the text now lives in the child's messages.
     log_service
-        .log_tool_call(
-            &child_sid,
-            &child_sid,
-            child_agent,
-            "respond",
-            "tc-child-1",
-            &serde_json::json!({"message": "Child response"}),
-        )
+        .log_tool_call(&child_sid, &child_sid, child_agent, "respond", "tc-child-1", &serde_json::json!({}))
         .unwrap();
     log_service
         .log_session_end(
@@ -473,6 +510,14 @@ fn test_response_from_child_session() {
         )
         .unwrap();
 
+    // Child session messages — extract_response reads this via the
+    // response_from_child_messages fallback. The legacy `messages` table
+    // created by DatabaseManager FKs execution_id→agent_executions and
+    // session_id→sessions, so both rows must exist.
+    insert_session_row(&db, &child_sid, "completed", child_agent);
+    insert_execution_row(&db, &child_sid, &child_sid, child_agent);
+    append_message(&messages, &child_sid, "assistant", "Child response", None, None);
+
     let state = builder
         .build(&root_sid)
         .unwrap()
@@ -483,7 +528,7 @@ fn test_response_from_child_session() {
 
 #[test]
 fn test_token_count_cumulative() {
-    let (builder, db, log_service, _conversations) = setup();
+    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -538,7 +583,7 @@ fn test_token_count_cumulative() {
 
 #[test]
 fn test_plan_completed_on_finished_session() {
-    let (builder, db, log_service, _conversations) = setup();
+    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -549,21 +594,9 @@ fn test_plan_completed_on_finished_session() {
         .log_session_start(&sid, &conv_id, agent, None)
         .unwrap();
 
-    // Plan with in_progress / pending steps
+    // Slimmed update_plan tool_call — name only (for derive_phase).
     log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "update_plan",
-            "tc-1",
-            &serde_json::json!({
-                "steps": [
-                    {"text": "Step 1", "status": "in_progress"},
-                    {"text": "Step 2", "status": "pending"}
-                ]
-            }),
-        )
+        .log_tool_call(&sid, &conv_id, agent, "update_plan", "tc-1", &serde_json::json!({}))
         .unwrap();
 
     log_service
@@ -576,9 +609,27 @@ fn test_plan_completed_on_finished_session() {
         )
         .unwrap();
 
+    // Create agent_execution so messages FK is satisfied
+    insert_execution_row(&db, &sid, &conv_id, agent);
+
+    // Plan content in an assistant message's tool_calls JSON (full args
+    // live here after the slim).
+    let plan_tc = serde_json::json!([{
+        "tool_id": "tc-1",
+        "tool_name": "update_plan",
+        "args": {
+            "steps": [
+                {"text": "Step 1", "status": "in_progress"},
+                {"text": "Step 2", "status": "pending"}
+            ]
+        }
+    }])
+    .to_string();
+    append_message(&messages, &sid, "assistant", "[tool calls]", Some(&plan_tc), None);
+
     let state = builder.build(&sid).unwrap().expect("session should exist");
 
-    // All steps should be marked completed
+    // All steps should be marked completed (session phase = Completed).
     assert_eq!(state.plan.len(), 2);
     for step in &state.plan {
         assert_eq!(step.status.as_deref(), Some("completed"));
@@ -587,7 +638,7 @@ fn test_plan_completed_on_finished_session() {
 
 #[test]
 fn test_subagent_task_from_parent_delegation() {
-    let (builder, db, log_service, _conversations) = setup();
+    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -656,28 +707,20 @@ fn test_subagent_task_from_parent_delegation() {
 }
 
 #[test]
-fn test_ward_from_tool_call() {
-    let (builder, db, log_service, _conversations) = setup();
+fn test_ward_from_sessions_row() {
+    // Slice 3: ward comes from sessions.ward_id (persisted by the
+    // WardChanged handler) — set it directly rather than relying on
+    // load_ward tool args (now slimmed out of execution_logs).
+    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
 
     insert_session_row(&db, &conv_id, "completed", agent);
+    set_session_ward(&db, &conv_id, "my-ward");
 
     log_service
         .log_session_start(&sid, &conv_id, agent, None)
-        .unwrap();
-
-    // Ward tool call — tool name contains "ward"
-    log_service
-        .log_tool_call(
-            &sid,
-            &conv_id,
-            agent,
-            "load_ward",
-            "tc-1",
-            &serde_json::json!({"action": "use", "name": "my-ward"}),
-        )
         .unwrap();
 
     log_service
@@ -695,4 +738,147 @@ fn test_ward_from_tool_call() {
     assert!(state.ward.is_some(), "ward should be set");
     let ward = state.ward.unwrap();
     assert_eq!(ward.name, "my-ward");
+}
+
+// ============================================================================
+// DELEGATION-SESSION ROBUSTNESS (Slice 3 redo — critical case)
+// ============================================================================
+//
+// Real sessions are delegation-based: the plan arrives as a `role=system`
+// message from a planner/builder agent, NOT an `update_plan` tool call. The
+// prior attempt failed because its checkpoint-based extractor only understood
+// `update_plan` tool_calls. This test seeds the realistic delegation shape
+// and verifies that Mission Control still renders plan + ward + response.
+
+#[test]
+fn test_delegation_session_plan_from_system_message() {
+    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let sid = uid();
+    let conv_id = sid.clone();
+    let agent = "root";
+
+    insert_session_row(&db, &conv_id, "completed", agent);
+    set_session_ward(&db, &conv_id, "maritime-tracking");
+    set_session_title(&db, &conv_id, "Track the vessel");
+
+    log_service
+        .log_session_start(&sid, &conv_id, agent, None)
+        .unwrap();
+
+    // Intent log (un-slimmed)
+    log_service
+        .log(
+            api_logs::ExecutionLog::new(
+                &sid,
+                &conv_id,
+                agent,
+                api_logs::LogLevel::Info,
+                api_logs::LogCategory::Intent,
+                "Intent analyzed",
+            )
+            .with_metadata(serde_json::json!({
+                "primary_intent": "Track a vessel",
+                "ward_recommendation": { "ward_name": "maritime-tracking" }
+            })),
+        )
+        .unwrap();
+
+    // A delegation happened (delegation log carries task — un-slimmed).
+    log_service
+        .log_delegation_start(&sid, &conv_id, agent, "planner-agent", "child-exec-1", "Plan vessel tracking")
+        .unwrap();
+
+    log_service
+        .log_session_end(
+            &sid,
+            &conv_id,
+            agent,
+            api_logs::SessionStatus::Completed,
+            None,
+        )
+        .unwrap();
+
+    // Messages: the realistic delegation-session shape. No update_plan
+    // tool_call exists — the plan arrives via a system message.
+    insert_execution_row(&db, &sid, &conv_id, agent);
+    append_message(&messages, &sid, "user", "Track the Ever Given", None, None);
+
+    // The delegation-result system message — planner response embedded.
+    let delegation_system = "## From Planner Agent\n\n\
+        I analyzed the request.\n\n\
+        ## Steps\n\
+        1. Locate the vessel on the map\n\
+        2. Estimate arrival time\n\
+        3. Report back\n\n\
+        ---\n\
+        _Conversation: `child-exec-1`_\n\n\
+        [Recall] Delegation completed.";
+    append_message(&messages, &sid, "system", delegation_system, None, None);
+
+    // Final assistant response
+    append_message(&messages, &sid, "assistant", "Vessel tracked; ETA Tuesday.", None, None);
+
+    let state = builder.build(&sid).unwrap().expect("session should exist");
+
+    // Plan must be sourced from the delegation `system` message content —
+    // this is the failure mode that reverted the prior attempt.
+    assert!(
+        !state.plan.is_empty(),
+        "plan must surface from delegation system message, got: {:?}",
+        state.plan
+    );
+    assert!(state.plan.iter().any(|s| s.text.contains("Locate the vessel")));
+
+    // ward comes from sessions.ward_id.
+    assert_eq!(state.ward.as_ref().unwrap().name, "maritime-tracking");
+
+    // response comes from the final assistant message.
+    assert_eq!(state.response.as_deref(), Some("Vessel tracked; ETA Tuesday."));
+
+    // title comes from sessions.title.
+    assert_eq!(state.session.title.as_deref(), Some("Track the vessel"));
+}
+
+#[test]
+fn test_delegation_session_continuation_envelope_plan() {
+    // The continuation prompt at core.rs:319 wraps the plan in a
+    // "[DELEGATION COMPLETED. YOUR PLAN IS BELOW....]" envelope. Verify
+    // extract_plan_from_messages handles this shape too.
+    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let sid = uid();
+    let conv_id = sid.clone();
+    let agent = "root";
+
+    insert_session_row(&db, &conv_id, "completed", agent);
+
+    log_service
+        .log_session_start(&sid, &conv_id, agent, None)
+        .unwrap();
+    log_service
+        .log_session_end(
+            &sid,
+            &conv_id,
+            agent,
+            api_logs::SessionStatus::Completed,
+            None,
+        )
+        .unwrap();
+
+    insert_execution_row(&db, &sid, &conv_id, agent);
+    append_message(&messages, &sid, "user", "Build a feature", None, None);
+
+    let system_msg = "[DELEGATION COMPLETED. YOUR PLAN IS BELOW.\n\
+        Review the delegate result already in context against this plan.\n\
+        If the user's goal is satisfied, respond with the final answer.]\n\n\
+        ## Steps\n\
+        - Write the code\n\
+        - Add tests\n\
+        - Document";
+    append_message(&messages, &sid, "system", system_msg, None, None);
+
+    let state = builder.build(&sid).unwrap().expect("session should exist");
+
+    assert_eq!(state.plan.len(), 3);
+    assert!(state.plan.iter().any(|s| s.text.contains("Write the code")));
+    assert!(state.plan.iter().any(|s| s.text.contains("Document")));
 }

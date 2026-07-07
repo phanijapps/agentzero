@@ -141,7 +141,12 @@ pub async fn get_session_state(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionState>, (StatusCode, Json<SessionErrorResponse>)> {
-    let builder = SessionStateBuilder::new(state.log_service.clone(), state.conversations.clone());
+    let builder = SessionStateBuilder::new(
+        state.log_service.clone(),
+        state.conversations.clone(),
+        state.messages.clone(),
+        state.state_service.clone(),
+    );
 
     match builder.build(&session_id) {
         Ok(Some(session_state)) => Ok(Json(session_state)),

@@ -133,6 +133,12 @@ pub struct ToolCallEntry {
     pub duration_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Tool input (args), sourced from the assistant `tool_calls` JSON (messages).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// Tool output (result), sourced from the matching `role=tool` message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 // ============================================================================
@@ -445,13 +451,18 @@ impl SessionStateBuilder {
 
             let child_session = &detail.session;
             let child_logs = &detail.logs;
+            // Child messages (keyed by conversation_id / sess-*) for tool-call input/output.
+            let child_messages = self
+                .messages
+                .replay(&child_session.conversation_id, None, 10_000)
+                .unwrap_or_default();
 
             // Extract the delegation task: check parent's delegation logs (metadata.task),
             // then child's delegation logs, then fall back to agent_executions.task via child session
             let task = self.extract_delegation_task(child_id, &child_session.agent_id, child_logs);
 
-            // Build tool call entries for this subagent
-            let tool_calls = Self::build_tool_calls(child_logs);
+            // Build tool call entries for this subagent (input/output from messages)
+            let tool_calls = Self::build_tool_calls(child_logs, &child_messages);
 
             subagents.push(SubagentState {
                 agent_id: child_session.agent_id.clone(),
@@ -519,44 +530,57 @@ impl SessionStateBuilder {
             .map(|l| l.message.chars().take(200).collect())
     }
 
-    /// Build tool call entries from a set of logs.
-    fn build_tool_calls(logs: &[ExecutionLog]) -> Vec<ToolCallEntry> {
-        let mut entries = Vec::new();
+    /// Build tool call entries. Input (args) comes from the assistant `tool_calls`
+    /// JSON in messages; output (result) from the matching `role=tool` message
+    /// (linked by `tool_call_id`); `duration_ms` from tool_result logs.
+    fn build_tool_calls(logs: &[ExecutionLog], messages: &[Message]) -> Vec<ToolCallEntry> {
+        use std::collections::HashMap;
 
-        for log in logs {
-            if log.category == LogCategory::ToolCall {
-                let tool_name = log
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.get("tool_name"))
+        // duration_ms per tool_id, from tool_result logs.
+        let duration: HashMap<&str, i64> = logs
+            .iter()
+            .filter(|l| l.category == LogCategory::ToolResult)
+            .filter_map(|l| {
+                let id = l.metadata.as_ref()?.get("tool_id")?.as_str()?;
+                l.duration_ms.map(|d| (id, d))
+            })
+            .collect();
+
+        // output (result) per tool_call_id, from role=tool messages.
+        let outputs: HashMap<&str, &str> = messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m.content.as_str())))
+            .collect();
+
+        let mut entries = Vec::new();
+        for m in messages.iter().filter(|m| m.role == "assistant") {
+            let Some(tc_json) = m.tool_calls.as_deref() else {
+                continue;
+            };
+            let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) else {
+                continue;
+            };
+            for tc in arr {
+                let tool_name = tc
+                    .get("tool_name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-
-                // Skip internal tools
                 if INTERNAL_TOOLS.contains(&tool_name.as_str()) {
                     continue;
                 }
-
-                let summary = log
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.get("summary"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        if !log.message.is_empty() {
-                            Some(log.message.clone())
-                        } else {
-                            None
-                        }
-                    });
-
+                let tool_id = tc.get("tool_id").and_then(|v| v.as_str());
+                let input = tc.get("args").map(|a| a.to_string());
+                let output = tool_id.and_then(|id| outputs.get(id)).map(|s| s.to_string());
+                let duration_ms = tool_id.and_then(|id| duration.get(id).copied());
                 entries.push(ToolCallEntry {
                     tool_name,
                     status: Some("completed".to_string()),
-                    duration_ms: log.duration_ms,
-                    summary,
+                    duration_ms,
+                    summary: None,
+                    input,
+                    output,
                 });
             }
         }

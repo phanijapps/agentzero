@@ -11,7 +11,6 @@ use gateway_execution::session_state::{SessionPhase, SessionStateBuilder};
 use gateway_services::VaultPaths;
 #[allow(deprecated)]
 use tempfile::tempdir;
-use zbot_conversation::{CheckpointStore, SqliteCheckpointStore};
 use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
 
 // ============================================================================
@@ -19,36 +18,21 @@ use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
 // ============================================================================
 
 /// Spin up a temp DB with full schema and return the builder + DB handle.
-///
-/// Returns the builder plus the CheckpointStore so tests can seed turn-
-/// boundary snapshots when verifying the checkpoint-read path (Slice 3).
 fn setup() -> (
     SessionStateBuilder,
     Arc<DatabaseManager>,
     Arc<LogService<DatabaseManager>>,
     Arc<ConversationRepository>,
-    Arc<SqliteCheckpointStore>,
 ) {
     let dir = tempdir().unwrap();
     #[allow(deprecated)]
     let dir_path = dir.into_path();
     let paths = Arc::new(VaultPaths::new(dir_path));
-    let db = Arc::new(DatabaseManager::new(paths.clone()).expect("DB init"));
+    let db = Arc::new(DatabaseManager::new(paths).expect("DB init"));
     let log_service = Arc::new(LogService::new(db.clone()));
     let conversations = Arc::new(ConversationRepository::new(db.clone()));
-
-    // CheckpointStore shares the same conversations.db (messages + checkpoints
-    // tables are in the zbot-conversation schema).
-    let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db())
-        .expect("conversation pool init");
-    let checkpoints = Arc::new(SqliteCheckpointStore::new(pool));
-
-    let builder = SessionStateBuilder::new(
-        log_service.clone(),
-        conversations.clone(),
-        checkpoints.clone() as Arc<dyn zbot_conversation::CheckpointStore>,
-    );
-    (builder, db, log_service, conversations, checkpoints)
+    let builder = SessionStateBuilder::new(log_service.clone(), conversations.clone());
+    (builder, db, log_service, conversations)
 }
 
 /// Generate a unique session-style ID.
@@ -113,7 +97,7 @@ fn insert_message_raw(
 
 #[test]
 fn test_completed_session_with_response() {
-    let (builder, db, log_service, conversations, _checkpoints) = setup();
+    let (builder, db, log_service, conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -202,7 +186,7 @@ fn test_completed_session_with_response() {
 
 #[test]
 fn test_crashed_session() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -234,7 +218,7 @@ fn test_crashed_session() {
 
 #[test]
 fn test_session_not_found() {
-    let (builder, _db, _log_service, _conversations, _checkpoints) = setup();
+    let (builder, _db, _log_service, _conversations) = setup();
 
     let result = builder.build("nonexistent").unwrap();
     assert!(result.is_none());
@@ -242,7 +226,7 @@ fn test_session_not_found() {
 
 #[test]
 fn test_title_from_tool_call() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -282,7 +266,7 @@ fn test_title_from_tool_call() {
 
 #[test]
 fn test_title_falls_back_to_intent_primary_when_tool_skipped() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -335,7 +319,7 @@ fn test_title_falls_back_to_intent_primary_when_tool_skipped() {
 
 #[test]
 fn test_title_tool_call_wins_over_intent_fallback() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -398,7 +382,7 @@ fn test_title_tool_call_wins_over_intent_fallback() {
 
 #[test]
 fn test_response_skips_tool_calls_message() {
-    let (builder, db, log_service, conversations, _checkpoints) = setup();
+    let (builder, db, log_service, conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -442,7 +426,7 @@ fn test_response_skips_tool_calls_message() {
 
 #[test]
 fn test_response_from_child_session() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -499,7 +483,7 @@ fn test_response_from_child_session() {
 
 #[test]
 fn test_token_count_cumulative() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -554,7 +538,7 @@ fn test_token_count_cumulative() {
 
 #[test]
 fn test_plan_completed_on_finished_session() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -603,7 +587,7 @@ fn test_plan_completed_on_finished_session() {
 
 #[test]
 fn test_subagent_task_from_parent_delegation() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -673,7 +657,7 @@ fn test_subagent_task_from_parent_delegation() {
 
 #[test]
 fn test_ward_from_tool_call() {
-    let (builder, db, log_service, _conversations, _checkpoints) = setup();
+    let (builder, db, log_service, _conversations) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -711,118 +695,4 @@ fn test_ward_from_tool_call() {
     assert!(state.ward.is_some(), "ward should be set");
     let ward = state.ward.unwrap();
     assert_eq!(ward.name, "my-ward");
-}
-
-// ============================================================================
-// SLICE 3: checkpoint-read path tests
-// ============================================================================
-
-/// Verify that `build()` reads tool-payload-derived fields (plan,
-/// recalled_facts, response) from the turn-boundary `context_state`
-/// checkpoint — NOT from `execution_logs.metadata.args/result`.
-///
-/// This test seeds **messages** (with full tool_calls JSON) and a
-/// **checkpoint** (built via `build_context_state`), but deliberately
-/// inserts **no** tool args in `execution_logs` (simulating slimmed metadata).
-/// If `build()` tried to read plan/response from logs, it would return empty.
-#[test]
-fn test_checkpoint_path_populates_plan_and_response() {
-    let (builder, db, log_service, conversations, checkpoints) = setup();
-    let sid = uid();
-    let conv_id = sid.clone();
-    let agent = "root";
-
-    insert_session_row(&db, &conv_id, "completed", agent);
-    insert_execution_row(&db, &sid, &conv_id, agent);
-
-    // Session log start (no tool-call logs with args — simulating slimmed metadata)
-    log_service
-        .log_session_start(&sid, &conv_id, agent, None)
-        .unwrap();
-
-    // Messages with full tool_calls JSON (this is where payloads live post-slimming)
-    conversations
-        .add_message(&sid, "user", "Build a report", None, None)
-        .unwrap();
-
-    // Assistant message with update_plan + respond tool calls
-    let tool_calls_json = serde_json::json!([{
-        "tool_id": "tc-plan",
-        "tool_name": "update_plan",
-        "args": {
-            "steps": [
-                {"text": "Step A", "status": "completed"},
-                {"text": "Step B", "status": "in_progress"}
-            ]
-        }
-    }, {
-        "tool_id": "tc-respond",
-        "tool_name": "respond",
-        "args": {"message": "Final answer from checkpoint"}
-    }])
-    .to_string();
-    db.with_connection(|conn| {
-        conn.execute(
-            "INSERT INTO messages (id, execution_id, session_id, role, content, created_at, token_count, tool_calls)
-             VALUES (?1, ?2, ?3, 'assistant', '[tool calls]', datetime('now'), 0, ?4)",
-            rusqlite::params![format!("msg-{}", uid()), &sid, &sid, tool_calls_json],
-        )?;
-        Ok(())
-    })
-    .expect("insert assistant message with tool_calls");
-
-    // Build and write a turn-boundary checkpoint (the production write path).
-    // We construct the messages vector directly — in production, write_turn_checkpoint
-    // fetches them via MessageStore::replay, but the extraction logic is identical.
-    let logs = log_service.get_session_detail(&sid).unwrap().unwrap().logs;
-    let msgs = vec![zbot_conversation::Message {
-        id: "msg-test".to_string(),
-        execution_id: Some(sid.clone()),
-        session_id: sid.clone(),
-        role: "assistant".to_string(),
-        content: "[tool calls]".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
-        token_count: 0,
-        tool_calls: Some(tool_calls_json),
-        tool_call_id: None,
-        seq: 1,
-    }];
-
-    // Use the public build_context_state API (same as write_turn_checkpoint)
-    let ctx = gateway_execution::build_context_state(
-        &logs,
-        &msgs,
-        "Final answer from checkpoint",
-        None, // ward_id
-        None, // title
-    );
-    let context_state_json = serde_json::to_string(&ctx).unwrap();
-
-    checkpoints
-        .write(&zbot_conversation::Checkpoint {
-            id: format!("cp-{}", uid()),
-            execution_id: sid.clone(),
-            session_id: sid.clone(),
-            llm_turn: 1,
-            last_message_id: String::new(),
-            pending_tool_calls: None,
-            context_state: Some(context_state_json),
-            child_executions: None,
-            schema_version: 1,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        })
-        .unwrap();
-
-    let state = builder.build(&sid).unwrap().expect("session should exist");
-
-    // Plan comes from messages via context_state checkpoint, NOT from logs
-    assert_eq!(state.plan.len(), 2);
-    assert_eq!(state.plan[0].text, "Step A");
-    assert_eq!(state.plan[1].text, "Step B");
-
-    // Response comes from the checkpoint's context_state
-    assert_eq!(
-        state.response.as_deref(),
-        Some("Final answer from checkpoint")
-    );
 }

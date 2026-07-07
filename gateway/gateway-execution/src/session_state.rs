@@ -8,8 +8,7 @@
 use std::sync::Arc;
 
 use api_logs::{ExecutionLog, LogCategory, LogService, SessionStatus};
-use serde::{Deserialize, Serialize};
-use zbot_conversation::{CheckpointStore, Message};
+use serde::Serialize;
 use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
 
 // ============================================================================
@@ -78,7 +77,7 @@ pub enum SessionPhase {
 }
 
 /// Information about the ward selected for this execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WardInfo {
     pub name: String,
@@ -87,7 +86,7 @@ pub struct WardInfo {
 }
 
 /// A single step in the agent's plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStep {
     pub text: String,
@@ -125,229 +124,6 @@ pub struct ToolCallEntry {
 }
 
 // ============================================================================
-// CONTEXT STATE (turn-boundary snapshot)
-// ============================================================================
-
-/// Snapshot of mutable agent context, written at each turn boundary into
-/// `checkpoints.context_state` by `write_turn_checkpoint`. Deserialized by
-/// `SessionStateBuilder::build` to populate `SessionState` fields in O(1)
-/// instead of replaying `execution_logs.metadata.args/result` (which are
-/// slimmed — Slice 3).
-///
-/// **Field sourcing at turn boundary:**
-/// - `intent` ← `extract_intent` against non-tool `Intent`-category logs
-///   (unaffected by slimming).
-/// - `ward` ← `state_service.get_session().ward_id` (persisted by
-///   `WardChanged` handler), fallback to intent recommendation.
-/// - `plan` ← `extract_plan_from_messages` against `messages.tool_calls`
-///   JSON (full args retained in messages).
-/// - `recalled_facts` ← `extract_recalled_facts_from_messages` against
-///   `messages` (role=tool results linked to memory/recall tool calls).
-/// - `response` ← accumulated response text (passed to
-///   `write_turn_checkpoint`).
-/// - `title` ← `state_service.get_session().title` (persisted by
-///   `SessionTitleChanged` handler), fallback to intent primary_intent.
-/// - `model` ← `extract_model` against non-tool log metadata.
-///
-/// Fields NOT in the snapshot (read at query-time):
-/// - `user_message` / `token_count` ← `MessageStore::replay` / conversation
-///   repo (T13's concern).
-/// - `subagents` ← `log_service` child-session enumeration (spec AC#4:
-///   "session meta and child-session enumeration still read via log_service").
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ContextState {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub intent: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ward: Option<WardInfo>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub plan: Vec<PlanStep>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub recalled_facts: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-/// Build a `ContextState` snapshot at the turn boundary. Called by
-/// `write_turn_checkpoint` (core.rs) with the session's logs (for non-tool
-/// metadata), messages (for tool-payload-derived fields), and runtime values.
-pub fn build_context_state(
-    logs: &[ExecutionLog],
-    messages: &[Message],
-    response: &str,
-    ward_id: Option<&str>,
-    title: Option<&str>,
-) -> ContextState {
-    let intent = SessionStateBuilder::extract_intent(logs);
-
-    // ward: prefer session.ward_id (persisted by WardChanged handler);
-    // fallback to intent recommendation or legacy log scan.
-    let ward = ward_id
-        .map(|w| WardInfo {
-            name: w.to_string(),
-            content: None,
-        })
-        .or_else(|| SessionStateBuilder::extract_ward(logs, intent.as_ref()));
-
-    // plan + recalled_facts: sourced from messages (full tool_calls JSON)
-    // since execution_logs.metadata no longer carries args/result.
-    let plan = extract_plan_from_messages(messages);
-    let recalled_facts = extract_recalled_facts_from_messages(messages);
-
-    let response_val = if response.trim().is_empty() {
-        None
-    } else {
-        Some(response.to_string())
-    };
-
-    // title: prefer session.title (persisted by SessionTitleChanged handler);
-    // fallback to intent primary_intent.
-    let title_val = title
-        .map(|t| t.to_string())
-        .or_else(|| SessionStateBuilder::extract_title(logs, intent.as_ref()));
-
-    let model = SessionStateBuilder::extract_model(logs);
-
-    ContextState {
-        intent,
-        ward,
-        plan,
-        recalled_facts,
-        response: response_val,
-        title: title_val,
-        model,
-    }
-}
-
-// ============================================================================
-// MESSAGES-BASED EXTRACTION (tool-payload fields after slimming)
-// ============================================================================
-
-/// Extract plan steps from the messages table. Scans assistant messages'
-/// `tool_calls` JSON for the latest `update_plan` call and parses its steps.
-///
-/// This replaces the execution_logs-based `extract_plan` at write-time —
-/// after slimming, `execution_logs.metadata` no longer carries `args`.
-fn extract_plan_from_messages(messages: &[Message]) -> Vec<PlanStep> {
-    for msg in messages.iter().rev() {
-        if msg.role != "assistant" {
-            continue;
-        }
-        let Some(tc_json) = &msg.tool_calls else {
-            continue;
-        };
-        let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) else {
-            continue;
-        };
-        for call in calls.iter().rev() {
-            let tool_name = call
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if tool_name == "update_plan" {
-                let args = call.get("args").unwrap_or(&serde_json::Value::Null);
-                return parse_plan_steps(args);
-            }
-        }
-    }
-    Vec::new()
-}
-
-/// Parse plan steps from a JSON value (shared between messages-based and
-/// log-based extraction).
-fn parse_plan_steps(args: &serde_json::Value) -> Vec<PlanStep> {
-    let steps_val = args
-        .get("steps")
-        .or_else(|| args.get("plan"))
-        .and_then(|v| v.as_array());
-
-    match steps_val {
-        Some(arr) => arr
-            .iter()
-            .filter_map(|v| {
-                if let Some(s) = v.as_str() {
-                    Some(PlanStep {
-                        text: s.to_string(),
-                        status: None,
-                    })
-                } else if let Some(obj) = v.as_object() {
-                    let text = obj
-                        .get("text")
-                        .or_else(|| obj.get("step"))
-                        .or_else(|| obj.get("description"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("(unknown)")
-                        .to_string();
-                    let status = obj
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    Some(PlanStep { text, status })
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        None => Vec::new(),
-    }
-}
-
-/// Extract recalled facts from the messages table. Finds memory/recall tool
-/// calls in assistant messages, then reads the corresponding tool-result
-/// messages (linked by `tool_call_id`) for fact text.
-///
-/// This replaces the execution_logs-based `extract_recalled_facts` at
-/// write-time — after slimming, `execution_logs.metadata` no longer carries
-/// `result`.
-fn extract_recalled_facts_from_messages(messages: &[Message]) -> Vec<String> {
-    let mut facts = Vec::new();
-    for msg in messages {
-        if msg.role != "assistant" {
-            continue;
-        }
-        let Some(tc_json) = &msg.tool_calls else {
-            continue;
-        };
-        let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) else {
-            continue;
-        };
-        for call in &calls {
-            let tool_name = call
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !(tool_name.contains("memory") || tool_name.contains("recall")) {
-                continue;
-            }
-            let Some(tool_id) = call.get("tool_id").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            // Find the matching tool-result message
-            for m in messages {
-                if m.role == "tool" && m.tool_call_id.as_deref() == Some(tool_id) {
-                    extract_facts_from_text(&m.content, &mut facts);
-                }
-            }
-        }
-    }
-    facts
-}
-
-/// Parse fact lines from a tool result string.
-fn extract_facts_from_text(text: &str, facts: &mut Vec<String>) {
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            facts.push(trimmed.to_string());
-        }
-    }
-}
-
-// ============================================================================
 // BUILDER
 // ============================================================================
 
@@ -359,7 +135,6 @@ const INTERNAL_TOOLS: &[&str] = &["analyze_intent", "update_plan", "set_session_
 pub struct SessionStateBuilder {
     log_service: Arc<LogService<DatabaseManager>>,
     conversations: Arc<ConversationRepository>,
-    checkpoints: Arc<dyn CheckpointStore>,
 }
 
 impl SessionStateBuilder {
@@ -367,23 +142,14 @@ impl SessionStateBuilder {
     pub fn new(
         log_service: Arc<LogService<DatabaseManager>>,
         conversations: Arc<ConversationRepository>,
-        checkpoints: Arc<dyn CheckpointStore>,
     ) -> Self {
         Self {
             log_service,
             conversations,
-            checkpoints,
         }
     }
 
     /// Build a complete [`SessionState`] for the given session.
-    ///
-    /// **Slice 3 data flow:** reads the turn-boundary `context_state` snapshot
-    /// from `CheckpointStore::latest(execution_id)` for the tool-payload-
-    /// derived fields (`intent`, `ward`, `plan`, `recalled_facts`, `response`,
-    /// `title`, `model`). Falls back to the legacy `extract_*`-from-logs path
-    /// when no checkpoint exists (e.g. crashed before the first turn boundary,
-    /// or test fixtures that insert logs directly).
     ///
     /// Returns `None` when the session does not exist in the logs database.
     pub fn build(&self, session_id: &str) -> Result<Option<SessionState>, String> {
@@ -397,63 +163,23 @@ impl SessionStateBuilder {
 
         // Messages table uses execution_id (exec-xxx), not conversation_id (sess-xxx)
         let user_message = self.extract_user_message(&session.session_id);
-
-        // --- Slice 3: prefer turn-boundary checkpoint snapshot ---
-        let checkpoint = self.checkpoints.latest(&session.session_id).ok().flatten();
-        let ctx: Option<ContextState> = checkpoint
-            .as_ref()
-            .and_then(|cp| cp.context_state.as_deref())
-            .and_then(|json| serde_json::from_str::<ContextState>(json).ok());
-
-        let (intent_analysis, ward, plan, recalled_facts, response, title_from_ctx, model) =
-            match &ctx {
-                Some(c) => (
-                    c.intent.clone(),
-                    c.ward.clone(),
-                    c.plan.clone(),
-                    c.recalled_facts.clone(),
-                    c.response.clone(),
-                    c.title.clone(),
-                    c.model.clone(),
-                ),
-                None => {
-                    // Fallback: legacy extract_* from execution_logs (for
-                    // sessions without a checkpoint — crashed before turn
-                    // boundary, or test fixtures with direct log inserts).
-                    let intent = Self::extract_intent(logs);
-                    let ward = Self::extract_ward(logs, intent.as_ref());
-                    let plan = Self::extract_plan(logs);
-                    let recalled_facts = Self::extract_recalled_facts(logs);
-                    let response = self.extract_response(
-                        logs,
-                        &session.session_id,
-                        &session.child_session_ids,
-                    );
-                    let title = Self::extract_title(logs, intent.as_ref());
-                    let model = Self::extract_model(logs);
-                    (intent, ward, plan, recalled_facts, response, title, model)
-                }
-            };
-
-        // If root checkpoint has no response, check child checkpoints (a
-        // subagent may have called respond — spec: child-session enumeration
-        // via log_service; we also check child checkpoints for efficiency).
-        let response = response.or_else(|| self.response_from_child_checkpoint(&session.child_session_ids));
-
+        let intent_analysis = Self::extract_intent(logs);
+        let ward = Self::extract_ward(logs, intent_analysis.as_ref());
+        let recalled_facts = Self::extract_recalled_facts(logs);
+        let plan = Self::extract_plan(logs);
         let subagents = self.build_subagents(&session.child_session_ids);
+        let response = self.extract_response(logs, &session.session_id, &session.child_session_ids);
         let phase = Self::derive_phase(&session.status, logs, response.as_ref());
 
-        // Title priority: session table → context_state → extract_title fallback
-        let title = session
-            .title
-            .clone()
-            .or(title_from_ctx)
-            .or_else(|| Self::extract_title(logs, intent_analysis.as_ref()));
+        let model = Self::extract_model(logs);
 
         Ok(Some(SessionState {
             session: SessionMeta {
                 id: session.session_id.clone(),
-                title,
+                title: session
+                    .title
+                    .clone()
+                    .or_else(|| Self::extract_title(logs, intent_analysis.as_ref())),
                 status: session.status.as_str().to_string(),
                 started_at: session.started_at.clone(),
                 duration_ms: session.duration_ms,
@@ -483,28 +209,6 @@ impl SessionStateBuilder {
             subagents,
             is_live: session.status == SessionStatus::Running,
         }))
-    }
-
-    // ========================================================================
-    // CHECKPOINT HELPERS
-    // ========================================================================
-
-    /// Check child-session checkpoints for a non-null `response` — a subagent
-    /// may have called `respond` when the root session did not. Each lookup is
-    /// O(1) (single `checkpoints.latest` per child).
-    fn response_from_child_checkpoint(&self, child_session_ids: &[String]) -> Option<String> {
-        for child_id in child_session_ids {
-            if let Ok(Some(cp)) = self.checkpoints.latest(child_id) {
-                if let Some(json) = cp.context_state.as_deref() {
-                    if let Ok(ctx) = serde_json::from_str::<ContextState>(json) {
-                        if ctx.response.is_some() {
-                            return ctx.response;
-                        }
-                    }
-                }
-            }
-        }
-        None
     }
 
     // ========================================================================

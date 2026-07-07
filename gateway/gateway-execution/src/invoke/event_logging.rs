@@ -44,17 +44,11 @@ pub fn log_delegation(ctx: &StreamContext, child_agent: &str, task: &str) {
 }
 
 /// Log a tool call start event.
-///
-/// **Slice 3 slimming:** `metadata` carries only the retained display key set
-/// `{tool_name, tool_id}` — `args` is dropped (full payload lives in
-/// `messages.tool_calls` and `traces/*.jsonl.gz`). The `args` parameter is
-/// kept in the signature for API stability and is forwarded to the trace
-/// writer by the caller (`stream_event_processor::trace_tool_call`).
 pub fn log_tool_call(
     ctx: &StreamContext,
     tool_id: &str,
     tool_name: &str,
-    _args: &serde_json::Value,
+    args: &serde_json::Value,
 ) {
     let entry = ExecutionLog::new(
         &ctx.execution_id,
@@ -67,16 +61,12 @@ pub fn log_tool_call(
     .with_metadata(serde_json::json!({
         "tool_id": tool_id,
         "tool_name": tool_name,
+        "args": args,
     }));
     log_entry(ctx, entry);
 }
 
 /// Log a tool result event.
-///
-/// **Slice 3 slimming:** `metadata` carries only the retained display key set
-/// `{tool_id, error, blocked_by_hook}` — `result` is dropped and the 500-char
-/// truncation is removed (full payload lives in `messages.content` for
-/// `role=tool` rows and `traces/*.jsonl.gz`).
 pub fn log_tool_result(
     ctx: &StreamContext,
     tool_id: &str,
@@ -87,6 +77,13 @@ pub fn log_tool_result(
     let blocked_by_hook = is_blocked_by_hook_result(result, error);
     let level = tool_result_log_level(error, blocked_by_hook);
 
+    // Truncate result for logging
+    let truncated = if result.len() > 500 {
+        format!("{}...", agent_primitives::truncate_str(result, 500))
+    } else {
+        result.to_string()
+    };
+
     let entry = ExecutionLog::new(
         &ctx.execution_id,
         &ctx.session_id,
@@ -95,7 +92,12 @@ pub fn log_tool_result(
         LogCategory::ToolResult,
         tool_result_message(error, blocked_by_hook),
     )
-    .with_metadata(tool_result_metadata(tool_id, error, blocked_by_hook));
+    .with_metadata(tool_result_metadata(
+        tool_id,
+        &truncated,
+        error,
+        blocked_by_hook,
+    ));
     let entry = match duration_ms {
         Some(duration_ms) => entry.with_duration(duration_ms),
         None => entry,
@@ -127,11 +129,13 @@ fn tool_result_message(error: &Option<String>, blocked_by_hook: bool) -> &'stati
 
 fn tool_result_metadata(
     tool_id: &str,
+    result: &str,
     error: &Option<String>,
     blocked_by_hook: bool,
 ) -> serde_json::Value {
     serde_json::json!({
         "tool_id": tool_id,
+        "result": result,
         "error": error,
         "blocked_by_hook": blocked_by_hook,
     })
@@ -162,7 +166,7 @@ mod tests {
         assert_eq!(tool_result_log_level(&error, true), LogLevel::Warn);
         assert_eq!(tool_result_message(&error, true), "Tool blocked by hook");
 
-        let metadata = tool_result_metadata("call-1", &error, true);
+        let metadata = tool_result_metadata("call-1", "[blocked by hook]", &error, true);
         assert_eq!(metadata["blocked_by_hook"], true);
         assert_eq!(metadata["error"], "blocked_by_hook");
     }

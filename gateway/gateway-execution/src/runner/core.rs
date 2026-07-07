@@ -1586,8 +1586,6 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         write_turn_checkpoint(
             &checkpoints,
             &state_service,
-            &log_service,
-            &messages,
             &execution_id,
             &session_id_clone,
             handle.current_iteration(),
@@ -1740,57 +1738,39 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
 
 /// Write a versioned `Checkpoint` at the turn boundary — the point where the
 /// assistant's final/respond turn completes. `context_state` captures a
-/// full snapshot of the agent's mutable context so `session_state` can read
-/// it in O(1) (T12) instead of replaying `execution_logs`.
+/// best-effort snapshot of the agent's mutable context so `session_state`
+/// can read it in O(1) (T12) instead of replaying `execution_logs`.
 ///
-/// **Slice 3 sourcing:**
-/// - `intent` ← non-tool `Intent`-category log (via `log_service`).
-/// - `ward` ← `state_service.get_session().ward_id`.
-/// - `plan` ← `messages.tool_calls` JSON (full args retained in messages).
-/// - `recalled_facts` ← `messages` tool results for memory/recall calls.
-/// - `response` ← accumulated response text (param).
-/// - `title` ← `state_service.get_session().title`.
-/// - `model` ← non-tool log metadata.
-///
-/// `subagents` are NOT in the snapshot — spec AC#4: child-session enumeration
-/// reads via `log_service` at query-time.
+/// Fields not yet sourced (`intent`, `plan`, `recalled_facts`, `model`,
+/// `subagents`, `title`) are `null` — they're populated in a follow-up slice
+/// once the in-memory runtime state is threaded to this call site. The
+/// important invariant today: one `checkpoints` row per turn with `llm_turn`,
+/// `last_message_id`, and a `context_state` JSON blob.
 pub(crate) fn write_turn_checkpoint(
     checkpoints: &Arc<dyn zbot_conversation::CheckpointStore>,
     state_service: &StateService<DatabaseManager>,
-    log_service: &Arc<LogService<DatabaseManager>>,
-    messages: &Arc<dyn zbot_conversation::MessageStore>,
     execution_id: &str,
     session_id: &str,
     llm_turn: u32,
     response: &str,
 ) {
-    // Fetch session for ward_id + title (persisted by WardChanged / TitleChanged handlers)
-    let session = state_service.get_session(session_id).ok().flatten();
-    let ward_id = session.as_ref().and_then(|s| s.ward_id.as_deref());
-    let title = session.as_ref().and_then(|s| s.title.as_deref());
-
-    // Fetch logs (for non-tool metadata: intent, model — unaffected by slimming)
-    let logs: Vec<api_logs::ExecutionLog> = log_service
-        .get_session_detail(session_id)
+    let ward = state_service
+        .get_session(session_id)
         .ok()
         .flatten()
-        .map(|d| d.logs)
-        .unwrap_or_default();
+        .and_then(|s| s.ward_id);
 
-    // Fetch messages (for tool-payload-derived fields: plan, recalled_facts)
-    let msgs: Vec<zbot_conversation::Message> = messages
-        .replay(session_id, None, 10_000)
-        .unwrap_or_default();
-
-    let ctx = crate::session_state::build_context_state(
-        &logs,
-        &msgs,
-        response,
-        ward_id,
-        title,
-    );
-
-    let context_state = serde_json::to_string(&ctx).unwrap_or_else(|_| "{}".to_string());
+    let context_state = serde_json::json!({
+        "intent": null,
+        "ward": ward,
+        "plan": null,
+        "recalled_facts": null,
+        "response": response,
+        "title": null,
+        "model": null,
+        "subagents": null,
+    })
+    .to_string();
 
     let checkpoint = zbot_conversation::Checkpoint {
         id: uuid::Uuid::now_v7().to_string(),

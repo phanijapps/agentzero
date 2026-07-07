@@ -1,6 +1,6 @@
 # Spec: Simplified Provider Model Configuration
 
-- **Status:** Implemented
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [RFC-0008: Simplified Provider Model Configuration](../../rfc/0008-simplified-provider-model-configuration.md)
@@ -67,23 +67,23 @@ proceeding; *Never do* is a hard rule, even under time pressure.
 
 ## Acceptance Criteria
 
-- [ ] Unknown models resolve to `200000` max input tokens and `32000` max output
+- [x] Unknown models resolve to `200000` max input tokens and `32000` max output
   tokens by default.
-- [ ] Existing agent `maxTokens` values are still accepted as max output tokens.
-- [ ] Existing provider `contextWindow` values are still accepted as max input
+- [x] Existing agent `maxTokens` values are still accepted as max output tokens.
+- [x] Existing provider `contextWindow` values are still accepted as max input
   tokens.
-- [ ] Agent create/edit APIs expose and persist max input and max output token
+- [x] Agent create/edit APIs expose and persist max input and max output token
   overrides.
-- [ ] Agent UI creation/editing exposes max input and max output token fields,
+- [x] Agent UI creation/editing exposes max input and max output token fields,
   defaulted to `200000` and `32000`.
-- [ ] Advanced settings exposes max input and max output token fields for
+- [x] Advanced settings exposes max input and max output token fields for
   orchestrator, distillation, curator, intent analysis, and multimodal model
   slots.
-- [ ] Runtime executor context-window budgeting uses the effective max input
+- [x] Runtime executor context-window budgeting uses the effective max input
   tokens instead of falling back to `8192` for unknown models.
-- [ ] Runtime LLM max output uses the effective max output tokens and still
+- [x] Runtime LLM max output uses the effective max output tokens and still
   clamps when a provider/model-specific lower max output is configured.
-- [ ] Provider cards/details do not require model capability metadata to show a
+- [x] Provider cards/details do not require model capability metadata to show a
   usable provider/model configuration.
 
 ## Assumptions

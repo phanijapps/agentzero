@@ -550,11 +550,12 @@ fn build_client(cfg: &EmbeddingConfig) -> Result<Arc<dyn EmbeddingClient>, Strin
             // after swap — a mismatch surfaces as Health::Misconfigured
             // rather than a silent corruption of the vec0 indexes.
             let base = format!("{}/v1", ollama.base_url.trim_end_matches('/'));
-            let client = OpenAiEmbeddingClient::new(
+            let client = OpenAiEmbeddingClient::with_provider_type(
                 base,
                 String::new(),
                 ollama.model.clone(),
                 ollama.dimensions,
+                "ollama".to_string(),
             );
             Ok(Arc::new(client))
         }
@@ -1060,6 +1061,10 @@ impl EmbeddingClient for NoopEmbeddingClient {
     fn model_name(&self) -> String {
         "unconfigured".to_string()
     }
+
+    fn provider_type(&self) -> String {
+        "unconfigured".to_string()
+    }
 }
 
 // ============================================================================
@@ -1097,6 +1102,18 @@ impl EmbeddingClient for LiveEmbeddingClient {
 
     fn model_name(&self) -> String {
         self.service.client().model_name()
+    }
+
+    fn provider_type(&self) -> String {
+        self.service.client().provider_type()
+    }
+
+    fn prompt_profile(&self) -> String {
+        self.service.client().prompt_profile()
+    }
+
+    fn normalization(&self) -> Option<String> {
+        self.service.client().normalization()
     }
 }
 

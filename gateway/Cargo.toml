@@ -27,6 +27,7 @@ agent-runtime = { path = "../runtime/agent-runtime" }
 agent-tools = { path = "../runtime/agent-tools" }
 agent-primitives = { path = "../runtime/agent-primitives" }
 zbot-stores = { path = "../stores/zbot-stores" }
+zbot-engram-adapter = { path = "../stores/zbot-engram-adapter" }
 zbot-stores-domain = { path = "../stores/zbot-stores-domain" }
 zbot-stores-traits = { path = "../stores/zbot-stores-traits" }
 zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }

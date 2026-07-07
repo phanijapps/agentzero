@@ -75,6 +75,7 @@ import type {
   UpdateCronJobRequest,
   CronTriggerResult,
   // Memory types
+  CreatableMemoryCategory,
   MemoryFact,
   MemoryFilter,
   MemoryListResponse,
@@ -1592,7 +1593,7 @@ export class HttpTransport implements Transport {
   }
 
   async createMemory(agentId: string, fact: {
-    category: string;
+    category: CreatableMemoryCategory;
     key: string;
     content: string;
     confidence?: number;

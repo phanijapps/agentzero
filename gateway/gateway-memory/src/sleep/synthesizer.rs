@@ -19,7 +19,9 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zbot_stores::{KnowledgeGraphStore, StrategyCandidate};
-use zbot_stores_traits::{CompactionStore, EpisodeStore, MemoryFactStore, StrategyFactInsert};
+use zbot_stores_traits::{
+    CompactionStore, EmbeddingQueryIdentity, EpisodeStore, MemoryFactStore, StrategyFactInsert,
+};
 
 use crate::util::parse_llm_json;
 use crate::{CachedLlmClient, LlmClientConfig, MemoryLlmFactory};
@@ -180,11 +182,13 @@ impl Synthesizer {
         // Dedup step (optional — requires embedder)
         let embedding = self.embed_content(&resp.key_fact).await;
         if let Some(ref emb) = embedding {
+            let query_identity = self.embedding_query_identity();
             match self
                 .memory_store
-                .find_strategy_fact_by_similarity(
+                .find_strategy_fact_by_similarity_with_identity(
                     &cand.agent_id,
                     emb,
+                    query_identity.as_ref(),
                     DEDUP_COSINE_THRESHOLD as f32,
                     50,
                 )
@@ -277,6 +281,17 @@ impl Synthesizer {
                 None
             }
         }
+    }
+
+    fn embedding_query_identity(&self) -> Option<EmbeddingQueryIdentity> {
+        let client = self.embedder.as_ref()?;
+        Some(EmbeddingQueryIdentity {
+            provider_type: client.provider_type(),
+            model: client.model_name(),
+            dimensions: client.dimensions() as u32,
+            prompt_profile: client.prompt_profile(),
+            normalization: client.normalization(),
+        })
     }
 
     async fn build_input(&self, cand: &StrategyCandidate) -> Result<SynthesisInput, String> {

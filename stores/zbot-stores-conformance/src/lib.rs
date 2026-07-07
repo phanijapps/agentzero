@@ -5,6 +5,8 @@
 //! Impl crates call these from their integration tests; behavioural drift
 //! between impls produces failing assertions.
 
+pub mod parity;
+
 use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
 use zbot_stores::extracted::ExtractedKnowledge;
 use zbot_stores::types::{Direction, EntityId, ResolveOutcome};
@@ -726,4 +728,44 @@ pub async fn memory_hybrid_search_finds_match<S: MemoryFactStore>(store: &S) {
             .any(|r| r["content"].as_str().unwrap_or("").contains("coffee")),
         "results should contain the coffee fact"
     );
+}
+
+// =============================================================================
+// Belief store conformance
+// =============================================================================
+
+use zbot_stores_traits::{Belief, BeliefStore};
+
+pub async fn belief_upsert_get_round_trip<S: BeliefStore>(store: &S) {
+    let now = chrono::Utc::now();
+    let belief = Belief {
+        id: "belief-conf-upsert-get".to_string(),
+        partition_id: "partition-conf".to_string(),
+        subject: "user.preference".to_string(),
+        content: "User prefers concise responses".to_string(),
+        confidence: 0.85,
+        valid_from: Some(now),
+        valid_until: None,
+        source_fact_ids: vec!["fact-conf-1".to_string()],
+        synthesizer_version: 1,
+        reasoning: None,
+        created_at: now,
+        updated_at: now,
+        superseded_by: None,
+        stale: false,
+        embedding: None,
+    };
+
+    store.upsert_belief(&belief).await.unwrap();
+
+    let fetched = store
+        .get_belief("partition-conf", "user.preference", None)
+        .await
+        .unwrap()
+        .expect("belief should exist after upsert");
+
+    assert_eq!(fetched.id, belief.id);
+    assert_eq!(fetched.partition_id, belief.partition_id);
+    assert_eq!(fetched.subject, belief.subject);
+    assert_eq!(fetched.source_fact_ids, belief.source_fact_ids);
 }

@@ -28,7 +28,6 @@
 //! sets the per-call `function_call_id` from `StepEvent::ToolCall`.
 //! `tool_concurrency(1)` keeps the shared context race-free.
 
-use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -264,12 +263,12 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                                 artifacts: respond.artifacts,
                             });
                         }
-                        // Surface result-value markers. The ward/update_plan/
-                        // set_session_title tools signal via their return JSON
+                        // Surface result-value markers. Ward/update_plan/title
+                        // marker producers signal via their return JSON
                         // (`__ward_changed__`/`__plan_update`/`__session_title_changed__`
                         // + payload fields); the legacy executor parses the tool
-                        // output. Without this, set_session_title never persists
-                        // and the session shows as "root" in mission-control.
+                        // output. Without this, legacy marker producers never
+                        // publish the corresponding stream events.
                         if let Ok(parsed) = serde_json::from_str::<Value>(&result_text) {
                             if parsed
                                 .get("__session_title_changed__")
@@ -459,56 +458,54 @@ impl<M: CompletionModel> RigExecutionHook<M> {
 }
 
 impl<M: CompletionModel> AgentHook<M> for RigExecutionHook<M> {
-    fn on_event(&self, event: StepEvent<'_, M>) -> impl Future<Output = Flow> + Send {
-        async move {
-            match event {
-                StepEvent::ToolCall {
-                    tool_name,
-                    tool_call_id,
-                    args,
-                    ..
-                } => {
-                    if let Some(id) = tool_call_id.filter(|id: &&str| !id.is_empty()) {
-                        self.ctx.set_function_call_id((*id).to_string());
-                    }
-                    if let Some(before) = &self.before {
-                        let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                        if let ToolCallDecision::Block { reason } = before(tool_name, &args_value) {
-                            return Flow::skip(reason);
-                        }
-                    }
-                    Flow::cont()
+    async fn on_event(&self, event: StepEvent<'_, M>) -> Flow {
+        match event {
+            StepEvent::ToolCall {
+                tool_name,
+                tool_call_id,
+                args,
+                ..
+            } => {
+                if let Some(id) = tool_call_id.filter(|id: &&str| !id.is_empty()) {
+                    self.ctx.set_function_call_id((*id).to_string());
                 }
-                StepEvent::CompletionCall { .. } => {
-                    // Mirror the legacy executor's per-turn reset of the
-                    // delegation claim. Without this, the first delegation's
-                    // `app:delegation_active=true` is never released on the Rig
-                    // path, so every subsequent `delegate_to_agent` is blocked
-                    // with "You already have an active delegation" and the root
-                    // deadlocks looping on queued delegations that never spawn.
-                    self.ctx
-                        .set_state("app:delegation_active".to_string(), Value::Bool(false));
-                    Flow::cont()
-                }
-                StepEvent::ToolResult {
-                    tool_name,
-                    args,
-                    result,
-                    ..
-                } => {
-                    if let Some(after) = &self.after {
-                        let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                        // rig's ToolResult fires for completed calls; the legacy
-                        // executor calls after_tool_call with succeeded=true on
-                        // this path, so we match it.
-                        if let Some(replacement) = after(tool_name, &args_value, result, true) {
-                            return Flow::rewrite_result(replacement);
-                        }
+                if let Some(before) = &self.before {
+                    let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
+                    if let ToolCallDecision::Block { reason } = before(tool_name, &args_value) {
+                        return Flow::skip(reason);
                     }
-                    Flow::cont()
                 }
-                _ => Flow::cont(),
+                Flow::cont()
             }
+            StepEvent::CompletionCall { .. } => {
+                // Mirror the legacy executor's per-turn reset of the
+                // delegation claim. Without this, the first delegation's
+                // `app:delegation_active=true` is never released on the Rig
+                // path, so every subsequent `delegate_to_agent` is blocked
+                // with "You already have an active delegation" and the root
+                // deadlocks looping on queued delegations that never spawn.
+                self.ctx
+                    .set_state("app:delegation_active".to_string(), Value::Bool(false));
+                Flow::cont()
+            }
+            StepEvent::ToolResult {
+                tool_name,
+                args,
+                result,
+                ..
+            } => {
+                if let Some(after) = &self.after {
+                    let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
+                    // rig's ToolResult fires for completed calls; the legacy
+                    // executor calls after_tool_call with succeeded=true on
+                    // this path, so we match it.
+                    if let Some(replacement) = after(tool_name, &args_value, result, true) {
+                        return Flow::rewrite_result(replacement);
+                    }
+                }
+                Flow::cont()
+            }
+            _ => Flow::cont(),
         }
     }
 }
@@ -1183,15 +1180,16 @@ mod tests {
         );
     }
 
-    // set_session_title returns `{"__session_title_changed__": true, "title": ...}`;
-    // the engine must surface SessionTitleChanged so the gateway persists the title.
+    // A legacy title marker producer can return
+    // `{"__session_title_changed__": true, "title": ...}`; the engine must
+    // surface SessionTitleChanged so the gateway persists the title.
     #[tokio::test]
     async fn session_title_marker_surfaces() {
         struct TitleTool;
         #[async_trait::async_trait]
         impl agent_primitives::Tool for TitleTool {
             fn name(&self) -> &str {
-                "set_session_title"
+                "legacy_title_marker"
             }
             fn description(&self) -> &str {
                 "set title"
@@ -1207,7 +1205,7 @@ mod tests {
 
         let engine = RigAgentEngine::new(
             sample_config(),
-            ToolCallModel::new("set_session_title"),
+            ToolCallModel::new("legacy_title_marker"),
             vec![RigToolAdapter::boxed(Arc::new(TitleTool))],
             Arc::new(crate::tools::context::ToolContext::default()),
         );

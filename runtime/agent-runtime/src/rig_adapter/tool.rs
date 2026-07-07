@@ -79,7 +79,7 @@ impl ToolDyn for RigToolAdapter {
             let parameters = inner
                 .parameters_schema()
                 .filter(|v| !v.is_null())
-                .unwrap_or_else(|| empty_object_schema());
+                .unwrap_or_else(empty_object_schema);
             ToolDefinition {
                 name: inner.name().to_string(),
                 description: inner.description().to_string(),
@@ -296,9 +296,11 @@ mod tests {
             .await
             .expect("tool call");
 
-        let calls = seen.lock().unwrap();
-        assert_eq!(calls.len(), 1, "tool executed once");
-        let call = &calls[0];
+        let call = {
+            let calls = seen.lock().unwrap();
+            assert_eq!(calls.len(), 1, "tool executed once");
+            calls[0].clone()
+        };
         // Tool received the model-supplied args verbatim.
         assert_eq!(call.args, json!({"x": 42}));
         // Hidden runtime context reached the tool from extensions.

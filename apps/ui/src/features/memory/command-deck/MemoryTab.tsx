@@ -7,7 +7,7 @@ import { WriteRail } from "./WriteRail";
 import { SearchResults } from "./SearchResults";
 import { useWards, useWardContent, useHybridSearch, useTimewarp } from "./hooks";
 import { getTransport } from "@/services/transport";
-import type { MemoryCategory } from "@/services/transport/types";
+import type { CreatableMemoryCategory } from "@/services/transport/types";
 import { BeliefsList } from "./beliefs/BeliefsList";
 import { ContradictionList } from "./beliefs/ContradictionList";
 
@@ -28,7 +28,7 @@ const SUB_TAB_LABELS: Record<MemorySubTab, string> = {
 };
 
 interface SaveInput {
-  category: MemoryCategory;
+  category: CreatableMemoryCategory;
   content: string;
   ward_id: string;
 }

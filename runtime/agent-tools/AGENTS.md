@@ -15,13 +15,11 @@ cargo test -p agent-tools      # 25 tests
 | `execution/shell.rs` | `ShellTool` — shell commands (cwd = ward dir, uses venv) |
 | `execution/write_file.rs` | `WriteFileTool` — create/overwrite files in ward |
 | `execution/edit_file.rs` | `EditFileTool` — targeted find-and-replace |
-| `execution/skills.rs` | `LoadSkillTool`, `ListSkillsTool` |
-| `execution/session_title.rs` | `SetSessionTitleTool` |
+| `execution/skills.rs` | `LoadSkillTool` |
 | `execution/update_plan.rs` | `UpdatePlanTool` — lightweight task checklist |
 | `execution/graph.rs` | `ExecutionGraphTool` — DAG workflow engine |
-| `execution/todos.rs` | `TodoTool` (optional) |
 | `file.rs` | `ReadTool`, `WriteTool`, `EditTool` (optional file-tools group) |
-| `search.rs` | `GrepTool`, `GlobTool` |
+| `search.rs` | `GlobTool` |
 | `ward.rs` | `WardTool` — ward use/list/create/info; emits `WardChanged` |
 | `memory.rs` | `MemoryTool` — persistent key-value (shared/agent/ward scopes) |
 | `web.rs` | `WebFetchTool` (optional) |
@@ -31,7 +29,6 @@ cargo test -p agent-tools      # 25 tests
 | `ui.rs` | `RequestInputTool`, `ShowContentTool` (optional) |
 | `agent.rs` | `ListAgentsTool`, `CreateAgentTool` (optional) |
 | `multimodal.rs` | `MultimodalAnalyzeTool` — vision fallback |
-| `introspection.rs` | `ListMcpsTool`, `ListSkillsTool`, `ListToolsTool` (optional) |
 | `connectors.rs` | `QueryResourceTool` — query bridge worker resources |
 
 ## Registration Functions
@@ -45,7 +42,7 @@ pub fn builtin_tools_with_fs(fs: Arc<dyn FileSystemContext>) -> Vec<Arc<dyn Tool
 ```
 
 Core tools are always enabled. Optional tools depend on `ToolSettings` boolean flags:
-`file_tools`, `todos`, `python`, `web_fetch`, `ui_tools`, `create_agent`, `introspection`.
+`file_tools`, `python`, `web_fetch`, `ui_tools`, `create_agent`.
 
 ## Security / Guards
 

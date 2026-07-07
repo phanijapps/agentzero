@@ -7,6 +7,8 @@ How the code is *currently* organized. Not why (that's in
 - [`overview.md`](overview.md) — the map of the monorepo. What's in
   `apps/`, `packages/`, `tools/`, `packs/`, and how they relate.
   Read this first.
+- [`security.md`](security.md) — data-root confinement, dependency provenance,
+  and diagnostics controls for adapter and migration boundaries.
 - `<subsystem>.md` — one file per non-trivial subsystem (add as the repo
   grows). Each describes the structure, the entry points, and links to
   the ADRs that explain why.

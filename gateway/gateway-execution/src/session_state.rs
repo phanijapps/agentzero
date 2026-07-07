@@ -215,14 +215,13 @@ impl SessionStateBuilder {
     // EXTRACTION HELPERS
     // ========================================================================
 
-    /// Title-length cap for the intent-analysis fallback. Matches the spirit
-    /// of `SetSessionTitleTool`'s 120-char ceiling but keeps UI rows short.
+    /// Title-length cap for the intent-analysis fallback. Keeps UI rows short
+    /// without depending on the retired model-visible title tool.
     const INTENT_TITLE_MAX_CHARS: usize = 80;
 
-    /// Extract session title. Prefers the explicit `set_session_title` tool
-    /// call. Falls back to the intent analysis `primary_intent` so sessions
-    /// where the agent skips step 2 of first_turn_protocol still land with
-    /// a meaningful title instead of null.
+    /// Extract session title. Replays legacy `set_session_title` tool-call logs
+    /// from old conversation DBs, then falls back to intent analysis so new
+    /// sessions still land with a meaningful title instead of null.
     fn extract_title(logs: &[ExecutionLog], intent: Option<&serde_json::Value>) -> Option<String> {
         for log in logs {
             if log.category == LogCategory::ToolCall {

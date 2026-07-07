@@ -4,9 +4,11 @@
 
 use agent_primitives::{ConnectorResourceProvider, FileSystemContext};
 use agent_runtime::{
-    AgentExecutor, BoxedAgentEngine, ContextEditingConfig, ContextEditingMiddleware, DelegateTool,
-    ExecutorConfig, KeepPolicy, LlmClient, LlmConfig, McpManager, MiddlewarePipeline, OpenAiClient,
-    PlanBlockMiddleware, RespondTool, RetryPolicy, RetryingLlmClient, RigAgentConfig,
+    AgentExecutor, BoxedAgentEngine, ContextActorKind, ContextCapability, ContextCapabilityCatalog,
+    ContextCapabilityHealth, ContextCapabilityKind, ContextCostHint, ContextEditingConfig,
+    ContextEditingMiddleware, ContextLatencyHint, ContextRiskLevel, ContextSideEffects,
+    DelegateTool, ExecutorConfig, KeepPolicy, LlmClient, LlmConfig, McpManager, MiddlewarePipeline,
+    OpenAiClient, PlanBlockMiddleware, RespondTool, RetryPolicy, RetryingLlmClient, RigAgentConfig,
     RigModelConfig, SummarizationConfig, SummarizationMiddleware, ToolCallDecision, ToolRegistry,
     TriggerCondition,
 };
@@ -15,9 +17,6 @@ use agent_tools::{
     GlobTool,
     // Knowledge graph query tool
     GraphQueryTool,
-    GrepTool,
-    ListMcpsTool,
-    ListSkillsTool,
     LoadSkillTool,
     // Root orchestrator tools
     MemoryTool,
@@ -26,7 +25,6 @@ use agent_tools::{
     QueryResourceTool,
     // Optional file reading tools
     ReadTool,
-    SetSessionTitleTool,
     // Subagent tools
     ShellTool,
     ToolSettings,
@@ -39,6 +37,7 @@ use gateway_services::agents::Agent;
 use gateway_services::models::{ModelRegistry, DEFAULT_MAX_INPUT_TOKENS};
 use gateway_services::providers::Provider;
 use gateway_services::{McpService, SettingsService, SkillService};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use zbot_stores::MemoryFactStore;
@@ -239,16 +238,13 @@ enum ToolCapability {
     GoalWrite,
     GraphRead,
     IngestWrite,
-    McpList,
     MemoryRead,
     MemoryWrite,
     MultimodalAnalyze,
     PlanWrite,
     ProcedureRun,
     Respond,
-    SessionTitleWrite,
     Shell,
-    SkillList,
     SkillLoad,
     WardRead,
     WardWrite,
@@ -265,16 +261,13 @@ impl ToolCapability {
             Self::GoalWrite => "goal.write",
             Self::GraphRead => "graph.read",
             Self::IngestWrite => "ingest.write",
-            Self::McpList => "mcp.list",
             Self::MemoryRead => "memory.read",
             Self::MemoryWrite => "memory.write",
             Self::MultimodalAnalyze => "multimodal.analyze",
             Self::PlanWrite => "plan.write",
             Self::ProcedureRun => "procedure.run",
             Self::Respond => "respond",
-            Self::SessionTitleWrite => "session_title.write",
             Self::Shell => "process.shell",
-            Self::SkillList => "skill.list",
             Self::SkillLoad => "skill.load",
             Self::WardRead => "ward.read",
             Self::WardWrite => "ward.write",
@@ -299,7 +292,6 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::PlanWrite
                 | ToolCapability::ProcedureRun
                 | ToolCapability::Respond
-                | ToolCapability::SessionTitleWrite
                 | ToolCapability::Shell
                 | ToolCapability::WardRead
                 | ToolCapability::WardWrite
@@ -311,13 +303,11 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::GoalWrite
                 | ToolCapability::GraphRead
                 | ToolCapability::IngestWrite
-                | ToolCapability::McpList
                 | ToolCapability::MemoryRead
                 | ToolCapability::MemoryWrite
                 | ToolCapability::MultimodalAnalyze
                 | ToolCapability::Respond
                 | ToolCapability::Shell
-                | ToolCapability::SkillList
                 | ToolCapability::SkillLoad
                 | ToolCapability::WardRead
                 | ToolCapability::WardWrite
@@ -326,11 +316,9 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
             capability,
             ToolCapability::FileRead
                 | ToolCapability::GraphRead
-                | ToolCapability::McpList
                 | ToolCapability::MemoryRead
                 | ToolCapability::MultimodalAnalyze
                 | ToolCapability::Respond
-                | ToolCapability::SkillList
                 | ToolCapability::SkillLoad
                 | ToolCapability::WardRead
         ),
@@ -355,16 +343,13 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
         ToolCapability::GoalWrite,
         ToolCapability::GraphRead,
         ToolCapability::IngestWrite,
-        ToolCapability::McpList,
         ToolCapability::MemoryRead,
         ToolCapability::MemoryWrite,
         ToolCapability::MultimodalAnalyze,
         ToolCapability::PlanWrite,
         ToolCapability::ProcedureRun,
         ToolCapability::Respond,
-        ToolCapability::SessionTitleWrite,
         ToolCapability::Shell,
-        ToolCapability::SkillList,
         ToolCapability::SkillLoad,
         ToolCapability::WardRead,
         ToolCapability::WardWrite,
@@ -375,6 +360,270 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
         .filter(|capability| actor_allows(actor, *capability))
         .map(ToolCapability::as_state_value)
         .collect()
+}
+
+/// Build an actor-filtered context capability catalog from the live tool
+/// registry. This is descriptive metadata only; `build_tool_registry` and
+/// `actor_allows` remain the enforcement path.
+pub fn build_context_capability_catalog(
+    actor: RuntimeActorKind,
+    registry: &ToolRegistry,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+) -> ContextCapabilityCatalog {
+    let mut seen = BTreeSet::new();
+    let mut capabilities = Vec::new();
+    for tool in registry.get_all() {
+        if !seen.insert(tool.name().to_string()) {
+            continue;
+        }
+        let tool_caps = tool_capabilities(tool.name());
+        if !tool_caps.is_empty() && !actor_allows_all(actor, &tool_caps) {
+            continue;
+        }
+        capabilities.push(ContextCapability {
+            id: tool.name().to_string(),
+            kind: ContextCapabilityKind::Tool,
+            display_name: display_name(tool.name()),
+            description: tool.description().to_string(),
+            actor_policy: actor_policy_for_capabilities(actor, &tool_caps),
+            risk_level: risk_level_for_tool(tool.name(), &tool_caps),
+            side_effects: side_effects_for_tool(tool.name(), &tool_caps),
+            input_schema: tool.parameters_schema(),
+            output_schema: None,
+            resource_uri_template: None,
+            cost_hint: Some(cost_hint_for_tool(tool.name(), &tool_caps)),
+            latency_hint: Some(latency_hint_for_tool(tool.name(), &tool_caps)),
+            token_hint: token_hint_for_tool(tool.name()),
+            health: ContextCapabilityHealth::Available,
+            owner_crate: Some(owner_crate_for_tool(tool.name()).to_string()),
+            audit_policy: Some(audit_policy_for_tool(tool.name(), &tool_caps).to_string()),
+            default_visible: default_visible_for_tool(tool.name(), actor),
+            visibility_policy: visibility_policy_for_tool(tool.name(), actor).to_string(),
+            split_target: split_target_for_tool(tool.name()).map(str::to_string),
+        });
+    }
+
+    ContextCapabilityCatalog {
+        version: "2026-07-07".to_string(),
+        actor_kind: context_actor_kind(actor),
+        session_id,
+        agent_id,
+        capabilities,
+    }
+}
+
+fn context_actor_kind(actor: RuntimeActorKind) -> ContextActorKind {
+    match actor {
+        RuntimeActorKind::Root => ContextActorKind::Root,
+        RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
+        RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
+        RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
+    }
+}
+
+fn actor_policy_for_capabilities(
+    fallback_actor: RuntimeActorKind,
+    capabilities: &[ToolCapability],
+) -> Vec<ContextActorKind> {
+    if capabilities.is_empty() {
+        return vec![context_actor_kind(fallback_actor)];
+    }
+
+    [
+        RuntimeActorKind::Root,
+        RuntimeActorKind::DelegatedExecutor,
+        RuntimeActorKind::DelegatedReviewer,
+        RuntimeActorKind::WardAgent,
+    ]
+    .into_iter()
+    .filter(|actor| actor_allows_all(*actor, capabilities))
+    .map(context_actor_kind)
+    .collect()
+}
+
+fn display_name(tool_name: &str) -> String {
+    tool_name
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
+    match name {
+        "delegate_to_agent" => vec![ToolCapability::AgentDelegate],
+        "edit" | "edit_file" | "write" | "write_file" => vec![ToolCapability::FileWrite],
+        "glob" | "read" => vec![ToolCapability::FileRead],
+        "goal" => vec![ToolCapability::GoalWrite],
+        "graph_query" => vec![ToolCapability::GraphRead],
+        "handoff_to_agent"
+        | "kill_agent"
+        | "list_session_agents"
+        | "steer_agent"
+        | "wait_agent" => vec![ToolCapability::AgentControl],
+        "ingest" => vec![ToolCapability::IngestWrite],
+        "load_skill" => vec![ToolCapability::SkillLoad],
+        "memory" => vec![ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
+        "multimodal_analyze" => vec![ToolCapability::MultimodalAnalyze],
+        "query_resource" => vec![ToolCapability::ConnectorQuery],
+        "respond" => vec![ToolCapability::Respond],
+        "run_procedure" => vec![ToolCapability::ProcedureRun],
+        "shell" => vec![ToolCapability::Shell],
+        "update_plan" => vec![ToolCapability::PlanWrite],
+        "ward" => vec![ToolCapability::WardRead, ToolCapability::WardWrite],
+        _ => Vec::new(),
+    }
+}
+
+fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextSideEffects {
+    if name == "wait_agent" || name == "list_session_agents" {
+        return ContextSideEffects::ReadExternal;
+    }
+    if capabilities.contains(&ToolCapability::Shell) {
+        return ContextSideEffects::Execute;
+    }
+    if capabilities.contains(&ToolCapability::Respond) {
+        return ContextSideEffects::WriteExternal;
+    }
+    if capabilities.iter().any(|capability| {
+        matches!(
+            capability,
+            ToolCapability::AgentControl
+                | ToolCapability::AgentDelegate
+                | ToolCapability::FileWrite
+                | ToolCapability::GoalWrite
+                | ToolCapability::IngestWrite
+                | ToolCapability::MemoryWrite
+                | ToolCapability::PlanWrite
+                | ToolCapability::WardWrite
+        )
+    }) {
+        return ContextSideEffects::WriteLocal;
+    }
+    if capabilities.is_empty() {
+        ContextSideEffects::None
+    } else {
+        ContextSideEffects::ReadExternal
+    }
+}
+
+fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRiskLevel {
+    if name == "wait_agent" || name == "list_session_agents" {
+        return ContextRiskLevel::Low;
+    }
+    if capabilities.contains(&ToolCapability::Shell) {
+        return ContextRiskLevel::High;
+    }
+    if capabilities.iter().any(|capability| {
+        matches!(
+            capability,
+            ToolCapability::AgentControl
+                | ToolCapability::AgentDelegate
+                | ToolCapability::FileWrite
+                | ToolCapability::IngestWrite
+                | ToolCapability::WardWrite
+        )
+    }) {
+        return ContextRiskLevel::Moderate;
+    }
+    ContextRiskLevel::Low
+}
+
+fn cost_hint_for_tool(_name: &str, capabilities: &[ToolCapability]) -> ContextCostHint {
+    if capabilities.contains(&ToolCapability::MultimodalAnalyze)
+        || capabilities.contains(&ToolCapability::ConnectorQuery)
+    {
+        ContextCostHint::Moderate
+    } else {
+        ContextCostHint::Cheap
+    }
+}
+
+fn latency_hint_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextLatencyHint {
+    if name == "wait_agent" {
+        return ContextLatencyHint::Background;
+    }
+    if capabilities.contains(&ToolCapability::ConnectorQuery)
+        || capabilities.contains(&ToolCapability::MultimodalAnalyze)
+    {
+        ContextLatencyHint::Slow
+    } else {
+        ContextLatencyHint::Local
+    }
+}
+
+fn token_hint_for_tool(name: &str) -> Option<u32> {
+    match name {
+        "load_skill" => Some(1200),
+        "memory" | "graph_query" | "query_resource" => Some(800),
+        "shell" | "read" => Some(400),
+        "wait_agent" => Some(120),
+        _ => Some(200),
+    }
+}
+
+fn owner_crate_for_tool(name: &str) -> &'static str {
+    match name {
+        "delegate_to_agent" | "respond" | "run_procedure" => "agent-runtime",
+        "handoff_to_agent"
+        | "kill_agent"
+        | "list_session_agents"
+        | "steer_agent"
+        | "wait_agent" => "gateway-execution",
+        _ => "agent-tools",
+    }
+}
+
+fn audit_policy_for_tool(name: &str, capabilities: &[ToolCapability]) -> &'static str {
+    if name == "wait_agent" {
+        "join_audit"
+    } else if capabilities.contains(&ToolCapability::Shell) {
+        "execution_audit"
+    } else if matches!(
+        side_effects_for_tool(name, capabilities),
+        ContextSideEffects::None | ContextSideEffects::ReadExternal
+    ) {
+        "read_audit"
+    } else {
+        "mutation_audit"
+    }
+}
+
+fn default_visible_for_tool(name: &str, _actor: RuntimeActorKind) -> bool {
+    !matches!(name, "edit" | "write") && name != "wait_agent"
+}
+
+fn visibility_policy_for_tool(name: &str, _actor: RuntimeActorKind) -> &'static str {
+    match name {
+        "wait_agent" => "visible_when_parallel_children_active",
+        "edit" | "write" => "legacy_alias_hidden",
+        "load_skill" => "default_visible_bounded_packet",
+        "memory" | "query_resource" | "graph_query" | "shell" | "ward" => {
+            "default_visible_until_split_parity"
+        }
+        _ => "default_visible",
+    }
+}
+
+fn split_target_for_tool(name: &str) -> Option<&'static str> {
+    match name {
+        "memory" => Some("actions:memory_write; resources:memory_recall/context_atoms"),
+        "query_resource" => Some("resources:connector_resource_handles"),
+        "graph_query" => Some("resources:context_graph_retrieval"),
+        "shell" => Some("actions:shell_execute; resources:command_result_handles"),
+        "ward" => Some("actions:ward_lifecycle; resources:ward_context"),
+        "load_skill" => Some("resources:skill_packet/skill_section_handles"),
+        "wait_agent" => Some("action:parallel_join"),
+        _ => None,
+    }
 }
 
 fn build_runtime_middleware_pipeline(
@@ -635,6 +884,20 @@ impl ExecutorBuilder {
         self
     }
 
+    /// Build a descriptive context capability catalog from the same registry
+    /// construction path used for execution.
+    pub fn build_context_capability_catalog(
+        &self,
+        session_id: Option<String>,
+        agent_id: Option<String>,
+    ) -> ContextCapabilityCatalog {
+        let fs_context: Arc<dyn FileSystemContext> =
+            Arc::new(GatewayFileSystem::new(self.config_dir.clone()));
+        let registry = self.build_tool_registry(fs_context);
+
+        build_context_capability_catalog(self.actor_kind, registry.as_ref(), session_id, agent_id)
+    }
+
     /// Build an executor for the given agent and provider.
     ///
     /// # Arguments
@@ -643,7 +906,7 @@ impl ExecutorBuilder {
     /// * `conversation_id` - The conversation ID for this execution
     /// * `session_id` - The session ID for this execution
     /// * `available_agents` - List of available agents (for list_agents tool)
-    /// * `available_skills` - List of available skills (for list_skills tool)
+    /// * `available_skills` - List of available skills (for runtime context/catalog metadata)
     /// * `hook_context` - Optional hook context for initial state
     /// * `mcp_service` - MCP service for starting servers
     /// * `ward_id` - Optional active ward from existing session
@@ -680,7 +943,7 @@ impl ExecutorBuilder {
             );
         }
 
-        // Cache available skills for list_skills tool
+        // Cache available skills for runtime context/catalog metadata.
         if !available_skills.is_empty() {
             executor_config = executor_config.with_initial_state(
                 "available_skills",
@@ -975,26 +1238,8 @@ impl ExecutorBuilder {
         register_if_allowed(
             &mut tool_registry,
             actor,
-            &[ToolCapability::SkillList],
-            Arc::new(ListSkillsTool::new(fs_context.clone())),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::McpList],
-            Arc::new(ListMcpsTool::new(fs_context.clone())),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
             &[ToolCapability::FileRead],
             Arc::new(ReadTool::new(fs_context.clone())),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::FileRead],
-            Arc::new(GrepTool),
         );
         register_if_allowed(
             &mut tool_registry,
@@ -1017,12 +1262,6 @@ impl ExecutorBuilder {
             actor,
             &[ToolCapability::PlanWrite],
             Arc::new(UpdatePlanTool::new()),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::SessionTitleWrite],
-            Arc::new(SetSessionTitleTool::new()),
         );
         register_if_allowed(
             &mut tool_registry,
@@ -1534,6 +1773,62 @@ mod tests {
             .collect()
     }
 
+    fn catalog_for_actor(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .build_tool_registry(fs_context);
+
+        build_context_capability_catalog(
+            actor_kind,
+            registry.as_ref(),
+            Some("session-1".to_string()),
+            Some("agent-1".to_string()),
+        )
+    }
+
+    fn catalog_for_actor_with_join_deps(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("ensure vault dirs");
+        let db = Arc::new(DatabaseManager::new(paths.clone()).expect("db init"));
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .with_agent_result_bus(Arc::new(AgentResultBus::new()))
+            .with_state_service(Arc::new(StateService::new(db.clone())))
+            .with_conversation_repo(Arc::new(ConversationRepository::new(db)))
+            .build_tool_registry(fs_context);
+
+        build_context_capability_catalog(
+            actor_kind,
+            registry.as_ref(),
+            Some("session-1".to_string()),
+            Some("agent-1".to_string()),
+        )
+    }
+
+    fn catalog_ids(catalog: &ContextCapabilityCatalog) -> BTreeSet<String> {
+        catalog
+            .capabilities
+            .iter()
+            .map(|capability| capability.id.clone())
+            .collect()
+    }
+
+    fn catalog_capability<'a>(
+        catalog: &'a ContextCapabilityCatalog,
+        id: &str,
+    ) -> &'a ContextCapability {
+        catalog
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == id)
+            .unwrap_or_else(|| panic!("expected catalog capability {id}"))
+    }
+
     fn assert_has(names: &BTreeSet<String>, expected: &[&str]) {
         for name in expected {
             assert!(names.contains(*name), "expected tool {name}");
@@ -1547,6 +1842,123 @@ mod tests {
     }
 
     #[test]
+    fn root_context_catalog_reflects_current_actor_policy() {
+        let catalog = catalog_for_actor(RuntimeActorKind::Root);
+        let ids = catalog_ids(&catalog);
+
+        assert_eq!(catalog.actor_kind, ContextActorKind::Root);
+        assert_has(
+            &ids,
+            &["shell", "memory", "ward", "respond", "delegate_to_agent"],
+        );
+        assert_missing(
+            &ids,
+            &[
+                "write_file",
+                "edit_file",
+                "load_skill",
+                "list_mcps",
+                "set_session_title",
+            ],
+        );
+
+        let shell = catalog_capability(&catalog, "shell");
+        assert_eq!(shell.kind, ContextCapabilityKind::Tool);
+        assert_eq!(shell.side_effects, ContextSideEffects::Execute);
+        assert_eq!(shell.risk_level, ContextRiskLevel::High);
+        assert_eq!(shell.owner_crate.as_deref(), Some("agent-tools"));
+        assert!(shell.input_schema.is_some());
+        assert!(shell.actor_policy.contains(&ContextActorKind::Root));
+        assert!(shell
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedExecutor));
+        assert!(shell.actor_policy.contains(&ContextActorKind::WardAgent));
+        assert!(!shell
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedReviewer));
+        assert!(shell.default_visible);
+        assert_eq!(
+            shell.split_target.as_deref(),
+            Some("actions:shell_execute; resources:command_result_handles")
+        );
+    }
+
+    #[test]
+    fn delegated_reviewer_catalog_is_read_only_and_review_safe() {
+        let catalog = catalog_for_actor(RuntimeActorKind::DelegatedReviewer);
+        let ids = catalog_ids(&catalog);
+
+        assert_eq!(catalog.actor_kind, ContextActorKind::DelegatedReviewer);
+        assert_has(&ids, &["read", "glob", "respond", "load_skill"]);
+        assert_missing(
+            &ids,
+            &[
+                "grep",
+                "shell",
+                "write_file",
+                "edit_file",
+                "ward",
+                "memory",
+                "delegate_to_agent",
+                "wait_agent",
+                "set_session_title",
+                "list_skills",
+                "list_mcps",
+            ],
+        );
+        assert_eq!(
+            catalog.capabilities.len(),
+            ids.len(),
+            "catalog de-duplicates duplicate registry entries"
+        );
+
+        let read = catalog_capability(&catalog, "read");
+        assert_eq!(read.side_effects, ContextSideEffects::ReadExternal);
+        assert!(read
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedReviewer));
+    }
+
+    #[test]
+    fn wait_agent_catalog_metadata_marks_parallel_join_action() {
+        let root_catalog = catalog_for_actor_with_join_deps(RuntimeActorKind::Root);
+        let wait_agent = catalog_capability(&root_catalog, "wait_agent");
+
+        assert_eq!(wait_agent.kind, ContextCapabilityKind::Tool);
+        assert_eq!(wait_agent.side_effects, ContextSideEffects::ReadExternal);
+        assert_eq!(wait_agent.risk_level, ContextRiskLevel::Low);
+        assert_eq!(
+            wait_agent.latency_hint,
+            Some(ContextLatencyHint::Background)
+        );
+        assert_eq!(wait_agent.owner_crate.as_deref(), Some("gateway-execution"));
+        assert_eq!(wait_agent.audit_policy.as_deref(), Some("join_audit"));
+        assert!(!wait_agent.default_visible);
+        assert_eq!(
+            wait_agent.visibility_policy,
+            "visible_when_parallel_children_active"
+        );
+        assert_eq!(
+            wait_agent.split_target.as_deref(),
+            Some("action:parallel_join")
+        );
+        assert!(wait_agent.actor_policy.contains(&ContextActorKind::Root));
+        assert!(wait_agent
+            .actor_policy
+            .contains(&ContextActorKind::WardAgent));
+        assert!(!wait_agent
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedExecutor));
+        assert!(!wait_agent
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedReviewer));
+
+        let executor_catalog =
+            catalog_for_actor_with_join_deps(RuntimeActorKind::DelegatedExecutor);
+        assert_missing(&catalog_ids(&executor_catalog), &["wait_agent"]);
+    }
+
+    #[test]
     fn delegated_executor_keeps_implementation_tools_without_orchestration() {
         let names = registry_names(RuntimeActorKind::DelegatedExecutor);
 
@@ -1557,24 +1969,24 @@ mod tests {
                 "write_file",
                 "edit_file",
                 "read",
-                "grep",
                 "ward",
                 "memory",
                 "respond",
                 "load_skill",
-                "list_skills",
-                "list_mcps",
             ],
         );
         assert_missing(
             &names,
             &[
                 "delegate_to_agent",
+                "grep",
                 "wait_agent",
                 "kill_agent",
                 "steer_agent",
                 "update_plan",
                 "set_session_title",
+                "list_skills",
+                "list_mcps",
             ],
         );
     }
@@ -1583,21 +1995,11 @@ mod tests {
     fn delegated_reviewer_is_read_only_and_non_orchestrating() {
         let names = registry_names(RuntimeActorKind::DelegatedReviewer);
 
-        assert_has(
-            &names,
-            &[
-                "read",
-                "glob",
-                "grep",
-                "respond",
-                "load_skill",
-                "list_skills",
-                "list_mcps",
-            ],
-        );
+        assert_has(&names, &["read", "glob", "respond", "load_skill"]);
         assert_missing(
             &names,
             &[
+                "grep",
                 "shell",
                 "write_file",
                 "edit_file",
@@ -1609,6 +2011,8 @@ mod tests {
                 "steer_agent",
                 "update_plan",
                 "set_session_title",
+                "list_skills",
+                "list_mcps",
             ],
         );
     }
@@ -1624,9 +2028,7 @@ mod tests {
                 "memory",
                 "ward",
                 "update_plan",
-                "set_session_title",
                 "read",
-                "grep",
                 "respond",
                 "delegate_to_agent",
             ],
@@ -1636,9 +2038,11 @@ mod tests {
             &[
                 "write_file",
                 "edit_file",
+                "grep",
                 "load_skill",
                 "list_skills",
                 "list_mcps",
+                "set_session_title",
             ],
         );
     }
@@ -1655,17 +2059,49 @@ mod tests {
                 "edit_file",
                 "read",
                 "glob",
-                "grep",
                 "ward",
                 "memory",
                 "update_plan",
-                "set_session_title",
                 "respond",
                 "delegate_to_agent",
                 "load_skill",
-                "list_skills",
-                "list_mcps",
             ],
+        );
+        assert_missing(
+            &names,
+            &["grep", "set_session_title", "list_skills", "list_mcps"],
+        );
+    }
+
+    #[test]
+    fn broad_tools_expose_split_target_metadata() {
+        let catalog = catalog_for_actor(RuntimeActorKind::Root);
+        for name in ["shell", "memory", "ward"] {
+            let capability = catalog_capability(&catalog, name);
+            assert!(
+                capability.default_visible,
+                "{name} should remain visible until split parity"
+            );
+            assert!(
+                capability.split_target.is_some(),
+                "{name} must name its future split target"
+            );
+            assert_eq!(
+                capability.visibility_policy,
+                "default_visible_until_split_parity"
+            );
+        }
+
+        let ward_catalog = catalog_for_actor(RuntimeActorKind::WardAgent);
+        let load_skill = catalog_capability(&ward_catalog, "load_skill");
+        assert!(load_skill.default_visible);
+        assert_eq!(
+            load_skill.split_target.as_deref(),
+            Some("resources:skill_packet/skill_section_handles")
+        );
+        assert_eq!(
+            load_skill.visibility_policy,
+            "default_visible_bounded_packet"
         );
     }
 

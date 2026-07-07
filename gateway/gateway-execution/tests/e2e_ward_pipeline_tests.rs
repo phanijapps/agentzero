@@ -395,6 +395,18 @@ fn test_intent_injection_no_sdlc_for_simple() {
         !injection.contains("tasks.json"),
         "Simple approach should NOT mention tasks.json"
     );
+    assert!(
+        injection.contains("**Fast path:**"),
+        "Simple approach should explicitly route through the direct fast path"
+    );
+    assert!(
+        !injection.contains("delegate_to_agent(agent_id="),
+        "Simple approach should not render an executable delegation example"
+    );
+    assert!(
+        !injection.contains("ward(action="),
+        "Simple approach should not force ward entry"
+    );
 }
 
 /// Ward rules should not have hardcoded domain examples.

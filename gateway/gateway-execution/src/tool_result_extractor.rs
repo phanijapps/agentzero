@@ -120,7 +120,7 @@ fn extract_web_fetch(parsed: Option<&Value>) -> Vec<Entity> {
 }
 
 /// Extract from shell tool output: currently just captures file paths mentioned
-/// in stdout (useful for grep/find/ls outputs) as File entities.
+/// in stdout (useful for search/find/ls outputs) as File entities.
 fn extract_shell(parsed: Option<&Value>) -> Vec<Entity> {
     let Some(obj) = parsed.and_then(|v| v.as_object()) else {
         return Vec::new();
@@ -140,7 +140,7 @@ fn extract_shell(parsed: Option<&Value>) -> Vec<Entity> {
     let paths = extract_file_paths(stdout);
     paths
         .into_iter()
-        .take(10) // cap to avoid grep floods
+        .take(10) // cap to avoid search floods
         .map(|path| {
             let mut e = Entity::new("__global__".to_string(), EntityType::File, path.clone());
             e.properties.insert("path".to_string(), Value::String(path));

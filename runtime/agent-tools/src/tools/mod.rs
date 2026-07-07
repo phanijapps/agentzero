@@ -10,7 +10,6 @@ mod goal;
 mod graph_query;
 pub mod guards;
 mod ingest;
-mod introspection;
 mod memory;
 mod multimodal;
 mod search;
@@ -30,9 +29,7 @@ pub use connectors::QueryResourceTool;
 pub use execution::EditFileTool;
 pub use execution::ExecutionGraphTool;
 pub use execution::PythonTool;
-pub use execution::SetSessionTitleTool;
 pub use execution::ShellTool;
-pub use execution::TodoTool;
 pub use execution::UpdatePlanTool;
 pub use execution::WriteFileTool;
 pub use execution::skills::LoadSkillTool;
@@ -48,10 +45,9 @@ pub use goal::{GoalAccess, GoalSummary, GoalTool};
 pub use ingest::{
     IngestTool, IngestionAccess, StructuredCounts, StructuredEntity, StructuredRelationship,
 };
-pub use introspection::{ListMcpsTool, ListSkillsTool, ListToolsTool};
 pub use memory::{MemoryEntry, MemoryStore, MemoryTool};
 pub use multimodal::MultimodalAnalyzeTool;
-pub use search::{GlobTool, GrepTool};
+pub use search::GlobTool;
 pub use ui::{RequestInputTool, ShowContentTool};
 pub use ward::{WardTool, WardUsageAccess};
 pub use web::WebFetchTool;
@@ -72,8 +68,7 @@ pub use web::WebFetchTool;
 /// - memory: Persist/recall information
 /// - ward: Project directory management
 /// - update_plan: Lightweight task checklist
-/// - list_skills, load_skill: Skill discovery
-/// - grep: Structured file content search
+/// - load_skill: Bounded skill packet loading by explicit skill name
 ///
 /// Note: respond, delegate_to_agent, and list_agents are registered separately
 /// in the runner as action tools.
@@ -97,8 +92,10 @@ pub struct ToolSettings {
     #[serde(default)]
     pub create_agent: bool,
 
-    /// Enable introspection tools (list_tools, list_mcps)
-    /// Note: list_skills is now a core tool
+    /// Compatibility flag for retired introspection tools.
+    ///
+    /// Preserved in settings payloads so older clients can round-trip their
+    /// config without re-enabling removed tools.
     #[serde(default)]
     pub introspection: bool,
 
@@ -110,8 +107,7 @@ pub struct ToolSettings {
     #[serde(default)]
     pub file_tools: bool,
 
-    /// Enable the heavyweight todos tool (SQLite-like task persistence).
-    /// When false (default), the lightweight update_plan tool is used instead.
+    /// Compatibility flag for the retired heavyweight todos tool.
     #[serde(default)]
     pub todos: bool,
 
@@ -152,8 +148,7 @@ fn default_offload_enabled() -> bool {
 /// - memory: Persistent KV store
 /// - ward: Project directory management
 /// - update_plan: Lightweight task checklist
-/// - list_skills, load_skill: Skill discovery
-/// - grep: Structured file content search
+/// - load_skill: Bounded skill packet loading by explicit skill name
 #[must_use]
 pub fn core_tools(
     fs: Arc<dyn FileSystemContext>,
@@ -173,21 +168,16 @@ pub fn core_tools(
         Arc::new(WardTool::new(fs.clone(), fact_store, ward_usage)),
         // Lightweight plan tracking
         Arc::new(UpdatePlanTool::new()),
-        // Session title (human-readable label for the UI)
-        Arc::new(SetSessionTitleTool::new()),
         // DAG workflow engine for multi-step orchestration
         Arc::new(ExecutionGraphTool::new()),
-        // Skill discovery (high priority - encourages delegation)
-        Arc::new(ListSkillsTool::new(fs.clone())),
+        // Skill packet loading
         Arc::new(LoadSkillTool::new(fs.clone())),
-        // File search (structured output beats raw shell rg)
-        Arc::new(GrepTool),
     ]
 }
 
 /// Get optional tools based on settings.
 ///
-/// Includes legacy file tools (write/edit/glob), todos, python, web_fetch, etc.
+/// Includes legacy file tools (write/edit/glob), python, web_fetch, etc.
 #[must_use]
 pub fn optional_tools(
     fs: Arc<dyn FileSystemContext>,
@@ -201,11 +191,6 @@ pub fn optional_tools(
         tools.push(Arc::new(WriteTool::new(fs.clone())));
         tools.push(Arc::new(EditTool::new(fs.clone())));
         tools.push(Arc::new(GlobTool));
-    }
-
-    // Heavyweight todos (opt-in, replaced by update_plan in core)
-    if settings.todos {
-        tools.push(Arc::new(TodoTool::new()));
     }
 
     if settings.python {
@@ -223,11 +208,6 @@ pub fn optional_tools(
 
     if settings.create_agent {
         tools.push(Arc::new(CreateAgentTool::new(fs.clone())));
-    }
-
-    if settings.introspection {
-        tools.push(Arc::new(ListToolsTool::new()));
-        tools.push(Arc::new(ListMcpsTool::new(fs.clone())));
     }
 
     // Multimodal analysis — always available as a vision fallback

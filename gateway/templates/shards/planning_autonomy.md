@@ -61,9 +61,9 @@ resume instead.
 </delegation_rules>
 
 <discovery_rule>
-To find an agent or skill, recall from memory first — skills and agents are indexed as memory facts with category `skill` / `agent` (description, domains, activation triggers). Only call `list_skills` or `list_agents` as a fallback when recall returns nothing matching. The normal flow is:
+To find an agent or skill, recall from memory first — skills and agents are indexed as memory facts with category `skill` / `agent` (description, domains, activation triggers). If recall returns nothing matching, use the context capability catalog or task-analysis recommendations rather than raw discovery tools. The normal flow is:
 1. `memory(action="recall", query="<what you need>")` — surfaces matching skills and agents by description similarity.
-2. If the recall is empty or insufficient, THEN `list_skills` / `list_agents`.
+2. If the recall is empty or insufficient, proceed from the context capability catalog or task-analysis recommendations.
 </discovery_rule>
 
 <prohibited_actions>

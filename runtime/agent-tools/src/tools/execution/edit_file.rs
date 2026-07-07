@@ -148,7 +148,7 @@ impl Tool for EditFileTool {
             return Ok(json!({
                 "success": false,
                 "error": format!("old_text not found in {}. The text must match exactly (including whitespace).", path),
-                "hint": "Use grep to find the exact text first, then copy it precisely."
+                "hint": "Use shell with rg or grep to find the exact text first, then copy it precisely."
             }));
         }
 

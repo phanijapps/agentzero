@@ -408,7 +408,7 @@ pub enum ServerMessage {
         seq: Option<u64>,
     },
 
-    /// Session title changed via set_session_title tool.
+    /// Session title changed by runtime title derivation or legacy log replay.
     SessionTitleChanged {
         session_id: String,
         title: String,

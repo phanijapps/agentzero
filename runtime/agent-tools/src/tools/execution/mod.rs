@@ -1,24 +1,20 @@
 // ============================================================================
 // EXECUTION TOOLS
-// Python, Shell, LoadSkill, TODO, UpdatePlan, WriteFile, EditFile tools
+// Python, Shell, LoadSkill, UpdatePlan, WriteFile, EditFile tools
 // ============================================================================
 
 pub mod ast_hook;
 pub mod edit_file;
 pub mod graph;
-pub mod session_title;
 pub mod shell;
 pub mod skills;
-pub mod todos;
 pub mod update_plan;
 pub mod ward_cwd;
 pub mod write_file;
 
 pub use edit_file::EditFileTool;
 pub use graph::ExecutionGraphTool;
-pub use session_title::SetSessionTitleTool;
 pub use shell::ShellTool;
-pub use todos::TodoTool;
 pub use update_plan::UpdatePlanTool;
 pub use write_file::WriteFileTool;
 

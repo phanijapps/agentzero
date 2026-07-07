@@ -210,7 +210,7 @@ pub enum StreamEvent {
     // ========================================================================
     // SESSION EVENTS
     // ========================================================================
-    /// Session title changed via `set_session_title` tool.
+    /// Session title changed by runtime title derivation or legacy log replay.
     #[serde(rename = "session_title_changed")]
     SessionTitleChanged {
         timestamp: u64,

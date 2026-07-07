@@ -6,7 +6,8 @@
 use agent_runtime::{ChatMessage, ChatResponse, LlmClient, LlmError, StreamCallback};
 use async_trait::async_trait;
 use gateway_execution::middleware::intent_analysis::{
-    analyze_intent, format_intent_injection, ExecutionApproach, DEFAULT_INTENT_ANALYSIS_PROMPT,
+    analyze_intent, format_intent_injection, ExecutionApproach, WardAction,
+    DEFAULT_INTENT_ANALYSIS_PROMPT,
 };
 use serde_json::Value;
 use zbot_stores::MemoryFactStore;
@@ -209,7 +210,7 @@ async fn test_full_enrichment_flow() {
     assert!(injection.contains("planner-agent"));
 }
 
-/// LLM call failure should propagate as Err.
+/// LLM call failure should degrade to a simple fallback analysis.
 #[tokio::test]
 async fn test_graceful_degradation_on_llm_failure() {
     let client = FailingLlmClient;
@@ -227,16 +228,16 @@ async fn test_graceful_degradation_on_llm_failure() {
     )
     .await;
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("Intent analysis structured output failed"),
-        "unexpected error message: {}",
-        err
+    let analysis = result.expect("LLM failure should fall back, not abort execution");
+    assert_eq!(
+        analysis.execution_strategy.approach,
+        ExecutionApproach::Simple
     );
+    assert_eq!(analysis.ward_recommendation.action, WardAction::CreateNew);
+    assert_eq!(analysis.ward_recommendation.ward_name, "general");
 }
 
-/// Malformed LLM output should fail the structured intent path.
+/// Malformed LLM output should degrade to a simple fallback analysis.
 #[tokio::test]
 async fn test_graceful_degradation_on_malformed_json() {
     let mock = MockLlmClient {
@@ -256,13 +257,13 @@ async fn test_graceful_degradation_on_malformed_json() {
     )
     .await;
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("Intent analysis structured output failed"),
-        "unexpected error message: {}",
-        err
+    let analysis = result.expect("malformed output should fall back, not abort execution");
+    assert_eq!(
+        analysis.execution_strategy.approach,
+        ExecutionApproach::Simple
     );
+    assert_eq!(analysis.ward_recommendation.action, WardAction::CreateNew);
+    assert_eq!(analysis.ward_recommendation.ward_name, "general");
 }
 
 /// Simple strategy without a graph should parse correctly.

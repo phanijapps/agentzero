@@ -392,11 +392,11 @@ export interface ToolSettings {
   uiTools: boolean;
   /** Enable create_agent tool */
   createAgent: boolean;
-  /** Enable introspection tools (list_tools, list_mcps) */
+  /** Compatibility flag for retired introspection tools */
   introspection: boolean;
   /** Enable file tools (read, write, edit, glob) as separate tools */
   fileTools: boolean;
-  /** Enable heavyweight todos tool (SQLite-like task persistence) */
+  /** Compatibility flag for retired heavyweight todos tool */
   todos: boolean;
   /** Offload large tool results to filesystem instead of keeping in context */
   offloadLargeResults: boolean;
@@ -1120,6 +1120,12 @@ export type MemoryCategory =
   | "skill"
   | "agent"
   | "ward";
+
+/** Public memory categories users can create from the UI/API. */
+export type CreatableMemoryCategory = Exclude<
+  MemoryCategory,
+  "instruction" | "correction"
+>;
 
 /** A memory fact stored in the agent's memory system */
 export interface MemoryFact {

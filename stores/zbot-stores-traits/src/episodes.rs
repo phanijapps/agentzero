@@ -1,5 +1,6 @@
 //! `EpisodeStore` trait — backend-agnostic interface for session episodes.
 
+use crate::memory_facts::EmbeddingQueryIdentity;
 use async_trait::async_trait;
 use serde_json::Value;
 // Domain types live in `zbot-stores-domain`; re-export here so the
@@ -55,6 +56,20 @@ pub trait EpisodeStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Identity-aware variant of `search_episodes_by_similarity`.
+    async fn search_episodes_by_similarity_with_identity(
+        &self,
+        agent_id: &str,
+        embedding: &[f32],
+        query_identity: Option<&EmbeddingQueryIdentity>,
+        threshold: f32,
+        limit: usize,
+    ) -> Result<Vec<Value>, String> {
+        let _ = query_identity;
+        self.search_episodes_by_similarity(agent_id, embedding, threshold, limit)
+            .await
+    }
+
     /// Typed variant of `search_episodes_by_similarity` returning
     /// `(SessionEpisode, score)` pairs directly. Default deserialises
     /// the Value-based result so backends only need to implement the
@@ -66,8 +81,29 @@ pub trait EpisodeStore: Send + Sync {
         threshold: f32,
         limit: usize,
     ) -> Result<Vec<(SessionEpisode, f64)>, String> {
+        self.search_episodes_by_similarity_typed_with_identity(
+            agent_id, embedding, None, threshold, limit,
+        )
+        .await
+    }
+
+    /// Identity-aware typed variant of `search_episodes_by_similarity_typed`.
+    async fn search_episodes_by_similarity_typed_with_identity(
+        &self,
+        agent_id: &str,
+        embedding: &[f32],
+        query_identity: Option<&EmbeddingQueryIdentity>,
+        threshold: f32,
+        limit: usize,
+    ) -> Result<Vec<(SessionEpisode, f64)>, String> {
         let rows = self
-            .search_episodes_by_similarity(agent_id, embedding, threshold, limit)
+            .search_episodes_by_similarity_with_identity(
+                agent_id,
+                embedding,
+                query_identity,
+                threshold,
+                limit,
+            )
             .await?;
         rows.into_iter()
             .map(|row| {

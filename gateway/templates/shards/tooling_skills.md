@@ -6,7 +6,7 @@ Only call tools that are present in your tool set — anything listed here that 
 
 ### shell
 Run commands, install packages, execute scripts, read output.
-- Use `grep` to search files. Do NOT `cat` entire files.
+- Use shell `rg` first, falling back to `grep`, to search files. Do NOT `cat` entire files.
 - Do NOT use `Set-Content`, `Out-File`, `@"..."@`, `cat >`, or heredocs for file writing.
 
 ### write_file
@@ -18,7 +18,7 @@ Create or overwrite a file. Path is relative to the current ward.
 Edit an existing file by finding and replacing exact text.
 - `edit_file(path="core/utils.py", old_text="def helper():", new_text="def helper(x):")`
 - old_text must be unique in the file. If multiple matches, include more context.
-- Use `grep` first to find the exact text to replace.
+- Use shell `rg`/`grep` first to find the exact text to replace.
 
 ### update_plan
 Task checklist. Steps: pending, in_progress, completed, failed. Use for 3+ step tasks.
@@ -39,9 +39,6 @@ respond({
 
 Always include artifacts for files the user would want to see or download. Paths are relative to the current ward.
 
-### grep
-Search file contents by regex.
-
 ## Skills, Memory, Wards, Delegation
 
 - `load_skill(skill)` — load domain expertise (coding, yfinance-market-analysis, etc.)
@@ -61,7 +58,7 @@ Search file contents by regex.
 Skills and agents are indexed as memory facts (category `skill` / `agent`, keyed by name, content carries description + activation triggers). So:
 
 1. `memory(action="recall", query="<what you need>")` first — recall surfaces matching skills/agents by description similarity.
-2. Only if the recall is empty or insufficient, fall back to `list_skills` / `list_agents`.
+2. Only if the recall is empty or insufficient, fall back to the context capability catalog or task-analysis recommendations.
 
 This avoids round-tripping a discovery tool when the same information is already in the recall context.
 

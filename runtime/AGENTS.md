@@ -47,10 +47,9 @@ Built-in tools are organized into core and optional sets, then registered by the
 | `memory` | Durable memory and graph operations through zbot stores. |
 | `ward` | Manage code wards. |
 | `update_plan` | Lightweight task checklist. |
-| `set_session_title` | Set human-readable session labels. |
+| runtime title service | Sets human-readable session labels without a model-visible tool call. |
 | `execution_graph` | DAG workflow helper. |
-| `list_skills` / `load_skill` | Skill discovery and context loading. |
-| `grep` | Regex search in files. |
+| `load_skill` | Load bounded skill packets and section handles for known skill names. |
 
 ### Action Tools
 

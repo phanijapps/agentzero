@@ -1,6 +1,6 @@
 # Spec: Tool Waste Visibility
 
-- **Status:** Done
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none

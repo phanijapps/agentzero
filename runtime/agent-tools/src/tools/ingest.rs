@@ -53,6 +53,22 @@ pub struct StructuredCounts {
     pub relationships_upserted: usize,
 }
 
+/// Internal evidence-intake record for durable memory/knowledge writes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvidenceRecord {
+    pub evidence_id: String,
+    pub action: String,
+    pub source_id: String,
+    pub source_type: String,
+    pub session_id: Option<String>,
+    pub agent_id: String,
+    pub retention_policy: String,
+    #[serde(default)]
+    pub ontology_labels: Vec<String>,
+    #[serde(default)]
+    pub taxonomy_labels: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Backend abstraction
 // ---------------------------------------------------------------------------
@@ -61,6 +77,11 @@ pub struct StructuredCounts {
 /// to the episode repository (for text) and the graph storage (for structured).
 #[async_trait]
 pub trait IngestionAccess: Send + Sync + 'static {
+    /// Record one durable evidence-intake boundary before semantic writes.
+    async fn record_evidence(&self, _record: EvidenceRecord) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
     /// Chunk `text`, create one episode per chunk, and notify workers.
     /// Returns `(source_id, episode_count)`.
     async fn enqueue(
@@ -206,6 +227,21 @@ impl Tool for IngestTool {
                         },
                         "required": ["type", "from", "to"]
                     }
+                },
+                "retention_policy": {
+                    "type": "string",
+                    "description": "Durable evidence retention policy selected by the host. Defaults to 'durable'.",
+                    "default": "durable"
+                },
+                "ontology_labels": {
+                    "type": "array",
+                    "description": "Optional zbot-selected dynamic ontology labels to attach to this evidence intake.",
+                    "items": {"type": "string"}
+                },
+                "taxonomy_labels": {
+                    "type": "array",
+                    "description": "Optional zbot-selected SKOS/taxonomy labels to attach to this evidence intake.",
+                    "items": {"type": "string"}
                 }
             }
         }))
@@ -230,6 +266,44 @@ impl Tool for IngestTool {
             ));
         }
 
+        let source_id = args
+            .get("source_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("agent-ingest");
+        let source_type = args
+            .get("source_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("document");
+        let session_id = ctx.session_id().to_string();
+        let session_id_opt = if session_id.is_empty() {
+            None
+        } else {
+            Some(session_id.as_str())
+        };
+        let ontology_labels = string_array_arg(&args, "ontology_labels");
+        let taxonomy_labels = string_array_arg(&args, "taxonomy_labels");
+        let retention_policy = args
+            .get("retention_policy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("durable")
+            .to_string();
+
+        let evidence = EvidenceRecord {
+            evidence_id: format!("{}:{}", agent_id, source_id),
+            action: "ingest".to_string(),
+            source_id: source_id.to_string(),
+            source_type: source_type.to_string(),
+            session_id: session_id_opt.map(str::to_string),
+            agent_id: agent_id.clone(),
+            retention_policy,
+            ontology_labels,
+            taxonomy_labels,
+        };
+        self.access
+            .record_evidence(evidence.clone())
+            .await
+            .map_err(AgentError::Tool)?;
+
         // Structured path — synchronous bulk write, runs first so relationships
         // whose `from`/`to` reference entities in the same call see them.
         let counts = if !entities.is_empty() || !relationships.is_empty() {
@@ -246,20 +320,6 @@ impl Tool for IngestTool {
 
         // Text path — async background extraction (unchanged behavior).
         let (resolved_source, chunk_count) = if !text.is_empty() {
-            let source_id = args
-                .get("source_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("agent-ingest");
-            let source_type = args
-                .get("source_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("document");
-            let session_id = ctx.session_id().to_string();
-            let session_id_opt = if session_id.is_empty() {
-                None
-            } else {
-                Some(session_id.as_str())
-            };
             self.access
                 .enqueue(source_id, source_type, text, session_id_opt, &agent_id)
                 .await
@@ -273,7 +333,165 @@ impl Tool for IngestTool {
             "relationships_upserted": counts.relationships_upserted,
             "text_chunks_enqueued": chunk_count,
             "source_id": resolved_source,
+            "evidence": evidence,
             "status": "ok",
         }))
+    }
+}
+
+fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_primitives::{
+        CallbackContext, EventActions, ReadonlyContext, ToolContext, types::Content,
+    };
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MockIngestion {
+        records: Mutex<Vec<EvidenceRecord>>,
+    }
+
+    #[async_trait]
+    impl IngestionAccess for MockIngestion {
+        async fn record_evidence(&self, record: EvidenceRecord) -> std::result::Result<(), String> {
+            self.records.lock().unwrap().push(record);
+            Ok(())
+        }
+
+        async fn enqueue(
+            &self,
+            source_id: &str,
+            _source_type: &str,
+            _text: &str,
+            _session_id: Option<&str>,
+            _agent_id: &str,
+        ) -> std::result::Result<(String, usize), String> {
+            Ok((source_id.to_string(), 1))
+        }
+
+        async fn ingest_structured(
+            &self,
+            _agent_id: &str,
+            entities: Vec<StructuredEntity>,
+            relationships: Vec<StructuredRelationship>,
+        ) -> std::result::Result<StructuredCounts, String> {
+            Ok(StructuredCounts {
+                entities_upserted: entities.len(),
+                relationships_upserted: relationships.len(),
+            })
+        }
+    }
+
+    struct MockContext;
+
+    impl ReadonlyContext for MockContext {
+        fn invocation_id(&self) -> &str {
+            "invoke"
+        }
+        fn agent_name(&self) -> &str {
+            "root"
+        }
+        fn user_id(&self) -> &str {
+            "user"
+        }
+        fn app_name(&self) -> &str {
+            "zbot"
+        }
+        fn session_id(&self) -> &str {
+            "sess-1"
+        }
+        fn branch(&self) -> &str {
+            "main"
+        }
+        fn user_content(&self) -> &Content {
+            use std::sync::LazyLock;
+            static CONTENT: LazyLock<Content> = LazyLock::new(|| Content {
+                role: "user".to_string(),
+                parts: vec![],
+            });
+            &CONTENT
+        }
+    }
+
+    impl CallbackContext for MockContext {
+        fn get_state(&self, _key: &str) -> Option<Value> {
+            None
+        }
+
+        fn set_state(&self, _key: String, _value: Value) {}
+    }
+
+    impl ToolContext for MockContext {
+        fn function_call_id(&self) -> String {
+            "call-1".to_string()
+        }
+
+        fn actions(&self) -> EventActions {
+            EventActions::default()
+        }
+
+        fn set_actions(&self, _actions: EventActions) {}
+    }
+
+    #[tokio::test]
+    async fn ingest_records_evidence_with_ontology_and_taxonomy_policy() {
+        let access = Arc::new(MockIngestion::default());
+        let tool = IngestTool::new(access.clone());
+
+        let result = tool
+            .execute(
+                Arc::new(MockContext),
+                json!({
+                    "source_id": "sec-10k",
+                    "source_type": "filing",
+                    "text": "Apple reports revenue.",
+                    "retention_policy": "durable",
+                    "ontology_labels": ["company", "financial_statement"],
+                    "taxonomy_labels": ["skos:finance"]
+                }),
+            )
+            .await
+            .expect("ingest ok");
+
+        assert_eq!(result["status"], "ok");
+        let records = access.records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].source_id, "sec-10k");
+        assert_eq!(records[0].session_id.as_deref(), Some("sess-1"));
+        assert_eq!(
+            records[0].ontology_labels,
+            vec!["company", "financial_statement"]
+        );
+        assert_eq!(records[0].taxonomy_labels, vec!["skos:finance"]);
+    }
+
+    #[tokio::test]
+    async fn empty_ingest_does_not_record_evidence() {
+        let access = Arc::new(MockIngestion::default());
+        let tool = IngestTool::new(access.clone());
+
+        let err = tool
+            .execute(Arc::new(MockContext), json!({}))
+            .await
+            .expect_err("empty ingest must fail");
+
+        assert!(format!("{err}").contains("requires at least one"));
+        assert!(access.records.lock().unwrap().is_empty());
     }
 }

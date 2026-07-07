@@ -51,6 +51,21 @@ pub trait EmbeddingClient: Send + Sync {
     /// `LiveEmbeddingClient` can forward the current backend's name without
     /// fighting the borrow checker over temporary `Arc` guards.
     fn model_name(&self) -> String;
+
+    /// Return the provider family for vector-space compatibility checks.
+    fn provider_type(&self) -> String {
+        "unknown".to_string()
+    }
+
+    /// Return the prompt profile used to create the embedding.
+    fn prompt_profile(&self) -> String {
+        "query".to_string()
+    }
+
+    /// Return the normalization policy used by this embedding backend.
+    fn normalization(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Configuration for the embedding system.

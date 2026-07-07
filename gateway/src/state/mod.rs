@@ -21,12 +21,9 @@ use gateway_services::{EmbeddingService, WardProvenance, WardUsage};
 use std::path::PathBuf;
 use std::sync::Arc;
 use zbot_stores_sqlite::kg::service::GraphService;
-use zbot_stores_sqlite::kg::storage::GraphStorage;
-use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
 use zbot_stores_sqlite::{
     ConversationRepository, DatabaseManager, DistillationRepository, EpisodeRepository,
-    KgEpisodeRepository, KnowledgeDatabase, MemoryRepository, ProcedureRepository,
-    WardWikiRepository,
+    KgEpisodeRepository,
 };
 
 /// Shared application state for the gateway.
@@ -58,12 +55,6 @@ pub struct AppState {
 
     /// Conversation repository for message persistence.
     pub conversations: Arc<ConversationRepository>,
-
-    /// Knowledge database — memory facts, graph, vec0 indexes.
-    ///
-    /// Wrapped in `Option` so test fixtures can build a minimal AppState
-    /// without one. Production always carries `Some(...)`.
-    pub knowledge_db: Option<Arc<KnowledgeDatabase>>,
 
     /// Settings service for application configuration.
     pub settings: Arc<SettingsService>,
@@ -201,43 +192,6 @@ pub struct AppState {
     pub advertise_handle: std::sync::Arc<std::sync::Mutex<Option<discovery::AdvertiseHandle>>>,
 }
 
-/// Boot-time helper: synchronously reconcile vec0 tables to match the
-/// `EmbeddingService` dimension. Extracted from `AppState::new` so the
-/// constructor stays under the cognitive-complexity threshold.
-///
-/// `current_dim == 0` is the `EmbeddingBackend::Unconfigured` sentinel —
-/// the user hasn't picked a backend yet, so we leave the marker-derived
-/// tables in place and let the async reconciler reindex once the user
-/// reconfigures.
-fn sync_reconcile_vec_dim_at_boot(
-    embedding_service: &Arc<EmbeddingService>,
-    knowledge_db: &Arc<zbot_stores_sqlite::KnowledgeDatabase>,
-) {
-    let current_dim = embedding_service.dimensions();
-    if current_dim == 0 {
-        tracing::info!("Embedding backend unconfigured at boot — skipping sync vec0 reconcile");
-        return;
-    }
-    tracing::warn!(
-        dim = current_dim,
-        "Embedding dim mismatch at boot — rebuilding vec0 tables synchronously"
-    );
-    if let Err(e) = knowledge_db.reconcile_vec_tables_dim(current_dim) {
-        tracing::error!(
-            "Synchronous vec0 reconcile failed ({e}); recall may be degraded until the async reindex completes"
-        );
-        return;
-    }
-    if let Err(e) = embedding_service.mark_indexed(current_dim) {
-        tracing::warn!("mark_indexed failed after sync reconcile: {e}; async reindex will retry");
-        return;
-    }
-    tracing::info!(
-        dim = current_dim,
-        "Synchronous vec0 reconcile complete; content repopulates at next sleep cycle"
-    );
-}
-
 impl AppState {
     /// Create a new application state.
     ///
@@ -260,6 +214,11 @@ impl AppState {
         let skills = Arc::new(SkillService::with_roots(skills_roots));
         let provider_service = Arc::new(ProviderService::new(paths.clone()));
         let mcp_service = Arc::new(McpService::new(paths.clone()));
+        let settings = Arc::new(SettingsService::new(paths.clone()));
+        let memory_provider_settings = settings
+            .get_execution_settings()
+            .map(|s| s.memory.provider.clone())
+            .unwrap_or_default();
 
         // Factory for sleep-time memory LLM clients — built once, shared
         // across every sleep-time component that needs an LLM call.
@@ -277,12 +236,9 @@ impl AppState {
         );
         let conversation_repo = Arc::new(ConversationRepository::new(db_manager.clone()));
 
-        // Initialize knowledge database (memory facts, graph, vec0 indexes).
-        // SQLite is the only backend; the Option-wrapping is retained so
-        // downstream `.as_ref().map(...)` chains stay typecheck-stable.
-        let knowledge_db: Option<Arc<KnowledgeDatabase>> = Some(Arc::new(
-            KnowledgeDatabase::new(paths.clone()).expect("Failed to initialize knowledge database"),
-        ));
+        // Semantic memory/knowledge now lives behind Engram. The only zbot-owned
+        // runtime SQLite DB opened here is conversations.db via DatabaseManager.
+        tracing::info!("Engram memory provider selected; skipping SQLite knowledge DB init");
 
         // Create log service for execution tracing
         let log_service = Arc::new(LogService::new(db_manager.clone()));
@@ -298,18 +254,7 @@ impl AppState {
         let bridge_registry = Arc::new(gateway_bridge::BridgeRegistry::new());
         let bridge_outbox = Arc::new(gateway_bridge::OutboxRepository::new(db_manager.clone()));
 
-        // Initialize memory evolution services — repositories that need vector
-        // similarity get a SqliteVecIndex over their vec0 partner table.
-        let memory_repo: Option<Arc<MemoryRepository>> = knowledge_db.as_ref().map(|kdb| {
-            let memory_vec: Arc<dyn VectorIndex> = Arc::new(
-                SqliteVecIndex::new(kdb.clone(), "memory_facts_index", "fact_id")
-                    .expect("vec index init"),
-            );
-            Arc::new(MemoryRepository::new(kdb.clone(), memory_vec))
-        });
-        let goal_repo: Option<Arc<zbot_stores_sqlite::GoalRepository>> = knowledge_db
-            .as_ref()
-            .map(|kdb| Arc::new(zbot_stores_sqlite::GoalRepository::new(kdb.clone())));
+        let goal_repo: Option<Arc<zbot_stores_sqlite::GoalRepository>> = None;
         // Phase E6c: distillation_run rows live on the conversation DB
         // (DatabaseManager), not knowledge.db. Wire unconditionally —
         // both backends have the conversation DB. This makes
@@ -318,35 +263,12 @@ impl AppState {
         // actually persists.
         let distillation_repo: Option<Arc<DistillationRepository>> =
             Some(Arc::new(DistillationRepository::new(db_manager.clone())));
-        let episode_repo: Option<Arc<EpisodeRepository>> = knowledge_db.as_ref().map(|kdb| {
-            let episode_vec: Arc<dyn VectorIndex> = Arc::new(
-                SqliteVecIndex::new(kdb.clone(), "session_episodes_index", "episode_id")
-                    .expect("vec index init"),
-            );
-            Arc::new(EpisodeRepository::new(kdb.clone(), episode_vec))
-        });
-        let kg_episode_repo: Option<Arc<KgEpisodeRepository>> = knowledge_db
-            .as_ref()
-            .map(|kdb| Arc::new(KgEpisodeRepository::new(kdb.clone())));
+        let episode_repo: Option<Arc<EpisodeRepository>> = None;
+        let kg_episode_repo: Option<Arc<KgEpisodeRepository>> = None;
 
-        // Initialize knowledge graph service and storage. Skipped entirely
-        // when knowledge_db is None.
-        let (graph_service, graph_storage): (Option<Arc<GraphService>>, Option<Arc<GraphStorage>>) =
-            match knowledge_db.as_ref() {
-                Some(kdb) => match GraphStorage::new(kdb.clone()) {
-                    Ok(storage) => {
-                        let storage = Arc::new(storage);
-                        let service = Arc::new(GraphService::new(storage.clone()));
-                        tracing::info!("Knowledge graph service initialized");
-                        (Some(service), Some(storage))
-                    }
-                    Err(e) => {
-                        tracing::warn!("Knowledge graph initialization failed: {}", e);
-                        (None, None)
-                    }
-                },
-                None => (None, None),
-            };
+        // The old concrete SQLite graph service is not opened in runtime
+        // composition. Graph behavior routes through Engram-backed trait stores.
+        let graph_service: Option<Arc<GraphService>> = None;
 
         // EmbeddingService — owns the live EmbeddingClient and supports
         // hot-swap between internal (fastembed) and Ollama backends.
@@ -365,34 +287,7 @@ impl AppState {
                 )
             }
         };
-        // Best-effort boot-time reindex. Non-fatal.
-        if let Err(e) = embedding_service.ensure_indexed_blocking() {
-            tracing::warn!("EmbeddingService ensure_indexed_blocking failed: {e}");
-        }
-
-        // Fix 2: synchronously align the vec0 tables' dim with the live
-        // `EmbeddingService` BEFORE we start accepting WebSocket invokes.
-        //
-        // Without this, the daemon accepts a user prompt while the
-        // async reconciler in `reconcile_embeddings_at_boot` is still
-        // running. The first `memory.recall` then hits either:
-        //   - a dim mismatch (tables at 384, client embeds at 1024), or
-        //   - a brand-new `*__new` rename window left by the async path.
-        //
-        // Drop-and-recreate synchronously + mark_indexed(current_dim).
-        // Table content is repopulated from source rows at the next sleep
-        // cycle; recall returns empty in the interim instead of erroring.
-        //
-        // `current_dim == 0` is the `EmbeddingBackend::Unconfigured`
-        // sentinel — the user hasn't picked a backend yet. Leave the
-        // marker-derived tables in place (the default 384 layout from
-        // `KnowledgeDatabase::new` is still usable for FTS-only recall)
-        // and let the async reconciler reindex once the user reconfigures.
-        if embedding_service.needs_reindex() {
-            if let Some(ref kdb) = knowledge_db {
-                sync_reconcile_vec_dim_at_boot(&embedding_service, kdb);
-            }
-        }
+        tracing::info!("Engram memory provider selected; skipping SQLite embedding reindex");
         // Hand downstream (distillation, recall, memory_fact_store, etc.) a
         // LiveEmbeddingClient wrapper so they follow ArcSwap backend changes
         // instead of caching the boot-time client (which would still be the
@@ -404,6 +299,16 @@ impl AppState {
             "Embedding client ready (lazy, {}d)",
             embedding_service.dimensions()
         );
+
+        let engram_store_bundle = Some(
+            persistence_factory::build_engram_store_bundle(
+                paths.as_ref(),
+                &memory_provider_settings,
+                embedding_client.clone(),
+            )
+            .expect("Failed to initialize selected Engram memory provider"),
+        );
+        tracing::info!("Engram memory provider initialized for trait-routed stores");
 
         // Load recall configuration (compiled defaults merged with optional user overrides)
         let recall_config = Arc::new(gateway_services::RecallConfig::load_from_path(
@@ -418,16 +323,13 @@ impl AppState {
 
         // Build the trait-routed memory_store eagerly (before MemoryRecall +
         // SessionDistiller construction, so they can be wired with it).
-        let early_memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
-            memory_repo.as_ref().map(|mr| {
-                persistence_factory::build_memory_store(mr.clone(), embedding_client.clone())
-            });
+        let early_memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> = engram_store_bundle
+            .as_ref()
+            .map(|bundle| bundle.memory_store.clone());
 
-        // Create memory recall. Builds whenever memory_store is wired,
-        // which is always whenever memory_repo is. Graph enrichment via
-        // GraphService still requires the concrete graph_storage; on
-        // Surreal it's None and recall falls back to non-enriched
-        // hybrid (still finds facts, just no KG-traversal boost).
+        // Create memory recall. Builds whenever the Engram memory store is
+        // wired. Graph enrichment routes through the trait store; the old
+        // concrete GraphService path is no longer opened here.
         let mut memory_recall_inner: Option<MemoryRecall> = if early_memory_store.is_some() {
             Some(MemoryRecall::new(
                 embedding_client.clone(),
@@ -436,70 +338,40 @@ impl AppState {
         } else {
             None
         };
-        // Wire trait-routed episode_store wrapping the SQLite EpisodeRepository.
         if let Some(recall) = memory_recall_inner.as_mut() {
-            let store_opt: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> =
-                episode_repo.as_ref().map(|r| {
-                    Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(r.clone()))
-                        as Arc<dyn zbot_stores_traits::EpisodeStore>
-                });
+            let store_opt: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> = engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.episode_store.clone());
             if let Some(store) = store_opt {
                 recall.set_episode_store(store);
             }
         }
 
-        // Ward wiki repository (still concrete; consumed by SessionDistiller
-        // and the trait-store wrapper below).
-        let wiki_repo: Option<Arc<WardWikiRepository>> = knowledge_db.as_ref().map(|kdb| {
-            let wiki_vec: Arc<dyn VectorIndex> = Arc::new(
-                SqliteVecIndex::new(kdb.clone(), "wiki_articles_index", "article_id")
-                    .expect("vec index init"),
-            );
-            Arc::new(WardWikiRepository::new(kdb.clone(), wiki_vec))
-        });
         // Wire trait-routed wiki_store (Phase E6c).
         if let Some(recall) = memory_recall_inner.as_mut() {
-            let store_opt: Option<Arc<dyn zbot_stores_traits::WikiStore>> =
-                wiki_repo.as_ref().map(|r| {
-                    Arc::new(zbot_stores_sqlite::GatewayWikiStore::new(r.clone()))
-                        as Arc<dyn zbot_stores_traits::WikiStore>
-                });
+            let store_opt: Option<Arc<dyn zbot_stores_traits::WikiStore>> = engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.wiki_store.clone());
             if let Some(store) = store_opt {
                 recall.set_wiki_store(store);
             }
         }
-        // Trait-routed kg ingestion store. GatewayKgEpisodeStore wraps
-        // the SQLite kg_episode_repo. Handlers + queue + adapter all
-        // consume the trait, so a future backend plugs in by
-        // implementing the trait without touching consumers.
+        // Trait-routed kg ingestion store.
         let kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>> =
-            kg_episode_repo.as_ref().map(|r| {
-                Arc::new(zbot_stores_sqlite::GatewayKgEpisodeStore::new(r.clone()))
-                    as Arc<dyn zbot_stores_traits::KgEpisodeStore>
-            });
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.kg_episode_store.clone());
 
-        // Trait-routed wiki store — wraps the SQLite repository
-        // (when wiki_repo exists), else None.
+        // Trait-routed wiki store.
         let wiki_store_for_state: Option<Arc<dyn zbot_stores_traits::WikiStore>> =
-            wiki_repo.as_ref().map(|wr| {
-                Arc::new(zbot_stores_sqlite::GatewayWikiStore::new(wr.clone()))
-                    as Arc<dyn zbot_stores_traits::WikiStore>
-            });
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.wiki_store.clone());
 
-        // Wire procedure repository for procedure recall during intent analysis.
-        // SQLite-only — None when knowledge_db is None.
-        let procedure_repo: Option<Arc<ProcedureRepository>> = knowledge_db.as_ref().map(|kdb| {
-            let procedure_vec: Arc<dyn VectorIndex> = Arc::new(
-                SqliteVecIndex::new(kdb.clone(), "procedures_index", "procedure_id")
-                    .expect("vec index init"),
-            );
-            Arc::new(ProcedureRepository::new(kdb.clone(), procedure_vec))
-        });
         let procedure_store_for_state: Option<Arc<dyn zbot_stores_traits::ProcedureStore>> =
-            procedure_repo.as_ref().map(|pr| {
-                Arc::new(zbot_stores_sqlite::GatewayProcedureStore::new(pr.clone()))
-                    as Arc<dyn zbot_stores_traits::ProcedureStore>
-            });
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.procedure_store.clone());
         // Wire the trait-routed procedure_store on MemoryRecall so
         // procedure recall runs (Phase E6c).
         if let (Some(recall), Some(ps)) = (
@@ -511,25 +383,11 @@ impl AppState {
 
         // Trait-routed episode store for downstream consumers (distiller +
         // sleep worker + AppState). Built once here so the sleep worker
-        // construction below doesn't have to re-derive from the underlying
-        // repo. Wraps `EpisodeRepository` over the same KnowledgeDatabase.
+        // construction below doesn't have to re-derive backend-specific handles.
         let episode_store_for_state: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> =
-            knowledge_db.as_ref().and_then(|kdb| {
-                zbot_stores_sqlite::vector_index::SqliteVecIndex::new(
-                    kdb.clone(),
-                    "session_episodes_index",
-                    "episode_id",
-                )
-                .ok()
-                .map(|vec_index| {
-                    let repo = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
-                        kdb.clone(),
-                        Arc::new(vec_index),
-                    ));
-                    Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(repo))
-                        as Arc<dyn zbot_stores_traits::EpisodeStore>
-                })
-            });
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.episode_store.clone());
 
         // Conversation store is always SQLite-backed (per the design doc:
         // conversations.db is SQLite-only). The sleep worker's
@@ -545,14 +403,9 @@ impl AppState {
 
         // Build the trait-routed kg_store early enough to wire it on
         // MemoryRecall before that struct is moved into Arc::new below.
-        // Wraps the SQLite GraphStorage.
-        let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
-            graph_storage.as_ref().map(|gs| {
-                let embedder = embedding_client
-                    .clone()
-                    .expect("embedding_client wired above for distillation/recall");
-                persistence_factory::build_kg_store_from_storage(gs.clone(), embedder)
-            });
+        let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> = engram_store_bundle
+            .as_ref()
+            .map(|bundle| bundle.kg_store.clone());
         if let (Some(recall), Some(ks)) = (memory_recall_inner.as_mut(), kg_store.as_ref()) {
             recall.set_kg_store(ks.clone());
         }
@@ -561,7 +414,7 @@ impl AppState {
         // `execution.memory.beliefNetwork.enabled`. Reads settings
         // eagerly here so the store is attached before MemoryRecall is
         // sealed in `Arc::new` below. When the flag is off (default)
-        // OR the knowledge DB is missing, no store is wired and recall
+        // OR the Engram belief store is missing, no store is wired and recall
         // stays byte-for-byte identical to pre-B-4 behavior.
         let belief_network_enabled_for_recall =
             gateway_services::SettingsService::new(paths.clone())
@@ -569,9 +422,11 @@ impl AppState {
                 .map(|s| s.execution.memory.belief_network.enabled)
                 .unwrap_or(false);
         if belief_network_enabled_for_recall {
-            if let Some(kdb) = knowledge_db.as_ref() {
-                let belief_store_for_recall: Arc<dyn zbot_stores_traits::BeliefStore> =
-                    Arc::new(zbot_stores_sqlite::SqliteBeliefStore::new(kdb.clone()));
+            let belief_store_for_recall: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
+                engram_store_bundle
+                    .as_ref()
+                    .map(|bundle| bundle.belief_store.clone());
+            if let Some(belief_store_for_recall) = belief_store_for_recall {
                 if let Some(recall) = memory_recall_inner.as_mut() {
                     recall.set_belief_store(belief_store_for_recall);
                 }
@@ -649,37 +504,17 @@ impl AppState {
         // also needs it so the memory fact store can generate embeddings.
         let runner_embedding_client = embedding_client.clone();
 
-        // Build the trait-object KG store from graph_storage.
-        // Coexists with graph_service/graph_storage until Phase 5 retirement.
-        //
-        // Construction is centralized in `persistence_factory` (TD-023):
-        // when alternate-backend support lands, the config-driven branch goes
-        // there, and this callsite stays the same. We use the
-        // `_from_storage` helper because AppState shares one
-        // `Arc<GraphStorage>` between `kg_store` and the legacy
-        // `graph_service`; once `graph_service` retires, callers migrate
-        // to `build_kg_store(knowledge_db, …)`.
-        //
         // kg_store was built earlier (before memory_recall_inner moved
-        // into Arc::new) so it could be wired on MemoryRecall. The
-        // duplicate definition here is intentionally absent — both the
-        // distiller and AppState fields below reuse the earlier binding.
+        // into Arc::new) so it could be wired on MemoryRecall. Both the
+        // distiller and AppState fields below reuse the same Engram-backed
+        // trait object.
         let memory_store = early_memory_store;
 
         let episode_repo_ref = episode_repo.clone();
 
-        // Create settings service (before distiller & runtime, so we can read execution settings)
-        let settings = Arc::new(SettingsService::new(paths.clone()));
-
-        // SessionDistiller (Phase E3): builds in BOTH backends.
-        //
-        // Required: at least one of memory_store (trait) or memory_repo
-        // (concrete) must be wired so fact upsert has a destination.
-        // SQLite-only deps (graph_storage, distillation_repo, episode_repo,
-        // wiki_repo, procedure_repo) flow through as Optional — None in
-        // missing means the corresponding side-effects (KG ingestion,
-        // run-tracking, episode storage, wiki compilation, procedure
-        // upsert) skip gracefully. Fact distillation itself runs.
+        // SessionDistiller writes semantic artifacts through Engram-backed
+        // trait stores. Conversation-linked run tracking still uses
+        // conversations.db through DistillationRepository.
         let distiller: Option<Arc<SessionDistiller>> = if memory_store.is_some() {
             let mut distiller_inner = SessionDistiller::new(
                 provider_service.clone(),
@@ -779,12 +614,11 @@ impl AppState {
                 as Arc<dyn agent_tools::IngestionAccess>),
             _ => None,
         };
-        // Goal adapter wraps the SQLite GoalRepository.
+        // Goal adapter is trait-routed through the Engram adapter sidecar.
         let goal_store_for_adapter: Option<Arc<dyn zbot_stores_traits::GoalStore>> =
-            goal_repo.as_ref().map(|gr| {
-                Arc::new(zbot_stores_sqlite::GatewayGoalStore::new(gr.clone()))
-                    as Arc<dyn zbot_stores_traits::GoalStore>
-            });
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.goal_store.clone());
         let goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>> =
             goal_store_for_adapter.map(|store| {
                 Arc::new(gateway_execution::invoke::goal_adapter::GoalAdapter::new(
@@ -812,11 +646,11 @@ impl AppState {
             runner_embedding_client,
             max_parallel_agents,
             kg_store.clone(),
-            kg_episode_repo.clone(),
+            None,
             ingestion_adapter,
             goal_adapter,
             procedure_store_for_state.clone(),
-            gateway_services::SettingsService::new(paths.clone())
+            settings
                 .load()
                 .map(|s| s.execution.memory.procedure_recommendation.clone())
                 .unwrap_or_default(),
@@ -824,11 +658,9 @@ impl AppState {
         ));
 
         // Phase 4: CompactionRepository + SleepTimeWorker (background maintenance).
-        // CompactionRepository is SQLite-tied (kg_compactions table on
-        // knowledge.db). None when knowledge_db is unwired.
-        let compaction_repo: Option<Arc<zbot_stores_sqlite::CompactionRepository>> = knowledge_db
-            .as_ref()
-            .map(|kdb| Arc::new(zbot_stores_sqlite::CompactionRepository::new(kdb.clone())));
+        // The concrete SQLite compaction repository is retired from runtime
+        // composition; Engram-backed compaction audit storage is wired below.
+        let compaction_repo: Option<Arc<zbot_stores_sqlite::CompactionRepository>> = None;
 
         // Phase D1: trait-routed compaction audit store. Wired in BOTH
         // backends so the maintenance worker can record merges/prunes
@@ -836,43 +668,18 @@ impl AppState {
         // `kg_compaction_run` table; SQLite delegates to the existing
         // `CompactionRepository`. Default no-op impls cover edge cases.
         let compaction_store: Option<Arc<dyn zbot_stores_traits::CompactionStore>> =
-            compaction_repo.as_ref().map(|r| {
-                Arc::new(zbot_stores_sqlite::GatewayCompactionStore::new(r.clone()))
-                    as Arc<dyn zbot_stores_traits::CompactionStore>
-            });
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.compaction_store.clone());
 
-        // One-shot backfill: populate legacy kg_entities / kg_relationships
-        // rows with the richer metadata introduced in commits b816702,
-        // 1bc21f6, 5bf3013. Marker row in kg_compactions gates this so
-        // subsequent daemon starts are a no-op. Non-fatal on failure —
-        // a backfill bug must never prevent the daemon from booting.
-        // Skip entirely when knowledge_db is None.
-        if let Some(ref kdb) = knowledge_db {
-            let backfiller = gateway_execution::sleep::KgBackfiller::new(kdb.clone());
-            match backfiller.run_once_blocking() {
-                Ok(stats) if stats.already_done => {
-                    tracing::debug!("kg_backfill: marker present, skipping");
-                }
-                Ok(stats) => {
-                    tracing::info!(
-                        entities_scanned = stats.entities_scanned,
-                        entities_updated = stats.entities_updated,
-                        relationships_scanned = stats.relationships_scanned,
-                        relationships_updated = stats.relationships_updated,
-                        "kg_backfill: completed",
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "kg_backfill: failed (non-fatal)");
-                }
-            }
-        }
+        // The legacy SQLite KG metadata backfill is retired from runtime
+        // composition. Engram-backed stores own current semantic storage.
+        tracing::info!("Engram memory provider selected; skipping SQLite KG backfill");
 
         // Belief Network stores (Phase B-1/B-2 + B-5 HTTP surface + B-6 observatory).
         //
         // Two layers of gating:
-        //   1. Trait store handles can only be built when `knowledge_db`
-        //      is wired (SQLite-backed).
+        //   1. Trait store handles come from the selected memory provider.
         //   2. We only park them on `AppState` for the HTTP layer when
         //      `execution.memory.beliefNetwork.enabled = true` — so the
         //      `/api/beliefs/*`, `/api/contradictions/*`, and
@@ -885,17 +692,13 @@ impl AppState {
             .get_execution_settings()
             .map(|s| s.memory.belief_network.clone())
             .unwrap_or_default();
-        let belief_store_raw: Option<Arc<dyn zbot_stores::BeliefStore>> =
-            knowledge_db.as_ref().map(|kdb| {
-                Arc::new(zbot_stores_sqlite::SqliteBeliefStore::new(kdb.clone()))
-                    as Arc<dyn zbot_stores::BeliefStore>
-            });
+        let belief_store_raw: Option<Arc<dyn zbot_stores::BeliefStore>> = engram_store_bundle
+            .as_ref()
+            .map(|bundle| bundle.belief_store.clone());
         let belief_contradiction_store_raw: Option<Arc<dyn zbot_stores::BeliefContradictionStore>> =
-            knowledge_db.as_ref().map(|kdb| {
-                Arc::new(zbot_stores_sqlite::SqliteBeliefContradictionStore::new(
-                    kdb.clone(),
-                )) as Arc<dyn zbot_stores::BeliefContradictionStore>
-            });
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.belief_contradiction_store.clone());
         // HTTP surface only exposes the stores when the feature is on.
         let belief_store_for_http: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
             if belief_network_cfg.enabled {
@@ -911,13 +714,9 @@ impl AppState {
             None
         };
 
-        // Sleep-time worker requires the entire SQLite knowledge cluster.
-        // Build only when ALL of (compaction_repo, memory_repo, knowledge_db,
-        // procedure_repo, kg_store, compaction_store) are present. The
-        // maintenance ops (compactor/decay/pruner/orphan_archiver) take
-        // Sleep-time worker — trait-routed. Gates on the trait stores
+        // Sleep-time worker is trait-routed. Gates on the trait stores
         // (kg_store, episode_store, memory_store, procedure_store,
-        // compaction_store) all wired above from the SQLite repos.
+        // compaction_store) all wired above from the selected provider.
         // Conversation store is always SQLite-backed (per design) and
         // built unconditionally above.
         let (sleep_time_worker, belief_network_activity) = match (
@@ -1041,7 +840,6 @@ impl AppState {
             hook_registry: Some(hook_registry),
             delegation_registry,
             conversations: conversation_repo,
-            knowledge_db,
             settings,
             log_service,
             state_service,
@@ -1097,14 +895,12 @@ impl AppState {
         let log_service = Arc::new(LogService::new(db_manager.clone()));
         let bridge_outbox = Arc::new(gateway_bridge::OutboxRepository::new(db_manager.clone()));
         let state_service = Arc::new(StateService::new(db_manager));
-        let knowledge_db = Arc::new(
-            KnowledgeDatabase::new(paths.clone()).expect("Failed to initialize knowledge database"),
-        );
-        let memory_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(knowledge_db.clone(), memory_vec));
+        let engram_store_bundle = persistence_factory::build_engram_store_bundle(
+            paths.as_ref(),
+            &gateway_memory::MemoryProviderSettings::default(),
+            None,
+        )
+        .expect("Failed to initialize Engram memory provider for minimal state");
 
         // Create connector registry
         let connector_service = ConnectorService::new(paths.clone());
@@ -1121,52 +917,18 @@ impl AppState {
             None, // bus is set later by server.start()
         ));
 
-        // Phase B: minimal still wires the trait-routed memory_store
-        // so tests that hit /api/memory/.../search succeed without
-        // needing to construct full AppState. Fallback no-op
-        // embedding client lets save_fact path complete.
-        let memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayMemoryFactStore::new(memory_repo.clone(), None),
-        ));
-
-        // Episode / wiki / procedure trait stores so HTTP handlers reach
-        // these listings without concrete-repo fallbacks. Each wraps the
-        // SQLite repo bound to its own vec0 partner table.
-        let episode_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "session_episodes_index", "episode_id")
-                .expect("episode vec index init"),
-        );
-        let episode_repo_handle = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
-            knowledge_db.clone(),
-            episode_vec,
-        ));
-        let episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo_handle),
-        ));
-
-        let wiki_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "wiki_articles_index", "article_id")
-                .expect("wiki vec index init"),
-        );
-        let wiki_repo_handle = Arc::new(zbot_stores_sqlite::WardWikiRepository::new(
-            knowledge_db.clone(),
-            wiki_vec,
-        ));
-        let wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayWikiStore::new(wiki_repo_handle),
-        ));
-
-        let proc_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "procedures_index", "procedure_id")
-                .expect("procedure vec index init"),
-        );
-        let procedure_repo_handle = Arc::new(zbot_stores_sqlite::ProcedureRepository::new(
-            knowledge_db.clone(),
-            proc_vec,
-        ));
-        let procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayProcedureStore::new(procedure_repo_handle),
-        ));
+        let memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
+            Some(engram_store_bundle.memory_store.clone());
+        let episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> =
+            Some(engram_store_bundle.episode_store.clone());
+        let wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>> =
+            Some(engram_store_bundle.wiki_store.clone());
+        let procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>> =
+            Some(engram_store_bundle.procedure_store.clone());
+        let kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>> =
+            Some(engram_store_bundle.kg_episode_store.clone());
+        let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
+            Some(engram_store_bundle.kg_store.clone());
 
         Self {
             agents: Arc::new(AgentService::new(agents_dir)),
@@ -1178,7 +940,6 @@ impl AppState {
             hook_registry: None,
             delegation_registry: Arc::new(DelegationRegistry::new()),
             conversations: conversation_repo,
-            knowledge_db: Some(knowledge_db),
             settings: Arc::new(SettingsService::new(paths.clone())),
             log_service,
             state_service,
@@ -1208,9 +969,9 @@ impl AppState {
             wiki_store,
             procedure_store,
             kg_episode_repo: None,
-            kg_episode_store: None,
+            kg_episode_store,
             graph_service: None,
-            kg_store: None,
+            kg_store,
             ingestion_queue: None,
             ingestion_backpressure: None,
             advertiser: discovery::noop(),
@@ -1219,6 +980,105 @@ impl AppState {
             belief_contradiction_store: None,
             belief_network_activity: None,
         }
+    }
+
+    /// Build an actor-filtered context capability catalog for HTTP/API
+    /// inspection. Production uses the execution runner's live dependency set;
+    /// minimal test state falls back to the same `ExecutorBuilder` with the
+    /// services retained directly on `AppState`.
+    pub fn context_capability_catalog(
+        &self,
+        actor_kind: gateway_execution::invoke::RuntimeActorKind,
+        session_id: Option<String>,
+        agent_id: Option<String>,
+    ) -> agent_runtime::ContextCapabilityCatalog {
+        let tool_settings = self.settings.get_tool_settings().unwrap_or_default();
+
+        if let Some(runner) = self.runtime.runner() {
+            return runner.context_capability_catalog(
+                actor_kind,
+                tool_settings,
+                session_id,
+                agent_id,
+            );
+        }
+
+        let mut builder = gateway_execution::invoke::ExecutorBuilder::new(
+            self.paths.vault_dir().clone(),
+            tool_settings,
+        )
+        .with_actor_kind(actor_kind)
+        .with_state_service(self.state_service.clone())
+        .with_conversation_repo(self.conversations.clone())
+        .with_model_registry(self.model_registry.clone());
+
+        if let Some(store) = &self.memory_store {
+            builder = builder.with_fact_store(store.clone());
+        }
+        if let Some(provider) = self.connector_resource_provider() {
+            builder = builder.with_connector_provider(provider);
+        }
+        if let Some(store) = &self.kg_store {
+            builder = builder.with_kg_store(store.clone());
+        }
+        if let (Some(queue), Some(kg_store), Some(kg_episode_store)) = (
+            self.ingestion_queue.as_ref(),
+            self.kg_store.as_ref(),
+            self.kg_episode_store.as_ref(),
+        ) {
+            let adapter = Arc::new(
+                gateway_execution::invoke::ingest_adapter::IngestionAdapter::new(
+                    queue.clone(),
+                    kg_episode_store.clone(),
+                    kg_store.clone(),
+                ),
+            );
+            builder = builder.with_ingestion_adapter(adapter);
+        }
+        if let Some(repo) = &self.goal_repo {
+            let store: Arc<dyn zbot_stores_traits::GoalStore> =
+                Arc::new(zbot_stores_sqlite::GatewayGoalStore::new(repo.clone()));
+            let adapter = Arc::new(gateway_execution::invoke::goal_adapter::GoalAdapter::new(
+                store,
+            ));
+            builder = builder.with_goal_adapter(adapter);
+        }
+        if let Some(store) = &self.procedure_store {
+            builder = builder.with_procedure_store(store.clone());
+        }
+
+        let ward_usage = Arc::new(
+            gateway_execution::invoke::ward_usage_adapter::WardUsageAdapter::new(Arc::new(
+                WardUsage::new(self.paths.wards_dir()),
+            )),
+        );
+        builder = builder
+            .with_ward_usage(ward_usage)
+            .with_steering_registry(Arc::new(agent_runtime::SteeringRegistry::new()))
+            .with_agent_result_bus(Arc::new(
+                gateway_execution::agent_pool::AgentResultBus::new(),
+            ));
+
+        builder.build_context_capability_catalog(session_id, agent_id)
+    }
+
+    fn connector_resource_provider(
+        &self,
+    ) -> Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> {
+        let http_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> =
+            Some(Arc::new(gateway_execution::GatewayResourceProvider::new(
+                self.connector_registry.clone(),
+            )));
+        let bridge_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> =
+            Some(Arc::new(gateway_bridge::BridgeResourceProvider::new(
+                self.bridge_registry.clone(),
+                self.bridge_outbox.clone(),
+            )));
+
+        Some(Arc::new(gateway_execution::CompositeResourceProvider::new(
+            http_provider,
+            bridge_provider,
+        )))
     }
 
     /// Create with custom components.
@@ -1237,58 +1097,24 @@ impl AppState {
         paths: SharedVaultPaths,
     ) -> Self {
         let config_dir = paths.vault_dir().clone();
-        let knowledge_db = Arc::new(
-            KnowledgeDatabase::new(paths.clone()).expect("Failed to initialize knowledge database"),
-        );
-        let memory_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(knowledge_db.clone(), memory_vec));
-
-        // Phase B: same trait wrap as `minimal()` so test paths see a
-        // wired memory_store and search/recall handlers don't 503.
-        let memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayMemoryFactStore::new(memory_repo.clone(), None),
-        ));
-
-        // Episode / wiki / procedure trait stores so HTTP handlers reach
-        // these listings without concrete-repo fallbacks.
-        let episode_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "session_episodes_index", "episode_id")
-                .expect("episode vec index init"),
-        );
-        let episode_repo_handle = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
-            knowledge_db.clone(),
-            episode_vec,
-        ));
-        let episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo_handle),
-        ));
-
-        let wiki_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "wiki_articles_index", "article_id")
-                .expect("wiki vec index init"),
-        );
-        let wiki_repo_handle = Arc::new(zbot_stores_sqlite::WardWikiRepository::new(
-            knowledge_db.clone(),
-            wiki_vec,
-        ));
-        let wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayWikiStore::new(wiki_repo_handle),
-        ));
-
-        let proc_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "procedures_index", "procedure_id")
-                .expect("procedure vec index init"),
-        );
-        let procedure_repo_handle = Arc::new(zbot_stores_sqlite::ProcedureRepository::new(
-            knowledge_db.clone(),
-            proc_vec,
-        ));
-        let procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>> = Some(Arc::new(
-            zbot_stores_sqlite::GatewayProcedureStore::new(procedure_repo_handle),
-        ));
+        let engram_store_bundle = persistence_factory::build_engram_store_bundle(
+            paths.as_ref(),
+            &gateway_memory::MemoryProviderSettings::default(),
+            None,
+        )
+        .expect("Failed to initialize Engram memory provider for component state");
+        let memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
+            Some(engram_store_bundle.memory_store.clone());
+        let episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> =
+            Some(engram_store_bundle.episode_store.clone());
+        let wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>> =
+            Some(engram_store_bundle.wiki_store.clone());
+        let procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>> =
+            Some(engram_store_bundle.procedure_store.clone());
+        let kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>> =
+            Some(engram_store_bundle.kg_episode_store.clone());
+        let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
+            Some(engram_store_bundle.kg_store.clone());
 
         // Create bridge registry and outbox
         let bridge_registry = Arc::new(gateway_bridge::BridgeRegistry::new());
@@ -1318,7 +1144,6 @@ impl AppState {
             hook_registry: None,
             delegation_registry: Arc::new(DelegationRegistry::new()),
             conversations,
-            knowledge_db: Some(knowledge_db),
             settings: Arc::new(SettingsService::new(paths.clone())),
             log_service,
             state_service,
@@ -1348,9 +1173,9 @@ impl AppState {
             wiki_store,
             procedure_store,
             kg_episode_repo: None,
-            kg_episode_store: None,
+            kg_episode_store,
             graph_service: None,
-            kg_store: None,
+            kg_store,
             ingestion_queue: None,
             ingestion_backpressure: None,
             advertiser: discovery::noop(),
@@ -1367,77 +1192,31 @@ impl AppState {
         self
     }
 
-    /// Reconcile the indexed embedding dim against the current client dim.
+    /// Reconcile the embedding client health against current settings.
     ///
-    /// Runs at boot (from `GatewayServer::start`) and performs three things:
+    /// Runs at boot (from `GatewayServer::start`) and performs two things:
     ///
     /// 1. Pre-emptive Ollama ping — surfaces unreachability in `Health`
     ///    immediately instead of waiting for the periodic health loop.
-    /// 2. If `needs_reindex()`, invokes
-    ///    [`gateway_execution::sleep::embedding_reindex::reindex_all`] against
-    ///    the live knowledge database, then writes the `.embedding-state`
-    ///    marker on success.
-    /// 3. Spawns the periodic health-check loop (60s tick).
+    /// 2. Spawns the periodic health-check loop (60s tick).
     ///
-    /// All failures are logged — embeddings-based recall degrades to FTS in
-    /// the existing `recall_unified` path if the reindex does not complete.
+    /// Semantic memory/knowledge indexing lives behind Engram. The old SQLite
+    /// vec-index rebuild path is intentionally not a production fallback.
     pub async fn reconcile_embeddings_at_boot(&self) {
-        // 1. Preflight.
         self.embedding_service.preflight().await;
 
-        // 2. Reindex if the marker dim disagrees with the live dim.
         if self.embedding_service.needs_reindex() {
             let current_dim = self.embedding_service.dimensions();
-            let Some(knowledge_db) = self.knowledge_db.as_ref() else {
-                tracing::warn!(
-                    "Embedding marker mismatch but knowledge DB unavailable — skipping reindex"
+            if let Err(e) = self.embedding_service.mark_indexed(current_dim) {
+                tracing::warn!("mark_indexed failed after embedding preflight: {e}");
+            } else {
+                tracing::info!(
+                    dim = current_dim,
+                    "Embedding marker updated; Engram owns semantic index maintenance"
                 );
-                self.embedding_service
-                    .publish_health(gateway_services::Health::Ready);
-                let _handle = self.embedding_service.clone().start_health_loop();
-                return;
-            };
-            tracing::info!(
-                dim = current_dim,
-                "Embedding dim/model mismatch vs marker — reindexing at boot"
-            );
-            let client = self.embedding_service.client();
-            let svc = self.embedding_service.clone();
-            let on_progress = move |table: &'static str, current: usize, total: usize| {
-                svc.publish_health(gateway_services::Health::Reindexing {
-                    table: table.to_string(),
-                    current,
-                    total,
-                });
-            };
-            match gateway_execution::sleep::embedding_reindex::reindex_all(
-                knowledge_db,
-                client,
-                current_dim,
-                &on_progress,
-            )
-            .await
-            {
-                Ok(_) => {
-                    if let Err(e) = self.embedding_service.mark_indexed(current_dim) {
-                        tracing::warn!("mark_indexed failed after boot reindex: {e}");
-                    } else {
-                        tracing::info!("Boot reindex complete at dim={current_dim}");
-                    }
-                    self.embedding_service
-                        .publish_health(gateway_services::Health::Ready);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Boot reindex failed: {e} — embeddings will be stale until next reconfigure"
-                    );
-                    // Leave health as-is (preflight already set any Ollama state);
-                    // recall_unified falls back to FTS.
-                }
             }
         }
 
-        // 3. Start periodic health loop.
         let _handle = self.embedding_service.clone().start_health_loop();
         // JoinHandle intentionally dropped — loop lives for the process
         // lifetime; daemon shutdown drops the runtime.
@@ -1630,16 +1409,14 @@ impl AppState {
 
     /// Seed default policies from bundled template if no policies/corrections exist.
     async fn seed_default_policies(&self) {
-        // Route through the trait surface so the configured backend
-        // backends seed identically. `memory_store` is wired in both
-        // modes (SQLite-wrapper or ).
+        // Route through the trait surface so Engram receives the same
+        // default policy seed data as the rest of the runtime.
         let memory_store = match &self.memory_store {
             Some(s) => s,
             None => {
                 tracing::warn!(
                     "seed_default_policies: memory_store is None — refusing to seed. \
-                     This means neither SQLite memory_repo  \
-                     wired into AppState; check persistence_factory output."
+                     Check persistence_factory output."
                 );
                 return;
             }
@@ -2084,7 +1861,8 @@ mod tests {
         assert!(state.episode_store.is_some());
         assert!(state.wiki_store.is_some());
         assert!(state.procedure_store.is_some());
-        assert!(state.knowledge_db.is_some());
+        assert!(state.kg_store.is_some());
+        assert!(state.kg_episode_store.is_some());
     }
 
     #[test]
@@ -2293,17 +2071,52 @@ mod tests {
     async fn new_app_state_initialises_full_constructor_path() {
         let dir = TempDir::new().unwrap();
         let state = AppState::new(dir.path().to_path_buf());
-        assert!(state.knowledge_db.is_some());
         assert!(state.memory_store.is_some());
         assert!(state.kg_store.is_some());
-        assert!(state.graph_service.is_some());
+        assert!(state.graph_service.is_none());
         assert!(state.distillation_repo.is_some());
         assert!(state.distiller.is_some());
         assert!(state.session_archiver.is_some());
-        assert!(state.episode_repo.is_some());
-        assert!(state.kg_episode_repo.is_some());
+        assert!(state.episode_repo.is_none());
+        assert!(state.kg_episode_repo.is_none());
+        assert!(state.episode_store.is_some());
+        assert!(state.kg_episode_store.is_some());
         assert!(state.cron_scheduler.is_none());
         assert!(state.bridge_bus.is_none());
+    }
+
+    #[tokio::test]
+    async fn new_app_state_engram_provider_skips_sqlite_knowledge_db() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("settings.json"),
+            r#"{
+                "execution": {
+                    "memory": {
+                        "provider": {
+                            "mode": "engram",
+                            "engramPath": "engram",
+                            "tenant": "agentzero"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let state = AppState::new(dir.path().to_path_buf());
+
+        assert!(state.graph_service.is_none());
+        assert!(state.kg_episode_repo.is_none());
+        assert!(state.memory_store.is_some());
+        assert!(state.kg_store.is_some());
+        assert!(state.episode_store.is_some());
+        assert!(state.wiki_store.is_some());
+        assert!(state.procedure_store.is_some());
+        assert!(!dir.path().join("data").join("knowledge.db").exists());
+        assert!(dir.path().join("data").join("engram").exists());
     }
 
     #[test]

@@ -5,7 +5,11 @@
 //! into working memory so the LLM has relevant context at the right moment.
 
 use super::working_memory::WorkingMemory;
+use agent_runtime::{
+    ContextActorKind, ContextAtom, ContextPacketDelta, ContextRenderPolicy, ContextTrace,
+};
 use regex::Regex;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use tracing::debug;
@@ -100,7 +104,7 @@ pub fn detect_triggers(
         }
     }
 
-    if tool_name != "respond" && tool_name != "set_session_title" {
+    if tool_name != "respond" {
         for name in extract_new_entities(result, wm) {
             triggers.push(MicroRecallTrigger::EntityMention { entity_name: name });
         }
@@ -146,6 +150,168 @@ pub async fn execute_micro_recall(
         MicroRecallTrigger::EntityMention { entity_name } => {
             handle_entity_mention(wm, entity_name, ctx, iteration).await;
         }
+    }
+    wm.add_context_packet_delta(context_packet_delta_for_trigger(trigger, ctx, iteration));
+}
+
+/// Build the structured delta for a micro-recall trigger.
+pub fn context_packet_delta_for_trigger(
+    trigger: &MicroRecallTrigger,
+    ctx: &MicroRecallContext,
+    iteration: u32,
+) -> ContextPacketDelta {
+    let (trigger_kind, atom_id, atom_kind, content) = match trigger {
+        MicroRecallTrigger::PreDelegation { agent_id } => (
+            "pre_delegation",
+            format!("pre-delegation-{agent_id}"),
+            "delegation_context",
+            format!("Preparing delegation to {agent_id}. Recall corrections, procedures, and constraints for that child agent."),
+        ),
+        MicroRecallTrigger::ToolError {
+            tool_name,
+            error_msg,
+        } => (
+            "tool_error",
+            format!("tool-error-{tool_name}"),
+            "tool_error_context",
+            format!("{tool_name} error: {}", truncate_safe(error_msg, 240)),
+        ),
+        MicroRecallTrigger::WardEntry { ward_id } => (
+            "ward_entry",
+            format!("ward-entry-{ward_id}"),
+            "ward_context",
+            format!("Entered ward {ward_id}. Load ward-scoped facts, graph entities, and local operating constraints."),
+        ),
+        MicroRecallTrigger::EntityMention { entity_name } => (
+            "entity_mention",
+            format!("entity-mention-{entity_name}"),
+            "entity_context",
+            format!("New entity mentioned: {entity_name}. Recall graph and memory context before acting on it."),
+        ),
+    };
+    build_single_atom_delta(
+        &format!("micro-recall:{iteration}:{}", slugify(&atom_id)),
+        &ctx.agent_id,
+        actor_kind_for_agent(&ctx.agent_id),
+        iteration,
+        trigger_kind,
+        delta_atom(
+            slugify(&atom_id),
+            atom_kind,
+            content,
+            "micro_recall",
+            trigger_kind,
+        ),
+    )
+}
+
+/// Build the structured delta for a completed delegated-agent callback.
+pub fn context_packet_delta_for_delegation_callback(
+    agent_id: &str,
+    result: &str,
+    iteration: u32,
+) -> ContextPacketDelta {
+    build_single_atom_delta(
+        &format!("micro-recall:{iteration}:delegation-callback-{agent_id}"),
+        "root",
+        ContextActorKind::Root,
+        iteration,
+        "delegation_callback",
+        delta_atom(
+            format!("delegation-callback-{}", slugify(agent_id)),
+            "delegation_callback",
+            format!(
+                "Delegation callback from {agent_id}: {}",
+                truncate_safe(result, 240)
+            ),
+            "delegation_callback",
+            agent_id,
+        ),
+    )
+}
+
+fn build_single_atom_delta(
+    delta_id: &str,
+    agent_id: &str,
+    actor_kind: ContextActorKind,
+    iteration: u32,
+    trigger_kind: &str,
+    atom: ContextAtom,
+) -> ContextPacketDelta {
+    let mut source_mix = BTreeMap::new();
+    source_mix.insert(atom.source.clone(), 1);
+    ContextPacketDelta {
+        delta_id: delta_id.to_string(),
+        request_id: format!("micro-recall:{agent_id}:{iteration}"),
+        agent_id: agent_id.to_string(),
+        actor_kind,
+        iteration,
+        trigger_kind: trigger_kind.to_string(),
+        atoms: vec![atom],
+        dropped: Vec::new(),
+        trace: ContextTrace {
+            selected_count: 1,
+            dropped_count: 0,
+            source_mix,
+        },
+    }
+}
+
+fn delta_atom(
+    id: impl Into<String>,
+    kind: &str,
+    content: String,
+    source: &str,
+    source_id: &str,
+) -> ContextAtom {
+    let token_estimate = content.chars().count().div_ceil(4).max(1) as u32;
+    ContextAtom {
+        id: id.into(),
+        kind: kind.to_string(),
+        content,
+        score: 1.0,
+        confidence: 1.0,
+        source: source.to_string(),
+        source_id: Some(source_id.to_string()),
+        provenance: vec![format!("{source}:{source_id}")],
+        valid_from: None,
+        valid_until: None,
+        visibility: vec![
+            ContextActorKind::Root,
+            ContextActorKind::DelegatedExecutor,
+            ContextActorKind::WardAgent,
+        ],
+        route_hint: None,
+        token_estimate,
+        render_policy: ContextRenderPolicy::Summary,
+    }
+}
+
+fn actor_kind_for_agent(agent_id: &str) -> ContextActorKind {
+    if agent_id.starts_with("ward:") {
+        ContextActorKind::WardAgent
+    } else {
+        ContextActorKind::Root
+    }
+}
+
+fn slugify(value: &str) -> String {
+    let slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if slug.is_empty() {
+        "unknown".to_string()
+    } else {
+        slug
     }
 }
 
@@ -583,6 +749,10 @@ mod tests {
         execute_micro_recall(&mut wm, &trigger, &ctx, 3).await;
         let output = wm.format_for_prompt();
         assert!(output.contains("shell error: permission denied"));
+        assert!(wm
+            .context_packet_deltas()
+            .iter()
+            .any(|delta| delta.trigger_kind == "tool_error"));
     }
 
     #[tokio::test]
@@ -599,6 +769,73 @@ mod tests {
         };
         execute_micro_recall(&mut wm, &trigger, &ctx, 1).await;
         // Should not panic; WM may or may not have content (no repos = no data)
+        assert!(wm
+            .context_packet_deltas()
+            .iter()
+            .any(|delta| delta.trigger_kind == "ward_entry"));
+    }
+
+    #[tokio::test]
+    async fn micro_recall_packet_deltas_cover_required_triggers() {
+        let ctx = MicroRecallContext {
+            memory_store: None,
+            kg_store: None,
+            agent_id: "root".to_string(),
+        };
+        let triggers = [
+            MicroRecallTrigger::PreDelegation {
+                agent_id: "research-agent".to_string(),
+            },
+            MicroRecallTrigger::ToolError {
+                tool_name: "shell".to_string(),
+                error_msg: "permission denied".to_string(),
+            },
+            MicroRecallTrigger::WardEntry {
+                ward_id: "finance".to_string(),
+            },
+            MicroRecallTrigger::EntityMention {
+                entity_name: "AAPL".to_string(),
+            },
+        ];
+
+        let mut wm = WorkingMemory::new(5000);
+        for (iteration, trigger) in triggers.iter().enumerate() {
+            execute_micro_recall(&mut wm, trigger, &ctx, iteration as u32).await;
+        }
+
+        let kinds = wm
+            .context_packet_deltas()
+            .iter()
+            .map(|delta| delta.trigger_kind.as_str())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"pre_delegation"));
+        assert!(kinds.contains(&"tool_error"));
+        assert!(kinds.contains(&"ward_entry"));
+        assert!(kinds.contains(&"entity_mention"));
+        for delta in wm.context_packet_deltas() {
+            assert_eq!(delta.trace.selected_count, 1);
+            assert_eq!(delta.trace.dropped_count, 0);
+            assert!(!delta.atoms[0].provenance.is_empty());
+            assert!(delta.atoms[0].visibility.contains(&ContextActorKind::Root));
+        }
+    }
+
+    #[test]
+    fn delegation_callback_delta_preserves_provenance() {
+        let delta = context_packet_delta_for_delegation_callback(
+            "analyst-agent",
+            "Found 5 useful facts",
+            4,
+        );
+
+        assert_eq!(delta.trigger_kind, "delegation_callback");
+        assert_eq!(delta.iteration, 4);
+        assert_eq!(delta.trace.selected_count, 1);
+        assert!(delta.atoms[0].content.contains("analyst-agent"));
+        assert_eq!(
+            delta.atoms[0].provenance,
+            vec!["delegation_callback:analyst-agent".to_string()]
+        );
     }
 
     // ---- extract_new_entities tests ----

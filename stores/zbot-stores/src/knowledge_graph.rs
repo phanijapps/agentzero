@@ -1,5 +1,6 @@
 use crate::error::StoreResult;
 use crate::extracted::ExtractedKnowledge;
+use crate::memory_facts::EmbeddingQueryIdentity;
 use crate::types::*;
 use async_trait::async_trait;
 use knowledge_graph::types::{
@@ -135,6 +136,21 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _top_k: usize,
     ) -> StoreResult<Vec<EntityNameEmbeddingHit>> {
         Ok(Vec::new())
+    }
+
+    /// Identity-aware variant of [`KnowledgeGraphStore::search_entities_by_name_embedding`].
+    /// Backends with persisted embedding identities should override this and
+    /// fail closed when `query_identity` is missing or mismatched.
+    async fn search_entities_by_name_embedding_with_identity(
+        &self,
+        agent_id: &str,
+        query_embedding: &[f32],
+        query_identity: Option<&EmbeddingQueryIdentity>,
+        top_k: usize,
+    ) -> StoreResult<Vec<EntityNameEmbeddingHit>> {
+        let _ = query_identity;
+        self.search_entities_by_name_embedding(agent_id, query_embedding, top_k)
+            .await
     }
 
     // ---- Maintenance -----------------------------------------------------

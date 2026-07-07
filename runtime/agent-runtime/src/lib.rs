@@ -66,6 +66,9 @@ pub(crate) mod tool_schema;
 /// Context management helpers (compaction, sanitization, truncation)
 pub(crate) mod context_management;
 
+/// Context capability catalog and packet contracts.
+pub mod context;
+
 /// Steering queue for mid-execution message injection
 pub mod steering;
 
@@ -105,6 +108,13 @@ pub use middleware::{
     PreProcessMiddleware, SummarizationConfig, SummarizationMiddleware, TriggerCondition,
 };
 
+pub use context::{
+    ContextActorKind, ContextAtom, ContextBudget, ContextCapability, ContextCapabilityCatalog,
+    ContextCapabilityHealth, ContextCapabilityKind, ContextCostHint, ContextGraphEdge,
+    ContextGraphNode, ContextLatencyHint, ContextPacket, ContextPacketDelta, ContextRenderPolicy,
+    ContextResourceHandle, ContextRiskLevel, ContextSideEffects, ContextTrace,
+    DroppedContextCandidate,
+};
 pub use context_management::{prepare_tool_result_for_context, ToolResultContextConfig};
 pub use engine::{AgentEngine, BoxedAgentEngine, StreamEventSink};
 pub use executor::{

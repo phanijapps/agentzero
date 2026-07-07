@@ -30,7 +30,85 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
 
 ---
 
-<!-- no deferred items yet -->
+## engram-pinned-source-before-release
+
+- **engram-memory-engine-cutover AC5:** Release/publish still needs Engram
+  pinned through the sanctioned dependency mechanism instead of mutable local
+  path dependencies. Blocked on the final source mechanism; unblocked by
+  replacing local Engram path dependencies with the accepted pin and recording
+  metadata, lockfile, revision/provenance, and dirty-state evidence.
+
+## engram-fresh-db-manual-smoke
+
+- **engram-memory-engine-cutover AC19:** User-run fresh-DB daemon/UI or CLI
+  smoke still needs to cover chat, memory/knowledge activity, AgentZero-owned
+  sleep-cycle cleanup, reload, and Memory/Graph/Observatory tabs. Blocked on
+  manual runtime validation; unblocked by running the smoke against a fresh
+  zbot data directory.
+
+## sqlite-store-crate-split
+
+- **engram-memory-engine-cutover follow-up:** `stores/zbot-stores-sqlite`
+  still owns the live `conversations.db` runtime contract through
+  `DatabaseManager`, `ConversationRepository`, execution/log/state adapters,
+  bridge outbox, and distillation run status, so it cannot be deleted yet.
+  Split or rename the crate so conversation/execution/outbox persistence lives
+  in a runtime SQLite crate, while old `KnowledgeDatabase`, sqlite-vec,
+  `MemoryRepository`, `GraphStorage`, old belief/wiki/procedure repos, and
+  current-SQLite parity fixtures move to a quarantined legacy memory SQLite
+  crate. Blocked on a focused crate-boundary spec; unblocked by extracting the
+  runtime DB surface first, then shrinking the legacy crate until only
+  migration/reference tests depend on it.
+
+## context-capability-resource-catalog-completion
+
+- **context-capability-registry AC2:** The shipped catalog is first-party
+  tool/actor-policy backed. It still needs live MCP manager metadata, connector
+  read-only resource metadata, and memory/graph/recall resource provider
+  entries as first-class catalog resources. Blocked on a focused resource
+  catalog provider slice; unblocked by adding catalog sources that do not
+  change tool execution behavior.
+
+## context-capability-broad-tool-split-completion
+
+- **context-capability-registry AC11:** Broad tools now expose split-target
+  metadata and `load_skill` returns bounded packets. The weak built-in `grep`
+  tool has been retired in favor of shell `rg`/`grep`, but `memory`,
+  `query_resource`, `graph_query`, `shell`, `ward`, and `load_skill`
+  are still callable action/resource compatibility surfaces. Blocked on
+  replacing each read-heavy use with resource/context packet lanes; unblocked by
+  removing each broad wrapper from default model registration once its split
+  target has parity.
+
+## context-capability-evidence-intake-completion
+
+- **context-capability-registry AC12:** The `ingest` tool records structured
+  evidence with retention, ontology, taxonomy, and provenance. `memory`
+  fact writes, tool-result distillation, and resource-read distillation still
+  need to route through the same internal evidence intake boundary. Blocked on a
+  focused distillation/write-lane slice; unblocked by adding shared evidence
+  recording behind those paths without making read-only resource access persist
+  by default.
+
+## spec-driven-research-development-contract-defect
+
+- **Defect:** The spec-driven research/development loop uses markdown prose as
+  the execution contract, so root, planner, ward-designer, subagents, and the
+  runtime infer different truths about plan location, next step, path scope,
+  status, and completion. The path failures seen in
+  `sess-c9847609-9ce6-47db-afcc-1b00c56b1a77` are a symptom: planner reported
+  `wards/<ward>/specs/<domain>/plan.md`, root was ward-scoped and tried
+  `financial-analysis/specs/...`, root then tried `~/...` with `read`, and only
+  recovered by shell-searching for the file. The broader issue is that
+  `plan.md`, `steps/*.md`, injected plan text, delegation callbacks, session DB
+  state, and prompt shards all carry overlapping but non-authoritative state.
+  This is especially weak for research/build hybrids where a plan marked
+  `research` still needs code, data fetching, analysis, and final synthesis.
+  Blocked on a dedicated spec-driven execution contract redesign; unblocked by
+  introducing a machine-readable plan manifest with canonical ward-relative
+  paths, explicit step ids, assigned agents, required skills/resources,
+  artifact contracts, status transitions, and continuation pointers, then making
+  markdown specs a rendered view instead of the source of runtime truth.
 
 <!-- Add one section per spec with open work, e.g.:
 

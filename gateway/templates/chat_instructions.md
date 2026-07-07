@@ -24,7 +24,7 @@ Only fall back to training data if recall and graph_query both come up empty AND
 </rules>
 
 <discovery_rule>
-To find an agent or skill, recall from memory first — they are indexed as facts (category `skill` / `agent`). Only call `list_skills` / `list_agents` as a fallback when recall is empty or insufficient.
+To find an agent or skill, recall from memory first — they are indexed as facts (category `skill` / `agent`). If recall is empty, use the context capability catalog or existing task analysis instead of raw discovery tools.
 </discovery_rule>
 
 <delegation>

@@ -26,6 +26,7 @@ pub struct OpenAiEmbeddingClient {
     api_key: String,
     model: String,
     dimensions: usize,
+    provider_type: String,
     http_client: reqwest::Client,
 }
 
@@ -33,11 +34,30 @@ impl OpenAiEmbeddingClient {
     /// Create a new OpenAI-compatible embedding client.
     #[must_use]
     pub fn new(base_url: String, api_key: String, model: String, dimensions: usize) -> Self {
+        Self::with_provider_type(
+            base_url,
+            api_key,
+            model,
+            dimensions,
+            "openai_compatible".to_string(),
+        )
+    }
+
+    /// Create a new OpenAI-compatible embedding client with an explicit provider family.
+    #[must_use]
+    pub fn with_provider_type(
+        base_url: String,
+        api_key: String,
+        model: String,
+        dimensions: usize,
+        provider_type: String,
+    ) -> Self {
         Self {
             base_url,
             api_key,
             model,
             dimensions,
+            provider_type,
             http_client: reqwest::Client::builder()
                 .timeout(EMBEDDING_REQUEST_TIMEOUT)
                 .connect_timeout(EMBEDDING_CONNECT_TIMEOUT)
@@ -79,9 +99,8 @@ impl EmbeddingClient for OpenAiEmbeddingClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
             return Err(EmbeddingError::ApiError(format!(
-                "({status}): {error_text}"
+                "embedding provider returned HTTP {status}"
             )));
         }
 
@@ -133,6 +152,10 @@ impl EmbeddingClient for OpenAiEmbeddingClient {
 
     fn model_name(&self) -> String {
         self.model.clone()
+    }
+
+    fn provider_type(&self) -> String {
+        self.provider_type.clone()
     }
 }
 

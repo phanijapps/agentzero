@@ -9,9 +9,7 @@ pub mod compactor;
 pub mod conflict_resolver;
 pub mod corrections_abstractor;
 pub mod decay;
-pub mod embedding_reindex;
 pub mod handoff_writer;
-pub mod kg_backfill;
 pub mod orphan_archiver;
 pub mod pattern_extractor;
 pub mod pruner;
@@ -31,7 +29,6 @@ pub use handoff_writer::{
     read_handoff_block, should_inject, HandoffEntry, HandoffInput, HandoffLlm, HandoffWriter,
     LlmHandoffWriter,
 };
-pub use kg_backfill::{KgBackfillStats, KgBackfiller};
 pub use orphan_archiver::{OrphanArchiver, OrphanArchiverStats};
 pub use pattern_extractor::{
     LlmPatternExtractor, PatternExtractLlm, PatternExtractor, PatternResponse, PatternStats,

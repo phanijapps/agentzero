@@ -354,17 +354,19 @@ mod tests {
     use rig::streaming::StreamedAssistantContent;
     use std::sync::Mutex;
 
+    type SeenMessages = Arc<Mutex<Vec<Vec<ChatMessage>>>>;
+
     /// Stub AgentZero LlmClient that streams canned text then resolves.
     struct StubLlm {
         chunks: Vec<String>,
         final_text: String,
         tool_calls: Vec<AgentToolCall>,
-        seen: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
+        seen: SeenMessages,
         seen_schema: Arc<Mutex<Vec<Option<Value>>>>,
     }
 
     impl StubLlm {
-        fn text(chunks: &[&str]) -> (Arc<Self>, Arc<Mutex<Vec<Vec<ChatMessage>>>>) {
+        fn text(chunks: &[&str]) -> (Arc<Self>, SeenMessages) {
             let seen = Arc::new(Mutex::new(Vec::new()));
             let stub = Arc::new(Self {
                 chunks: chunks.iter().map(|c| (*c).to_string()).collect(),

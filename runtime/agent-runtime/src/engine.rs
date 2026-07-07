@@ -58,9 +58,9 @@ impl AgentEngine for AgentExecutor {
         &self,
         user_message: &str,
         history: &[ChatMessage],
-        on_event: &mut StreamEventSink<'_>,
+        mut on_event: &mut StreamEventSink<'_>,
     ) -> Result<(), ExecutorError> {
-        AgentExecutor::execute_stream(self, user_message, history, |event| on_event(event)).await
+        AgentExecutor::execute_stream(self, user_message, history, &mut on_event).await
     }
 
     async fn execute_stream_with_stop_flag(

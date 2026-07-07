@@ -1,4 +1,4 @@
-use agent_runtime::LlmClient;
+use agent_runtime::{ContextActorKind, LlmClient};
 use gateway_services::{AgentService, SharedVaultPaths, SkillService, SkillSource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -199,8 +199,9 @@ The runtime supplies the structured response schema. Return exactly one schema-c
 - The "Existing Wards" list shows wards that ALREADY EXIST, with their scope. If one
   covers this task's domain, set action "use_existing" and ward_name to its EXACT listed
   name — never invent a near-duplicate. Use "create_new" only when no listed ward fits.
-- approach "simple" for greetings, quick questions, single-step tasks.
-- approach "graph" when the task needs multiple agents, code, or multi-step orchestration.
+- approach "simple" for greetings, quick questions, one-shot answers, and single-domain analyses that root can finish with memory, graph, tools, or one relevant skill.
+- Do NOT choose "graph" merely because the answer needs current data, calculations, research, or a skill.
+- approach "graph" only when the task needs multiple agents, reusable code or pipeline work, spec/plan artifacts, user-requested files, or explicit multi-step orchestration.
 - When approach is "graph", ALWAYS include "coding" in recommended_skills — it provides the ward structure and task runner.
 
 ## Structured Response Contract
@@ -247,17 +248,48 @@ pub fn format_intent_injection(
         }
     }
 
-    // WARM PATH — the task belongs to an existing, graduated ward: delegate
-    // the WHOLE task to that ward-agent in one call. The ward-agent plans and
+    let es = &analysis.execution_strategy;
+    if es.approach == ExecutionApproach::Simple {
+        out.push_str(
+            "\n**Fast path:** This is a simple one-shot task. The task analysis \
+             overrides the generic first-turn orchestration shard for this request. \
+             Work in the root execution and answer directly.\n\
+             Do NOT call `ward`, `delegate_to_agent`, `planner-agent`, `wait_agent`, \
+             `run_procedure`, or read `specs/plan.md` unless the user explicitly asks \
+             for multi-agent/spec/build work. Use memory, graph, direct tools, and \
+             relevant skills as needed, then call `respond` when the answer is ready.\n",
+        );
+
+        if !analysis.recommended_skills.is_empty() || !analysis.recommended_agents.is_empty() {
+            out.push_str("\n**Available Resources:**\n");
+            for skill in &analysis.recommended_skills {
+                out.push_str(&format!("- skill: `{}` (load with load_skill)\n", skill));
+            }
+            for agent in &analysis.recommended_agents {
+                out.push_str(&format!(
+                    "- agent: `{}` (do not delegate on the fast path unless the task escalates)\n",
+                    agent
+                ));
+            }
+        }
+
+        if !es.explanation.is_empty() {
+            out.push_str(&format!("\n**Approach:** {}\n", es.explanation));
+        }
+        return out;
+    }
+
+    // WARM PATH — the task belongs to an existing, graduated ward and needs
+    // multi-step orchestration: delegate the WHOLE task to that ward-agent in
+    // one call. The ward-agent plans and
     // executes internally (see `synthesize_ward_agent` / the ward-as-agent
     // design). The root does not enter the ward or run the planner itself.
     //
-    // Gated on `action == "use_existing"` ALONE — not on `approach`. The
-    // intent classifier's graph/simple call is unreliable (it labels
-    // identical multi-step tasks both ways), so it cannot gate routing.
-    // `use_existing` is authoritative: callers (invoke_bootstrap's
-    // graduation gate) set it only when the ward directory exists on disk
-    // and carries a real doctrine, so it always points at a genuine ward.
+    // Simple one-shot work returns through the fast path above before ward
+    // routing. For graph work, `use_existing` is authoritative: callers
+    // (invoke_bootstrap's graduation gate) set it only when the ward directory
+    // exists on disk and carries a real doctrine, so it always points at a
+    // genuine ward.
     if analysis.ward_recommendation.action == WardAction::UseExisting {
         let ward = analysis.ward_recommendation.ward_name.as_str();
         let mut ward_task = String::new();
@@ -270,8 +302,7 @@ pub fn format_intent_injection(
         }
         out.push_str(&format!(
             "\n**Required action:** This task belongs to the existing `{ward}` ward.\n\
-             1. Call `set_session_title` with a concise 2-8 word title.\n\
-             2. Then delegate the ENTIRE task to the ward-agent in ONE call and wait \
+             1. Delegate the ENTIRE task to the ward-agent in ONE call and wait \
              for its result:\n\
              ```\n\
              delegate_to_agent(agent_id=\"ward:{ward}\", task=\"{ward_task}\", wait_for_result=true)\n\
@@ -322,7 +353,6 @@ pub fn format_intent_injection(
     }
 
     // Execution approach
-    let es = &analysis.execution_strategy;
     if es.approach == ExecutionApproach::Graph {
         // Build a rich delegation task so planner sees the original request,
         // intent, ward context, hidden requirements, and available resources
@@ -758,7 +788,15 @@ pub async fn analyze_intent(
             .await
         {
             Ok(items) if !items.is_empty() => {
-                let formatted = crate::recall::format_scored_items(&items);
+                let formatted = crate::recall::format_scored_items_with_options(
+                    &items,
+                    crate::recall::ContextPacketBuildOptions::new(
+                        "intent-analysis-recall",
+                        "root",
+                        ContextActorKind::Root,
+                        900,
+                    ),
+                );
                 tracing::info!(
                     count = items.len(),
                     "Recalled unified context for intent analysis"
@@ -844,43 +882,42 @@ pub async fn analyze_intent(
         "LLM call — sending relevant resources"
     );
 
-    let mut analysis: IntentAnalysis =
-        match agent_runtime::rig_adapter::prompt_typed(
-            llm_client.clone(),
-            system_prompt,
-            user_content.as_str(),
-        )
-        .await
-        {
-            Ok(a) => a,
-            Err(first_err) => {
-                // LLM structured output is occasionally malformed (glm-5.2). Retry
-                // once before falling back — the second attempt usually succeeds,
-                // preserving the FULL analysis (primary_intent, execution_strategy)
-                // instead of degrading to the simple fallback.
-                tracing::warn!(
-                    error = %first_err,
-                    "Intent analysis structured output failed on first attempt — retrying once"
-                );
-                match agent_runtime::rig_adapter::prompt_typed(
-                    llm_client,
-                    system_prompt,
-                    user_content.as_str(),
-                )
-                .await
-                {
-                    Ok(a) => a,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            matched_wards = ?results.wards,
-                            "Intent analysis structured output failed twice — falling back to semantic-search ward match (warm-routing preserved)"
-                        );
-                        fallback_analysis_from_semantic(user_message, &results.wards)
-                    }
+    let mut analysis: IntentAnalysis = match agent_runtime::rig_adapter::prompt_typed(
+        llm_client.clone(),
+        system_prompt,
+        user_content.as_str(),
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(first_err) => {
+            // LLM structured output is occasionally malformed (glm-5.2). Retry
+            // once before falling back — the second attempt usually succeeds,
+            // preserving the FULL analysis (primary_intent, execution_strategy)
+            // instead of degrading to the simple fallback.
+            tracing::warn!(
+                error = %first_err,
+                "Intent analysis structured output failed on first attempt — retrying once"
+            );
+            match agent_runtime::rig_adapter::prompt_typed(
+                llm_client,
+                system_prompt,
+                user_content.as_str(),
+            )
+            .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        matched_wards = ?results.wards,
+                        "Intent analysis structured output failed twice — falling back to semantic-search ward match (warm-routing preserved)"
+                    );
+                    fallback_analysis_from_semantic(user_message, &results.wards)
                 }
             }
-        };
+        }
+    };
 
     // Step 6: Compute procedure recommendation and attach to the analysis.
     // This block is what `format_intent_injection` will render into the root
@@ -2247,7 +2284,11 @@ mod tests {
             &[],
         )
         .await;
-        assert!(result.is_ok(), "should recover on retry: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "should recover on retry: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap().primary_intent, "stock-valuation");
     }
 
@@ -2351,10 +2392,7 @@ mod tests {
             {"action": "shell", "args": {}, "binds": []},
             {"action": "read_file", "args": {}, "binds": []}
         ]"#;
-        assert!(procedure_is_dispatchable(
-            steps,
-            &["shell", "read_file", "grep"]
-        ));
+        assert!(procedure_is_dispatchable(steps, &["shell", "read_file"]));
     }
 
     #[test]
@@ -2448,37 +2486,64 @@ mod tests {
     }
 
     #[test]
-    fn format_intent_injection_warm_path_fires_regardless_of_approach() {
-        // The classifier's graph/simple label must NOT gate warm routing —
-        // an existing graduated ward is delegated to either way.
-        for approach in [ExecutionApproach::Graph, ExecutionApproach::Simple] {
-            let analysis = IntentAnalysis {
-                primary_intent: "city itinerary".to_string(),
-                hidden_intents: vec![],
-                recommended_skills: vec![],
-                recommended_agents: vec![],
-                ward_recommendation: WardRecommendation {
-                    action: WardAction::UseExisting,
-                    ward_name: "travel-planning".to_string(),
-                    subdirectory: None,
-                    structure: Default::default(),
-                    reason: "existing ward".to_string(),
-                },
-                execution_strategy: ExecutionStrategy {
-                    approach: approach.clone(),
-                    graph: None,
-                    explanation: "x".to_string(),
-                },
-                rewritten_prompt: String::new(),
-                procedure_recommendation: None,
-            };
-            let injection = format_intent_injection(&analysis, None, Some("Barcelona itinerary"));
-            assert!(
-                injection.contains("delegate_to_agent(agent_id=\"ward:travel-planning\""),
-                "warm path should fire for approach={approach}"
-            );
-            assert!(!injection.contains("delegate_to_agent(agent_id=\"planner-agent\""));
-        }
+    fn format_intent_injection_simple_existing_ward_stays_direct() {
+        // Fast path: a simple one-shot request should not be promoted into the
+        // warm ward-agent route just because it belongs to an existing ward.
+        let analysis = IntentAnalysis {
+            primary_intent: "city itinerary".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::UseExisting,
+                ward_name: "travel-planning".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "existing ward".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Simple,
+                graph: None,
+                explanation: "one-shot answer".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: Some(
+                "\n## Recommended action: run_procedure\nrun_procedure(name=\"x\")\n".to_string(),
+            ),
+        };
+        let injection = format_intent_injection(&analysis, None, Some("Barcelona itinerary"));
+        assert!(injection.contains("**Fast path:**"));
+        assert!(!injection.contains("delegate_to_agent(agent_id=\"ward:travel-planning\""));
+        assert!(!injection.contains("delegate_to_agent(agent_id=\"planner-agent\""));
+        assert!(!injection.contains("ward(action="));
+        assert!(!injection.contains("Recommended action: run_procedure"));
+    }
+
+    #[test]
+    fn format_intent_injection_warm_path_requires_graph_approach() {
+        let analysis = IntentAnalysis {
+            primary_intent: "city itinerary".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::UseExisting,
+                ward_name: "travel-planning".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "existing ward".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Graph,
+                graph: None,
+                explanation: "multi-step itinerary".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: None,
+        };
+        let injection = format_intent_injection(&analysis, None, Some("Barcelona itinerary"));
+        assert!(injection.contains("delegate_to_agent(agent_id=\"ward:travel-planning\""));
+        assert!(!injection.contains("delegate_to_agent(agent_id=\"planner-agent\""));
     }
 
     #[test]
@@ -2511,8 +2576,8 @@ mod tests {
         // Warm path: delegate the whole task to the ward-agent and wait.
         assert!(injection.contains("delegate_to_agent(agent_id=\"ward:financial-analysis\""));
         assert!(injection.contains("wait_for_result=true"));
-        // The root must still set the session title before delegating.
-        assert!(injection.contains("set_session_title"));
+        // Session title is now runtime-derived, not a required model-visible tool call.
+        assert!(!injection.contains("set_session_title"));
         // Warm path must NOT emit the planner-delegation call (the cold path's
         // routing). The text may *mention* planner-agent in a "do NOT" line —
         // assert on the actual call string instead.

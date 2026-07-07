@@ -22,7 +22,7 @@ below:
 
 - `read`, `write_file`, `edit_file` — file I/O.
 - `shell` — full shell access. Run tests, builds, linters, git. Respect the destructive-operation gate below.
-- `list_skills`, `load_skill` — discover and load skills.
+- `load_skill` — load a known skill recommended by task analysis or recall.
 - `ward(action='use')` — enter a ward.
 - `memory` (recall / get_fact / save_fact) — context recall across sessions.
 

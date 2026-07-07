@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{make_episode_repo, make_procedure_repo, make_wiki_repo, now_iso, setup};
+use common::{insert_episode, now_iso, setup, upsert_procedure, upsert_wiki_article};
 use serde_json::Value;
 use zbot_stores_domain::{MemoryFact, Procedure, SessionEpisode, WikiArticle};
 
@@ -57,7 +57,6 @@ async fn returns_four_content_types_with_age_buckets() {
     .expect("upsert fact");
 
     // Wiki (including an __index__ article to drive summary)
-    let wiki = make_wiki_repo(&state);
     let index_article = WikiArticle {
         id: "wiki-index".to_string(),
         ward_id: TEST_WARD.to_string(),
@@ -71,7 +70,7 @@ async fn returns_four_content_types_with_age_buckets() {
         created_at: now.clone(),
         updated_at: now.clone(),
     };
-    wiki.upsert_article(&index_article).expect("upsert index");
+    upsert_wiki_article(&state, &index_article);
     let regular_article = WikiArticle {
         id: "wiki-1".to_string(),
         ward_id: TEST_WARD.to_string(),
@@ -85,10 +84,9 @@ async fn returns_four_content_types_with_age_buckets() {
         created_at: now.clone(),
         updated_at: now.clone(),
     };
-    wiki.upsert_article(&regular_article).expect("upsert wiki");
+    upsert_wiki_article(&state, &regular_article);
 
     // Procedure
-    let proc_repo = make_procedure_repo(&state);
     let proc = Procedure {
         id: "proc-1".to_string(),
         agent_id: "agent-1".to_string(),
@@ -107,10 +105,9 @@ async fn returns_four_content_types_with_age_buckets() {
         created_at: now.clone(),
         updated_at: now.clone(),
     };
-    proc_repo.upsert_procedure(&proc).expect("upsert proc");
+    upsert_procedure(&state, &proc);
 
     // Episode
-    let ep_repo = make_episode_repo(&state);
     let ep = SessionEpisode {
         id: "ep-1".to_string(),
         session_id: "sess-1".to_string(),
@@ -124,7 +121,7 @@ async fn returns_four_content_types_with_age_buckets() {
         embedding: None,
         created_at: now.clone(),
     };
-    ep_repo.insert(&ep).expect("insert episode");
+    insert_episode(&state, &ep);
 
     let response = server.get(&format!("/api/wards/{TEST_WARD}/content")).await;
     response.assert_status_ok();
@@ -186,4 +183,110 @@ async fn unknown_ward_returns_empty_arrays_and_zero_counts() {
 
     // Summary fallback: title = ward_id
     assert_eq!(body["summary"]["title"].as_str(), Some("nope"));
+}
+
+#[tokio::test]
+async fn ward_content_filters_internal_reserved_memory_facts() {
+    let (server, _dir, state) = setup();
+    let now = now_iso();
+
+    for category in ["ctx", "instruction", "correction"] {
+        let fact = MemoryFact {
+            id: format!("fact-internal-{category}"),
+            session_id: Some("sess-internal".to_string()),
+            agent_id: "agent-1".to_string(),
+            scope: "session".to_string(),
+            category: category.to_string(),
+            key: format!("{category}.private"),
+            content: "ward-private-sentinel must not be public".to_string(),
+            confidence: 1.0,
+            mention_count: 1,
+            source_summary: None,
+            embedding: None,
+            ward_id: TEST_WARD.to_string(),
+            contradicted_by: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            expires_at: None,
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            pinned: true,
+            epistemic_class: Some("current".to_string()),
+            source_episode_id: None,
+            source_ref: None,
+        };
+        let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
+        futures::executor::block_on(
+            state
+                .memory_store
+                .as_ref()
+                .expect("memory_store")
+                .upsert_typed_fact(fact_v, None),
+        )
+        .expect("upsert internal fact");
+    }
+
+    let response = server.get(&format!("/api/wards/{TEST_WARD}/content")).await;
+    response.assert_status_ok();
+    let body: Value = response.json();
+
+    assert_eq!(body["facts"].as_array().map(|a| a.len()), Some(0));
+    assert_eq!(body["counts"]["facts"], 0);
+    assert!(
+        !body.to_string().contains("ward-private-sentinel"),
+        "reserved memory fact content leaked through ward content: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ward_list_ignores_reserved_only_wards() {
+    let (server, _dir, state) = setup();
+    let internal_ward = "internal-only-ward";
+    let now = now_iso();
+
+    for category in ["ctx", "instruction", "correction"] {
+        let fact = MemoryFact {
+            id: format!("fact-list-internal-{category}"),
+            session_id: Some("sess-internal".to_string()),
+            agent_id: "agent-1".to_string(),
+            scope: "session".to_string(),
+            category: category.to_string(),
+            key: format!("{category}.private"),
+            content: "private ward list sentinel".to_string(),
+            confidence: 1.0,
+            mention_count: 1,
+            source_summary: None,
+            embedding: None,
+            ward_id: internal_ward.to_string(),
+            contradicted_by: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            expires_at: None,
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            pinned: true,
+            epistemic_class: Some("current".to_string()),
+            source_episode_id: None,
+            source_ref: None,
+        };
+        let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
+        futures::executor::block_on(
+            state
+                .memory_store
+                .as_ref()
+                .expect("memory_store")
+                .upsert_typed_fact(fact_v, None),
+        )
+        .expect("upsert internal fact");
+    }
+
+    let response = server.get("/api/wards").await;
+    response.assert_status_ok();
+    let body: Value = response.json();
+    assert!(
+        !body.to_string().contains(internal_ward),
+        "reserved-only ward leaked through public ward list: {body}"
+    );
 }

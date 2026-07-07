@@ -5,7 +5,7 @@
 use super::callback::{handle_delegation_failure, handle_delegation_success};
 use super::context::{infer_delegation_mode, DelegationContext, DelegationRequest};
 use super::registry::DelegationRegistry;
-use agent_runtime::{BoxedAgentEngine, ToolResultContextConfig};
+use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig};
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::{EventBus, GatewayEvent};
@@ -359,7 +359,17 @@ pub async fn spawn_delegated_agent(
             .await
         {
             Ok(items) if !items.is_empty() => {
-                let formatted = crate::recall::format_scored_items(&items);
+                let formatted = crate::recall::format_scored_items_with_options(
+                    &items,
+                    crate::recall::ContextPacketBuildOptions::new(
+                        format!("{execution_id}:delegation-recall"),
+                        request.child_agent_id.clone(),
+                        context_actor_kind(actor_kind),
+                        1_200,
+                    )
+                    .with_conversation_id(Some(child_conversation_id.clone()))
+                    .with_ward_id(session_ward_id.clone()),
+                );
                 if formatted.is_empty() {
                     Vec::new()
                 } else {
@@ -1254,6 +1264,15 @@ fn actor_kind_for_delegation(child_agent_id: &str, task: &str) -> RuntimeActorKi
         RuntimeActorKind::WardAgent
     } else {
         RuntimeActorKind::from(detect_subagent_role(child_agent_id, task))
+    }
+}
+
+fn context_actor_kind(actor_kind: RuntimeActorKind) -> ContextActorKind {
+    match actor_kind {
+        RuntimeActorKind::Root => ContextActorKind::Root,
+        RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
+        RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
+        RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
     }
 }
 

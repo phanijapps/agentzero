@@ -29,8 +29,8 @@ pub use conversation::ConversationStore;
 pub use episodes::{EpisodeStats, EpisodeStore, SessionEpisode, SuccessfulEpisode};
 pub use kg_episodes::{KgEpisodeStatusCounts, KgEpisodeStore};
 pub use memory_facts::{
-    MemoryAggregateStats, MemoryFact, MemoryFactStore, MemoryHealthMetrics, SkillIndexRow,
-    StrategyFactInsert, StrategyFactMatch,
+    EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFact, MemoryFactStore, MemoryHealthMetrics,
+    SkillIndexRow, StrategyFactInsert, StrategyFactMatch,
 };
 pub use outbox::OutboxStore;
 pub use procedures::{

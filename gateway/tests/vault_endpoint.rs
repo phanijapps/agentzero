@@ -302,8 +302,10 @@ async fn search_excludes_hidden_env_config_and_non_visible_files() {
 
 #[tokio::test]
 async fn vault_routes_deny_when_remote_access_cannot_be_proven_local() {
-    let mut config = GatewayConfig::default();
-    config.host = Ipv4Addr::UNSPECIFIED.into();
+    let config = GatewayConfig {
+        host: Ipv4Addr::UNSPECIFIED.into(),
+        ..GatewayConfig::default()
+    };
     let (server, _dir) = setup_with_config(config);
 
     let response = server.get("/api/vault/wards").await;

@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use zbot_stores_domain::{Belief, ScoredBelief};
 
+use crate::memory_facts::EmbeddingQueryIdentity;
+
 /// Abstract interface for durable belief storage.
 ///
 /// Implementations can wrap a SQLite repository, a remote API, or an
@@ -95,4 +97,19 @@ pub trait BeliefStore: Send + Sync {
         query_embedding: &[f32],
         limit: usize,
     ) -> Result<Vec<ScoredBelief>, String>;
+
+    /// Identity-aware variant of [`BeliefStore::search_beliefs`].
+    /// Backends with persisted embedding identities should override this and
+    /// fail closed when `query_identity` is missing or mismatched.
+    async fn search_beliefs_with_identity(
+        &self,
+        partition_id: &str,
+        query_embedding: &[f32],
+        query_identity: Option<&EmbeddingQueryIdentity>,
+        limit: usize,
+    ) -> Result<Vec<ScoredBelief>, String> {
+        let _ = query_identity;
+        self.search_beliefs(partition_id, query_embedding, limit)
+            .await
+    }
 }

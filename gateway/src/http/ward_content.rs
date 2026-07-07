@@ -113,7 +113,7 @@ fn stamp(mut value: Value, now: DateTime<Utc>, anchor: Option<&str>) -> Value {
 }
 
 fn route_hint_value(hint: RouteHint) -> Value {
-    serde_json::to_value(hint).unwrap_or_else(|_| Value::Null)
+    serde_json::to_value(hint).unwrap_or(Value::Null)
 }
 
 fn first_non_empty_line(s: &str) -> Option<String> {
@@ -284,6 +284,7 @@ pub async fn get_ward_content(
         .into_iter()
         .filter(|v| v.get("ward_id").and_then(|w| w.as_str()) == Some(ward_id.as_str()))
         .filter_map(|v| serde_json::from_value::<MemoryFact>(v).ok())
+        .filter(|fact| !matches!(fact.category.as_str(), "ctx" | "instruction" | "correction"))
         .take(FACT_LIMIT)
         .collect();
 
@@ -379,6 +380,12 @@ pub async fn list_wards(
 
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for row in rows {
+        if matches!(
+            row.get("category").and_then(|v| v.as_str()),
+            Some("ctx" | "instruction" | "correction")
+        ) {
+            continue;
+        }
         let ward = row
             .get("ward_id")
             .and_then(|v| v.as_str())

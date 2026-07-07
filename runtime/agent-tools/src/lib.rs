@@ -27,14 +27,10 @@ pub use tools::{
     GoalTool,
     GraphQueryTool,
     GraphStorageAccess,
-    GrepTool,
     // Ingestion tool (enqueue text for background extraction + bulk structured)
     IngestTool,
     IngestionAccess,
-    // Composite re-exports
     ListAgentsTool,
-    ListMcpsTool,
-    ListSkillsTool,
     LoadSkillTool,
     MemoryEntry,
     MemoryStore,
@@ -44,7 +40,6 @@ pub use tools::{
     NeighborInfo,
     QueryResourceTool,
     ReadTool,
-    SetSessionTitleTool,
     // Individual tools for lean subagent registries
     ShellTool,
     StructuredCounts,

@@ -1,37 +1,153 @@
-# Local install-time scratch — written by `agentbundle install`,
-# consumed by the adapt-to-project skill at session start. The path
-# *is* the scope (repo-scope marker only here — user-scope marker
-# lives inside ~/.agentbundle/, outside any repo).
-.adapt-install-marker.toml
+# =============================================================================
+# AGENT ZERO - GITIGNORE
+# =============================================================================
 
-# Work-loop session state — per-spec scratch, never committed.
-docs/specs/**/state.json
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+node_modules/
+.pnp
+.pnp.js
 
-# Supervisor-mode worktrees.
-.worktrees/
+# -----------------------------------------------------------------------------
+# Build outputs
+# -----------------------------------------------------------------------------
+dist/
+dist-ssr/
+dist-web/
+target/
+src-tauri/target/
+.ref/
+.serena/
+*.wix
 
-# Implementer reports — session-scratch.
-docs/specs/**/notes/implementer-*.md
 
-# Personal Claude Code overrides.
-CLAUDE.local.md
-.claude/settings.local.json
-AGENTS.local.md
+# -----------------------------------------------------------------------------
+# Environment files
+# -----------------------------------------------------------------------------
+cc.ps1
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
 
-# OS / editor noise.
-.DS_Store
-*.swp
+# -----------------------------------------------------------------------------
+# Logs
+# -----------------------------------------------------------------------------
+/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# -----------------------------------------------------------------------------
+# Testing
+# -----------------------------------------------------------------------------
+coverage/
+*.lcov
+.nyc_output/
+playwright-report/
+test-results/
+
+# -----------------------------------------------------------------------------
+# Editor / IDE
+# -----------------------------------------------------------------------------
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.AppleDouble
+.LSOverride
+.history/
+.vs/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# Python build artefacts.
-__pycache__/
-*.egg-info/
-*.pyc
-build/
+# -----------------------------------------------------------------------------
+# TypeScript
+# -----------------------------------------------------------------------------
+*.tsbuildinfo
 
-# Build pipeline output.
-dist/
+# -----------------------------------------------------------------------------
+# Misc
+# -----------------------------------------------------------------------------
+*.local
+.cache/
+.parcel-cache/
+.next/
+out/
+.nuxt/
+.vuepress/dist/
+.serverless/
+.fusebox/
+.dynamodb/
+.tern-port
+.claude/*
+!.claude/commands/
+.mcp.json
 
-# Conductor scratch + per-workspace probe scaffolding.
-.context/
+# -----------------------------------------------------------------------------
+# OS specific
+# -----------------------------------------------------------------------------
+Thumbs.db
+.DS_Store
+*.bak
+*.tmp
+*.temp
+temp_*.py
+
+# -----------------------------------------------------------------------------
+# Rust specific
+# -----------------------------------------------------------------------------
+**/*.rs.bk
+*.pdb
+# Cargo.lock — committed at the workspace root for reproducible builds
+# (zbot ships binaries; SonarQube S8570 / supply-chain best practice).
+
+# -----------------------------------------------------------------------------
+# ML model caches (fastembed ONNX models)
+# -----------------------------------------------------------------------------
+.fastembed_cache/
+nul
+
+# -----------------------------------------------------------------------------
+# Tauri specific
+# -----------------------------------------------------------------------------
+src-tauri-gen/
+# Tauri won't package these files
+src-tauri/tauri.conf.json.default
+
+# -----------------------------------------------------------------------------
+# User data directories (runtime)
+# -----------------------------------------------------------------------------
+~/.config/zeroagent/
+~/.local/share/zeroagent/
+
+# Superpowers working files
+.superpowers/
+docs/*
+!docs/project-graph.html
+!docs/specs/
+!docs/specs/**
+!docs/rfc/
+!docs/rfc/**
+docs/specs/**/state.json
+.agents
+# mempalace / chromadb artifacts
+chroma.sqlite3
+mempalace.yaml
+entities.json
+mcp.json
+.playwright-mcp/
+
+## Environment variables
+.env

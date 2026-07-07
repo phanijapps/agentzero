@@ -1,5 +1,6 @@
 //! `WikiStore` trait — backend-agnostic interface for ward wiki articles.
 
+use crate::memory_facts::EmbeddingQueryIdentity;
 use async_trait::async_trait;
 use serde_json::Value;
 // `WikiArticle` and `WikiHit` live in `zbot-stores-domain`; re-export
@@ -57,6 +58,20 @@ pub trait WikiStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Identity-aware variant of `search_wiki_hybrid`.
+    async fn search_wiki_hybrid_with_identity(
+        &self,
+        ward_id: Option<&str>,
+        query: &str,
+        limit: usize,
+        query_embedding: Option<&[f32]>,
+        query_identity: Option<&EmbeddingQueryIdentity>,
+    ) -> Result<Vec<Value>, String> {
+        let _ = query_identity;
+        self.search_wiki_hybrid(ward_id, query, limit, query_embedding)
+            .await
+    }
+
     /// Typed variant of `search_wiki_hybrid` returning `Vec<WikiHit>`
     /// directly. Default deserialises the Value-based result so backends
     /// only need to implement `search_wiki_hybrid`.
@@ -67,8 +82,27 @@ pub trait WikiStore: Send + Sync {
         limit: usize,
         query_embedding: Option<&[f32]>,
     ) -> Result<Vec<WikiHit>, String> {
+        self.search_wiki_hybrid_typed_with_identity(ward_id, query, limit, query_embedding, None)
+            .await
+    }
+
+    /// Identity-aware typed variant of `search_wiki_hybrid_typed`.
+    async fn search_wiki_hybrid_typed_with_identity(
+        &self,
+        ward_id: Option<&str>,
+        query: &str,
+        limit: usize,
+        query_embedding: Option<&[f32]>,
+        query_identity: Option<&EmbeddingQueryIdentity>,
+    ) -> Result<Vec<WikiHit>, String> {
         let rows = self
-            .search_wiki_hybrid(ward_id, query, limit, query_embedding)
+            .search_wiki_hybrid_with_identity(
+                ward_id,
+                query,
+                limit,
+                query_embedding,
+                query_identity,
+            )
             .await?;
         rows.into_iter()
             .map(|v| serde_json::from_value(v).map_err(|e| format!("decode WikiHit: {e}")))
@@ -90,6 +124,19 @@ pub trait WikiStore: Send + Sync {
         _limit: usize,
     ) -> Result<Vec<(WikiArticle, f64)>, String> {
         Ok(Vec::new())
+    }
+
+    /// Identity-aware variant of `search_wiki_by_similarity_typed`.
+    async fn search_wiki_by_similarity_typed_with_identity(
+        &self,
+        ward_id: &str,
+        embedding: &[f32],
+        query_identity: Option<&EmbeddingQueryIdentity>,
+        limit: usize,
+    ) -> Result<Vec<(WikiArticle, f64)>, String> {
+        let _ = query_identity;
+        self.search_wiki_by_similarity_typed(ward_id, embedding, limit)
+            .await
     }
 
     /// Typed variant of `list_articles` returning `Vec<WikiArticle>`

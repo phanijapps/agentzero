@@ -767,15 +767,19 @@ mod tests {
 
     #[test]
     fn local_access_denies_unspecified_bind_without_peer() {
-        let mut cfg = GatewayConfig::default();
-        cfg.host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let cfg = GatewayConfig {
+            host: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            ..GatewayConfig::default()
+        };
         assert!(!is_local_request(&cfg, None));
     }
 
     #[test]
     fn local_access_on_unspecified_bind_requires_loopback_peer() {
-        let mut cfg = GatewayConfig::default();
-        cfg.host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let cfg = GatewayConfig {
+            host: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            ..GatewayConfig::default()
+        };
         assert!(is_local_request(
             &cfg,
             Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 1234)))

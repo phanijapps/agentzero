@@ -210,6 +210,10 @@ impl EmbeddingClient for LocalEmbeddingClient {
     fn model_name(&self) -> String {
         self.model_name.clone()
     }
+
+    fn provider_type(&self) -> String {
+        "fastembed".to_string()
+    }
 }
 
 /// Return (name, dimensions) for known fastembed models.

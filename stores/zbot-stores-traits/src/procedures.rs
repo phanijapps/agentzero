@@ -1,5 +1,6 @@
 //! `ProcedureStore` trait — backend-agnostic interface for learned procedures.
 
+use crate::memory_facts::EmbeddingQueryIdentity;
 use async_trait::async_trait;
 use serde_json::Value;
 // Domain types live in `zbot-stores-domain`; re-export here so the
@@ -40,6 +41,20 @@ pub trait ProcedureStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Identity-aware variant of `search_procedures_by_similarity`.
+    async fn search_procedures_by_similarity_with_identity(
+        &self,
+        embedding: &[f32],
+        query_identity: Option<&EmbeddingQueryIdentity>,
+        agent_id: &str,
+        ward_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Value>, String> {
+        let _ = query_identity;
+        self.search_procedures_by_similarity(embedding, agent_id, ward_id, limit)
+            .await
+    }
+
     /// Typed variant of `search_procedures_by_similarity` returning
     /// `(Procedure, score)` pairs directly. Default deserialises the
     /// Value-based result for backends that haven't overridden.
@@ -50,8 +65,29 @@ pub trait ProcedureStore: Send + Sync {
         ward_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Procedure, f64)>, String> {
+        self.search_procedures_by_similarity_typed_with_identity(
+            embedding, None, agent_id, ward_id, limit,
+        )
+        .await
+    }
+
+    /// Identity-aware typed variant of `search_procedures_by_similarity_typed`.
+    async fn search_procedures_by_similarity_typed_with_identity(
+        &self,
+        embedding: &[f32],
+        query_identity: Option<&EmbeddingQueryIdentity>,
+        agent_id: &str,
+        ward_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(Procedure, f64)>, String> {
         let rows = self
-            .search_procedures_by_similarity(embedding, agent_id, ward_id, limit)
+            .search_procedures_by_similarity_with_identity(
+                embedding,
+                query_identity,
+                agent_id,
+                ward_id,
+                limit,
+            )
             .await?;
         rows.into_iter()
             .map(|row| {

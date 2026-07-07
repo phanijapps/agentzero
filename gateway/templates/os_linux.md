@@ -11,7 +11,7 @@ PLATFORM: Linux
 | Read file | `cat filename` |
 | Read first N lines | `head -30 filename` |
 | Create directory | `mkdir -p core output stocks` |
-| Find text in files | `grep -r "def " core/` |
+| Find text in files | `rg "def " core/` |
 | Check file exists | `test -f filename` |
 | Delete file | `rm filename` |
 | Run Python | `python3 script.py` (or `python` if symlinked) |

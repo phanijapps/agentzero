@@ -262,6 +262,16 @@ fn gateway_scenarios() -> Vec<Value> {
                     seed_aggregate_ids: vec!["aggregate".to_string()],
                     lca_aggregate_id: Some("aggregate".to_string()),
                     surfaced_item_count: 1,
+                    match_sources: vec!["memory_facts".to_string()],
+                    ranking_reasons: vec!["reciprocal_rank_fusion".to_string()],
+                    degraded_reasons: Vec::new(),
+                    embedding_provider_identity: Some(json!({
+                        "providerType": "fastembed",
+                        "model": "test",
+                        "dimensions": 3,
+                        "promptProfile": "query",
+                        "normalization": null
+                    })),
                 },
             ],
         ),

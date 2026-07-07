@@ -23,7 +23,7 @@ use agent_runtime::ChatMessage;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
     broadcast_event, collect_agents_summary, collect_skills_summary, detect_subagent_role,
-    process_stream_event, select_engine, spawn_batch_writer_with_repo, subagent_rules, AgentLoader,
+    process_stream_event, select_engine, spawn_batch_writer_with_traces, subagent_rules, AgentLoader,
     ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext,
 };
 use crate::lifecycle::{
@@ -639,10 +639,11 @@ fn spawn_execution_task(ctx: SpawnContext) {
         };
 
         // Create batch writer with conversation repo for session message streaming
-        let batch_writer = spawn_batch_writer_with_repo(
+        let batch_writer = spawn_batch_writer_with_traces(
             state_service.clone(),
             log_service.clone(),
             Some(conversation_repo.clone()),
+            paths.traces_dir(),
         );
 
         // Create stream context for event processing

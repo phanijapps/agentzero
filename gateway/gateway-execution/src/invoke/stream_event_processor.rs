@@ -118,6 +118,7 @@ fn handle_side_effects(ctx: &StreamContext, event: &StreamEvent) {
             ..
         } => {
             log_tool_call(ctx, tool_id, tool_name, args);
+            trace_tool_call(ctx, tool_id, tool_name, args);
         }
         StreamEvent::ToolResult {
             tool_id,
@@ -127,6 +128,7 @@ fn handle_side_effects(ctx: &StreamContext, event: &StreamEvent) {
             ..
         } => {
             log_tool_result(ctx, tool_id, result, error, *duration_ms);
+            trace_tool_result(ctx, tool_id, result, error, *duration_ms);
         }
         StreamEvent::Error { error, .. } => {
             log_error(ctx, error);
@@ -139,6 +141,75 @@ fn handle_side_effects(ctx: &StreamContext, event: &StreamEvent) {
         }
         _ => {}
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trace emission — full-fidelity events streamed to traces/<session>.jsonl.gz
+// via the BatchWriter sink (additive alongside the slim execution_logs).
+// ---------------------------------------------------------------------------
+
+fn emit_trace(ctx: &StreamContext, event: zbot_trace::TraceEvent) {
+    if let Some(writer) = &ctx.batch_writer {
+        writer.trace_event(&ctx.session_id, event);
+    }
+}
+
+fn trace_tool_call(ctx: &StreamContext, tool_id: &str, tool_name: &str, args: &serde_json::Value) {
+    emit_trace(
+        ctx,
+        zbot_trace::TraceEvent {
+            trace_id: ctx.session_id.clone(),
+            span_id: tool_id.to_string(),
+            session_id: ctx.session_id.clone(),
+            execution_id: ctx.execution_id.clone(),
+            agent_id: ctx.agent_id.clone(),
+            parent_session_id: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            level: "info".into(),
+            category: "tool_call".into(),
+            message: format!("Calling tool: {tool_name}"),
+            duration_ms: None,
+            tool_name: Some(tool_name.to_string()),
+            payload: Some(args.clone()),
+            usage: None,
+            model: None,
+        },
+    );
+}
+
+fn trace_tool_result(
+    ctx: &StreamContext,
+    tool_id: &str,
+    result: &str,
+    error: &Option<String>,
+    duration_ms: Option<i64>,
+) {
+    // Full, untruncated result (the .jsonl.gz is the full-fidelity source;
+    // execution_logs.metadata carries only the truncated/scalar preview).
+    let level = if error.is_some() { "error" } else { "info" };
+    emit_trace(
+        ctx,
+        zbot_trace::TraceEvent {
+            trace_id: ctx.session_id.clone(),
+            span_id: tool_id.to_string(),
+            session_id: ctx.session_id.clone(),
+            execution_id: ctx.execution_id.clone(),
+            agent_id: ctx.agent_id.clone(),
+            parent_session_id: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            level: level.into(),
+            category: "tool_result".into(),
+            message: format!("Tool result ({tool_id}): {}", error.as_deref().unwrap_or("ok")),
+            duration_ms,
+            // tool_name is not carried on StreamEvent::ToolResult; the
+            // tool_call event (same span_id) carries it. Analytics joins on
+            // span_id (refined in T8/T14).
+            tool_name: None,
+            payload: Some(serde_json::Value::String(result.to_string())),
+            usage: None,
+            model: None,
+        },
+    );
 }
 
 fn handle_ward_changed(ctx: &StreamContext, ward_id: &str) {

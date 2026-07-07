@@ -23,7 +23,7 @@ use crate::handle::ExecutionHandle;
 use crate::invoke::micro_recall::MicroRecallContext;
 use crate::invoke::working_memory_middleware;
 use crate::invoke::{
-    broadcast_event, process_stream_event, spawn_batch_writer_with_repo, BatchWriterHandle,
+    broadcast_event, process_stream_event, spawn_batch_writer_with_traces, BatchWriterHandle,
     ResponseAccumulator, StreamContext, ToolCallAccumulator, WorkingMemory,
 };
 use crate::lifecycle::{
@@ -294,10 +294,11 @@ impl ExecutionStream {
         } = ctx;
 
         // Create batch writer for non-blocking DB writes (with conversation repo for session messages)
-        let batch_writer = spawn_batch_writer_with_repo(
+        let batch_writer = spawn_batch_writer_with_traces(
             self.state_service.clone(),
             self.log_service.clone(),
             Some(self.conversation_repo.clone()),
+            self.paths.traces_dir(),
         );
 
         // Create stream context for event processing

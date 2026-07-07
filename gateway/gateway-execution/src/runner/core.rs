@@ -35,7 +35,7 @@ use crate::delegation::{spawn_delegated_agent, DelegationRegistry, DelegationReq
 pub use crate::handle::ExecutionHandle;
 use crate::invoke::{
     broadcast_event, collect_agents_summary, collect_skills_summary, process_stream_event,
-    select_engine, spawn_batch_writer_with_repo, AgentLoader, ExecutorBuilder, ResponseAccumulator,
+    select_engine, spawn_batch_writer_with_traces, AgentLoader, ExecutorBuilder, ResponseAccumulator,
     RuntimeActorKind, StreamContext, ToolCallAccumulator,
 };
 use crate::lifecycle::{
@@ -1374,10 +1374,11 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
 
     tokio::spawn(async move {
         // Create batch writer for non-blocking DB writes (with conversation repo for session messages)
-        let batch_writer = spawn_batch_writer_with_repo(
+        let batch_writer = spawn_batch_writer_with_traces(
             state_service.clone(),
             log_service.clone(),
             Some(conversation_repo.clone()),
+            paths.traces_dir(),
         );
 
         let stream_ctx = StreamContext::new(

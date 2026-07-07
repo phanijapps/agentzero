@@ -54,6 +54,8 @@ pub async fn spawn_delegated_agent(
     skill_service: Arc<SkillService>,
     paths: SharedVaultPaths,
     conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     delegation_registry: Arc<DelegationRegistry>,
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
@@ -434,6 +436,8 @@ pub async fn spawn_delegated_agent(
         conv_id: child_conversation_id.clone(),
         event_bus,
         conversation_repo,
+        messages,
+        checkpoints,
         delegation_registry,
         delegation_tx,
         log_service,
@@ -525,6 +529,8 @@ struct SpawnContext {
     // --- Shared services ---
     event_bus: Arc<EventBus>,
     conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     delegation_registry: Arc<DelegationRegistry>,
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     log_service: Arc<LogService<DatabaseManager>>,
@@ -558,6 +564,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
         delegation_permit,
         event_bus,
         conversation_repo,
+        messages,
+        checkpoints,
         delegation_registry,
         delegation_tx,
         log_service,
@@ -644,6 +652,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
             log_service.clone(),
             Some(conversation_repo.clone()),
             paths.traces_dir(),
+            Some(messages.clone()),
         );
 
         // Create stream context for event processing
@@ -779,6 +788,17 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 None,
             );
         }
+
+        // Turn-boundary checkpoint — write a versioned snapshot of the
+        // subagent's context state so session_state can read it in O(1).
+        crate::runner::core::write_turn_checkpoint(
+            &checkpoints,
+            &state_service,
+            &execution_id,
+            &child_session_id,
+            handle.current_iteration(),
+            &accumulated_response,
+        );
 
         match result {
             Ok(()) => {

@@ -45,6 +45,8 @@ pub struct ExecutionStream {
     pub state_service: Arc<StateService<DatabaseManager>>,
     pub log_service: Arc<LogService<DatabaseManager>>,
     pub conversation_repo: Arc<ConversationRepository>,
+    pub messages: Arc<dyn zbot_conversation::MessageStore>,
+    pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     pub delegation_registry: Arc<DelegationRegistry>,
     pub handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
@@ -293,12 +295,14 @@ impl ExecutionStream {
             recommended_skills,
         } = ctx;
 
-        // Create batch writer for non-blocking DB writes (with conversation repo for session messages)
+        // Create batch writer for non-blocking DB writes (message writes route
+        // through MessageStore; conversation_repo stays as fallback).
         let batch_writer = spawn_batch_writer_with_traces(
             self.state_service.clone(),
             self.log_service.clone(),
             Some(self.conversation_repo.clone()),
             self.paths.traces_dir(),
+            Some(self.messages.clone()),
         );
 
         // Create stream context for event processing
@@ -560,6 +564,18 @@ impl ExecutionStream {
             batch_writer.log(response_log);
         }
 
+        // Turn-boundary checkpoint — write a versioned snapshot of the
+        // agent's context state so session_state can read it in O(1)
+        // (T12) instead of replaying execution_logs.
+        super::core::write_turn_checkpoint(
+            &self.checkpoints,
+            &self.state_service,
+            &execution_id,
+            &session_id,
+            handle.current_iteration(),
+            &accumulated_response,
+        );
+
         // Handle completion
         match result {
             Ok(()) => {
@@ -818,7 +834,13 @@ mod tests {
             event_bus: bus,
             state_service: state,
             log_service: logs,
-            conversation_repo: convo,
+            conversation_repo: convo.clone(),
+            messages: Arc::new(zbot_conversation::SqliteMessageStore::new(
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+            )),
+            checkpoints: Arc::new(zbot_conversation::SqliteCheckpointStore::new(
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+            )),
             delegation_tx: tx,
             delegation_registry: registry,
             handles,

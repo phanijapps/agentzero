@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use zbot_conversation::MessageStore;
 use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
 use zbot_trace::TraceWriter;
 
@@ -134,7 +135,7 @@ pub fn spawn_batch_writer(
     state_service: Arc<StateService<DatabaseManager>>,
     log_service: Arc<LogService<DatabaseManager>>,
 ) -> BatchWriterHandle {
-    spawn_batch_writer_inner(state_service, log_service, None, None)
+    spawn_batch_writer_inner(state_service, log_service, None, None, None)
 }
 
 /// Spawn a batch writer with optional conversation repository for session messages.
@@ -143,18 +144,29 @@ pub fn spawn_batch_writer_with_repo(
     log_service: Arc<LogService<DatabaseManager>>,
     conversation_repo: Option<Arc<ConversationRepository>>,
 ) -> BatchWriterHandle {
-    spawn_batch_writer_inner(state_service, log_service, conversation_repo, None)
+    spawn_batch_writer_inner(state_service, log_service, conversation_repo, None, None)
 }
 
 /// Spawn a batch writer that also streams full-fidelity trace events to
 /// per-session `.jsonl.gz` files under `traces_dir`.
+///
+/// Pass `messages = Some(...)` to route session-message writes through
+/// `MessageStore::append` (the new path). When `None`, falls back to
+/// `conversation_repo` (the legacy path) for backward compatibility.
 pub fn spawn_batch_writer_with_traces(
     state_service: Arc<StateService<DatabaseManager>>,
     log_service: Arc<LogService<DatabaseManager>>,
     conversation_repo: Option<Arc<ConversationRepository>>,
     traces_dir: PathBuf,
+    messages: Option<Arc<dyn MessageStore>>,
 ) -> BatchWriterHandle {
-    spawn_batch_writer_inner(state_service, log_service, conversation_repo, Some(traces_dir))
+    spawn_batch_writer_inner(
+        state_service,
+        log_service,
+        conversation_repo,
+        Some(traces_dir),
+        messages,
+    )
 }
 
 fn spawn_batch_writer_inner(
@@ -162,6 +174,7 @@ fn spawn_batch_writer_inner(
     log_service: Arc<LogService<DatabaseManager>>,
     conversation_repo: Option<Arc<ConversationRepository>>,
     traces_dir: Option<PathBuf>,
+    messages: Option<Arc<dyn MessageStore>>,
 ) -> BatchWriterHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -171,6 +184,7 @@ fn spawn_batch_writer_inner(
         log_service,
         conversation_repo,
         traces_dir,
+        messages,
     ));
 
     BatchWriterHandle { tx }
@@ -183,6 +197,7 @@ async fn batch_writer_loop(
     log_service: Arc<LogService<DatabaseManager>>,
     conversation_repo: Option<Arc<ConversationRepository>>,
     traces_dir: Option<PathBuf>,
+    messages: Option<Arc<dyn MessageStore>>,
 ) {
     // Pending token updates — coalesced by execution_id (only latest kept)
     let mut token_updates: HashMap<String, (u64, u64)> = HashMap::new();
@@ -249,7 +264,7 @@ async fn batch_writer_loop(
                     }
                     None => {
                         // Channel closed — flush remaining and exit
-                        flush_all(&state_service, &log_service, conversation_repo.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                        flush_all(&state_service, &log_service, conversation_repo.as_deref(), messages.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
                         tracing::debug!("BatchWriter shutting down after final flush");
                         return;
                     }
@@ -258,13 +273,13 @@ async fn batch_writer_loop(
                 // Flush if we've accumulated enough items
                 let total = token_updates.len() + log_entries.len() + session_messages.len();
                 if total >= 10 {
-                    flush_all(&state_service, &log_service, conversation_repo.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                    flush_all(&state_service, &log_service, conversation_repo.as_deref(), messages.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
                 }
             }
             _ = interval.tick() => {
                 // Periodic flush
                 if !token_updates.is_empty() || !log_entries.is_empty() || !session_messages.is_empty() {
-                    flush_all(&state_service, &log_service, conversation_repo.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                    flush_all(&state_service, &log_service, conversation_repo.as_deref(), messages.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
                 }
             }
         }
@@ -272,10 +287,17 @@ async fn batch_writer_loop(
 }
 
 /// Flush all pending writes to the database.
+///
+/// Session messages are routed through `MessageStore::append` when `messages`
+/// is `Some` (the new T11 path — writes the shared `messages` table with
+/// atomic `seq` assignment). Falls back to `conversation_repo` (the legacy
+/// path) when `messages` is `None`. Both paths write the same `messages`
+/// table, so reads keep working either way.
 fn flush_all(
     state_service: &StateService<DatabaseManager>,
     log_service: &LogService<DatabaseManager>,
     conversation_repo: Option<&ConversationRepository>,
+    messages: Option<&dyn MessageStore>,
     token_updates: &mut HashMap<String, (u64, u64)>,
     log_entries: &mut Vec<ExecutionLog>,
     session_messages: &mut Vec<SessionMessage>,
@@ -299,8 +321,27 @@ fn flush_all(
         }
     }
 
-    // Flush session messages (order-preserving)
-    if let Some(repo) = conversation_repo {
+    // Flush session messages (order-preserving).
+    // Prefer the new MessageStore path; fall back to the legacy repo.
+    if let Some(store) = messages {
+        for msg in session_messages.drain(..) {
+            let message = zbot_conversation::Message {
+                id: format!("msg-{}", uuid::Uuid::new_v4()),
+                execution_id: Some(msg.execution_id.clone()),
+                session_id: msg.session_id.clone(),
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                token_count: msg.content.len() as i64 / 4,
+                tool_calls: msg.tool_calls.clone(),
+                tool_call_id: msg.tool_call_id.clone(),
+                seq: 0, // assigned atomically inside append; ignored server-side
+            };
+            if let Err(e) = store.append(&message) {
+                tracing::warn!("BatchWriter: failed to append message via MessageStore: {}", e);
+            }
+        }
+    } else if let Some(repo) = conversation_repo {
         for msg in session_messages.drain(..) {
             if let Err(e) = repo.append_session_message(
                 &msg.session_id,
@@ -315,7 +356,7 @@ fn flush_all(
         }
     } else if !session_messages.is_empty() {
         tracing::warn!(
-            "BatchWriter: {} session messages dropped (no conversation repo)",
+            "BatchWriter: {} session messages dropped (no message store or conversation repo)",
             session_messages.len()
         );
         session_messages.clear();
@@ -435,6 +476,7 @@ mod tests {
             h.logs.clone(),
             Some(h.convo.clone()),
             None,
+            None,
         ));
 
         // Enqueue a log and a session message. Neither is on the 10-item fast
@@ -480,6 +522,7 @@ mod tests {
             h.logs.clone(),
             Some(h.convo.clone()),
             None,
+            None,
         ));
 
         for (tin, tout) in [(1, 2), (3, 4), (5, 6), (7, 8)] {
@@ -518,6 +561,7 @@ mod tests {
             h.state.clone(),
             h.logs.clone(),
             Some(h.convo.clone()),
+            None,
             None,
         ));
 
@@ -560,6 +604,7 @@ mod tests {
             rx,
             h.state.clone(),
             h.logs.clone(),
+            None,
             None,
             None,
         ));
@@ -642,6 +687,7 @@ mod tests {
             h.logs.clone(),
             Some(h.convo.clone()),
             Some(traces_dir.clone()),
+            None,
         ));
 
         tx.send(BatchWrite::TraceEvent {

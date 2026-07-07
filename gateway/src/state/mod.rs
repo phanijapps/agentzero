@@ -661,6 +661,12 @@ impl AppState {
                 )) as Arc<dyn agent_tools::GoalAccess>
             });
 
+        // Build the conversation stores before the runtime so the runner can
+        // be wired with MessageStore/CheckpointStore at construction.
+        let (messages, checkpoints, slim_logs, trace_analytics) =
+            build_conversation_stores(&paths)
+                .expect("Failed to initialize conversation/trace stores");
+
         // Create runtime with execution runner and connector registry
         let runtime = Arc::new(RuntimeService::with_runner_and_connectors(
             event_bus.clone(),
@@ -668,6 +674,8 @@ impl AppState {
             provider_service.clone(),
             paths.clone(),
             conversation_repo.clone(),
+            messages.clone(),
+            checkpoints.clone(),
             mcp_service.clone(),
             skills.clone(),
             log_service.clone(),
@@ -864,10 +872,6 @@ impl AppState {
             bridge_outbox.clone(),
             None, // bus is set later by server.start()
         ));
-
-        let (messages, checkpoints, slim_logs, trace_analytics) =
-            build_conversation_stores(&paths)
-                .expect("Failed to initialize conversation/trace stores");
 
         Self {
             agents,

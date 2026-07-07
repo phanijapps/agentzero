@@ -71,6 +71,11 @@ pub struct ExecutionRunner {
     handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     /// Conversation repository for SQLite persistence
     conversation_repo: Arc<ConversationRepository>,
+    /// New message store (append-only conversation log). Writes route here
+    /// via the BatchWriter; reads stay on `conversation_repo` until T13.
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    /// Versioned agent-state checkpoints — written at each turn boundary.
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     /// Delegation registry for tracking parent-child relationships
     delegation_registry: Arc<DelegationRegistry>,
     /// Channel for delegation requests
@@ -161,6 +166,10 @@ pub struct ExecutionRunnerConfig {
     /// Per-ward usage telemetry — feeds the curator. Required so every
     /// `ward:<name>` delegation can `bump_use` persistently.
     pub ward_usage: Arc<gateway_services::WardUsage>,
+    /// New message store (T11 — writes route here via BatchWriter).
+    pub messages: Arc<dyn zbot_conversation::MessageStore>,
+    /// Versioned checkpoints (T11 — written at each turn boundary).
+    pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
 
     // --- Optional integrations ---
     pub connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
@@ -199,6 +208,8 @@ pub(super) struct ContinuationArgs<'a> {
     pub(super) skill_service: Arc<gateway_services::SkillService>,
     pub(super) paths: SharedVaultPaths,
     pub(super) conversation_repo: Arc<ConversationRepository>,
+    pub(super) messages: Arc<dyn zbot_conversation::MessageStore>,
+    pub(super) checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub(super) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     pub(super) delegation_registry: Arc<DelegationRegistry>,
     pub(super) delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
@@ -424,6 +435,8 @@ impl ExecutionRunner {
             procedure_recommendation_cfg,
             max_parallel_agents,
             ward_usage,
+            messages,
+            checkpoints,
         } = config;
 
         // Create channel for delegation requests
@@ -485,6 +498,8 @@ impl ExecutionRunner {
             paths,
             handles,
             conversation_repo,
+            messages,
+            checkpoints,
             delegation_registry,
             delegation_tx,
             log_service,
@@ -667,6 +682,8 @@ impl ExecutionRunner {
             paths: self.paths.clone(),
             handles: self.handles.clone(),
             conversation_repo: self.conversation_repo.clone(),
+            messages: self.messages.clone(),
+            checkpoints: self.checkpoints.clone(),
             delegation_registry: self.delegation_registry.clone(),
             delegation_tx: self.delegation_tx.clone(),
             log_service: self.log_service.clone(),
@@ -702,6 +719,8 @@ impl ExecutionRunner {
             skill_service: self.skill_service.clone(),
             paths: self.paths.clone(),
             conversation_repo: self.conversation_repo.clone(),
+            messages: self.messages.clone(),
+            checkpoints: self.checkpoints.clone(),
             handles: self.handles.clone(),
             delegation_registry: self.delegation_registry.clone(),
             delegation_tx: self.delegation_tx.clone(),
@@ -785,6 +804,8 @@ impl ExecutionRunner {
             state_service: self.state_service.clone(),
             log_service: self.log_service.clone(),
             conversation_repo: self.conversation_repo.clone(),
+            messages: self.messages.clone(),
+            checkpoints: self.checkpoints.clone(),
             delegation_tx: self.delegation_tx.clone(),
             delegation_registry: self.delegation_registry.clone(),
             handles: self.handles.clone(),
@@ -1009,6 +1030,8 @@ impl ExecutionRunner {
             self.skill_service.clone(),
             self.paths.clone(),
             self.conversation_repo.clone(),
+            self.messages.clone(),
+            self.checkpoints.clone(),
             self.handles.clone(),
             self.delegation_registry.clone(),
             self.delegation_tx.clone(),
@@ -1189,6 +1212,8 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         skill_service,
         paths,
         conversation_repo,
+        messages,
+        checkpoints,
         handles,
         delegation_registry: _delegation_registry,
         delegation_tx,
@@ -1373,12 +1398,14 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     let agent_id_clone = root_agent_id.to_string();
 
     tokio::spawn(async move {
-        // Create batch writer for non-blocking DB writes (with conversation repo for session messages)
+        // Create batch writer for non-blocking DB writes (message writes route
+        // through MessageStore; conversation_repo stays as fallback).
         let batch_writer = spawn_batch_writer_with_traces(
             state_service.clone(),
             log_service.clone(),
             Some(conversation_repo.clone()),
             paths.traces_dir(),
+            Some(messages.clone()),
         );
 
         let stream_ctx = StreamContext::new(
@@ -1553,6 +1580,18 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
             );
         }
 
+        // Turn-boundary checkpoint — write a versioned snapshot of the
+        // agent's context state so session_state can read it in O(1)
+        // (T12) instead of replaying execution_logs.
+        write_turn_checkpoint(
+            &checkpoints,
+            &state_service,
+            &execution_id,
+            &session_id_clone,
+            handle.current_iteration(),
+            &accumulated_response,
+        );
+
         match result {
             Ok(()) => {
                 // Check if this continuation spawned new delegations
@@ -1691,6 +1730,68 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     });
 
     Ok(())
+}
+
+// ============================================================================
+// TURN-BOUNDARY CHECKPOINT (T11)
+// ============================================================================
+
+/// Write a versioned `Checkpoint` at the turn boundary — the point where the
+/// assistant's final/respond turn completes. `context_state` captures a
+/// best-effort snapshot of the agent's mutable context so `session_state`
+/// can read it in O(1) (T12) instead of replaying `execution_logs`.
+///
+/// Fields not yet sourced (`intent`, `plan`, `recalled_facts`, `model`,
+/// `subagents`, `title`) are `null` — they're populated in a follow-up slice
+/// once the in-memory runtime state is threaded to this call site. The
+/// important invariant today: one `checkpoints` row per turn with `llm_turn`,
+/// `last_message_id`, and a `context_state` JSON blob.
+pub(crate) fn write_turn_checkpoint(
+    checkpoints: &Arc<dyn zbot_conversation::CheckpointStore>,
+    state_service: &StateService<DatabaseManager>,
+    execution_id: &str,
+    session_id: &str,
+    llm_turn: u32,
+    response: &str,
+) {
+    let ward = state_service
+        .get_session(session_id)
+        .ok()
+        .flatten()
+        .and_then(|s| s.ward_id);
+
+    let context_state = serde_json::json!({
+        "intent": null,
+        "ward": ward,
+        "plan": null,
+        "recalled_facts": null,
+        "response": response,
+        "title": null,
+        "model": null,
+        "subagents": null,
+    })
+    .to_string();
+
+    let checkpoint = zbot_conversation::Checkpoint {
+        id: uuid::Uuid::now_v7().to_string(),
+        execution_id: execution_id.to_string(),
+        session_id: session_id.to_string(),
+        llm_turn,
+        last_message_id: String::new(),
+        pending_tool_calls: None,
+        context_state: Some(context_state),
+        child_executions: None,
+        schema_version: 1,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    if let Err(e) = checkpoints.write(&checkpoint) {
+        tracing::warn!(
+            execution_id = %execution_id,
+            session_id = %session_id,
+            "Turn-boundary checkpoint write failed: {e}"
+        );
+    }
 }
 
 // ============================================================================

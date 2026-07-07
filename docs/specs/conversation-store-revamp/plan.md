@@ -80,7 +80,7 @@ schema_version, created_at) + `idx_checkpoints_exec_turn`.
 ### Interfaces & contracts
 
 `MessageStore { append(&self,&Message), replay(session_id, after_seq, limit),
-tool_sequence_for_session(session_id), next_seq_is_internal }`,
+tool_sequence_for_session(session_id) }` (`seq` is assigned atomically inside `append`; no separate `next_seq` API),
 `CheckpointStore { write(&self,&Checkpoint), latest(execution_id) }`,
 `SlimLogStore { append, query }`, `TraceWriter { open_confined, append, flush,
 close }`, `TraceAnalytics { open, sessions_with_failed_tool(tool), query }`.
@@ -110,8 +110,7 @@ Payload routing:
 | Turn boundary | — | — | `CheckpointStore::write(context_state)` |
 | Delegation result | role=system | — | TraceEvent(delegation) |
 
-`context_state` JSON schema (written at turn boundary, T11): `{intent, ward,
-plan, recalled_facts, response, title, model, subagents}`.
+`context_state` JSON schema, written at the **turn boundary** — the point where the assistant's final/respond turn completes (stream-end flush in `execution_stream.rs`, mirrored in `runner/core.rs:1400-1552`). Snapshot fields and their write-time source: `ward` ← `session.ward_id`; `plan` ← in-memory plan tracker; `intent` ← the `Intent` execution_log row / in-memory intent; `response` ← the respond tool call's args in `messages.tool_calls`; `title` ← session title; `model` ← model in use; `recalled_facts`/`subagents` ← in-memory runtime state. Message-derived fields (`user_message`, `token_count`) are **not** in the snapshot — T12 reads them via `MessageStore::replay`.
 
 ### Failure, edge cases & resilience
 
@@ -208,7 +207,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Tests:** seed 2 `.jsonl.zst` via `TraceWriter` (one with a `tool_result` error for `read_file`); `sessions_with_failed_tool("read_file")` returns 1 session; **`traces_dir` with spaces works**; an **8 MB line is skipped+counted, not abort** (AC: cross-session query, DoS bound).
 
-**Approach:** `src/analytics.rs` — `TraceAnalytics::open(traces_dir)` holding an in-memory `duckdb::Connection`; `sessions_with_failed_tool(tool)` uses a **prepared statement with `$1` bind** for `tool` (no `format!`). Set `read_json_auto` options to the form tests confirm; enforce per-line cap (8 MB) + per-query file-count cap, skip+count oversized. `tests/analytics.rs`. **De-risk gate:** `cargo build -p zbot-trace` must succeed (the one cross-compile risk).
+**Approach:** `src/analytics.rs` — `TraceAnalytics::open(traces_dir)` holding an in-memory `duckdb::Connection`; `sessions_with_failed_tool(tool)` uses a **prepared statement with `$1` bind** for `tool` (no `format!`). Set `read_json_auto` options to the form tests confirm; enforce per-line cap (8 MB) + per-query file-count cap (256), skip+count oversized. `tests/analytics.rs`. **De-risk gate:** `cargo build -p zbot-trace` must succeed (the one cross-compile risk).
 
 **Done when:** tests green; `cargo build -p zbot-trace` succeeds; `cargo check --workspace` clean.
 
@@ -244,7 +243,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Tests:** after one conversation: `execution_logs.metadata` has **no** `args`/`result` (CLI assert); `.jsonl.zst` has them; a `checkpoints` row per turn with populated `context_state`; `GET /api/logs/sessions/:id` returns non-empty plan/ward (smoke after T11 gates T12).
 
-**Approach:** `event_logging.rs` — `metadata` = retained key set only: `{tool_name, tool_id}` for tool_call, `{tool_name, tool_id, error, blocked_by_hook}` for tool_result; delete the 500/1000-char truncation; keep signatures. `stream_event_processor.rs` — alongside each `log_*`, push a `TraceEvent` (full payload). `execution_stream.rs`/`core.rs:1400-1552` — write messages via `MessageStore::append` (seq auto-assigned; `msg-` id); at **turn boundary** call `CheckpointStore::write` with `context_state` = `{intent, ward, plan, recalled_facts, response, title, model, subagents}` snapshot. `delegation/callback.rs:238` — system message via `MessageStore` + delegation TraceEvent. Delete `conversations.db`, run one conversation, verify.
+**Approach:** `event_logging.rs` — `metadata` = retained key set only: `{tool_name, tool_id}` for tool_call, `{tool_name, tool_id, error, blocked_by_hook}` for tool_result; delete the 500/1000-char truncation; keep signatures. `stream_event_processor.rs` — alongside each `log_*`, push a `TraceEvent` (full payload). `execution_stream.rs`/`core.rs:1400-1552` — write messages via `MessageStore::append` (seq auto-assigned; `msg-` id); at the **turn boundary** (assistant final/respond turn completes — the stream-end flush in `execution_stream.rs`, mirrored in `core.rs:1400-1552`) call `CheckpointStore::write` with `context_state` per the schema + sources in Design §Behavior & rules. `delegation/callback.rs:238` — system message via `MessageStore` + delegation TraceEvent. Delete `conversations.db`, run one conversation, verify.
 
 **Done when:** post-conversation assertions hold; `cargo check --workspace` clean.
 
@@ -260,17 +259,17 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Done when:** test green; response shape's field set unchanged.
 
-### T13: Rewire read sites (incl. `execution-state` `tool_results`)
+### T13: Eliminate all `ConversationRepository` consumers (concrete holders + trait + read sites)
 
-**Depends on:** T2, T11
+**Depends on:** T2, T4, T11
 
-**Touches:** `gateway/src/http/chat.rs`, `gateway-execution/src/runner/{core.rs,invoke_bootstrap.rs}`, `gateway-execution/src/{distillation.rs,sleep/handoff_writer.rs,sleep/pattern_extractor.rs}`, `services/execution-state/src/repository.rs`
+**Touches:** `gateway/src/services/runtime.rs`, `gateway/gateway-execution/src/tools/wait_agent.rs`, `gateway-execution/src/runner/{continuation_watcher.rs,delegation_dispatcher.rs,core.rs,invoke_bootstrap.rs}`, `gateway-execution/src/invoke/executor.rs`, `gateway-execution/src/{distillation.rs,session_state.rs}`, `gateway-execution/src/sleep/{handoff_writer.rs,pattern_extractor.rs}`, `gateway/src/http/chat.rs`, `services/execution-state/src/repository.rs`
 
-**Tests:** `GET /api/sessions/:id/messages` returns rows via `MessageStore::replay`; `tool_results` wire field `None` (AC: field set unchanged).
+**Tests:** `grep -rn 'ConversationRepository'` finds only the struct/repo definitions (deleted in T16) — no consumer; `GET /api/sessions/:id/messages` returns rows via `MessageStore::replay`; `tool_results` wire field `None`; `extract_user_message`/`sum_token_count` (`session_state.rs`) read via `MessageStore::replay`.
 
-**Approach:** `chat.rs:185` → `messages.replay(..,None,limit)`; map `Message`→`SessionMessageResponse` (`tool_results: None`). `core.rs:1262` + `invoke_bootstrap.rs:480` → `replay(..,200)`. distillation/handoff/pattern_extractor → `replay`/`tool_sequence_for_session`. **`execution-state/repository.rs:1193,1403,1414`**: drop the `tool_results` SELECT/bind/parse; map to `None` (matches chat.rs).
+**Approach:** swap every concrete `Arc<ConversationRepository>` field/param/setter for `Arc<dyn MessageStore>` and adapt method calls (`get_session_conversation`/`get_messages` → `MessageStore::replay`; `tool_sequence_for_session` is now on `MessageStore`, T2). Sites: `runtime.rs:60,104,464`; `wait_agent.rs:13,20,81`; `continuation_watcher.rs:61,106`; `delegation_dispatcher.rs:242,302`; `executor.rs:721,867,1321,1802` (field + `with_conversation_repo` setter + use); `distillation.rs:43,212,362,737,768,1131`; `chat.rs:185`; `core.rs:1262` + `invoke_bootstrap.rs:480`; `handoff_writer.rs`/`pattern_extractor.rs`; `session_state.rs:137,144,266-292` (`extract_user_message`/`sum_token_count` → `MessageStore::replay`). **`execution-state/repository.rs:1193,1403,1414`**: drop the `tool_results` SELECT/bind/parse; map to `None`.
 
-**Done when:** UI history loads; `cargo check --workspace` clean.
+**Done when:** `grep -rn ConversationRepository` finds no consumer (only the soon-deleted definition); UI history loads; `cargo check --workspace` clean.
 
 ### T14: `/api/traces/query` (preset enum + `$1` binds + openapi)
 
@@ -304,7 +303,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Tests:** `grep` finds none of: `ConversationRepository`, legacy `Message` POD, `ConversationStore` trait, gz archiver, replay branch, `agent_executions.checkpoint` column + `AgentExecution.checkpoint` field + `save_execution_checkpoint`, `BatchWrite::SessionMessage` + `conversation_repo` param (AC: no superseded symbols).
 
-**Approach:** remove in dependency order (consumers first — T4 already off the trait); `cargo check --workspace` after each (green proves no missed site). Delete: `schema.rs` messages+execution_logs DDL; `repository.rs` `ConversationRepository` + methods; `zbot-stores-traits/conversation.rs` `ConversationStore`; `zbot-stores-domain/message.rs` `Message`; `execution-state/types.rs` `Checkpoint` + the `agent_executions.checkpoint` column (`schema.rs:436`) + `AgentExecution.checkpoint` field + `save_execution_checkpoint` (`repository.rs:981`/`service.rs:573`); `archiver.rs` (retires the unconfined `<session_id>.jsonl.gz` path — security delta); `session_state.rs` replay branch; `batch_writer.rs` `BatchWrite::SessionMessage` + `conversation_repo` param + flush branch; `services/api-logs` truncation; `state/mod.rs` old `conversations` field + 3 construction lines.
+**Approach:** remove in dependency order (consumers first — T4 already off the trait); `cargo check --workspace` after each (green proves no missed site). Delete: `schema.rs` messages+execution_logs DDL; `repository.rs` `ConversationRepository` + methods; `zbot-stores-traits/conversation.rs` `ConversationStore`; `zbot-stores-domain/message.rs` `Message`; `execution-state/types.rs` `Checkpoint` + the `agent_executions.checkpoint` column and **all** its touch-sites — CREATE TABLE `service.rs:893`, column def `schema.rs:436`, SELECT/INSERT/parse at `repository.rs:344,758,774,797,817,884,981,1024,1286,1300`, `AgentExecution.checkpoint` field, and `save_execution_checkpoint` (`repository.rs:981`/`service.rs:573`). T13 already removed every consumer, so these are orphaned definitions — delete in one coordinated commit; `archiver.rs` (retires the unconfined `<session_id>.jsonl.gz` path — security delta); `session_state.rs` replay branch; `batch_writer.rs` `BatchWrite::SessionMessage` + `conversation_repo` param + flush branch; `services/api-logs` truncation; `state/mod.rs` old `conversations` field + 3 construction lines.
 
 **Done when:** grep clean; `cargo test --workspace` green; `npm run build` green.
 

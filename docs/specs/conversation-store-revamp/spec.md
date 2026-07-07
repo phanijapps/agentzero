@@ -96,7 +96,7 @@ The three-tier guard that keeps an implementing agent inside the lines.
 - [ ] Tool args appear in exactly one SQLite column (`messages.tool_calls`) — never in `execution_logs.metadata`.
 - [ ] Tool result text appears in `messages.content` and the session's `traces/<session_id>.jsonl.zst` — never in `execution_logs.metadata`.
 - [ ] `execution_logs.metadata` carries only the retained display key set `{tool_name, tool_id, error, blocked_by_hook}` — no `args`/`result` payloads; the dual 500/1000-char truncation is gone.
-- [ ] A session's state is returned by a single `checkpoints` lookup (O(1)); `context_state` is **written** at each turn boundary with schema `{intent, ward, plan, recalled_facts, response, title, model, subagents}` and read back into `SessionState` (equivalent to a replay).
+- [ ] The state *snapshot* (`intent, ward, plan, recalled_facts, response, title, model, subagents`) is returned by a single `checkpoints` lookup — no replay of `execution_logs.metadata.args/result`; `context_state` is **written** at each turn boundary. Message-derived fields (`user_message`, `token_count`) read via `MessageStore::replay`; session meta and child-session enumeration still read via `log_service` (so assembly is 1 + N lookups for N subagents, not strictly O(1)).
 - [ ] `GET /api/sessions/:id/messages` and `/api/logs` DTO **field sets** are unchanged; `tool_results` wire field is present (value `None`); `metadata` values intentionally shrink per AC#3 — UI tests updated to the slim shape.
 - [ ] `messages.id` keeps the existing `msg-<uuid>` wire shape (no bare-UUID change on the message route).
 - [ ] `messages.seq` is assigned atomically (server-side, no `next_seq`-then-`append` TOCTOU); a 2×100 concurrent-append test yields 200 distinct, ordered seqs.
@@ -105,14 +105,14 @@ The three-tier guard that keeps an implementing agent inside the lines.
 - [ ] `POST /api/traces/query` accepts `{ preset: enum, params }`, matches `preset` against a fixed `match` (400 on unknown), and `TraceAnalytics` parameterizes all filters via DuckDB `$1` binds — no `format!`/concat SQL in `zbot-trace` (grep-enforced).
 - [ ] `VaultPaths::traces_dir()` returns `data_dir.join("traces")` and is a member of `ensure_dirs_exist()`; the trace writer never creates the directory itself.
 - [ ] `duckdb` and `zstd` are pinned to a reviewed minor in `Cargo.lock`; `cargo audit` (or `cargo deny`) is green for both before merge.
-- [ ] The JSONL reader enforces a per-line decode cap (8 MB) and a per-query file-count cap; oversized lines are skipped with a counter, not abort.
+- [ ] The JSONL reader enforces a per-line decode cap (8 MB) and a per-query file-count cap (256); oversized lines are skipped with a counter, not abort.
 - [ ] No superseded symbols remain: `ConversationRepository`, legacy `Message` POD, `ConversationStore` trait, gz archiver, `session_state` replay branch, `agent_executions.checkpoint` column + `AgentExecution.checkpoint` field + `save_execution_checkpoint`, `BatchWrite::SessionMessage` + the `conversation_repo` param (grep clean).
 - [ ] `cargo check --workspace` and `cargo test --workspace` green; `npm run build` green (UI tests updated).
 - [ ] One real conversation through the daemon produces: `messages` rows (seq-ordered, `msg-` ids), one `checkpoints` row per turn with populated `context_state`, a `traces/<id>.jsonl.zst` with full payloads, slim `execution_logs` — observed end-to-end.
 
 ## Deferred
 
-- [ ] `thread_summaries` / `SummaryStore` (compaction-without-loss context-window assembly) — deferred: <a href="#deferred">see `docs/backlog.md` → Conversation-Store-Revamp</a>. This spec ships the immutable message log + checkpoint; the derived-summary writer/consumer is a follow-up.
+- [ ] `thread_summaries` / `SummaryStore` (compaction-without-loss context-window assembly) — `(deferred: conversation-store-revamp-summary-store)`. This spec ships the immutable message log + checkpoint; the derived-summary writer/consumer is a follow-up.
 
 ## Assumptions
 
@@ -120,7 +120,7 @@ The three-tier guard that keeps an implementing agent inside the lines.
 - Technical: `rusqlite` 0.32 bundled + `r2d2`/`r2d2_sqlite`, WAL pragmas (source: `stores/zbot-stores-sqlite/src/connection.rs:38-52`).
 - Technical: `conversations.db` schema frozen at v22 (source: `stores/zbot-stores-sqlite/src/schema.rs:9`).
 - Technical: a `Checkpoint` struct already exists at `services/execution-state/src/types.rs:667` — promoted, not invented (source: read); its `context_state` field is currently `Value::Null` (populated only by a test) — this spec adds the writer.
-- Technical: `AppState.conversations` is concrete `Arc<ConversationRepository>` (`gateway/src/state/mod.rs:57`); `memory_store: Arc<dyn …>` at `:82` is the trait-DI pattern to copy; 3 construction sites `:842/:942/:1093` (source: read).
+- Technical: `AppState.conversations` is concrete `Arc<ConversationRepository>` (field at `gateway/src/state/mod.rs:57`); `memory_store: Arc<dyn …>` at `:82` is the trait-DI pattern to copy; the concrete repo is constructed at `:237/:396/:894/:2134` and threaded through `executor.rs`, `continuation_watcher.rs`, `delegation_dispatcher.rs`, `wait_agent.rs`, `distillation.rs`, `runtime.rs` (source: read).
 - Technical: `ConversationStore` trait (`stores/zbot-stores-traits/src/conversation.rs:33`) is consumed by 6 sites for `ward_id`/`agent_id`/`tool_sequence_for_session` (source: adversarial-reviewer finding, grep-confirmed) — rewired in this spec.
 - Technical: `gateway-execution/src/archiver.rs:142` constructs `<session_id>.jsonl.gz` without confinement — T16's deletion retires this vector (source: read).
 - Technical: `messages.id` is `format!("msg-{}", Uuid::new_v4())` today (`stores/zbot-stores-sqlite/src/repository.rs:56,148`) — preserved (source: read).

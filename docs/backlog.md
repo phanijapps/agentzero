@@ -117,3 +117,14 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
 - **AC<N> (deferred: <anchor>):** <what's open> — blocked on <X>; unblocked by <Y>.
 
 -->
+
+## conversation-store-revamp-summary-store
+
+- **`SummaryStore` / `thread_summaries` (deferred: conversation-store-revamp-summary-store):**
+  compaction-without-loss context-window assembly — a `SummaryStore` trait +
+  `thread_summaries` table + a writer wired into
+  `runtime/agent-runtime/src/context_management.rs` (where compaction already
+  lives), so context = latest summary + message tail (`seq > as_of_seq`). Blocked
+  on the conversation-store-revamp base (append-only `messages` + `checkpoints`)
+  landing; unblocked by a follow-up spec that adds the summary writer +
+  context-window assembly.

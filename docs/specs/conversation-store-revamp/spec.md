@@ -54,7 +54,7 @@ The three-tier guard that keeps an implementing agent inside the lines.
 
 - Touching `sessions` or `agent_executions` rows/DDL (they stay in
   `zbot-stores-sqlite`; only their *consumers* are rewired).
-- Adding any dependency other than `duckdb` and `zstd`.
+- Adding any dependency other than `duckdb` and `flate2`.
 - Changing the orchestrator's committed plan/goal delivery.
 
 ### Never do
@@ -64,9 +64,9 @@ The three-tier guard that keeps an implementing agent inside the lines.
 - No in-place migration of `zbot-stores-sqlite`. The new crates are built
   alongside; the old conversation/trace code is deleted only at cutover.
 - No co-locating trace payloads in `execution_logs.metadata`. Full tool
-  args/results live in `messages` (replay) and `traces/*.jsonl.zst` (analytics).
+  args/results live in `messages` (replay) and `traces/*.jsonl.gz` (analytics).
 - No full event-sourcing / state-as-projection. State is a versioned snapshot.
-- No new top-level dependency beyond `duckdb` and `zstd`.
+- No new top-level dependency beyond `duckdb` and `flate2`.
 - No `format!`/string-concatenated SQL anywhere in `zbot-conversation` or
   `zbot-trace`.
 
@@ -89,26 +89,26 @@ The three-tier guard that keeps an implementing agent inside the lines.
   that asserts field-set equality, plus updated UI tests for the slim shape.
 - **Cutover + end-to-end — manual QA** through the daemon: one conversation;
   observe messages (seq-ordered, `msg-` ids), a populated checkpoint per turn,
-  `.jsonl.zst` with full payloads, slim `execution_logs`, logs route serving.
+  `.jsonl.gz` with full payloads, slim `execution_logs`, logs route serving.
 
 ## Acceptance Criteria
 
 - [ ] Tool args appear in exactly one SQLite column (`messages.tool_calls`) — never in `execution_logs.metadata`.
-- [ ] Tool result text appears in `messages.content` and the session's `traces/<session_id>.jsonl.zst` — never in `execution_logs.metadata`.
+- [ ] Tool result text appears in `messages.content` and the session's `traces/<session_id>.jsonl.gz` — never in `execution_logs.metadata`.
 - [ ] `execution_logs.metadata` carries only the retained display key set `{tool_name, tool_id, error, blocked_by_hook}` — no `args`/`result` payloads; the dual 500/1000-char truncation is gone.
 - [ ] The state *snapshot* (`intent, ward, plan, recalled_facts, response, title, model, subagents`) is returned by a single `checkpoints` lookup — no replay of `execution_logs.metadata.args/result`; `context_state` is **written** at each turn boundary. Message-derived fields (`user_message`, `token_count`) read via `MessageStore::replay`; session meta and child-session enumeration still read via `log_service` (so assembly is 1 + N lookups for N subagents, not strictly O(1)).
 - [ ] `GET /api/sessions/:id/messages` and `/api/logs` DTO **field sets** are unchanged; `tool_results` wire field is present (value `None`); `metadata` values intentionally shrink per AC#3 — UI tests updated to the slim shape.
 - [ ] `messages.id` keeps the existing `msg-<uuid>` wire shape (no bare-UUID change on the message route).
 - [ ] `messages.seq` is assigned atomically (server-side, no `next_seq`-then-`append` TOCTOU); a 2×100 concurrent-append test yields 200 distinct, ordered seqs.
-- [ ] A `.jsonl.zst` for a session killed mid-turn is valid and decodable up to the last flushed frame.
+- [ ] A `.jsonl.gz` for a session killed mid-turn is valid and decodable up to the last flushed frame.
 - [ ] Trace paths are confined: `session_id` is validated (UUID, or rejected for `/`, `..`, NUL, drive-prefix), joined under `VaultPaths::traces_dir()`, canonicalized before open, escapes rejected (`docs/architecture/security.md` §Path Confinement).
 - [ ] `POST /api/traces/query` accepts `{ preset: enum, params }`, matches `preset` against a fixed `match` (400 on unknown), and `TraceAnalytics` parameterizes all filters via DuckDB `$1` binds — no `format!`/concat SQL in `zbot-trace` (grep-enforced).
 - [ ] `VaultPaths::traces_dir()` returns `data_dir.join("traces")` and is a member of `ensure_dirs_exist()`; the trace writer never creates the directory itself.
-- [ ] `duckdb` and `zstd` are pinned to a reviewed minor in `Cargo.lock`; `cargo audit` (or `cargo deny`) is green for both before merge.
+- [ ] `duckdb` and `flate2` are pinned to a reviewed minor in `Cargo.lock`; `cargo audit` (or `cargo deny`) is green for both before merge.
 - [ ] The JSONL reader enforces a per-line decode cap (8 MB) and a per-query file-count cap (256); oversized lines are skipped with a counter, not abort.
 - [ ] No superseded symbols remain: `ConversationRepository`, legacy `Message` POD, `ConversationStore` trait, gz archiver, `session_state` replay branch, `agent_executions.checkpoint` column + `AgentExecution.checkpoint` field + `save_execution_checkpoint`, `BatchWrite::SessionMessage` + the `conversation_repo` param (grep clean).
 - [ ] `cargo check --workspace` and `cargo test --workspace` green; `npm run build` green (UI tests updated).
-- [ ] One real conversation through the daemon produces: `messages` rows (seq-ordered, `msg-` ids), one `checkpoints` row per turn with populated `context_state`, a `traces/<id>.jsonl.zst` with full payloads, slim `execution_logs` — observed end-to-end.
+- [ ] One real conversation through the daemon produces: `messages` rows (seq-ordered, `msg-` ids), one `checkpoints` row per turn with populated `context_state`, a `traces/<id>.jsonl.gz` with full payloads, slim `execution_logs` — observed end-to-end.
 
 ## Deferred
 

@@ -12,7 +12,7 @@ Build two new self-contained crates alongside the old code, flip consumers to
 them, then delete the dead old code. Four phases: (1) `stores/zbot-conversation`
 — messages + checkpoints behind narrow traits (and rewire the legacy
 `ConversationStore` consumers); (2) `stores/zbot-trace` — slim `execution_logs`
-+ confined streamed `.jsonl.zst` + DuckDB analytics with `$1` binds; (3)
++ confined streamed `.jsonl.gz` + DuckDB analytics with `$1` binds; (3)
 cutover — rewire `AppState`, `BatchWriter`, the dual write sites (incl. the
 `context_state` checkpoint writer), `session_state`, and read sites; add
 `/api/traces/query`; (4) delete all superseded code. Clean cutover (old
@@ -25,7 +25,7 @@ this plan.
 ## Constraints
 
 - Two new crates only: `stores/zbot-conversation`, `stores/zbot-trace`. New deps
-  limited to `duckdb` (pinned minor), `zstd` (pinned minor). No god-class facades.
+  limited to `duckdb` (pinned minor), `flate2` (pinned, gzip). No god-class facades.
 - `sessions`/`agent_executions`/`artifacts`/`distillation_runs`/`recall_log`/
   `bridge_outbox` stay in `zbot-stores-sqlite; only their *consumers* rewire.
 - HTTP routes + DTO *field sets* frozen. `tool_results` wire field stays (`None`);
@@ -53,7 +53,7 @@ Per-task `Tests:` below. Cross-cutting:
 - Slim by writer-discipline (`execution_logs` columns unchanged; writers emit
   only `{tool_name, tool_id, error, blocked_by_hook}`). Rejected: file-only trace
   (`B2`); deferred DuckDB (`B3`).
-- JSONL-zstd per session + DuckDB `$1`-bound reader. Rejected: live Parquet.
+- JSONL-gzip per session + DuckDB `$1`-bound reader. Rejected: live Parquet; zstd (DuckDB can't read it without the `parquet` extension — a network `INSTALL`, unsuitable for desktop — so gzip, which DuckDB reads natively).
 - Promote the existing `Checkpoint`; add a real `context_state` writer at turn
   boundaries; `session_state` switches replay→O(1). Rejected: parallel system;
   full event-sourcing.
@@ -102,7 +102,7 @@ Public contract: `POST /api/traces/query { preset: enum<{sessions_with_failed_to
 
 Payload routing:
 
-| Event | `messages` | `execution_logs.metadata` | trace `.jsonl.zst` |
+| Event | `messages` | `execution_logs.metadata` | trace `.jsonl.gz` |
 |---|---|---|---|
 | User input | role=user (`msg-` id) | — | TraceEvent(session) |
 | ToolCallStart | role=assistant w/ tool_calls | `{tool_name, tool_id}` | TraceEvent(tool_call, payload=args) |
@@ -114,8 +114,10 @@ Payload routing:
 
 ### Failure, edge cases & resilience
 
-- `TraceWriter`: one zstd frame per flush → crash leaves a valid, decodable file
-  to the last frame. Path confined (AC#9).
+- `TraceWriter`: one complete gzip member per event (`flate2::write::GzEncoder` +
+  `finish`) → every append is durable immediately; a crash leaves all prior
+  complete members recoverable (tolerant reader skips the truncated tail). Path
+  confined (AC#9).
 - `seq` atomic server-side → no concurrent-collision.
 - Shared pool + WAL `busy_timeout` → cross-store writes serialized.
 - DuckDB `$1` binds + 8 MB/line + file-count caps → no injection, no memory blowup.
@@ -177,7 +179,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Tests:** schema initializes `execution_logs` + 3 indexes (goal-based).
 
-**Approach:** add `"stores/zbot-trace",` to `members`. `Cargo.toml` (same as T1 + `zstd = "<pinned minor>"`, `duckdb = { version = "<pinned minor>", features = ["bundled"] }`, `tracing`). `src/domain.rs` — `SlimLog`, `TraceEvent` (OTel-genai fields, `skip_serializing_if Option::is_none`). `src/schema.rs` — `execution_logs` DDL (unchanged) + indexes. `src/pool.rs` — `open_trace_pool(path)`. `tests/schema.rs`. Pin `duckdb`/`zstd` to specific reviewed minors in `Cargo.lock`; run `cargo audit`/`cargo deny` (AC#12).
+**Approach:** add `"stores/zbot-trace",` to `members`. `Cargo.toml` (same as T1 + `flate2 = "1"`, `duckdb = { version = "<pinned minor>", features = ["bundled"] }`, `tracing`). `src/domain.rs` — `SlimLog`, `TraceEvent` (OTel-genai fields, `skip_serializing_if Option::is_none`). `src/schema.rs` — `execution_logs` DDL (unchanged) + indexes. `src/pool.rs` — `open_trace_pool(path)`. `tests/schema.rs`. Pin `duckdb`/`flate2` in `Cargo.lock`; run `cargo audit`/`cargo deny` (AC#12).
 
 **Done when:** `cargo test -p zbot-trace --test schema` green; `cargo check --workspace` clean; audit green.
 
@@ -191,13 +193,13 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Done when:** `cargo test -p zbot-trace --test slim_logs` green.
 
-### T7: `TraceWriter` (confined streaming `.jsonl.zst`)
+### T7: `TraceWriter` (confined streaming `.jsonl.gz`)
 
 **Depends on:** T5
 
 **Tests:** append a,b,flush,append c,close → decodes to 3 lines; crash (drop without close after an unflushed append) → decodes to the flushed prefix only; **hostile `session_id` (`../x`, `a/b`, NUL, `C:\`) is rejected** (AC: confinement + crash-safety).
 
-**Approach:** `src/writer.rs` — `TraceWriter::open_confined(traces_dir, session_id)`: validate `session_id` (UUID or reject `/`,`..`,NUL,drive-prefix), `let path = traces_dir.join(format!("{session_id}.jsonl.zst"))`, `canonicalize(traces_dir)` and assert `path.canonicalize()` starts_with it before open (per `docs/architecture/security.md` §Path Confinement). `append` writes JSON+`\n` into a `zstd::stream::write::Encoder`; `flush` flushes the frame; `close` finishes. `tests/writer.rs` + a `read_zstd_lines` helper.
+**Approach:** `src/writer.rs` — `TraceWriter::open_confined(traces_dir, session_id)`: validate `session_id` (UUID or reject `/`,`..`,NUL,drive-prefix), `let path = traces_dir.join(format!("{session_id}.jsonl.gz"))`, `canonicalize(traces_dir)` and assert `path.canonicalize()` starts_with it before open (per `docs/architecture/security.md` §Path Confinement). `append` writes JSON+`\n` as one complete gzip member via `flate2::write::GzEncoder` + `finish()`; `flush`/`close` flush the OS file. `tests/writer.rs` + a `read_gz_lines` helper (multi-member decode, truncation-tolerant).
 
 **Done when:** `cargo test -p zbot-trace --test writer` green (all three).
 
@@ -205,7 +207,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Depends on:** T5, T7
 
-**Tests:** seed 2 `.jsonl.zst` via `TraceWriter` (one with a `tool_result` error for `read_file`); `sessions_with_failed_tool("read_file")` returns 1 session; **`traces_dir` with spaces works**; an **8 MB line is skipped+counted, not abort** (AC: cross-session query, DoS bound).
+**Tests:** seed 2 `.jsonl.gz` via `TraceWriter` (one with a `tool_result` error for `read_file`); `sessions_with_failed_tool("read_file")` returns 1 session; **`traces_dir` with spaces works**; an **8 MB line is skipped+counted, not abort** (AC: cross-session query, DoS bound).
 
 **Approach:** `src/analytics.rs` — `TraceAnalytics::open(traces_dir)` holding an in-memory `duckdb::Connection`; `sessions_with_failed_tool(tool)` uses a **prepared statement with `$1` bind** for `tool` (no `format!`). Set `read_json_auto` options to the form tests confirm; enforce per-line cap (8 MB) + per-query file-count cap (256), skip+count oversized. `tests/analytics.rs`. **De-risk gate:** `cargo build -p zbot-trace` must succeed (the one cross-compile risk).
 
@@ -229,7 +231,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Touches:** `gateway-execution/src/invoke/batch_writer.rs`, `gateway-execution/src/lifecycle.rs`
 
-**Tests:** 3 `TraceEvent`s for a session → close → `.jsonl.zst` has 3 lines (integration).
+**Tests:** 3 `TraceEvent`s for a session → close → `.jsonl.gz` has 3 lines (integration).
 
 **Approach:** add `TraceEvent { session_id, event }` to the mpsc type; `HashMap<session_id, TraceWriter>` in the task; 100ms tick also flushes all open writers; `close_session_trace(session_id)` from session-end in `lifecycle.rs`. Writers opened via `TraceWriter::open_confined(traces_dir, session_id)`.
 
@@ -241,7 +243,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Touches:** `gateway-execution/src/invoke/{event_logging.rs,stream_event_processor.rs}`, `gateway-execution/src/runner/{execution_stream.rs,core.rs}`, `gateway-execution/src/delegation/callback.rs`
 
-**Tests:** after one conversation: `execution_logs.metadata` has **no** `args`/`result` (CLI assert); `.jsonl.zst` has them; a `checkpoints` row per turn with populated `context_state`; `GET /api/logs/sessions/:id` returns non-empty plan/ward (smoke after T11 gates T12).
+**Tests:** after one conversation: `execution_logs.metadata` has **no** `args`/`result` (CLI assert); `.jsonl.gz` has them; a `checkpoints` row per turn with populated `context_state`; `GET /api/logs/sessions/:id` returns non-empty plan/ward (smoke after T11 gates T12).
 
 **Approach:** `event_logging.rs` — `metadata` = retained key set only: `{tool_name, tool_id}` for tool_call, `{tool_name, tool_id, error, blocked_by_hook}` for tool_result; delete the 500/1000-char truncation; keep signatures. `stream_event_processor.rs` — alongside each `log_*`, push a `TraceEvent` (full payload). `execution_stream.rs`/`core.rs:1400-1552` — write messages via `MessageStore::append` (seq auto-assigned; `msg-` id); at the **turn boundary** (assistant final/respond turn completes — the stream-end flush in `execution_stream.rs`, mirrored in `core.rs:1400-1552`) call `CheckpointStore::write` with `context_state` per the schema + sources in Design §Behavior & rules. `delegation/callback.rs:238` — system message via `MessageStore` + delegation TraceEvent. Delete `conversations.db`, run one conversation, verify.
 
@@ -277,7 +279,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 
 **Touches:** `gateway/src/http/traces.rs` (new), `gateway/src/http/mod.rs`, `gateway/src/http/openapi.yaml`
 
-**Tests:** seed `.jsonl.zst`; `POST /api/traces/query {preset:"sessions_with_failed_tool", params:{tool:"read_file"}}` returns the sessions; unknown preset → 400 (AC: query + injection-safe).
+**Tests:** seed `.jsonl.gz`; `POST /api/traces/query {preset:"sessions_with_failed_tool", params:{tool:"read_file"}}` returns the sessions; unknown preset → 400 (AC: query + injection-safe).
 
 **Approach:** `traces.rs` — `POST /api/traces/query { preset: Preset, params: Params }`; `match preset` (fixed enum, 400 on unknown); only the matched arm's typed params reach `TraceAnalytics` (`$1`-bound). Mount; extend `openapi.yaml` (hand-authored, note skill absent).
 
@@ -316,7 +318,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
   (security benefit, replaced by the confined writer).
 - **Infrastructure:** `traces/` under the vault data root, via
   `VaultPaths::ensure_dirs_exist()`.
-- **External-system integration:** `duckdb` (bundled, pinned) + `zstd` (pinned);
+- **External-system integration:** `duckdb` (bundled, pinned) + `flate2` (pinned, gzip);
   cross-compile resolved at T8.
 - **Deployment sequencing:** Phase 1–2 compile standalone; Phase 3 flips
   consumers task-by-task with a daemon smoke; Phase 4 deletes only after T4 +
@@ -325,8 +327,7 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 ## Risks
 
 - `duckdb` `bundled` cross-compile (T8 smoke; isolated behind `TraceAnalytics`).
-- zstd frame-per-flush compresses less than one-frame-per-file (acceptable;
-  optional re-compress on close later).
+- gzip members compress slightly worse than a single zstd stream would (acceptable; the analytics-relevant events are large); a periodic re-compress-on-close can tighten the ratio later.
 - `messages` never-deleted → unbounded growth; existing `SessionArchiver` still
   handles archival (now of slim rows) — flagged, not solved.
 - Two near-duplicate runner write loops remain after T11 (emit shape changed
@@ -339,3 +340,4 @@ New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
 - 2026-07-07: initial plan (canonical new-spec format).
 - 2026-07-07: pre-EXECUTE review revisions — deferred `thread_summaries`/`SummaryStore` (was T4); added T4 (rewire `ConversationStore` consumers); atomic `seq` + concurrency test (T2); `context_state` writer at turn boundary (T11) + schema; `latest` by `(llm_turn,created_at)` (T3); trace path confinement (T7); DuckDB `$1` binds + caps (T8); shared pool (T9); retained metadata key set (T11); `execution-state` `tool_results` fix (T13); preset enum + binds (T14); dual-path golden + UI test updates (T15); complete deletion list incl. checkpoint column/field/method + `BatchWrite::SessionMessage` (T16); new ACs for confinement/injection/seq/traces_dir/pinning/caps; resolved AC#3↔#5 contradiction.
 - 2026-07-07 (T7 implemented): `TraceWriter` uses **complete-frame-per-event** (`encode_all` per `append` + `write_all`), not the planned "frame-per-flush". Reason: zstd's streaming `Encoder::flush()` produces a block boundary, not a decodable frame — a writer dropped mid-session read as "incomplete frame". Frame-per-event makes every `append` independently durable (no separate flush needed) and the file a concatenation of decodable frames; a tolerant reader skips a truncated tail. Trade-off: slightly worse compression for tiny/token events (acceptable — the analytics-relevant tool_call/tool_result events are large); a periodic re-compress-on-close can tighten the ratio later.
+- 2026-07-07 (T8 implemented): **trace format pivoted from `.jsonl.zst` to `.jsonl.gz`** (gzip via `flate2`). DuckDB cannot decompress zstd without `INSTALL parquet; LOAD parquet;` (a network fetch — unsuitable for a desktop app); gzip is DuckDB-native. The DuckDB de-risk gate passed (duckdb-rs `bundled` compiles on this host; `read_json_auto` reads `.jsonl.gz` natively; `$1`-bound `sessions_with_failed_tool` works). `zstd` dep replaced by `flate2` (= `1`). ~6% worse compression than zstd — acceptable.

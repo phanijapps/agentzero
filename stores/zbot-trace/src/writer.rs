@@ -1,36 +1,32 @@
-//! `TraceWriter` — per-session `.jsonl.zst` trace files.
+//! `TraceWriter` — per-session `.jsonl.gz` trace files.
 //!
-//! Each `append` writes **one complete zstd frame** (`encode_all` + `write_all`),
-//! so the file is a concatenation of independently-decodable frames: every
-//! appended event is durable immediately (no separate flush needed), and a
-//! crash mid-write leaves all prior complete frames recoverable — the truncated
-//! tail frame is skipped by a tolerant reader. Paths are confined under
+//! Each `append` writes **one complete gzip member** (`GzEncoder` + `finish`),
+//! so the file is a multi-member gzip stream: every appended event is durable
+//! immediately, and a crash mid-write leaves all prior complete members
+//! recoverable (a tolerant reader skips the truncated trailing member). DuckDB
+//! reads `.jsonl.gz` natively (zstd would require the `parquet` extension — a
+//! network `INSTALL`, unsuitable for a desktop app). Paths are confined under
 //! `traces_dir` (per `docs/architecture/security.md` §Path Confinement).
-//!
-//! Trade-off: per-event frames compress small/token events less densely than a
-//! single streamed frame would. Acceptable now (the analytics-relevant events —
-//! tool_call/tool_result — are large); a periodic re-compress-on-close can
-//! tighten the ratio later.
 
 use crate::domain::TraceEvent;
 use anyhow::{Context, Result};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use std::io::Write;
 use std::path::Path;
-
-const ZSTD_LEVEL: i32 = 3;
 
 pub struct TraceWriter {
     file: std::fs::File,
 }
 
 impl TraceWriter {
-    /// Open (or append to) `<traces_dir>/<session_id>.jsonl.zst`, confined.
+    /// Open (or append to) `<traces_dir>/<session_id>.jsonl.gz`, confined.
     pub fn open_confined(traces_dir: &Path, session_id: &str) -> Result<Self> {
         validate_session_id(session_id)?;
         let root = traces_dir
             .canonicalize()
             .with_context(|| format!("traces_dir {} does not exist", traces_dir.display()))?;
-        let path = root.join(format!("{session_id}.jsonl.zst"));
+        let path = root.join(format!("{session_id}.jsonl.gz"));
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -39,17 +35,17 @@ impl TraceWriter {
         Ok(Self { file })
     }
 
-    /// Append one event as a self-contained zstd frame (JSON line).
+    /// Append one event as a self-contained gzip member (one JSON line).
     pub fn append(&mut self, event: &TraceEvent) -> Result<()> {
         let mut bytes = serde_json::to_vec(event)?;
         bytes.push(b'\n');
-        let frame = zstd::encode_all(bytes.as_slice(), ZSTD_LEVEL)?;
-        self.file.write_all(&frame)?;
+        let mut enc = GzEncoder::new(&mut self.file, Compression::default());
+        enc.write_all(&bytes)?;
+        enc.finish()?; // completes the gzip member, flushed to the file
         Ok(())
     }
 
-    /// Flush the OS file buffer (each event is already a complete frame on
-    /// disk; this only matters for OS-level durability ordering).
+    /// Flush the OS file buffer (each event is already a complete member).
     pub fn flush(&mut self) -> Result<()> {
         self.file.flush()?;
         Ok(())

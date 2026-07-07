@@ -2,12 +2,14 @@
 //! streamed per-session `.jsonl.zst` full-fidelity events, and DuckDB
 //! analytics. See `docs/specs/conversation-store-revamp/spec.md`.
 
+pub mod analytics;
 pub mod domain;
 pub mod schema;
 pub mod slim_logs;
 pub mod writer;
 mod pool;
 
+pub use analytics::TraceAnalytics;
 pub use domain::{SlimLog, TraceEvent};
 pub use pool::open_trace_pool;
 pub use slim_logs::{SlimLogStore, SqliteSlimLogStore};

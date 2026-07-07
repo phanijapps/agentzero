@@ -1,7 +1,7 @@
 # Plan: Conversation Store Revamp
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Drafting
+- **Status:** Executing
 
 > **Plan contract:** implementation strategy. Changes as we learn; substantial
 > changes noted in the changelog at the bottom.

@@ -4,7 +4,9 @@
 
 pub mod domain;
 pub mod schema;
+pub mod slim_logs;
 mod pool;
 
 pub use domain::{SlimLog, TraceEvent};
 pub use pool::open_trace_pool;
+pub use slim_logs::{SlimLogStore, SqliteSlimLogStore};

@@ -3,147 +3,130 @@
 - **Spec:** [`spec.md`](spec.md)
 - **Status:** Drafting
 
-> **Plan contract:** this is the implementation strategy. Unlike the spec, this
-> document is allowed to change as you learn. When it changes substantially
-> (a different approach, not just a re-ordering), note why in the changelog
-> at the bottom.
+> **Plan contract:** implementation strategy. Changes as we learn; substantial
+> changes noted in the changelog at the bottom.
 
 ## Approach
 
 Build two new self-contained crates alongside the old code, flip consumers to
 them, then delete the dead old code. Four phases: (1) `stores/zbot-conversation`
-— messages/checkpoints/thread_summaries behind narrow traits; (2)
-`stores/zbot-trace` — slim `execution_logs` + streamed `.jsonl.zst` + DuckDB
-analytics; (3) cutover — rewire `AppState`, `BatchWriter`, the dual write sites,
-`session_state`, and the read sites; add `/api/traces/query`; (4) delete all
-superseded code. Clean cutover (old `conversations.db` deleted, not prod) — no
-migration/backfill. The riskiest part is Phase 3 (live read/write paths across
-~15 files); it is done one task per commit with a daemon smoke after each.
+— messages + checkpoints behind narrow traits (and rewire the legacy
+`ConversationStore` consumers); (2) `stores/zbot-trace` — slim `execution_logs`
++ confined streamed `.jsonl.zst` + DuckDB analytics with `$1` binds; (3)
+cutover — rewire `AppState`, `BatchWriter`, the dual write sites (incl. the
+`context_state` checkpoint writer), `session_state`, and read sites; add
+`/api/traces/query`; (4) delete all superseded code. Clean cutover (old
+`conversations.db` deleted, not prod) — no migration/backfill. Riskiest part:
+Phase 3 (live read/write paths); one task per commit + a daemon smoke after each.
 
-Each consumer reads exactly one store (dedup principle): LLM replay →
-`messages`; live logs UI → slim `execution_logs`; session detail/resume →
-`checkpoints`; cross-session analytics → DuckDB over `traces/`; compacted context
-→ latest `thread_summaries` + message tail.
+`thread_summaries` / `SummaryStore` is **deferred** (spec §Deferred) — not in
+this plan.
 
 ## Constraints
 
 - Two new crates only: `stores/zbot-conversation`, `stores/zbot-trace`. New deps
-  limited to `duckdb` and `zstd`. No god-class facades.
+  limited to `duckdb` (pinned minor), `zstd` (pinned minor). No god-class facades.
 - `sessions`/`agent_executions`/`artifacts`/`distillation_runs`/`recall_log`/
-  `bridge_outbox` stay in `zbot-stores-sqlite`, untouched.
-- UI/API contracts frozen (DTOs unchanged; `tool_results` wire field stays,
-  mapped to `None`).
-- Each new crate opens its own `r2d2` pool to `conversations.db` (WAL +
-  `busy_timeout`); it does **not** depend on `DatabaseManager`.
-- `rusqlite = "0.32"` with `["bundled"]` in both crates (unified sqlite link).
-- `Uuid::now_v7()` for monotonic ids (add `features = ["v7"]` to workspace
-  `uuid`).
+  `bridge_outbox` stay in `zbot-stores-sqlite; only their *consumers* rewire.
+- HTTP routes + DTO *field sets* frozen. `tool_results` wire field stays (`None`);
+  `execution_logs.metadata` values intentionally shrink (AC#3).
+- The new stores share **one** `r2d2` pool, constructed in the gateway from the
+  `conversations.db` path (not 3 pools; not depending on `DatabaseManager`).
+- `rusqlite = "0.32"` with `["bundled"]`; `Uuid` (keep `msg-` prefix for
+  messages; `now_v7()` only for internal checkpoint/trace ids).
+- Path confinement (spec AC#9) + parameterized SQL everywhere (spec AC#10).
 
 ## Construction tests
 
-Most construction tests live under **Tasks** below (per-task `Tests:`). Cross-cutting:
-
-- **Integration:** `session_state` equivalence — seed a session through the new
-  write path, compute state two ways (checkpoint read vs. an independent replay
-  of messages), assert equal. Golden snapshot of `GET /api/sessions/:id/messages`
-  + `/api/logs` shapes before/after cutover.
-- **Manual verification:** one conversation run through the daemon — observe
-  messages/checkpoints/trace file/slim logs/logs UI end-to-end.
+Per-task `Tests:` below. Cross-cutting:
+- **Integration:** `context_state` round-trip (write at turn boundary, read via
+  `latest`, assert == replay-derived `SessionState`). Dual-path golden test (old
+  `ConversationRepository` vs new stores, same seed) asserting DTO field-set
+  equality + the slim metadata shape.
+- **Manual verification:** one conversation through the daemon end-to-end.
 
 ## Design (LLD)
 
 ### Design decisions
 
-- **Two crates, narrow traits, no facade** — each store is one trait + one impl.
-  Rejected: a single `ConversationStore`/`TraceStore` mega-trait (god class).
-  Rejected: extending the old `ConversationRepository` (in-place migration).
-- **Slim by writer-discipline, not schema change** — `execution_logs` keeps its
-  columns; writers stop emitting payloads into `metadata`. Keeps `/api/logs`
-  untouched. Rejected: dropping `execution_logs` from SQLite (would force the
-  logs UI onto DuckDB — `B2`).
-- **JSONL-zstd per session + DuckDB reader** — Parquet can't append after
-  writer-close, so it is export-only; nobody writes live traces as Parquet.
-  Rejected: live Parquet; deferred DuckDB (`B3`).
-- **Promote the existing `Checkpoint`** to a versioned table; `session_state`
-  switches replay→O(1) read. Rejected: inventing a parallel checkpoint system;
-  full event-sourcing (Temporal-style).
-- **Clean cutover, delete old DB** — not prod. Rejected: backfill (`M1`),
-  cutover-with-migration (`M3`).
+- Two crates, narrow traits, no facade. Rejected: mega-trait; in-place migration.
+- Slim by writer-discipline (`execution_logs` columns unchanged; writers emit
+  only `{tool_name, tool_id, error, blocked_by_hook}`). Rejected: file-only trace
+  (`B2`); deferred DuckDB (`B3`).
+- JSONL-zstd per session + DuckDB `$1`-bound reader. Rejected: live Parquet.
+- Promote the existing `Checkpoint`; add a real `context_state` writer at turn
+  boundaries; `session_state` switches replay→O(1). Rejected: parallel system;
+  full event-sourcing.
+- Clean cutover, delete old DB. Rejected: backfill; cutover-with-migration.
+- `latest` checkpoint by `(llm_turn DESC, created_at DESC)` — not UUIDv7
+  monotonicity (fragile within a millisecond).
+- `seq` assigned atomically server-side inside the INSERT — no
+  `next_seq`-then-`append` TOCTOU.
+- Shared pool for the new stores — not per-crate duplication.
 
-Traces to: ACs (args/result single-column, O(1) state, slim logs, crash-safe
-trace, cross-session query, contracts unchanged) · `gateway/src/http/openapi.yaml`.
+Traces to: ACs · `gateway/src/http/openapi.yaml`.
 
 ### Data & schema
 
-`zbot-conversation` v1: `messages` (id, execution_id, session_id, role, content,
-created_at, token_count, tool_calls, tool_call_id, **seq**; legacy `tool_results`
-dropped) + `idx_messages_session_seq`; `checkpoints` (id, execution_id,
-session_id, llm_turn, last_message_id, pending_tool_calls, context_state,
-child_executions, schema_version, created_at) + `idx_checkpoints_exec`;
-`thread_summaries` (id, session_id, as_of_message_id, as_of_seq, summary,
-schema_version, created_at) + `idx_summaries_session`.
+`zbot-conversation` v1: `messages` (id `msg-<uuid>`, execution_id, session_id,
+role, content, created_at, token_count, tool_calls, tool_call_id, **seq**) +
+`idx_messages_session_seq`; `checkpoints` (id, execution_id, session_id,
+llm_turn, last_message_id, pending_tool_calls, **context_state** JSON, child_executions,
+schema_version, created_at) + `idx_checkpoints_exec_turn`.
+(`thread_summaries` removed — deferred.)
 
-`zbot-trace`: `execution_logs` — **columns unchanged** (id, session_id,
-conversation_id, agent_id, parent_session_id, timestamp, level, category,
-message, metadata, duration_ms) + existing indexes.
-
-Traces to: ACs (single-column payloads, O(1) state) · openapi.yaml.
+`zbot-trace`: `execution_logs` — columns unchanged + existing indexes.
 
 ### Interfaces & contracts
 
-Narrow traits (in the crates): `MessageStore { append, replay, next_seq }`,
-`CheckpointStore { write, latest }`, `SummaryStore { write, latest }`,
-`SlimLogStore { append, query }`, `TraceWriter { open, append, flush, close }`,
-`TraceAnalytics { open, sessions_with_failed_tool, query }`. Each `Send + Sync`,
-sync methods, `anyhow::Result`. `AppState` holds them as `Arc<dyn Trait>` (the
-`memory_store` pattern).
+`MessageStore { append(&self,&Message), replay(session_id, after_seq, limit),
+tool_sequence_for_session(session_id), next_seq_is_internal }`,
+`CheckpointStore { write(&self,&Checkpoint), latest(execution_id) }`,
+`SlimLogStore { append, query }`, `TraceWriter { open_confined, append, flush,
+close }`, `TraceAnalytics { open, sessions_with_failed_tool(tool), query }`.
+`AppState` holds `Arc<dyn …>` each (the `memory_store` pattern); the new stores
+share one pool.
 
-Public contract: `POST /api/traces/query` added to
-`gateway/src/http/openapi.yaml` — accepts a preset name + params (no raw
-client SQL; injection-safe), returns JSON rows.
-
-Traces to: ACs (cross-session query, contracts unchanged) · openapi.yaml.
+Public contract: `POST /api/traces/query { preset: enum<{sessions_with_failed_tool}>, params }`
+→ JSON rows; preset matched by `match` (400 unknown); added to
+`gateway/src/http/openapi.yaml` (hand-authored; `api-contract` skill absent — noted).
 
 ### Component / module decomposition
 
-`stores/zbot-conversation/`: `domain.rs` (Message/Checkpoint/ThreadSummary POD),
-`pool.rs` (`open_conversation_pool`), `schema.rs`, `messages.rs`,
-`checkpoints.rs`, `summaries.rs`, `lib.rs` (re-exports only).
-
-`stores/zbot-trace/`: `domain.rs` (TraceEvent OTel-genai / SlimLog), `pool.rs`,
+`stores/zbot-conversation/`: `domain.rs` (Message, Checkpoint), `pool.rs`,
+`schema.rs`, `messages.rs`, `checkpoints.rs`, `lib.rs`.
+`stores/zbot-trace/`: `domain.rs` (TraceEvent OTel-genai, SlimLog), `pool.rs`,
 `schema.rs`, `slim_logs.rs`, `writer.rs`, `analytics.rs`, `lib.rs`.
-
-Traces to: AC (no superseded symbols) · openapi.yaml.
 
 ### Behavior & rules
 
-Payload routing (the core dedup):
+Payload routing:
 
 | Event | `messages` | `execution_logs.metadata` | trace `.jsonl.zst` |
 |---|---|---|---|
-| User input | role=user | — | TraceEvent(session) |
-| ToolCallStart | role=assistant w/ tool_calls | `{tool_name}` | TraceEvent(tool_call, payload=args) |
-| ToolResult | role=tool (full result) | `{tool_name}` | TraceEvent(tool_result, payload=result) |
-| Turn boundary | — | — | CheckpointStore.write |
+| User input | role=user (`msg-` id) | — | TraceEvent(session) |
+| ToolCallStart | role=assistant w/ tool_calls | `{tool_name, tool_id}` | TraceEvent(tool_call, payload=args) |
+| ToolResult | role=tool (full result) | `{tool_name, tool_id, error, blocked_by_hook}` | TraceEvent(tool_result, payload=result) |
+| Turn boundary | — | — | `CheckpointStore::write(context_state)` |
 | Delegation result | role=system | — | TraceEvent(delegation) |
 
-Traces to: ACs (single-column payloads, slim logs) · openapi.yaml.
+`context_state` JSON schema (written at turn boundary, T11): `{intent, ward,
+plan, recalled_facts, response, title, model, subagents}`.
 
 ### Failure, edge cases & resilience
 
-- `TraceWriter` writes one zstd frame per flush → a crash leaves the file valid
-  and decodable up to the last flushed frame. (AC: crash-safe trace.)
-- Cross-pool writes to `conversations.db` are serialized by WAL +
-  `busy_timeout=5000`; the `BatchWriter` remains the write serializer.
-- `duckdb-rs` `bundled` cross-compile to Windows/macOS builds DuckDB from source;
-  resolve at build time (the analytics layer is isolated behind `TraceAnalytics`,
-  so a cross-compile problem is contained to Task 8 / the analytics endpoint).
+- `TraceWriter`: one zstd frame per flush → crash leaves a valid, decodable file
+  to the last frame. Path confined (AC#9).
+- `seq` atomic server-side → no concurrent-collision.
+- Shared pool + WAL `busy_timeout` → cross-store writes serialized.
+- DuckDB `$1` binds + 8 MB/line + file-count caps → no injection, no memory blowup.
+- `duckdb` `bundled` cross-compile resolved at T8 (isolated behind `TraceAnalytics`).
 
 ### Dependencies & integration
 
-New: `duckdb` (v1.5.x line, `bundled`), `zstd` (0.13). Reused: `rusqlite` 0.32
-bundled, `r2d2`/`r2d2_sqlite`, `serde`/`serde_json`, `anyhow`/`thiserror`,
-`uuid` (+v7), `chrono`. The new crates consume no `zbot-stores-sqlite` types.
+New: `duckdb` (pinned minor, `bundled`), `zstd` (pinned minor). Reused:
+`rusqlite` 0.32 bundled, `r2d2`/`r2d2_sqlite`, `serde`/`serde_json`,
+`anyhow`/`thiserror`, `uuid`, `chrono`. New crates consume no `zbot-stores-sqlite` types.
 
 ## Tasks
 
@@ -151,128 +134,93 @@ bundled, `r2d2`/`r2d2_sqlite`, `serde`/`serde_json`, `anyhow`/`thiserror`,
 
 **Depends on:** none
 
-**Tests:**
-- Schema initializes all three tables + indexes in an in-memory DB (AC: foundational; goal-based).
+**Tests:** schema initializes `messages` + `checkpoints` + indexes (in-memory DB; goal-based).
 
-**Approach:**
-- Add `"stores/zbot-conversation",` to workspace `members` (`Cargo.toml`).
-- Create `Cargo.toml` (rusqlite 0.32 bundled, r2d2, r2d2_sqlite, serde, serde_json, anyhow, thiserror, uuid +v7, chrono; dev-dep tempfile).
-- `src/domain.rs` — `Message` (id, execution_id, session_id, role, content, created_at, token_count, tool_calls, tool_call_id, seq), `Checkpoint` (id, execution_id, session_id, llm_turn, last_message_id, pending_tool_calls, context_state, child_executions, schema_version, created_at), `ThreadSummary` (id, session_id, as_of_message_id, as_of_seq, summary, schema_version, created_at).
-- `src/schema.rs` — `SCHEMA_SQL` (messages/checkpoints/thread_summaries DDL + indexes, per Design §Data & schema) + `initialize(&Connection)`.
-- `src/pool.rs` — `open_conversation_pool(path) -> Result<Pool>` (r2d2, WAL/busy_timeout/foreign_keys pragmas, calls `schema::initialize`).
-- `src/lib.rs` — `pub mod domain/schema; mod pool;` re-export POD types + `open_conversation_pool`.
-- `tests/schema.rs` — assert 3 tables exist after `initialize`.
+**Approach:** add `"stores/zbot-conversation",` to workspace `members`. `Cargo.toml` (rusqlite 0.32 bundled, r2d2, r2d2_sqlite, serde, serde_json, anyhow, thiserror, uuid, chrono; dev-dep tempfile). `src/domain.rs` — `Message` (id, execution_id, session_id, role, content, created_at, token_count, tool_calls, tool_call_id, seq), `Checkpoint` (id, execution_id, session_id, llm_turn, last_message_id, pending_tool_calls, context_state, child_executions, schema_version, created_at). `src/schema.rs` — `messages` + `checkpoints` DDL (per Design §Data & schema) + `initialize`. `src/pool.rs` — `open_conversation_pool(path)`. `src/lib.rs` re-exports. `tests/schema.rs`.
 
-**Done when:** `cargo test -p zbot-conversation --test schema` green and `cargo check --workspace` clean.
+**Done when:** `cargo test -p zbot-conversation --test schema` green; `cargo check --workspace` clean.
 
-### T2: `MessageStore`
+### T2: `MessageStore` (atomic seq, tool_sequence, `msg-` ids)
 
 **Depends on:** T1
 
-**Tests:**
-- `append` then `replay` round-trips content and seq; `next_seq` is monotonic across 3 appends (AC: messages append-only).
+**Tests:** append→replay round-trip; `seq` is monotonic; **2×100 concurrent appends yield 200 distinct ordered seqs** (AC: atomic seq, append-only); `tool_sequence_for_session` parses `tool_calls` as the legacy method did.
 
-**Approach:**
-- `src/messages.rs` — `trait MessageStore: Send+Sync { fn append(&self,&Message)->Result<()>; fn replay(&self,session_id,after_seq:Option<i64>,limit)->Result<Vec<Message>>; fn next_seq(&self,session_id)->Result<i64>; }` + `SqliteMessageStore { pool }`.
-- INSERT all fields; replay `WHERE session_id=? [AND seq>?] ORDER BY seq ASC LIMIT ?`; `next_seq` = `MAX(seq)+1`.
-- Re-export in `lib.rs`; `tests/messages.rs`.
+**Approach:** `src/messages.rs` — `trait MessageStore: Send+Sync { fn append(&self,&Message)->Result<()>; fn replay(&self,session_id,after_seq:Option<i64>,limit)->Result<Vec<Message>>; fn tool_sequence_for_session(&self,session_id)->Result<Vec<ToolCallEntry>>; }` + `SqliteMessageStore { pool }`. `append` assigns `seq` **atomically** in one statement: `INSERT INTO messages (...,seq) VALUES (..., (SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id=?))` — no separate `next_seq` call at the write site. `replay` = `WHERE session_id=? [AND seq>?] ORDER BY seq ASC LIMIT ?`. Message id `msg-<uuid>` preserved. Re-export; `tests/messages.rs` incl. `#[tokio::test]` concurrent property test.
 
-**Done when:** `cargo test -p zbot-conversation --test messages` green.
+**Done when:** `cargo test -p zbot-conversation --test messages` green (incl. concurrency).
 
-### T3: `CheckpointStore`
+### T3: `CheckpointStore` (latest by turn, context_state)
 
 **Depends on:** T1
 
-**Tests:**
-- `write` 3 checkpoints (turns 1–3); `latest` returns turn 3 (AC: O(1) latest-wins state).
+**Tests:** write 3 checkpoints (turns 1–3); `latest` returns turn 3 (AC: O(1) latest-wins).
 
-**Approach:**
-- `src/checkpoints.rs` — `trait CheckpointStore { write(&self,&Checkpoint); latest(&self,execution_id)->Option<Checkpoint>; }` + `SqliteCheckpointStore`.
-- INSERT; `latest` = `ORDER BY id DESC LIMIT 1` (UUIDv7 monotonic). Re-export; `tests/checkpoints.rs`.
+**Approach:** `src/checkpoints.rs` — `trait CheckpointStore { write(&self,&Checkpoint); latest(&self,execution_id)->Option<Checkpoint>; }` + `SqliteCheckpointStore`. `latest` = `ORDER BY llm_turn DESC, created_at DESC LIMIT 1`. Re-export; `tests/checkpoints.rs`.
 
 **Done when:** `cargo test -p zbot-conversation --test checkpoints` green.
 
-### T4: `SummaryStore`
+### T4: Rewire `ConversationStore` consumers off the legacy trait
 
-**Depends on:** T1
+**Depends on:** T2
 
-**Tests:**
-- `write` summaries at as_of_seq 10 and 20; `latest` returns 20 (AC: compaction-without-loss).
+**Touches:** `gateway-memory/src/services.rs`, `gateway-memory/src/sleep/{pattern_extractor.rs,worker.rs}`, `gateway/src/services/runtime.rs`, `gateway/src/state/mod.rs`, `gateway-execution/src/sleep/handoff_writer.rs`
 
-**Approach:**
-- `src/summaries.rs` — `trait SummaryStore { write(&self,&ThreadSummary); latest(&self,session_id)->Option<ThreadSummary>; }` + `SqliteSummaryStore`. `latest` = `ORDER BY as_of_seq DESC LIMIT 1`. Re-export; `tests/summaries.rs`.
+**Tests:** `cargo check --workspace` clean — no site references `dyn ConversationStore` (AC: precondition for T16).
 
-**Done when:** `cargo test -p zbot-conversation --test summaries` green; full `cargo test -p zbot-conversation` green.
+**Approach:** the legacy `ConversationStore` trait (`stores/zbot-stores-traits/src/conversation.rs:33`) exposes `tool_sequence_for_session` (→ now `MessageStore`, T2), `get_session_ward_id`, `get_session_agent_id` (read `sessions`/`agent_executions`, which stay in `zbot-stores-sqlite`). Rewire each of the 6 sites: `tool_sequence_for_session` → `MessageStore`; ward/agent-id lookups → the existing `sessions`/`agent_executions` accessors (or a thin `SessionMetaStore` trait in `zbot-conversation` backed by the shared pool, if a trait is cleaner than direct access). Do **not** delete the trait yet (T16).
+
+**Done when:** `cargo check --workspace` clean with no `dyn ConversationStore` consumer remaining.
 
 ### T5: `zbot-trace` crate — domain + schema
 
 **Depends on:** none
 
-**Tests:**
-- Schema initializes `execution_logs` + 3 indexes (goal-based).
+**Tests:** schema initializes `execution_logs` + 3 indexes (goal-based).
 
-**Approach:**
-- Add `"stores/zbot-trace",` to workspace `members`.
-- `Cargo.toml` (same as T1 + `zstd = "0.13"`, `duckdb = { version = "1", features = ["bundled"] }`, `tracing`).
-- `src/domain.rs` — `SlimLog` (id, session_id, conversation_id, agent_id, parent_session_id, timestamp, level, category, message, metadata, duration_ms) and `TraceEvent` (trace_id, span_id, session_id, execution_id, agent_id, parent_session_id, timestamp, level, category, message, duration_ms, tool_name, payload: Option<Value>, usage: Option<Value>, model) with OTel-genai field names + `skip_serializing_if = "Option::is_none"`.
-- `src/schema.rs` — `execution_logs` DDL (columns unchanged) + indexes.
-- `src/pool.rs` — `open_trace_pool(path)` (mirrors T1's pool, calls `schema::initialize`).
-- `tests/schema.rs`.
+**Approach:** add `"stores/zbot-trace",` to `members`. `Cargo.toml` (same as T1 + `zstd = "<pinned minor>"`, `duckdb = { version = "<pinned minor>", features = ["bundled"] }`, `tracing`). `src/domain.rs` — `SlimLog`, `TraceEvent` (OTel-genai fields, `skip_serializing_if Option::is_none`). `src/schema.rs` — `execution_logs` DDL (unchanged) + indexes. `src/pool.rs` — `open_trace_pool(path)`. `tests/schema.rs`. Pin `duckdb`/`zstd` to specific reviewed minors in `Cargo.lock`; run `cargo audit`/`cargo deny` (AC#12).
 
-**Done when:** `cargo test -p zbot-trace --test schema` green; `cargo check --workspace` clean.
+**Done when:** `cargo test -p zbot-trace --test schema` green; `cargo check --workspace` clean; audit green.
 
 ### T6: `SlimLogStore`
 
 **Depends on:** T5
 
-**Tests:**
-- `append` stores a row whose `metadata` is `{"tool_name":"read_file"}` — asserts **no** `args`/`result` keys; `query` returns it (AC: slim logs payload-free).
+**Tests:** `append` stores a row whose `metadata` is within `{tool_name, tool_id, error, blocked_by_hook}` — asserts **no** `args`/`result` keys; `query` returns it (AC: slim logs).
 
-**Approach:**
-- `src/slim_logs.rs` — `trait SlimLogStore { append(&self,&SlimLog); query(&self,session_id,limit)->Vec<SlimLog>; }` + `SqliteSlimLogStore`. INSERT; SELECT `ORDER BY timestamp`. Re-export; `tests/slim_logs.rs`.
+**Approach:** `src/slim_logs.rs` — `trait SlimLogStore { append(&self,&SlimLog); query(&self,session_id,limit)->Vec<SlimLog>; }` + `SqliteSlimLogStore`. INSERT (params!); SELECT `ORDER BY timestamp`. Re-export; `tests/slim_logs.rs`.
 
 **Done when:** `cargo test -p zbot-trace --test slim_logs` green.
 
-### T7: `TraceWriter` (streaming `.jsonl.zst`)
+### T7: `TraceWriter` (confined streaming `.jsonl.zst`)
 
 **Depends on:** T5
 
-**Tests:**
-- append a,b,flush,append c,close → file decodes to 3 lines (round-trip).
-- Property: append a, flush, append b (no flush), drop writer without close → file decodes to **1** line (crash leaves a valid, frame-complete file) (AC: crash-safe trace).
+**Tests:** append a,b,flush,append c,close → decodes to 3 lines; crash (drop without close after an unflushed append) → decodes to the flushed prefix only; **hostile `session_id` (`../x`, `a/b`, NUL, `C:\`) is rejected** (AC: confinement + crash-safety).
 
-**Approach:**
-- `src/writer.rs` — `TraceWriter::open(path)`, `append(&mut self,&TraceEvent)` (serialize JSON + `\n` into a `zstd::stream::write::Encoder`), `flush(&mut self)` (flush the current zstd frame so the file is decodable to here), `close(self)` (finish). Frame-per-flush = safe appends. Add a `read_zstd_lines` test helper.
-- `tests/writer.rs`.
+**Approach:** `src/writer.rs` — `TraceWriter::open_confined(traces_dir, session_id)`: validate `session_id` (UUID or reject `/`,`..`,NUL,drive-prefix), `let path = traces_dir.join(format!("{session_id}.jsonl.zst"))`, `canonicalize(traces_dir)` and assert `path.canonicalize()` starts_with it before open (per `docs/architecture/security.md` §Path Confinement). `append` writes JSON+`\n` into a `zstd::stream::write::Encoder`; `flush` flushes the frame; `close` finishes. `tests/writer.rs` + a `read_zstd_lines` helper.
 
-**Done when:** `cargo test -p zbot-trace --test writer` green (both tests).
+**Done when:** `cargo test -p zbot-trace --test writer` green (all three).
 
-### T8: `TraceAnalytics` (DuckDB over `.jsonl.zst`)
+### T8: `TraceAnalytics` (`$1`-bound DuckDB, caps)
 
 **Depends on:** T5, T7
 
-**Tests:**
-- Write 2 `.jsonl.zst` via `TraceWriter` (one with a `tool_result` error for `read_file`, one without); `sessions_with_failed_tool("read_file")` returns exactly 1 session (AC: cross-session trace query).
+**Tests:** seed 2 `.jsonl.zst` via `TraceWriter` (one with a `tool_result` error for `read_file`); `sessions_with_failed_tool("read_file")` returns 1 session; **`traces_dir` with spaces works**; an **8 MB line is skipped+counted, not abort** (AC: cross-session query, DoS bound).
 
-**Approach:**
-- `src/analytics.rs` — `TraceAnalytics::open(traces_dir)`, holding an in-memory `duckdb::Connection`; `sessions_with_failed_tool(tool)` runs `SELECT DISTINCT json_extract(line,'$.session_id') FROM read_json_auto('<dir>/*.jsonl.zst') WHERE json_extract(line,'$.tool_name')='"tool"' AND json_extract(line,'$.level')='"error"'`. Tune `read_json_auto` options to the form the test confirms. `tests/analytics.rs`.
+**Approach:** `src/analytics.rs` — `TraceAnalytics::open(traces_dir)` holding an in-memory `duckdb::Connection`; `sessions_with_failed_tool(tool)` uses a **prepared statement with `$1` bind** for `tool` (no `format!`). Set `read_json_auto` options to the form tests confirm; enforce per-line cap (8 MB) + per-query file-count cap, skip+count oversized. `tests/analytics.rs`. **De-risk gate:** `cargo build -p zbot-trace` must succeed (the one cross-compile risk).
 
-**Done when:** `cargo test -p zbot-trace --test analytics` green; `cargo check --workspace` clean. (If `duckdb` `bundled` fails to build on this host, surface — it is the one cross-compile risk.)
+**Done when:** tests green; `cargo build -p zbot-trace` succeeds; `cargo check --workspace` clean.
 
-### T9: Wire stores into `AppState`
+### T9: Wire stores into `AppState` (shared pool)
 
-**Depends on:** T2, T3, T4, T6, T7, T8
+**Depends on:** T2, T3, T6, T7, T8
 
 **Touches:** `gateway/Cargo.toml`, `gateway/src/state/mod.rs`, `gateway-services/src/paths.rs`
 
-**Tests:**
-- `cargo check -p gateway` clean (goal-based; the wiring compiles and the 3 construction sites resolve).
+**Tests:** `cargo check -p gateway` clean (goal-based).
 
-**Approach:**
-- `gateway/Cargo.toml`: add `zbot-conversation`, `zbot-trace` path deps.
-- `gateway/src/state/mod.rs`: add `messages: Arc<dyn MessageStore>`, `checkpoints: Arc<dyn CheckpointStore>`, `summaries: Arc<dyn SummaryStore>`, `slim_logs: Arc<dyn SlimLogStore>`, `trace_analytics: Arc<dyn TraceAnalytics>` (mirror `memory_store` at `:82`). Keep the old `conversations` field until T16.
-- Add a `build_conversation_stores(paths)` helper; call from the 3 construction sites (`:842/:942/:1093`).
-- Add `traces_dir` to `gateway-services::paths` (mirror `conversations_db`).
+**Approach:** `gateway/Cargo.toml`: add `zbot-conversation`, `zbot-trace`. `state/mod.rs`: add `messages: Arc<dyn MessageStore>`, `checkpoints: Arc<dyn CheckpointStore>`, `slim_logs: Arc<dyn SlimLogStore>`, `trace_analytics: Arc<dyn TraceAnalytics>` (mirror `memory_store:82`). Construct **one** shared `Pool<SqliteConnectionManager>` from the conversations.db path in a `build_conversation_stores(paths)` helper; pass clones to the message/checkpoint/slim_logs stores. Add `traces_dir` to `gateway-services::paths` **and** `ensure_dirs_exist()` (AC#11). Keep old `conversations` field until T16.
 
 **Done when:** `cargo check -p gateway` clean.
 
@@ -282,32 +230,23 @@ bundled, `r2d2`/`r2d2_sqlite`, `serde`/`serde_json`, `anyhow`/`thiserror`,
 
 **Touches:** `gateway-execution/src/invoke/batch_writer.rs`, `gateway-execution/src/lifecycle.rs`
 
-**Tests:**
-- Feed 3 `TraceEvent`s for a session through the handle, close, assert the `.jsonl.zst` has 3 lines (integration).
+**Tests:** 3 `TraceEvent`s for a session → close → `.jsonl.zst` has 3 lines (integration).
 
-**Approach:**
-- Add `TraceEvent { session_id, event }` to the mpsc channel type. Hold a `HashMap<session_id, TraceWriter>` in the writer task; the 100ms tick (`batch_writer.rs:144`) now also flushes all open trace writers. Add `close_session_trace(session_id)` called from session-end in `lifecycle.rs`.
+**Approach:** add `TraceEvent { session_id, event }` to the mpsc type; `HashMap<session_id, TraceWriter>` in the task; 100ms tick also flushes all open writers; `close_session_trace(session_id)` from session-end in `lifecycle.rs`. Writers opened via `TraceWriter::open_confined(traces_dir, session_id)`.
 
-**Done when:** the integration test green; `cargo check --workspace` clean.
+**Done when:** integration test green; `cargo check --workspace` clean.
 
-### T11: Rewire the dual write sites (payload routing)
+### T11: Rewire dual write sites + `context_state` writer + retained metadata
 
 **Depends on:** T9, T10
 
-**Touches:** `gateway-execution/src/invoke/event_logging.rs`, `gateway-execution/src/invoke/stream_event_processor.rs`, `gateway-execution/src/runner/execution_stream.rs`, `gateway-execution/src/runner/core.rs`, `gateway-execution/src/delegation/callback.rs`
+**Touches:** `gateway-execution/src/invoke/{event_logging.rs,stream_event_processor.rs}`, `gateway-execution/src/runner/{execution_stream.rs,core.rs}`, `gateway-execution/src/delegation/callback.rs`
 
-**Tests:**
-- After one conversation: `execution_logs.metadata` has **no** `args`/`result` keys (sqlite3 CLI assertion); `.jsonl.zst` contains them; a `checkpoints` row exists per turn (AC: single-column payloads, slim logs).
+**Tests:** after one conversation: `execution_logs.metadata` has **no** `args`/`result` (CLI assert); `.jsonl.zst` has them; a `checkpoints` row per turn with populated `context_state`; `GET /api/logs/sessions/:id` returns non-empty plan/ward (smoke after T11 gates T12).
 
-**Approach:**
-- `event_logging.rs`: `log_tool_call`/`log_tool_result` write `metadata = {tool_name}` (+`{error}` for results) only; delete the 500-char truncation. Keep signatures.
-- `stream_event_processor.rs:105-141`: alongside each `log_*`, push a `TraceEvent` (full payload) to the BatchWriter.
-- `execution_stream.rs:159-266,325,541-559`: replace `conversation_repo.append_session_message` with `messages.append` (set `seq = next_seq`); at turn end `checkpoints.write`.
-- Mirror in `runner/core.rs:1400-1552`.
-- `delegation/callback.rs:238`: system-message append via `MessageStore` + a delegation `TraceEvent`.
-- Delete `conversations.db` (empty/disposable), run one conversation, verify the assertions above.
+**Approach:** `event_logging.rs` — `metadata` = retained key set only: `{tool_name, tool_id}` for tool_call, `{tool_name, tool_id, error, blocked_by_hook}` for tool_result; delete the 500/1000-char truncation; keep signatures. `stream_event_processor.rs` — alongside each `log_*`, push a `TraceEvent` (full payload). `execution_stream.rs`/`core.rs:1400-1552` — write messages via `MessageStore::append` (seq auto-assigned; `msg-` id); at **turn boundary** call `CheckpointStore::write` with `context_state` = `{intent, ward, plan, recalled_facts, response, title, model, subagents}` snapshot. `delegation/callback.rs:238` — system message via `MessageStore` + delegation TraceEvent. Delete `conversations.db`, run one conversation, verify.
 
-**Done when:** the post-conversation assertions hold; `cargo check --workspace` clean.
+**Done when:** post-conversation assertions hold; `cargo check --workspace` clean.
 
 ### T12: `session_state` — replay → `CheckpointStore::latest`
 
@@ -315,102 +254,88 @@ bundled, `r2d2`/`r2d2_sqlite`, `serde`/`serde_json`, `anyhow`/`thiserror`,
 
 **Touches:** `gateway-execution/src/session_state.rs`
 
-**Tests:**
-- Seed a checkpoint; `GET /api/logs/sessions/:id` returns its plan/ward (AC: O(1) state, no replay); equivalence to a replay computed independently.
+**Tests:** seed a checkpoint (via T11's writer); `GET /api/logs/sessions/:id` returns its plan/ward/response; equivalence to an independent replay (AC: O(1) state).
 
-**Approach:**
-- Replace the replay aggregation with `checkpoints.latest(execution_id)`; deserialize `context_state` into the `SessionState` fields. Keep the returned JSON shape (UI contract).
+**Approach:** replace the replay branch of `SessionStateBuilder::build` with `checkpoints.latest(execution_id)`; deserialize `context_state` into the `SessionState` fields. Keep the returned JSON shape (UI contract). Delete the now-dead `extract_*` helpers that read `metadata.args/result`.
 
-**Done when:** the test green; response shape unchanged.
+**Done when:** test green; response shape's field set unchanged.
 
-### T13: Rewire read sites
+### T13: Rewire read sites (incl. `execution-state` `tool_results`)
 
 **Depends on:** T2, T11
 
-**Touches:** `gateway/src/http/chat.rs`, `gateway-execution/src/runner/core.rs`, `gateway-execution/src/runner/invoke_bootstrap.rs`, `gateway-execution/src/distillation.rs`, `gateway-execution/src/sleep/handoff_writer.rs`, `gateway-execution/src/sleep/pattern_extractor.rs`, `services/execution-state/src/repository.rs`
+**Touches:** `gateway/src/http/chat.rs`, `gateway-execution/src/runner/{core.rs,invoke_bootstrap.rs}`, `gateway-execution/src/{distillation.rs,sleep/handoff_writer.rs,sleep/pattern_extractor.rs}`, `services/execution-state/src/repository.rs`
 
-**Tests:**
-- `GET /api/sessions/:id/messages` returns the same rows via `MessageStore::replay`; `tool_results` wire field is `None` (AC: contracts unchanged).
+**Tests:** `GET /api/sessions/:id/messages` returns rows via `MessageStore::replay`; `tool_results` wire field `None` (AC: field set unchanged).
 
-**Approach:**
-- `chat.rs:185-215` → `messages.replay(.., None, limit)`; map `Message`→`SessionMessageResponse` (`tool_results: None`).
-- `core.rs:1262` + `invoke_bootstrap.rs:480` → `replay(.., 200)` then `session_messages_to_chat_format` (drop the `tool_results` parse).
-- distillation / handoff / pattern_extractor → `replay` (pattern_extractor still parses `tool_calls` JSON).
-- `services/execution-state/src/repository.rs:1182` join → `replay` + execution metadata.
+**Approach:** `chat.rs:185` → `messages.replay(..,None,limit)`; map `Message`→`SessionMessageResponse` (`tool_results: None`). `core.rs:1262` + `invoke_bootstrap.rs:480` → `replay(..,200)`. distillation/handoff/pattern_extractor → `replay`/`tool_sequence_for_session`. **`execution-state/repository.rs:1193,1403,1414`**: drop the `tool_results` SELECT/bind/parse; map to `None` (matches chat.rs).
 
 **Done when:** UI history loads; `cargo check --workspace` clean.
 
-### T14: `/api/traces/query` + openapi
+### T14: `/api/traces/query` (preset enum + `$1` binds + openapi)
 
 **Depends on:** T8, T9
 
 **Touches:** `gateway/src/http/traces.rs` (new), `gateway/src/http/mod.rs`, `gateway/src/http/openapi.yaml`
 
-**Tests:**
-- Seed `.jsonl.zst`; `POST /api/traces/query` returns the failed-tool sessions (AC: cross-session query; documented contract).
+**Tests:** seed `.jsonl.zst`; `POST /api/traces/query {preset:"sessions_with_failed_tool", params:{tool:"read_file"}}` returns the sessions; unknown preset → 400 (AC: query + injection-safe).
 
-**Approach:**
-- `traces.rs`: `POST /api/traces/query { preset, params }` → `trace_analytics.*`; return JSON rows. Whitelist presets (no raw client SQL — injection-safe).
-- Mount in `http/mod.rs`; extend `openapi.yaml` with the path + schema (hand-authored; note `api-contract` skill absent).
+**Approach:** `traces.rs` — `POST /api/traces/query { preset: Preset, params: Params }`; `match preset` (fixed enum, 400 on unknown); only the matched arm's typed params reach `TraceAnalytics` (`$1`-bound). Mount; extend `openapi.yaml` (hand-authored, note skill absent).
 
-**Done when:** test green; `openapi.yaml` carries the new path; `npm run build` unaffected.
+**Done when:** test green; openapi carries the path; `npm run build` unaffected.
 
-### T15: API contract golden tests
+### T15: API golden tests + UI test updates
 
 **Depends on:** T13, T14
 
-**Touches:** `gateway/tests/api_contract.rs` (new)
+**Touches:** `gateway/tests/api_contract.rs` (new), `apps/ui/src/features/mission-control/SessionDetailPane.test.tsx`, `apps/ui/src/features/logs/useSessionTrace.test.ts`
 
-**Tests:**
-- Snapshot the JSON of `GET /api/sessions/:id/messages` and `/api/logs/sessions/:id` against a seeded store; assert byte-identical to the pre-cutover shape (the `tool_results: null` field present) (AC: contracts unchanged).
+**Tests:** dual-path test — old `ConversationRepository` vs new stores against mirrored fixtures assert DTO **field-set** equality (not byte-identical) + slim metadata shape; UI tests updated to assert the retained key set (AC: field set unchanged; UI updated).
 
-**Approach:**
-- Author the golden tests; seed via the new stores.
+**Approach:** author the gateway golden test (drive both paths, diff field sets). Update the two UI tests to assert `{tool_name, tool_id, error, blocked_by_hook}` instead of `args`/`result`.
 
-**Done when:** `cargo test -p gateway --test api_contract` green.
+**Done when:** `cargo test -p gateway --test api_contract` green; `npm run build` green.
 
 ### T16: Delete superseded code
 
-**Depends on:** T11, T12, T13, T14, T15
+**Depends on:** T4, T11, T12, T13, T14, T15
 
-**Touches:** `stores/zbot-stores-sqlite/src/{schema.rs,repository.rs}`, `stores/zbot-stores-domain/src/message.rs`, `stores/zbot-stores-traits/src/conversation.rs`, `services/execution-state/src/types.rs`, `gateway-execution/src/{archiver.rs,session_state.rs}`, `services/api-logs`, `gateway/src/state/mod.rs`
+**Touches:** `stores/zbot-stores-sqlite/src/{schema.rs,repository.rs}`, `stores/zbot-stores-traits/src/conversation.rs`, `stores/zbot-stores-domain/src/message.rs`, `services/execution-state/src/{types.rs,repository.rs,service.rs}`, `gateway-execution/src/{archiver.rs,session_state.rs}`, `gateway-execution/src/invoke/batch_writer.rs`, `services/api-logs`, `gateway/src/state/mod.rs`
 
-**Tests:**
-- `grep` finds no `ConversationRepository`, legacy `Message` POD, `ConversationStore` trait, gz archiver, or replay loop (AC: no superseded symbols).
+**Tests:** `grep` finds none of: `ConversationRepository`, legacy `Message` POD, `ConversationStore` trait, gz archiver, replay branch, `agent_executions.checkpoint` column + `AgentExecution.checkpoint` field + `save_execution_checkpoint`, `BatchWrite::SessionMessage` + `conversation_repo` param (AC: no superseded symbols).
 
-**Approach:**
-- Remove in dependency order (consumers first). After each removal run `cargo check --workspace` — green proves no Phase-3 site was missed (don't paper over a lingering reference). Then: `zbot-stores-sqlite/schema.rs` messages+execution_logs DDL; `repository.rs` `ConversationRepository` + its methods; `zbot-stores-domain/message.rs` `Message`; `zbot-stores-traits/conversation.rs` `ConversationStore`; `execution-state/types.rs` `Checkpoint`; `archiver.rs` gz archiver; `session_state.rs` dead replay; `services/api-logs` truncation; `state/mod.rs` old `conversations` field + its 3 construction lines.
+**Approach:** remove in dependency order (consumers first — T4 already off the trait); `cargo check --workspace` after each (green proves no missed site). Delete: `schema.rs` messages+execution_logs DDL; `repository.rs` `ConversationRepository` + methods; `zbot-stores-traits/conversation.rs` `ConversationStore`; `zbot-stores-domain/message.rs` `Message`; `execution-state/types.rs` `Checkpoint` + the `agent_executions.checkpoint` column (`schema.rs:436`) + `AgentExecution.checkpoint` field + `save_execution_checkpoint` (`repository.rs:981`/`service.rs:573`); `archiver.rs` (retires the unconfined `<session_id>.jsonl.gz` path — security delta); `session_state.rs` replay branch; `batch_writer.rs` `BatchWrite::SessionMessage` + `conversation_repo` param + flush branch; `services/api-logs` truncation; `state/mod.rs` old `conversations` field + 3 construction lines.
 
 **Done when:** grep clean; `cargo test --workspace` green; `npm run build` green.
 
 ## Rollout
 
 - **Delivery:** single clean cutover on `feat/conversation-store-revamp`. Old
-  `conversations.db` deleted before Phase 3 (not prod — no data to preserve);
-  new tables initialize empty. Reversible up to Phase 4 (deletion) — until then,
-  the old code still compiles alongside. Irreversible step: T16's deletions
-  (mitigated by branch isolation + per-task commits).
-- **Infrastructure:** none beyond the new `traces/` directory under the vault
-  data root (`gateway-services::paths.traces_dir`).
-- **External-system integration:** `duckdb` (bundled) and `zstd` added to the
-  build; duckdb's cross-compile is resolved at build time (isolated to
-  `TraceAnalytics` / T8).
-- **Deployment sequencing:** Phase 1–2 (crates) land first and compile
-  standalone; Phase 3 flips consumers task-by-task with a daemon smoke each;
-  Phase 4 deletes only after every consumer (T11–T15) is off the old code.
+  `conversations.db` deleted before Phase 3 (not prod). Reversible up to T16
+  (deletion); per-task commits mitigate. Irreversible: T16 deletions — note T16
+  retires the existing unconfined `archiver.rs:142` filename-construction path
+  (security benefit, replaced by the confined writer).
+- **Infrastructure:** `traces/` under the vault data root, via
+  `VaultPaths::ensure_dirs_exist()`.
+- **External-system integration:** `duckdb` (bundled, pinned) + `zstd` (pinned);
+  cross-compile resolved at T8.
+- **Deployment sequencing:** Phase 1–2 compile standalone; Phase 3 flips
+  consumers task-by-task with a daemon smoke; Phase 4 deletes only after T4 +
+  T11–T15 are off the old code.
 
 ## Risks
 
-- `duckdb` `bundled` cross-compile to Windows/macOS (builds from source) — T8
-  smoke catches it; isolated behind `TraceAnalytics`.
-- zstd frame-per-flush compresses less than one-frame-per-file — acceptable
-  (still beats gzip); optional re-compress on close later.
-- `messages` never-deleted → unbounded growth on a long-lived install; the
-  existing `SessionArchiver` still handles old-session archival — flagged, not
-  solved here.
-- Two near-duplicate runner write loops remain after T11 (only their emit shape
-  changes); consolidating them is a follow-up.
+- `duckdb` `bundled` cross-compile (T8 smoke; isolated behind `TraceAnalytics`).
+- zstd frame-per-flush compresses less than one-frame-per-file (acceptable;
+  optional re-compress on close later).
+- `messages` never-deleted → unbounded growth; existing `SessionArchiver` still
+  handles archival (now of slim rows) — flagged, not solved.
+- Two near-duplicate runner write loops remain after T11 (emit shape changed
+  only); consolidation is a follow-up.
+- Logs/mission-control detail UI shows less inline (args/result gone) — by design
+  (AC#3/#5); detail via trace file + `/api/traces/query`.
 
 ## Changelog
 
-- 2026-07-07: initial plan (converted from the brainstorming/writing-plans draft into the canonical `new-spec`/`work-loop` format; content unchanged, structure + ACs + DAG added).
+- 2026-07-07: initial plan (canonical new-spec format).
+- 2026-07-07: pre-EXECUTE review revisions — deferred `thread_summaries`/`SummaryStore` (was T4); added T4 (rewire `ConversationStore` consumers); atomic `seq` + concurrency test (T2); `context_state` writer at turn boundary (T11) + schema; `latest` by `(llm_turn,created_at)` (T3); trace path confinement (T7); DuckDB `$1` binds + caps (T8); shared pool (T9); retained metadata key set (T11); `execution-state` `tool_results` fix (T13); preset enum + binds (T14); dual-path golden + UI test updates (T15); complete deletion list incl. checkpoint column/field/method + `BatchWrite::SessionMessage` (T16); new ACs for confinement/injection/seq/traces_dir/pinning/caps; resolved AC#3↔#5 contradiction.

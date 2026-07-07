@@ -56,6 +56,16 @@ pub struct AppState {
     /// Conversation repository for message persistence.
     pub conversations: Arc<ConversationRepository>,
 
+    /// Message store (append-only conversation log) — the message surface of
+    /// the old `ConversationRepository` migrates here at the T11 cutover.
+    pub messages: Arc<dyn zbot_conversation::MessageStore>,
+    /// Versioned agent-state checkpoints — `session_state` reads here (T12).
+    pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
+    /// Slim (payload-free) `execution_logs` — the live `/api/logs` UI source.
+    pub slim_logs: Arc<dyn zbot_trace::SlimLogStore>,
+    /// Cross-session trace analytics over `traces/*.jsonl.gz` (DuckDB).
+    pub trace_analytics: Arc<zbot_trace::TraceAnalytics>,
+
     /// Settings service for application configuration.
     pub settings: Arc<SettingsService>,
 
@@ -190,6 +200,31 @@ pub struct AppState {
     /// Active mDNS advertise handle. None until `start()` runs and only
     /// populated when `network.exposeToLan = true`.
     pub advertise_handle: std::sync::Arc<std::sync::Mutex<Option<discovery::AdvertiseHandle>>>,
+}
+
+/// Construct the new conversation/trace stores sharing **one** r2d2 pool, with
+/// both crates' schemas initialized on it (`messages`+`checkpoints` via
+/// `open_conversation_pool`; `execution_logs` here). The old `conversations`
+/// field stays in place until the T16 cutover delete.
+fn build_conversation_stores(
+    paths: &SharedVaultPaths,
+) -> anyhow::Result<(
+    Arc<dyn zbot_conversation::MessageStore>,
+    Arc<dyn zbot_conversation::CheckpointStore>,
+    Arc<dyn zbot_trace::SlimLogStore>,
+    Arc<zbot_trace::TraceAnalytics>,
+)> {
+    let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db())?;
+    {
+        let conn = pool.get()?;
+        zbot_trace::schema::initialize(&conn)?;
+    }
+    Ok((
+        Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone())),
+        Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool.clone())),
+        Arc::new(zbot_trace::SqliteSlimLogStore::new(pool)),
+        Arc::new(zbot_trace::TraceAnalytics::open(&paths.traces_dir())?),
+    ))
 }
 
 impl AppState {
@@ -830,6 +865,10 @@ impl AppState {
             None, // bus is set later by server.start()
         ));
 
+        let (messages, checkpoints, slim_logs, trace_analytics) =
+            build_conversation_stores(&paths)
+                .expect("Failed to initialize conversation/trace stores");
+
         Self {
             agents,
             skills,
@@ -838,6 +877,10 @@ impl AppState {
             runtime,
             event_bus,
             hook_registry: Some(hook_registry),
+            messages,
+            checkpoints,
+            slim_logs,
+            trace_analytics,
             delegation_registry,
             conversations: conversation_repo,
             settings,
@@ -930,7 +973,15 @@ impl AppState {
         let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
             Some(engram_store_bundle.kg_store.clone());
 
+        let (messages, checkpoints, slim_logs, trace_analytics) =
+            build_conversation_stores(&paths)
+                .expect("Failed to initialize conversation/trace stores");
+
         Self {
+            messages,
+            checkpoints,
+            slim_logs,
+            trace_analytics,
             agents: Arc::new(AgentService::new(agents_dir)),
             skills: Arc::new(SkillService::with_roots(skills_roots)),
             provider_service: Arc::new(ProviderService::new(paths.clone())),
@@ -1134,6 +1185,10 @@ impl AppState {
             None, // bus is set later by server.start()
         ));
 
+        let (messages, checkpoints, slim_logs, trace_analytics) =
+            build_conversation_stores(&paths)
+                .expect("Failed to initialize conversation/trace stores");
+
         Self {
             agents,
             skills,
@@ -1142,6 +1197,10 @@ impl AppState {
             runtime,
             event_bus,
             hook_registry: None,
+            messages,
+            checkpoints,
+            slim_logs,
+            trace_analytics,
             delegation_registry: Arc::new(DelegationRegistry::new()),
             conversations,
             settings: Arc::new(SettingsService::new(paths.clone())),

@@ -101,6 +101,11 @@ impl VaultPaths {
         self.vault_dir.join("data")
     }
 
+    /// Path to `data/traces` — per-session `.jsonl.gz` execution trace files.
+    pub fn traces_dir(&self) -> PathBuf {
+        self.vault_dir.join("data").join("traces")
+    }
+
     // =========================================================================
     // Root-level directories
     // =========================================================================
@@ -194,6 +199,7 @@ impl VaultPaths {
             self.config_dir(),
             self.ward_lang_configs_dir(),
             self.data_dir(),
+            self.traces_dir(),
             self.logs_dir(),
             self.agents_dir(),
             self.skills_dir(),

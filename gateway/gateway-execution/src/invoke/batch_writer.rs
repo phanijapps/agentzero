@@ -11,10 +11,12 @@
 use api_logs::{ExecutionLog, LogService};
 use execution_state::StateService;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_trace::TraceWriter;
 
 /// An appended row on a session's conversation stream.
 #[derive(Debug, Clone)]
@@ -42,6 +44,15 @@ pub enum BatchWrite {
 
     /// Append a message to a session's conversation stream.
     SessionMessage(SessionMessage),
+
+    /// Append a full-fidelity trace event to the session's `.jsonl.gz`.
+    TraceEvent {
+        session_id: String,
+        event: zbot_trace::TraceEvent,
+    },
+
+    /// Finalize a session's trace writer (called on session end).
+    CloseSessionTrace { session_id: String },
 }
 
 /// Handle for sending writes to the batch writer.
@@ -95,6 +106,23 @@ impl BatchWriterHandle {
             tool_call_id: tool_call_id.map(String::from),
         }));
     }
+
+    /// Convenience: append a full-fidelity trace event to the session's
+    /// `.jsonl.gz` (no-op until a `traces_dir` is wired via
+    /// `spawn_batch_writer_with_traces`).
+    pub fn trace_event(&self, session_id: &str, event: zbot_trace::TraceEvent) {
+        self.send(BatchWrite::TraceEvent {
+            session_id: session_id.to_string(),
+            event,
+        });
+    }
+
+    /// Convenience: finalize a session's trace writer on session end.
+    pub fn close_session_trace(&self, session_id: &str) {
+        self.send(BatchWrite::CloseSessionTrace {
+            session_id: session_id.to_string(),
+        });
+    }
 }
 
 /// Spawn a batch writer background task.
@@ -106,7 +134,7 @@ pub fn spawn_batch_writer(
     state_service: Arc<StateService<DatabaseManager>>,
     log_service: Arc<LogService<DatabaseManager>>,
 ) -> BatchWriterHandle {
-    spawn_batch_writer_with_repo(state_service, log_service, None)
+    spawn_batch_writer_inner(state_service, log_service, None, None)
 }
 
 /// Spawn a batch writer with optional conversation repository for session messages.
@@ -115,6 +143,26 @@ pub fn spawn_batch_writer_with_repo(
     log_service: Arc<LogService<DatabaseManager>>,
     conversation_repo: Option<Arc<ConversationRepository>>,
 ) -> BatchWriterHandle {
+    spawn_batch_writer_inner(state_service, log_service, conversation_repo, None)
+}
+
+/// Spawn a batch writer that also streams full-fidelity trace events to
+/// per-session `.jsonl.gz` files under `traces_dir`.
+pub fn spawn_batch_writer_with_traces(
+    state_service: Arc<StateService<DatabaseManager>>,
+    log_service: Arc<LogService<DatabaseManager>>,
+    conversation_repo: Option<Arc<ConversationRepository>>,
+    traces_dir: PathBuf,
+) -> BatchWriterHandle {
+    spawn_batch_writer_inner(state_service, log_service, conversation_repo, Some(traces_dir))
+}
+
+fn spawn_batch_writer_inner(
+    state_service: Arc<StateService<DatabaseManager>>,
+    log_service: Arc<LogService<DatabaseManager>>,
+    conversation_repo: Option<Arc<ConversationRepository>>,
+    traces_dir: Option<PathBuf>,
+) -> BatchWriterHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
     tokio::spawn(batch_writer_loop(
@@ -122,6 +170,7 @@ pub fn spawn_batch_writer_with_repo(
         state_service,
         log_service,
         conversation_repo,
+        traces_dir,
     ));
 
     BatchWriterHandle { tx }
@@ -133,6 +182,7 @@ async fn batch_writer_loop(
     state_service: Arc<StateService<DatabaseManager>>,
     log_service: Arc<LogService<DatabaseManager>>,
     conversation_repo: Option<Arc<ConversationRepository>>,
+    traces_dir: Option<PathBuf>,
 ) {
     // Pending token updates — coalesced by execution_id (only latest kept)
     let mut token_updates: HashMap<String, (u64, u64)> = HashMap::new();
@@ -140,6 +190,9 @@ async fn batch_writer_loop(
     let mut log_entries: Vec<ExecutionLog> = Vec::new();
     // Pending session messages (NOT coalesced — each is unique)
     let mut session_messages: Vec<SessionMessage> = Vec::new();
+    // Per-session trace writers (`<session_id>.jsonl.gz`). Each append writes a
+    // complete gzip member, so a dropped writer leaves prior events durable.
+    let mut trace_writers: HashMap<String, TraceWriter> = HashMap::new();
 
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     // Don't accumulate ticks while we're busy flushing
@@ -158,6 +211,41 @@ async fn batch_writer_loop(
                     }
                     Some(BatchWrite::SessionMessage(msg)) => {
                         session_messages.push(msg);
+                    }
+                    Some(BatchWrite::TraceEvent { session_id, event }) => {
+                        if let Some(dir) = traces_dir.as_ref() {
+                            match trace_writers.entry(session_id.clone()) {
+                                std::collections::hash_map::Entry::Occupied(mut e) => {
+                                    if let Err(err) = e.get_mut().append(&event) {
+                                        tracing::warn!(
+                                            "BatchWriter: trace append failed for {session_id}: {err}"
+                                        );
+                                    }
+                                }
+                                std::collections::hash_map::Entry::Vacant(e) => {
+                                    match TraceWriter::open_confined(dir, &session_id) {
+                                        Ok(mut w) => {
+                                            if let Err(err) = w.append(&event) {
+                                                tracing::warn!(
+                                                    "BatchWriter: trace append failed for {session_id}: {err}"
+                                                );
+                                            }
+                                            e.insert(w);
+                                        }
+                                        Err(err) => tracing::warn!(
+                                            "BatchWriter: trace open failed for {session_id}: {err}"
+                                        ),
+                                    }
+                                }
+                            }
+                        } else {
+                            tracing::trace!("BatchWriter: trace event dropped (no traces_dir)");
+                        }
+                    }
+                    Some(BatchWrite::CloseSessionTrace { session_id }) => {
+                        // Dropping the writer finalizes the file; events are
+                        // durable (gzip member-per-event).
+                        trace_writers.remove(&session_id);
                     }
                     None => {
                         // Channel closed — flush remaining and exit
@@ -346,6 +434,7 @@ mod tests {
             h.state.clone(),
             h.logs.clone(),
             Some(h.convo.clone()),
+            None,
         ));
 
         // Enqueue a log and a session message. Neither is on the 10-item fast
@@ -390,6 +479,7 @@ mod tests {
             h.state.clone(),
             h.logs.clone(),
             Some(h.convo.clone()),
+            None,
         ));
 
         for (tin, tout) in [(1, 2), (3, 4), (5, 6), (7, 8)] {
@@ -428,6 +518,7 @@ mod tests {
             h.state.clone(),
             h.logs.clone(),
             Some(h.convo.clone()),
+            None,
         ));
 
         // Ten session messages pushes the pending-count gate at ≥10. The
@@ -465,7 +556,13 @@ mod tests {
 
         // Spawn WITHOUT a conversation repo — session messages should be
         // dropped on flush with a warn!(), not crash.
-        let task = tokio::spawn(batch_writer_loop(rx, h.state.clone(), h.logs.clone(), None));
+        let task = tokio::spawn(batch_writer_loop(
+            rx,
+            h.state.clone(),
+            h.logs.clone(),
+            None,
+            None,
+        ));
 
         tx.send(BatchWrite::SessionMessage(SessionMessage {
             session_id: h.session_id.clone(),
@@ -509,5 +606,71 @@ mod tests {
             .expect("execution exists");
         assert_eq!(execution.tokens_in, 100);
         assert_eq!(execution.tokens_out, 200);
+    }
+
+    fn trace_ev(span: &str) -> zbot_trace::TraceEvent {
+        zbot_trace::TraceEvent {
+            trace_id: "tr".into(),
+            span_id: span.into(),
+            session_id: "s-trace".into(),
+            execution_id: "e1".into(),
+            agent_id: "root".into(),
+            parent_session_id: None,
+            timestamp: "2026-07-07T00:00:00Z".into(),
+            level: "info".into(),
+            category: "tool_call".into(),
+            message: format!("ev {span}"),
+            duration_ms: None,
+            tool_name: Some("read_file".into()),
+            payload: None,
+            usage: None,
+            model: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn trace_events_stream_to_jsonl_gz() {
+        let h = setup();
+        // setup()'s VaultPaths::ensure_dirs_exist created data/traces (T9).
+        let traces_dir = h._tmp.path().join("data").join("traces");
+        assert!(traces_dir.exists(), "traces_dir should exist");
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(batch_writer_loop(
+            rx,
+            h.state.clone(),
+            h.logs.clone(),
+            Some(h.convo.clone()),
+            Some(traces_dir.clone()),
+        ));
+
+        tx.send(BatchWrite::TraceEvent {
+            session_id: "s-trace".into(),
+            event: trace_ev("a"),
+        })
+        .expect("send a");
+        tx.send(BatchWrite::TraceEvent {
+            session_id: "s-trace".into(),
+            event: trace_ev("b"),
+        })
+        .expect("send b");
+        tx.send(BatchWrite::CloseSessionTrace {
+            session_id: "s-trace".into(),
+        })
+        .expect("close");
+        drop(tx);
+        task.await.expect("task joins");
+
+        // The session's .jsonl.gz holds both events (gzip member-per-event).
+        let path = traces_dir.join("s-trace.jsonl.gz");
+        let bytes = std::fs::read(&path).expect("trace file exists");
+        use std::io::Read;
+        let mut dec = flate2::read::MultiGzDecoder::new(&bytes[..]);
+        let mut out = String::new();
+        dec.read_to_string(&mut out).expect("decode");
+        let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2, "two trace events decoded");
+        assert!(lines[0].contains(r#""span_id":"a""#));
+        assert!(lines[1].contains(r#""span_id":"b""#));
     }
 }

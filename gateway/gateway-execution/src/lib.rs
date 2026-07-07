@@ -71,4 +71,4 @@ pub use recall::{
 };
 pub use resource_provider::GatewayResourceProvider;
 pub use runner::{ExecutionRunner, ExecutionRunnerConfig, OnSessionReady};
-pub use session_state::{SessionState, SessionStateBuilder};
+pub use session_state::{build_context_state, ContextState, SessionState, SessionStateBuilder};

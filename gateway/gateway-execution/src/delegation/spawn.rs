@@ -794,6 +794,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
         crate::runner::core::write_turn_checkpoint(
             &checkpoints,
             &state_service,
+            &log_service,
+            &messages,
             &execution_id,
             &child_session_id,
             handle.current_iteration(),

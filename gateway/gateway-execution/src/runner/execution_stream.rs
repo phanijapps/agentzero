@@ -570,6 +570,8 @@ impl ExecutionStream {
         super::core::write_turn_checkpoint(
             &self.checkpoints,
             &self.state_service,
+            &self.log_service,
+            &self.messages,
             &execution_id,
             &session_id,
             handle.current_iteration(),

@@ -189,12 +189,13 @@ impl SessionStateBuilder {
         let session = &detail.session;
         let logs = &detail.logs;
 
-        // Messages table uses execution_id (exec-xxx), not conversation_id (sess-xxx).
-        // Replay once for this session; child-session messages are replayed lazily
-        // for response fallback only (most sessions resolve on the root replay).
+        // Messages are keyed by conversation_id (sess-xxx); session.session_id is
+        // the execution id (exec-xxx) that execution_logs use. Replay by
+        // conversation_id so root messages resolve. Child-session messages are
+        // replayed lazily for response fallback only.
         let root_messages = self
             .messages
-            .replay(&session.session_id, None, 10_000)
+            .replay(&session.conversation_id, None, 10_000)
             .unwrap_or_default();
 
         // user_message and token_count still come from ConversationRepository

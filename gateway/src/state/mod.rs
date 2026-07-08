@@ -543,6 +543,12 @@ impl AppState {
         // also needs it so the memory fact store can generate embeddings.
         let runner_embedding_client = embedding_client.clone();
 
+        // Build the conversation stores before the distiller/runtime so both
+        // use the same MessageStore/SessionMetaStore/CheckpointStore handles.
+        let (messages, session_meta, checkpoints, slim_logs, trace_analytics) =
+            build_conversation_stores(&paths)
+                .expect("Failed to initialize conversation/trace stores");
+
         // kg_store was built earlier (before memory_recall_inner moved
         // into Arc::new) so it could be wired on MemoryRecall. Both the
         // distiller and AppState fields below reuse the same Engram-backed
@@ -558,7 +564,8 @@ impl AppState {
             let mut distiller_inner = SessionDistiller::new(
                 provider_service.clone(),
                 embedding_client.clone(),
-                conversation_repo.clone(),
+                messages.clone(),
+                session_meta.clone(),
                 paths.clone(),
                 Some(settings.clone()),
             );
@@ -664,12 +671,6 @@ impl AppState {
                     store,
                 )) as Arc<dyn agent_tools::GoalAccess>
             });
-
-        // Build the conversation stores before the runtime so the runner can
-        // be wired with MessageStore/CheckpointStore at construction.
-        let (messages, session_meta, checkpoints, slim_logs, trace_analytics) =
-            build_conversation_stores(&paths)
-                .expect("Failed to initialize conversation/trace stores");
 
         // Create runtime with execution runner and connector registry
         let runtime = Arc::new(RuntimeService::with_runner_and_connectors(

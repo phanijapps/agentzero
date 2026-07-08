@@ -185,7 +185,7 @@ methods are gone from runner code. Completed 2026-07-08.
 **Done when:** delegation code has no `ConversationRepository` references.
 Completed 2026-07-08.
 
-### T5: Move distillation off `ConversationRepository`
+### T5: Move distillation off `ConversationRepository` — DONE
 
 **Depends on:** T1, T2
 
@@ -199,6 +199,7 @@ Completed 2026-07-08.
 - Replace transcript and ward lookups.
 
 **Done when:** `distillation.rs` has no `ConversationRepository` references.
+Completed 2026-07-08.
 
 ### T6: Move memory sleep/handoff off `ConversationStore`
 
@@ -277,3 +278,5 @@ Completed 2026-07-08.
   now read from `MessageStore::replay`.
 - 2026-07-08: T4 completed; delegation callback persistence, ward lookup, and
   crash-report transcript reads now use `MessageStore` plus `SessionMetaStore`.
+- 2026-07-08: T5 completed; `SessionDistiller` transcript and ward metadata
+  reads now use `MessageStore` plus `SessionMetaStore`.

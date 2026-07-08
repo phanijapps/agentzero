@@ -132,7 +132,7 @@ runtime/delegation callback -> `MessageStore::append`.
 **Done when:** `cargo test -p zbot-conversation` and `cargo check -p gateway`
 are green. Completed 2026-07-08.
 
-### T2: Add pure stored-message to chat-message conversion
+### T2: Add pure stored-message to chat-message conversion — DONE
 
 **Depends on:** none
 
@@ -147,7 +147,8 @@ are green. Completed 2026-07-08.
 - Keep it near runtime execution code, not in persistence.
 
 **Done when:** helper tests pass and no production caller needs the old
-repository conversion method.
+repository conversion method. Helper added 2026-07-08; production caller
+migration follows in T3.
 
 ### T3: Move runner history bootstrap off `ConversationRepository`
 
@@ -269,3 +270,5 @@ methods are gone from runner code.
 - 2026-07-08: initial spec and plan.
 - 2026-07-08: T1 completed; added `SessionMetaStore` and wired it into
   `AppState` on the shared conversation pool.
+- 2026-07-08: T2 completed; added a pure stored-message to runtime chat-history
+  conversion helper with malformed tool-call tolerance.

@@ -1,7 +1,7 @@
 # Plan: Dynamic Ontology and SKOS Taxonomy
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Drafting
+- **Status:** Executing
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as you learn. When it changes substantially
@@ -167,6 +167,8 @@ Observatory surfaces still load with additive governance health only.
 ### T1: Governance config and selector contract round-trip
 
 **Depends on:** none
+
+**Status:** Done on 2026-07-08.
 
 **Touches:** `stores/zbot-engram-adapter/src/config.rs`, `stores/zbot-engram-adapter/src/governance/**`, `gateway/gateway-memory/src/lib.rs`, `gateway/src/state/persistence_factory.rs`
 

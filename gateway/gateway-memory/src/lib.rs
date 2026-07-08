@@ -476,6 +476,9 @@ pub struct MemoryProviderSettings {
     /// Migration execution mode used by adapter tooling.
     #[serde(default)]
     pub migration_mode: MemoryMigrationMode,
+    /// Zbot-owned ontology/taxonomy governance policy.
+    #[serde(default)]
+    pub governance: MemoryGovernanceSettings,
 }
 
 impl Default for MemoryProviderSettings {
@@ -490,6 +493,116 @@ impl Default for MemoryProviderSettings {
             embedding_provider: MemoryEmbeddingProviderSettings::default(),
             sqlite_storage_layout: MemorySqliteStorageLayout::default(),
             migration_mode: MemoryMigrationMode::DryRun,
+            governance: MemoryGovernanceSettings::default(),
+        }
+    }
+}
+
+/// Zbot-owned ontology/taxonomy governance settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGovernanceSettings {
+    /// Local ontology definition files under the trusted config root.
+    #[serde(default)]
+    pub ontology_definition_paths: Vec<String>,
+    /// Local SKOS taxonomy definition files under the trusted config root.
+    #[serde(default)]
+    pub taxonomy_definition_paths: Vec<String>,
+    /// Fallback ontology/taxonomy selection.
+    #[serde(default)]
+    pub default_selection: MemoryGovernanceSelection,
+    /// Scoped selection overlays.
+    #[serde(default)]
+    pub overlays: Vec<MemoryGovernanceOverlay>,
+    /// Ontology validation mode.
+    #[serde(default)]
+    pub validation_mode: MemoryGovernanceValidationMode,
+    /// Behavior for unclassified records.
+    #[serde(default)]
+    pub allow_unclassified: MemoryAllowUnclassifiedPolicy,
+    /// SKOS expansion limits for recall.
+    #[serde(default)]
+    pub skos_expansion: MemorySkosExpansionSettings,
+}
+
+impl Default for MemoryGovernanceSettings {
+    fn default() -> Self {
+        Self {
+            ontology_definition_paths: Vec::new(),
+            taxonomy_definition_paths: Vec::new(),
+            default_selection: MemoryGovernanceSelection::default(),
+            overlays: Vec::new(),
+            validation_mode: MemoryGovernanceValidationMode::Advisory,
+            allow_unclassified: MemoryAllowUnclassifiedPolicy::Allow,
+            skos_expansion: MemorySkosExpansionSettings::default(),
+        }
+    }
+}
+
+/// Active ontology/taxonomy IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGovernanceSelection {
+    #[serde(default)]
+    pub ontology_ids: Vec<String>,
+    #[serde(default)]
+    pub taxonomy_scheme_ids: Vec<String>,
+}
+
+/// Scoped governance overlay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGovernanceOverlay {
+    #[serde(default)]
+    pub ward_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub selection: MemoryGovernanceSelection,
+}
+
+/// Ontology validation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryGovernanceValidationMode {
+    #[default]
+    Advisory,
+    Disabled,
+}
+
+/// Unclassified record policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryAllowUnclassifiedPolicy {
+    #[default]
+    Allow,
+    Warn,
+}
+
+/// SKOS recall expansion limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySkosExpansionSettings {
+    #[serde(default = "default_skos_expansion_depth")]
+    pub max_depth: u8,
+    #[serde(default = "default_skos_expansion_fan_out")]
+    pub max_fan_out: u16,
+    #[serde(default = "default_skos_expansion_candidates")]
+    pub max_candidates: u16,
+}
+
+impl Default for MemorySkosExpansionSettings {
+    fn default() -> Self {
+        Self {
+            max_depth: default_skos_expansion_depth(),
+            max_fan_out: default_skos_expansion_fan_out(),
+            max_candidates: default_skos_expansion_candidates(),
         }
     }
 }
@@ -621,6 +734,18 @@ fn default_embedding_dimensions() -> u32 {
 
 fn default_embedding_prompt_profile() -> String {
     "query".to_string()
+}
+
+fn default_skos_expansion_depth() -> u8 {
+    1
+}
+
+fn default_skos_expansion_fan_out() -> u16 {
+    8
+}
+
+fn default_skos_expansion_candidates() -> u16 {
+    16
 }
 
 // ============================================================================
@@ -1285,6 +1410,8 @@ mod tests {
         assert_eq!(m.provider.mode, MemoryProviderMode::Engram);
         assert_eq!(m.provider.engram_path, "engram");
         assert_eq!(m.provider.tenant, "agentzero");
+        assert!(m.provider.governance.ontology_definition_paths.is_empty());
+        assert!(m.provider.governance.taxonomy_definition_paths.is_empty());
         assert_eq!(
             m.provider.sqlite_storage_layout,
             MemorySqliteStorageLayout::SingleFile {
@@ -1344,6 +1471,66 @@ mod tests {
                 file_name: "agent_memory.sqlite".to_string()
             }
         );
+    }
+
+    #[test]
+    fn memory_settings_deserializes_governance_additively() {
+        let json = r#"{
+            "provider": {
+                "governance": {
+                    "ontologyDefinitionPaths": ["governance/base-ontology.json"],
+                    "taxonomyDefinitionPaths": ["governance/base-taxonomy.json"],
+                    "defaultSelection": {
+                        "ontologyIds": ["zbot.base:v1"],
+                        "taxonomySchemeIds": ["zbot.tasks:v1"]
+                    },
+                    "overlays": [{
+                        "wardId": "ward-a",
+                        "selection": {
+                            "ontologyIds": ["ward.finance:v1"],
+                            "taxonomySchemeIds": ["ward.finance:v1"]
+                        }
+                    }],
+                    "validationMode": "disabled",
+                    "allowUnclassified": "warn",
+                    "skosExpansion": {
+                        "maxDepth": 2,
+                        "maxFanOut": 4,
+                        "maxCandidates": 10
+                    }
+                }
+            }
+        }"#;
+
+        let m: MemorySettings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            m.provider.governance.ontology_definition_paths,
+            vec!["governance/base-ontology.json"]
+        );
+        assert_eq!(
+            m.provider.governance.taxonomy_definition_paths,
+            vec!["governance/base-taxonomy.json"]
+        );
+        assert_eq!(
+            m.provider.governance.default_selection.ontology_ids,
+            vec!["zbot.base:v1"]
+        );
+        assert_eq!(
+            m.provider.governance.overlays[0].ward_id.as_deref(),
+            Some("ward-a")
+        );
+        assert_eq!(
+            m.provider.governance.validation_mode,
+            MemoryGovernanceValidationMode::Disabled
+        );
+        assert_eq!(
+            m.provider.governance.allow_unclassified,
+            MemoryAllowUnclassifiedPolicy::Warn
+        );
+        assert_eq!(m.provider.governance.skos_expansion.max_depth, 2);
+        assert_eq!(m.provider.governance.skos_expansion.max_fan_out, 4);
+        assert_eq!(m.provider.governance.skos_expansion.max_candidates, 10);
     }
 
     #[test]

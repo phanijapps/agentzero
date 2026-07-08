@@ -13,9 +13,11 @@ use std::{path::PathBuf, sync::Arc};
 use agent_runtime::llm::embedding::EmbeddingClient;
 use gateway_services::VaultPaths;
 use zbot_engram_adapter::{
-    AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout, EmbeddingMode,
-    EngramBeliefStore, EngramKnowledgeGraphStore, EngramMemoryFactStore, EngramProvider,
-    EngramSidecarStores, EngramWikiStore, MigrationMode, ScopeTarget,
+    AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout,
+    AllowUnclassifiedPolicy, EmbeddingMode, EngramBeliefStore, EngramKnowledgeGraphStore,
+    EngramMemoryFactStore, EngramProvider, EngramSidecarStores, EngramWikiStore, GovernanceOverlay,
+    GovernancePolicy, GovernanceSelection, MigrationMode, ScopeTarget, SkosExpansionPolicy,
+    ValidationMode,
 };
 use zbot_stores::{KnowledgeGraphStore, MemoryFactStore};
 
@@ -94,7 +96,8 @@ pub fn adapter_config_from_memory_provider_settings(
     let mut config = AdapterConfig::engram_for_data_root(
         paths.data_dir(),
         PathBuf::from(settings.engram_path.clone()),
-    );
+    )
+    .with_trusted_config_root(paths.config_dir());
     config.tenant = settings.tenant.clone();
     config.ward_scope_target = map_scope_target(settings.ward_scope_target);
     config.partition_scope_target = map_scope_target(settings.partition_scope_target);
@@ -115,8 +118,59 @@ pub fn adapter_config_from_memory_provider_settings(
         gateway_memory::MemoryMigrationMode::DryRun => MigrationMode::DryRun,
         gateway_memory::MemoryMigrationMode::Apply => MigrationMode::Apply,
     };
+    config.governance = map_governance_policy(&settings.governance);
     config.validate().map_err(|error| error.to_string())?;
     Ok(config)
+}
+
+fn map_governance_policy(settings: &gateway_memory::MemoryGovernanceSettings) -> GovernancePolicy {
+    GovernancePolicy {
+        ontology_definition_paths: settings
+            .ontology_definition_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+        taxonomy_definition_paths: settings
+            .taxonomy_definition_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+        default_selection: map_governance_selection(&settings.default_selection),
+        overlays: settings
+            .overlays
+            .iter()
+            .map(|overlay| GovernanceOverlay {
+                ward_id: overlay.ward_id.clone(),
+                project_id: overlay.project_id.clone(),
+                session_id: overlay.session_id.clone(),
+                source_id: overlay.source_id.clone(),
+                task_id: overlay.task_id.clone(),
+                selection: map_governance_selection(&overlay.selection),
+            })
+            .collect(),
+        validation_mode: match settings.validation_mode {
+            gateway_memory::MemoryGovernanceValidationMode::Advisory => ValidationMode::Advisory,
+            gateway_memory::MemoryGovernanceValidationMode::Disabled => ValidationMode::Disabled,
+        },
+        allow_unclassified: match settings.allow_unclassified {
+            gateway_memory::MemoryAllowUnclassifiedPolicy::Allow => AllowUnclassifiedPolicy::Allow,
+            gateway_memory::MemoryAllowUnclassifiedPolicy::Warn => AllowUnclassifiedPolicy::Warn,
+        },
+        skos_expansion: SkosExpansionPolicy {
+            max_depth: settings.skos_expansion.max_depth,
+            max_fan_out: settings.skos_expansion.max_fan_out,
+            max_candidates: settings.skos_expansion.max_candidates,
+        },
+    }
+}
+
+fn map_governance_selection(
+    selection: &gateway_memory::MemoryGovernanceSelection,
+) -> GovernanceSelection {
+    GovernanceSelection {
+        ontology_ids: selection.ontology_ids.clone(),
+        taxonomy_scheme_ids: selection.taxonomy_scheme_ids.clone(),
+    }
 }
 
 fn map_sqlite_storage_layout(
@@ -181,6 +235,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = VaultPaths::new(dir.path().to_path_buf());
         std::fs::create_dir_all(paths.data_dir()).unwrap();
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
         let settings = gateway_memory::MemoryProviderSettings {
             mode: gateway_memory::MemoryProviderMode::Engram,
             engram_path: "engram".to_string(),
@@ -202,11 +257,57 @@ mod tests {
         assert_eq!(config.ward_scope_target, ScopeTarget::Environment);
         assert_eq!(config.partition_scope_target, ScopeTarget::Subject);
         assert_eq!(config.embedding_mode, EmbeddingMode::EngramRefs);
+        assert!(config.governance.is_inert());
         assert_eq!(
             config.sqlite_storage_layout,
             AdapterSqliteStorageLayout::SingleFile {
                 file_name: "engram_data.db".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn adapter_config_resolves_governance_paths_under_vault_config_dir() {
+        let dir = TempDir::new().unwrap();
+        let paths = VaultPaths::new(dir.path().to_path_buf());
+        std::fs::create_dir_all(paths.data_dir()).unwrap();
+        std::fs::create_dir_all(paths.config_dir().join("governance")).unwrap();
+        let settings = gateway_memory::MemoryProviderSettings {
+            governance: gateway_memory::MemoryGovernanceSettings {
+                ontology_definition_paths: vec!["governance/base-ontology.json".to_string()],
+                taxonomy_definition_paths: vec!["governance/base-taxonomy.json".to_string()],
+                default_selection: gateway_memory::MemoryGovernanceSelection {
+                    ontology_ids: vec!["zbot.base:v1".to_string()],
+                    taxonomy_scheme_ids: vec!["zbot.tasks:v1".to_string()],
+                },
+                ..gateway_memory::MemoryGovernanceSettings::default()
+            },
+            ..gateway_memory::MemoryProviderSettings::default()
+        };
+
+        let config = adapter_config_from_memory_provider_settings(&paths, &settings)
+            .expect("adapter config");
+        let resolved = config
+            .resolve_governance_definition_paths()
+            .expect("governance paths");
+
+        assert_eq!(
+            resolved.ontology_definition_paths,
+            vec![paths
+                .config_dir()
+                .join("governance")
+                .join("base-ontology.json")]
+        );
+        assert_eq!(
+            resolved.taxonomy_definition_paths,
+            vec![paths
+                .config_dir()
+                .join("governance")
+                .join("base-taxonomy.json")]
+        );
+        assert_eq!(
+            config.governance.default_selection.ontology_ids,
+            vec!["zbot.base:v1"]
         );
     }
 

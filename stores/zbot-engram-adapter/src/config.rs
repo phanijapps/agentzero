@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     error::{AdapterError, AdapterResult},
+    governance::GovernancePolicy,
     scope::{ScopeMapper, ScopeTarget},
 };
 
@@ -123,6 +124,12 @@ pub struct AdapterConfig {
     /// confinement boundary.
     #[serde(skip)]
     pub(crate) data_root: Option<PathBuf>,
+    /// Trusted zbot config root injected by the composition layer.
+    ///
+    /// Governance definition paths are resolved beneath this root. This is not
+    /// deserialized from user settings.
+    #[serde(skip)]
+    pub(crate) config_root: Option<PathBuf>,
     /// Tenant used for Engram scopes.
     pub tenant: String,
     /// Where AgentZero ward IDs map in Engram scope.
@@ -139,6 +146,9 @@ pub struct AdapterConfig {
     pub sqlite_storage_layout: AdapterSqliteStorageLayout,
     /// Migration execution mode.
     pub migration_mode: MigrationMode,
+    /// Zbot-owned ontology and taxonomy governance policy.
+    #[serde(default)]
+    pub governance: GovernancePolicy,
 }
 
 impl Default for AdapterConfig {
@@ -147,6 +157,7 @@ impl Default for AdapterConfig {
             provider_mode: ProviderMode::CurrentSqlite,
             engram_path: None,
             data_root: None,
+            config_root: None,
             tenant: "agentzero".to_string(),
             ward_scope_target: ScopeTarget::Workspace,
             partition_scope_target: ScopeTarget::Workspace,
@@ -154,6 +165,7 @@ impl Default for AdapterConfig {
             embedding_provider: AdapterEmbeddingProviderConfig::default(),
             sqlite_storage_layout: AdapterSqliteStorageLayout::default(),
             migration_mode: MigrationMode::DryRun,
+            governance: GovernancePolicy::default(),
         }
     }
 }
@@ -175,6 +187,12 @@ impl AdapterConfig {
     /// Inject the trusted zbot data root supplied by the composition layer.
     pub fn with_trusted_data_root(mut self, data_root: impl Into<PathBuf>) -> Self {
         self.data_root = Some(data_root.into());
+        self
+    }
+
+    /// Inject the trusted zbot config root supplied by the composition layer.
+    pub fn with_trusted_config_root(mut self, config_root: impl Into<PathBuf>) -> Self {
+        self.config_root = Some(config_root.into());
         self
     }
 
@@ -211,6 +229,15 @@ impl AdapterConfig {
                 field: "embeddingProvider.promptProfile",
             });
         }
+        if (!self.governance.ontology_definition_paths.is_empty()
+            || !self.governance.taxonomy_definition_paths.is_empty())
+            && self.config_root.is_none()
+        {
+            return Err(AdapterError::MissingConfig {
+                field: "configRoot",
+            });
+        }
+        let _ = self.resolve_governance_definition_paths()?;
         Ok(())
     }
 
@@ -239,7 +266,48 @@ impl AdapterConfig {
                 field: "engramPath",
             })?;
 
-        resolve_confined_path(data_root, engram_path)
+        resolve_confined_path("engramPath", data_root, engram_path)
+    }
+
+    /// Resolve all configured governance definition files under the trusted
+    /// config root.
+    pub fn resolve_governance_definition_paths(
+        &self,
+    ) -> AdapterResult<ResolvedGovernanceDefinitionPaths> {
+        let Some(config_root) = self.config_root.as_deref() else {
+            if self.governance.ontology_definition_paths.is_empty()
+                && self.governance.taxonomy_definition_paths.is_empty()
+            {
+                return Ok(ResolvedGovernanceDefinitionPaths::default());
+            }
+            return Err(AdapterError::MissingConfig {
+                field: "configRoot",
+            });
+        };
+
+        let ontology_definition_paths = self
+            .governance
+            .ontology_definition_paths
+            .iter()
+            .map(|path| {
+                resolve_confined_path("governance.ontologyDefinitionPaths", config_root, path)
+            })
+            .map(|resolved| resolved.map(|path| path.path().to_path_buf()))
+            .collect::<AdapterResult<Vec<_>>>()?;
+        let taxonomy_definition_paths = self
+            .governance
+            .taxonomy_definition_paths
+            .iter()
+            .map(|path| {
+                resolve_confined_path("governance.taxonomyDefinitionPaths", config_root, path)
+            })
+            .map(|resolved| resolved.map(|path| path.path().to_path_buf()))
+            .collect::<AdapterResult<Vec<_>>>()?;
+
+        Ok(ResolvedGovernanceDefinitionPaths {
+            ontology_definition_paths,
+            taxonomy_definition_paths,
+        })
     }
 
     /// Build Engram's provider-facade config from the adapter config.
@@ -326,6 +394,15 @@ fn default_single_file_name() -> String {
 pub struct ResolvedEngramPath {
     data_root: PathBuf,
     path: PathBuf,
+}
+
+/// Confined governance definition paths.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResolvedGovernanceDefinitionPaths {
+    /// Ontology definition files resolved under the trusted config root.
+    pub ontology_definition_paths: Vec<PathBuf>,
+    /// Taxonomy definition files resolved under the trusted config root.
+    pub taxonomy_definition_paths: Vec<PathBuf>,
 }
 
 impl ResolvedEngramPath {
@@ -430,15 +507,19 @@ impl ResolvedEngramPath {
     }
 }
 
-fn resolve_confined_path(data_root: &Path, requested: &Path) -> AdapterResult<ResolvedEngramPath> {
+fn resolve_confined_path(
+    field: &'static str,
+    data_root: &Path,
+    requested: &Path,
+) -> AdapterResult<ResolvedEngramPath> {
     let data_root = data_root
         .canonicalize()
         .map_err(|_| AdapterError::PathNotConfined {
-            field: "dataRoot",
+            field,
             reason: "root does not exist or cannot be resolved".to_string(),
         })?;
 
-    reject_unsafe_components("engramPath", requested)?;
+    reject_unsafe_components(field, requested)?;
 
     let candidate = if requested.is_absolute() {
         requested.to_path_buf()
@@ -449,14 +530,14 @@ fn resolve_confined_path(data_root: &Path, requested: &Path) -> AdapterResult<Re
     let parent = candidate
         .parent()
         .ok_or_else(|| AdapterError::PathNotConfined {
-            field: "engramPath",
+            field,
             reason: "database path has no parent".to_string(),
         })?;
 
     let resolved_parent = resolve_existing_parent(parent)?;
     if !resolved_parent.starts_with(&data_root) {
         return Err(AdapterError::PathNotConfined {
-            field: "engramPath",
+            field,
             reason: "path resolves outside the zbot data root".to_string(),
         });
     }
@@ -464,8 +545,8 @@ fn resolve_confined_path(data_root: &Path, requested: &Path) -> AdapterResult<Re
     let file_name = candidate
         .file_name()
         .ok_or_else(|| AdapterError::PathNotConfined {
-            field: "engramPath",
-            reason: "database path has no file name".to_string(),
+            field,
+            reason: "path has no file name".to_string(),
         })?;
 
     Ok(ResolvedEngramPath {
@@ -533,6 +614,10 @@ fn resolve_existing_parent(parent: &Path) -> AdapterResult<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::governance::{
+        GovernanceOverlay, GovernancePolicy, GovernanceScope, GovernanceSelection,
+    };
+    use crate::AdapterErrorKind;
 
     #[test]
     fn default_config_is_safe_current_provider() {
@@ -542,6 +627,7 @@ mod tests {
         assert_eq!(config.embedding_mode, EmbeddingMode::PreserveBytes);
         assert_eq!(config.migration_mode, MigrationMode::DryRun);
         assert_eq!(config.ward_scope_target, ScopeTarget::Workspace);
+        assert!(config.governance.is_inert());
         assert!(config.validate().is_ok());
     }
 
@@ -587,5 +673,90 @@ mod tests {
 
         assert_eq!(scope.tenant, "tenant-a");
         assert_eq!(scope.workspace.as_deref(), Some("ward-a"));
+    }
+
+    #[test]
+    fn governance_definition_paths_are_confined_to_config_root() {
+        let root = tempfile::tempdir().expect("root");
+        let config_root = root.path().join("config");
+        std::fs::create_dir_all(config_root.join("governance")).expect("config");
+        let mut config = AdapterConfig::engram_for_data_root(root.path(), "engram")
+            .with_trusted_config_root(&config_root);
+        config.governance.ontology_definition_paths =
+            vec![PathBuf::from("governance/base-ontology.json")];
+        config.governance.taxonomy_definition_paths =
+            vec![PathBuf::from("governance/base-taxonomy.json")];
+
+        let resolved = config
+            .resolve_governance_definition_paths()
+            .expect("resolved governance paths");
+
+        assert_eq!(
+            resolved.ontology_definition_paths,
+            vec![config_root.join("governance").join("base-ontology.json")]
+        );
+        assert_eq!(
+            resolved.taxonomy_definition_paths,
+            vec![config_root.join("governance").join("base-taxonomy.json")]
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn governance_definition_paths_reject_escape() {
+        let root = tempfile::tempdir().expect("root");
+        let config_root = root.path().join("config");
+        std::fs::create_dir_all(&config_root).expect("config");
+        let mut config = AdapterConfig::engram_for_data_root(root.path(), "engram")
+            .with_trusted_config_root(&config_root);
+        config.governance.ontology_definition_paths = vec![PathBuf::from("../outside.json")];
+
+        let err = config
+            .resolve_governance_definition_paths()
+            .expect_err("path escapes must be rejected");
+
+        assert_eq!(err.kind(), AdapterErrorKind::PathNotConfined);
+    }
+
+    #[test]
+    fn governance_selector_precedence_is_deterministic() {
+        let mut config = AdapterConfig::default();
+        config.governance = GovernancePolicy {
+            default_selection: selection("default"),
+            overlays: vec![
+                GovernanceOverlay {
+                    ward_id: Some("ward".to_string()),
+                    selection: selection("ward"),
+                    ..GovernanceOverlay::default()
+                },
+                GovernanceOverlay {
+                    session_id: Some("session".to_string()),
+                    selection: selection("session"),
+                    ..GovernanceOverlay::default()
+                },
+                GovernanceOverlay {
+                    task_id: Some("task".to_string()),
+                    selection: selection("task"),
+                    ..GovernanceOverlay::default()
+                },
+            ],
+            ..GovernancePolicy::default()
+        };
+
+        let selected = config.governance.select(GovernanceScope {
+            ward_id: Some("ward"),
+            session_id: Some("session"),
+            task_id: Some("task"),
+            ..GovernanceScope::default()
+        });
+
+        assert_eq!(selected, selection("task"));
+    }
+
+    fn selection(suffix: &str) -> GovernanceSelection {
+        GovernanceSelection {
+            ontology_ids: vec![format!("ontology.{suffix}")],
+            taxonomy_scheme_ids: vec![format!("taxonomy.{suffix}")],
+        }
     }
 }

@@ -339,6 +339,8 @@ pub enum GatewayEvent {
         /// Non-secret embedding provider/model/dimension identity used for
         /// query vectors. Never includes vectors, query text, API keys, or URLs.
         embedding_provider_identity: Option<serde_json::Value>,
+        /// Non-secret SKOS expansion cues used to widen the retrieval query.
+        taxonomy_expansion: Vec<serde_json::Value>,
     },
 }
 

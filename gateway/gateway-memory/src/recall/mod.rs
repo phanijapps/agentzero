@@ -36,10 +36,30 @@ use std::sync::Arc;
 use crate::{MmrConfig, RecallConfig};
 use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
 use zbot_stores_domain::{MemoryFact, Procedure, ScoredFact};
-use zbot_stores_traits::EmbeddingQueryIdentity;
+use zbot_stores_traits::{
+    EmbeddingQueryIdentity, RecallTaxonomyExpander, RecallTaxonomyExpansionCandidate,
+    RecallTaxonomyExpansionRequest,
+};
 
 const MAX_RECALL_EMBED_QUERY_CHARS: usize = 500;
 const RETRY_RECALL_EMBED_QUERY_CHARS: usize = 384;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecallSkosExpansionLimits {
+    pub max_depth: u8,
+    pub max_fan_out: u16,
+    pub max_candidates: u16,
+}
+
+impl Default for RecallSkosExpansionLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 1,
+            max_fan_out: 8,
+            max_candidates: 16,
+        }
+    }
+}
 
 /// Retrieves relevant memory facts for injection at session start.
 ///
@@ -66,6 +86,8 @@ pub struct MemoryRecall {
     /// MMR diversity reranking. When `None` or `enabled = false`,
     /// `recall_unified` is byte-for-byte identical to pre-MMR behavior.
     mmr_config: Option<MmrConfig>,
+    taxonomy_expander: Option<Arc<dyn RecallTaxonomyExpander>>,
+    taxonomy_limits: RecallSkosExpansionLimits,
     /// Observatory v2 (Phase 3) — optional EventBus for emitting
     /// `RecallTrace` telemetry. When `None` (tests, headless invocations),
     /// recall stays silent. Production wiring attaches this in
@@ -98,6 +120,8 @@ impl MemoryRecall {
             belief_store: None,
             query_gate: None,
             mmr_config: None,
+            taxonomy_expander: None,
+            taxonomy_limits: RecallSkosExpansionLimits::default(),
             event_bus: None,
             config,
         }
@@ -132,6 +156,14 @@ impl MemoryRecall {
     /// pre-MMR behavior.
     pub fn set_mmr_config(&mut self, cfg: MmrConfig) {
         self.mmr_config = Some(cfg);
+    }
+
+    pub fn set_taxonomy_expander(&mut self, expander: Arc<dyn RecallTaxonomyExpander>) {
+        self.taxonomy_expander = Some(expander);
+    }
+
+    pub fn set_taxonomy_expansion_limits(&mut self, limits: RecallSkosExpansionLimits) {
+        self.taxonomy_limits = limits;
     }
 
     /// Access the recall configuration.
@@ -383,7 +415,16 @@ impl MemoryRecall {
         active_goals: &[GoalLite],
         budget: usize,
     ) -> Result<Vec<ScoredItem>, String> {
-        let query_emb = self.embed_query(query).await;
+        let taxonomy_expansion = self.expand_query_with_taxonomy(query, ward_id).await;
+        let retrieval_query = taxonomy_expansion
+            .as_ref()
+            .map(|expansion| expansion.expanded_query.as_str())
+            .unwrap_or(query);
+        let taxonomy_candidates = taxonomy_expansion
+            .as_ref()
+            .map(|expansion| expansion.candidates.clone())
+            .unwrap_or_default();
+        let query_emb = self.embed_query(retrieval_query).await;
         let query_identity = query_emb
             .as_ref()
             .and_then(|_| self.embedding_query_identity());
@@ -399,7 +440,7 @@ impl MemoryRecall {
             store
                 .search_memory_facts_hybrid_with_identity(
                     Some(agent_id),
-                    query,
+                    retrieval_query,
                     "hybrid",
                     10,
                     ward_id,
@@ -790,6 +831,7 @@ impl MemoryRecall {
                 ("graph", graph_items.len() + traversal_items.len()),
                 ("beliefs", belief_items.len()),
                 ("hierarchy", hier_items.len() + hier_relation_items.len()),
+                ("taxonomy", taxonomy_candidates.len()),
             ] {
                 if count > 0 {
                     match_sources.push(source.to_string());
@@ -802,6 +844,9 @@ impl MemoryRecall {
             ];
             if self.mmr_config.as_ref().is_some_and(|cfg| cfg.enabled) {
                 ranking_reasons.push("mmr_diversity".to_string());
+            }
+            if !taxonomy_candidates.is_empty() {
+                ranking_reasons.push("skos_taxonomy_expansion".to_string());
             }
             let degraded_reasons = if query_emb.is_none() {
                 vec!["query_embedding_unavailable".to_string()]
@@ -828,6 +873,7 @@ impl MemoryRecall {
                 ranking_reasons,
                 degraded_reasons,
                 embedding_provider_identity,
+                taxonomy_expansion: taxonomy_trace(&taxonomy_candidates),
             });
         }
 
@@ -866,6 +912,29 @@ impl MemoryRecall {
         let lambda = self.mmr_config.as_ref().map(|c| c.lambda).unwrap_or(0.6);
         let reranked = self.mmr_rerank(fused, lambda, budget).await;
         Ok(reranked)
+    }
+
+    async fn expand_query_with_taxonomy(
+        &self,
+        query: &str,
+        ward_id: Option<&str>,
+    ) -> Option<zbot_stores_traits::RecallTaxonomyExpansion> {
+        let expander = self.taxonomy_expander.as_ref()?;
+        let limits = self.taxonomy_limits;
+        if limits.max_candidates == 0 {
+            return None;
+        }
+        expander
+            .expand_recall_query(RecallTaxonomyExpansionRequest {
+                query: query.to_string(),
+                ward_id: ward_id.map(ToOwned::to_owned),
+                max_depth: limits.max_depth,
+                max_fan_out: limits.max_fan_out,
+                max_candidates: limits.max_candidates,
+            })
+            .await
+            .ok()
+            .filter(|expansion| !expansion.candidates.is_empty())
     }
 
     /// Emit typed context atoms from the existing unified recall path.
@@ -1138,6 +1207,22 @@ fn bounded_recall_embedding_query(text: &str, max_chars: usize) -> String {
 
 fn compact_recall_embedding_query(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn taxonomy_trace(candidates: &[RecallTaxonomyExpansionCandidate]) -> Vec<serde_json::Value> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "schemeId": candidate.scheme_id,
+                "conceptId": candidate.concept_id,
+                "label": candidate.label,
+                "matchedLabel": candidate.matched_label,
+                "relation": candidate.relation,
+                "depth": candidate.depth,
+            })
+        })
+        .collect()
 }
 
 fn is_embedding_context_length_error(error: &EmbeddingError) -> bool {
@@ -2589,6 +2674,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recall_unified_uses_taxonomy_expanded_query_for_retrieval() {
+        struct RecordingExpandedQueryStore {
+            saw_query: Arc<Mutex<Option<String>>>,
+        }
+
+        #[async_trait]
+        impl zbot_stores::MemoryFactStore for RecordingExpandedQueryStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!([]))
+            }
+
+            async fn search_memory_facts_hybrid_with_identity(
+                &self,
+                _agent_id: Option<&str>,
+                query: &str,
+                _mode: &str,
+                _limit: usize,
+                _ward_id: Option<&str>,
+                _query_embedding: Option<&[f32]>,
+                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                _as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                *self.saw_query.lock().unwrap() = Some(query.to_string());
+                Ok(Vec::new())
+            }
+        }
+
+        struct StaticTaxonomyExpander;
+
+        #[async_trait]
+        impl zbot_stores_traits::RecallTaxonomyExpander for StaticTaxonomyExpander {
+            async fn expand_recall_query(
+                &self,
+                request: zbot_stores_traits::RecallTaxonomyExpansionRequest,
+            ) -> Result<zbot_stores_traits::RecallTaxonomyExpansion, String> {
+                assert_eq!(request.max_depth, 1);
+                assert_eq!(request.max_fan_out, 8);
+                assert_eq!(request.max_candidates, 16);
+                Ok(zbot_stores_traits::RecallTaxonomyExpansion {
+                    expanded_query: format!("{} Knowledge Graph", request.query),
+                    candidates: vec![zbot_stores_traits::RecallTaxonomyExpansionCandidate {
+                        scheme_id: "zbot.general:v1".to_string(),
+                        concept_id: "zbot.general:v1:concept:knowledge_graph".to_string(),
+                        label: "Knowledge Graph".to_string(),
+                        matched_label: "kg".to_string(),
+                        relation: None,
+                        depth: 0,
+                    }],
+                })
+            }
+        }
+
+        let saw_query = Arc::new(Mutex::new(None));
+        let store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(RecordingExpandedQueryStore {
+            saw_query: saw_query.clone(),
+        });
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(TestEmbed);
+        let mut recall = MemoryRecall::new(Some(embed), Arc::new(RecallConfig::default()));
+        recall.set_memory_store(store);
+        recall.set_taxonomy_expander(Arc::new(StaticTaxonomyExpander));
+
+        let _ = recall
+            .recall_unified("agent-a", "kg recall", None, &[], 5)
+            .await
+            .expect("unified recall");
+
+        assert_eq!(
+            saw_query.lock().unwrap().as_deref(),
+            Some("kg recall Knowledge Graph")
+        );
+    }
+
+    #[tokio::test]
     async fn recall_unified_keeps_rrf_scaled_engram_fact_with_default_min_score() {
         struct RrfScaleStore;
 
@@ -2852,6 +3028,7 @@ mod tests {
                 "promptProfile": "query",
                 "normalization": null
             })),
+            taxonomy_expansion: Vec::new(),
         };
         let trace_json = serde_json::to_string(&trace).expect("serialize recall trace");
         assert!(trace_json.contains("match_sources"));

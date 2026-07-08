@@ -272,6 +272,7 @@ fn gateway_scenarios() -> Vec<Value> {
                         "promptProfile": "query",
                         "normalization": null
                     })),
+                    taxonomy_expansion: Vec::new(),
                 },
             ],
         ),

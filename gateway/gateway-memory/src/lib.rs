@@ -21,7 +21,7 @@ pub use recall::query_gate::{
 pub use recall::scored_item::{
     intent_boost, rrf_merge, GoalLite, ItemKind, Provenance, ScoredItem,
 };
-pub use recall::MemoryRecall;
+pub use recall::{MemoryRecall, RecallSkosExpansionLimits};
 pub use sleep::belief_contradiction_detector::{
     BeliefContradictionConfig, BeliefContradictionDetector, ContradictionDetectionStats,
     ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision, LlmContradictionJudge,

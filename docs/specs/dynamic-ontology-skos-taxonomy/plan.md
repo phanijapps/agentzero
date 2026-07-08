@@ -294,6 +294,8 @@ recorded, and public/additive output is sanitized.
 
 **Depends on:** T3, T4
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/governance/**`, `gateway/gateway-memory/src/recall/**`
 
 **Tests:**

@@ -1186,6 +1186,7 @@ pub(crate) fn gateway_event_to_server_message(event: GatewayEvent) -> Option<Ser
             ranking_reasons: _,
             degraded_reasons: _,
             embedding_provider_identity: _,
+            taxonomy_expansion,
         } => Some(ServerMessage::RecallTrace {
             agent_id,
             conversation_id,
@@ -1193,6 +1194,7 @@ pub(crate) fn gateway_event_to_server_message(event: GatewayEvent) -> Option<Ser
             seed_aggregate_ids,
             lca_aggregate_id,
             surfaced_item_count,
+            taxonomy_expansion,
             seq: None,
         }),
     }

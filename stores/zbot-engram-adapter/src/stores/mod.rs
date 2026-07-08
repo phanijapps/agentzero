@@ -4,4 +4,5 @@ pub mod beliefs;
 pub mod knowledge_graph;
 pub mod memory_facts;
 pub mod sidecars;
+pub mod taxonomy_recall;
 pub mod wiki;

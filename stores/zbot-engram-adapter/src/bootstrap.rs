@@ -7,7 +7,7 @@ use engram_conformance::bootstrap_provider;
 use engram_domain::CapabilityState;
 use engram_hierarchy::HierarchyRepository;
 use engram_integration::EngramProvider as UpstreamEngramProvider;
-use engram_knowledge::KnowledgeRepository;
+use engram_knowledge::{KnowledgeRepository, TaxonomyRepository};
 use engram_memory::MemoryService;
 use tokio::runtime::Handle;
 
@@ -140,6 +140,13 @@ impl EngramProvider {
             .hierarchy()
             .cloned()
             .ok_or_else(|| unsupported_upstream_handle("hierarchy"))
+    }
+
+    pub(crate) fn taxonomy(&self) -> AdapterResult<Arc<dyn TaxonomyRepository>> {
+        self.provider
+            .taxonomy()
+            .cloned()
+            .ok_or_else(|| unsupported_upstream_handle("taxonomy"))
     }
 }
 

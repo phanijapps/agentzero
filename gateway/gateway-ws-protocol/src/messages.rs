@@ -458,6 +458,8 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         lca_aggregate_id: Option<String>,
         surfaced_item_count: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        taxonomy_expansion: Vec<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },

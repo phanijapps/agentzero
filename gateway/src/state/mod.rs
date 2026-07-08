@@ -199,19 +199,19 @@ pub struct AppState {
     pub advertise_handle: std::sync::Arc<std::sync::Mutex<Option<discovery::AdvertiseHandle>>>,
 }
 
-/// Construct the new conversation/trace stores sharing **one** r2d2 pool, with
-/// both crates' schemas initialized on it (`messages`+`checkpoints` via
-/// `open_conversation_pool`; `execution_logs` here). The old `conversations`
-/// field stays in place until the T16 cutover delete.
-fn build_conversation_stores(
-    paths: &SharedVaultPaths,
-) -> anyhow::Result<(
+type ConversationStoreBundle = (
     Arc<dyn zbot_conversation::MessageStore>,
     Arc<dyn zbot_conversation::SessionMetaStore>,
     Arc<dyn zbot_conversation::CheckpointStore>,
     Arc<dyn zbot_trace::SlimLogStore>,
     Arc<zbot_trace::TraceAnalytics>,
-)> {
+);
+
+/// Construct the new conversation/trace stores sharing **one** r2d2 pool, with
+/// both crates' schemas initialized on it (`messages`+`checkpoints` via
+/// `open_conversation_pool`; `execution_logs` here). The old `conversations`
+/// field stays in place until the T16 cutover delete.
+fn build_conversation_stores(paths: &SharedVaultPaths) -> anyhow::Result<ConversationStoreBundle> {
     let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db())?;
     {
         let conn = pool.get()?;
@@ -426,6 +426,24 @@ impl AppState {
             (memory_recall_inner.as_mut(), early_memory_store.as_ref())
         {
             recall.set_memory_store(mem.clone());
+        }
+
+        if let Some(recall) = memory_recall_inner.as_mut() {
+            let taxonomy_expander: Option<Arc<dyn zbot_stores_traits::RecallTaxonomyExpander>> =
+                engram_store_bundle
+                    .as_ref()
+                    .map(|bundle| bundle.taxonomy_expander.clone());
+            if let Some(taxonomy_expander) = taxonomy_expander {
+                recall.set_taxonomy_expander(taxonomy_expander);
+            }
+            if let Ok(settings) = gateway_services::SettingsService::new(paths.clone()).load() {
+                let limits = settings.execution.memory.provider.governance.skos_expansion;
+                recall.set_taxonomy_expansion_limits(gateway_memory::RecallSkosExpansionLimits {
+                    max_depth: limits.max_depth,
+                    max_fan_out: limits.max_fan_out,
+                    max_candidates: limits.max_candidates,
+                });
+            }
         }
 
         // Build the trait-routed kg_store early enough to wire it on

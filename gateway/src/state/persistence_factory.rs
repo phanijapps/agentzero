@@ -15,9 +15,9 @@ use gateway_services::VaultPaths;
 use zbot_engram_adapter::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout,
     AllowUnclassifiedPolicy, EmbeddingMode, EngramBeliefStore, EngramKnowledgeGraphStore,
-    EngramMemoryFactStore, EngramProvider, EngramSidecarStores, EngramWikiStore, GovernanceOverlay,
-    GovernancePolicy, GovernanceSelection, MigrationMode, ScopeTarget, SkosExpansionPolicy,
-    ValidationMode,
+    EngramMemoryFactStore, EngramProvider, EngramSidecarStores, EngramTaxonomyRecallExpander,
+    EngramWikiStore, GovernanceOverlay, GovernancePolicy, GovernanceSelection, MigrationMode,
+    ScopeTarget, SkosExpansionPolicy, ValidationMode,
 };
 use zbot_stores::{KnowledgeGraphStore, MemoryFactStore};
 
@@ -34,6 +34,7 @@ pub struct EngramStoreBundle {
     pub goal_store: Arc<dyn zbot_stores_traits::GoalStore>,
     pub belief_store: Arc<dyn zbot_stores_traits::BeliefStore>,
     pub belief_contradiction_store: Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
+    pub taxonomy_expander: Arc<dyn zbot_stores_traits::RecallTaxonomyExpander>,
 }
 
 /// Build Engram trait-object stores for runtime semantic memory/knowledge.
@@ -70,6 +71,10 @@ pub fn build_engram_store_bundle(
     );
     let sidecars =
         Arc::new(EngramSidecarStores::open(config.clone()).map_err(|error| error.to_string())?);
+    let taxonomy_expander = Arc::new(
+        EngramTaxonomyRecallExpander::from_provider(config.clone(), &provider)
+            .map_err(|error| error.to_string())?,
+    );
 
     Ok(EngramStoreBundle {
         memory_store,
@@ -84,6 +89,7 @@ pub fn build_engram_store_bundle(
         // gateway/UI status contracts remain in one place.
         belief_store: beliefs.clone(),
         belief_contradiction_store: beliefs,
+        taxonomy_expander,
     })
 }
 

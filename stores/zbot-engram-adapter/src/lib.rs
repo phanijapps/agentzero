@@ -48,4 +48,5 @@ pub use stores::beliefs::EngramBeliefStore;
 pub use stores::knowledge_graph::EngramKnowledgeGraphStore;
 pub use stores::memory_facts::EngramMemoryFactStore;
 pub use stores::sidecars::EngramSidecarStores;
+pub use stores::taxonomy_recall::EngramTaxonomyRecallExpander;
 pub use stores::wiki::EngramWikiStore;

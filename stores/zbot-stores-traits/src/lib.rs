@@ -16,6 +16,7 @@ pub mod kg_episodes;
 pub mod memory_facts;
 pub mod outbox;
 pub mod procedures;
+pub mod taxonomy;
 pub mod wiki;
 
 pub use auxiliary::{DistillationStore, GoalStore, RecallLogStore};
@@ -34,6 +35,10 @@ pub use outbox::OutboxStore;
 pub use procedures::{
     PatternProcedureInsert, PatternStep, Procedure, ProcedureStats, ProcedureStore,
     ProcedureSummary,
+};
+pub use taxonomy::{
+    RecallTaxonomyExpander, RecallTaxonomyExpansion, RecallTaxonomyExpansionCandidate,
+    RecallTaxonomyExpansionRequest,
 };
 pub use wiki::{WikiStats, WikiStore};
 pub use zbot_stores_domain::{

@@ -20,6 +20,7 @@ use execution_state::StateService;
 use gateway_services::{EmbeddingService, WardProvenance, WardUsage};
 use std::path::PathBuf;
 use std::sync::Arc;
+use zbot_engram_adapter::GovernanceCapabilityHealth;
 use zbot_stores_sqlite::kg::service::GraphService;
 use zbot_stores_sqlite::{
     DatabaseManager, DistillationRepository, EpisodeRepository, KgEpisodeRepository,
@@ -129,6 +130,9 @@ pub struct AppState {
     /// `None` when `GraphStorage` fails to initialise (same condition as
     /// `graph_service`).
     pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+
+    /// Additive path-free governance health for Observatory/read-model routes.
+    pub governance_health: Option<GovernanceCapabilityHealth>,
 
     /// Streaming ingestion queue (Phase 2) — None when graph is unavailable.
     pub ingestion_queue: Option<Arc<gateway_execution::ingest::IngestionQueue>>,
@@ -927,6 +931,9 @@ impl AppState {
             kg_episode_store,
             graph_service,
             kg_store,
+            governance_health: engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.governance_health.clone()),
             ingestion_queue,
             ingestion_backpressure,
             advertiser: discovery::noop(),
@@ -1037,6 +1044,7 @@ impl AppState {
             kg_episode_store,
             graph_service: None,
             kg_store,
+            governance_health: Some(engram_store_bundle.governance_health.clone()),
             ingestion_queue: None,
             ingestion_backpressure: None,
             advertiser: discovery::noop(),
@@ -1248,6 +1256,7 @@ impl AppState {
             kg_episode_store,
             graph_service: None,
             kg_store,
+            governance_health: Some(engram_store_bundle.governance_health.clone()),
             ingestion_queue: None,
             ingestion_backpressure: None,
             advertiser: discovery::noop(),

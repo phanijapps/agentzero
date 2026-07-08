@@ -342,6 +342,8 @@ Engram storage is mutated.
 
 **Depends on:** T3, T5, T6
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/capabilities.rs`, `gateway/src/http/graph.rs`, `gateway/src/http/memory.rs`, `gateway/src/http/memory_search.rs`, `gateway/src/http/settings.rs`, `apps/ui/src/features/observatory/**`, `apps/ui/src/features/observatory-v2/**`
 
 **Tests:**
@@ -447,3 +449,5 @@ operated without public contract drift or hidden Engram product coupling.
 - 2026-07-06: initial plan.
 - 2026-07-08: added T10 for end-of-feature knowledge graph connection
   deduplication after governed predicate normalization.
+- 2026-07-08: completed T8 with path-free governance capability health on
+  memory/graph read models and additive Observatory display.

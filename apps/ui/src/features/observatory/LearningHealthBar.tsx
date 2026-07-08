@@ -63,6 +63,25 @@ export function LearningHealthBar() {
             Episodes:{" "}
             <span className="observatory__health-value">{stats.episodes}</span>
           </div>
+          {stats.governance ? (
+            <div className="observatory__health-item">
+              Governance:{" "}
+              <span
+                className={
+                  stats.governance.supported
+                    ? "observatory__health-value"
+                    : "observatory__health-value observatory__health-value--warning"
+                }
+              >
+                {stats.governance.supported ? "active" : "inactive"}
+                {stats.governance.findingCount > 0
+                  ? ` · ${stats.governance.findingCount} finding${
+                      stats.governance.findingCount === 1 ? "" : "s"
+                    }`
+                  : ""}
+              </span>
+            </div>
+          ) : null}
         </>
       )}
 

@@ -12,6 +12,7 @@ use knowledge_graph::{Direction, Entity, GraphStats, Relationship, Subgraph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use zbot_engram_adapter::GovernanceCapabilityHealth;
 use zbot_stores::{Direction as StoreDirection, KnowledgeGraphStore};
 use zbot_stores_domain::{DistillationStats, UndistilledSession};
 
@@ -463,6 +464,7 @@ pub struct AggregateGraphStats {
     pub facts: usize,
     pub episodes: i64,
     pub distillation: Option<DistillationStats>,
+    pub governance: Option<GovernanceCapabilityHealth>,
 }
 
 // ============================================================================
@@ -636,6 +638,7 @@ pub async fn graph_stats(
         facts,
         episodes,
         distillation,
+        governance: state.governance_health.clone(),
     }))
 }
 

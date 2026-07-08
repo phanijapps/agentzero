@@ -16,8 +16,8 @@ use zbot_engram_adapter::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout,
     AllowUnclassifiedPolicy, EmbeddingMode, EngramBeliefStore, EngramKnowledgeGraphStore,
     EngramMemoryFactStore, EngramProvider, EngramSidecarStores, EngramTaxonomyRecallExpander,
-    EngramWikiStore, GovernanceOverlay, GovernancePolicy, GovernanceSelection, MigrationMode,
-    ScopeTarget, SkosExpansionPolicy, ValidationMode,
+    EngramWikiStore, GovernanceCapabilityHealth, GovernanceOverlay, GovernancePolicy,
+    GovernanceSelection, MigrationMode, ScopeTarget, SkosExpansionPolicy, ValidationMode,
 };
 use zbot_stores::{KnowledgeGraphStore, MemoryFactStore};
 
@@ -35,6 +35,7 @@ pub struct EngramStoreBundle {
     pub belief_store: Arc<dyn zbot_stores_traits::BeliefStore>,
     pub belief_contradiction_store: Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
     pub taxonomy_expander: Arc<dyn zbot_stores_traits::RecallTaxonomyExpander>,
+    pub governance_health: GovernanceCapabilityHealth,
 }
 
 /// Build Engram trait-object stores for runtime semantic memory/knowledge.
@@ -57,10 +58,19 @@ pub fn build_engram_store_bundle(
         )
         .map_err(|error| error.to_string())?,
     );
-    let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(
+    let kg_store_impl = Arc::new(
         EngramKnowledgeGraphStore::from_provider(config.clone(), &provider)
             .map_err(|error| error.to_string())?,
     );
+    let governance_findings = kg_store_impl
+        .list_governance_findings(None, 500)
+        .map_err(|error| error.to_string())?;
+    let governance_health = GovernanceCapabilityHealth::from_config_and_findings(
+        &config,
+        provider.governance_bootstrap(),
+        &governance_findings,
+    );
+    let kg_store: Arc<dyn KnowledgeGraphStore> = kg_store_impl;
     let wiki_store: Arc<dyn zbot_stores_traits::WikiStore> = Arc::new(
         EngramWikiStore::from_provider(config.clone(), &provider)
             .map_err(|error| error.to_string())?,
@@ -90,6 +100,7 @@ pub fn build_engram_store_bundle(
         belief_store: beliefs.clone(),
         belief_contradiction_store: beliefs,
         taxonomy_expander,
+        governance_health,
     })
 }
 

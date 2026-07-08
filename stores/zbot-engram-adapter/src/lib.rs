@@ -18,7 +18,10 @@ pub mod scope;
 pub mod stores;
 
 pub use bootstrap::EngramProvider;
-pub use capabilities::{AdapterFeature, Capability, CapabilityReport, CapabilityStatus};
+pub use capabilities::{
+    AdapterFeature, Capability, CapabilityReport, CapabilityStatus, GovernanceBootstrapHealth,
+    GovernanceCapabilityHealth,
+};
 pub use config::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout, EmbeddingMode,
     MigrationMode, ProviderMode, ResolvedEngramPath, ResolvedGovernanceDefinitionPaths,

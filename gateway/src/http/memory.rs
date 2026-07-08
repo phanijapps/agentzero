@@ -13,6 +13,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use zbot_engram_adapter::GovernanceCapabilityHealth;
 use zbot_stores_domain::MemoryFact;
 use zbot_stores_traits::EmbeddingQueryIdentity;
 
@@ -863,6 +864,7 @@ pub struct MemoryHealth {
     pub last_compaction_merges: u64,
     pub last_compaction_prunes: u64,
     pub last_compaction_at: Option<String>,
+    pub governance: Option<GovernanceCapabilityHealth>,
 }
 
 /// `GET /api/memory/health` — queue depth, recent failures, last compaction.
@@ -890,6 +892,8 @@ pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
             health.last_compaction_at = Some(summary.latest_at);
         }
     }
+
+    health.governance = state.governance_health.clone();
 
     Json(health)
 }

@@ -1,6 +1,6 @@
 # Spec: Agent Handoff Notes
 
-- **Status:** Implementing
+- **Status:** Done
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`subagent-role-gating`](../subagent-role-gating/spec.md);

@@ -1,6 +1,6 @@
 # Spec: Durable Ward Memory
 
-- **Status:** Draft
+- **Status:** Closed
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0001: Unified Compaction and Memory Policy; RFC-0002: Memory Hygiene; [`runtime-context-control`](../runtime-context-control/spec.md); [`memory-hygiene`](../memory-hygiene/spec.md)

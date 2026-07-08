@@ -1,6 +1,6 @@
 # Spec: GitHub Release Installer
 
-- **Status:** Draft
+- **Status:** Closed
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0004: GitHub Release Installer and Cross-Platform Packaging; `docs/architecture/future-state/path-to-release.md`; `memory-bank/PUBLISHING.md`

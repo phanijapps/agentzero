@@ -4,10 +4,10 @@
 
 pub mod analytics;
 pub mod domain;
+mod pool;
 pub mod schema;
 pub mod slim_logs;
 pub mod writer;
-mod pool;
 
 pub use analytics::TraceAnalytics;
 pub use domain::{SlimLog, TraceEvent};

@@ -13,7 +13,10 @@ fn log(id: &str, session: &str, category: &str, metadata: Option<&str>) -> SlimL
         conversation_id: None,
         agent_id: "root".to_string(),
         parent_session_id: None,
-        timestamp: format!("2026-07-07T00:00:0{}Z", id.as_bytes().last().unwrap() - b'0'),
+        timestamp: format!(
+            "2026-07-07T00:00:0{}Z",
+            id.as_bytes().last().unwrap() - b'0'
+        ),
         level: "info".to_string(),
         category: category.to_string(),
         message: format!("{category} event"),
@@ -28,9 +31,21 @@ fn append_then_query_roundtrip() {
     let store = store();
     let session = "s1";
     store
-        .append(&log("1", session, "tool_call", Some(r#"{"tool_name":"read_file","tool_id":"t1"}"#)))
+        .append(&log(
+            "1",
+            session,
+            "tool_call",
+            Some(r#"{"tool_name":"read_file","tool_id":"t1"}"#),
+        ))
         .unwrap();
-    store.append(&log("2", session, "tool_result", Some(r#"{"tool_name":"read_file","tool_id":"t1","error":false}"#))).unwrap();
+    store
+        .append(&log(
+            "2",
+            session,
+            "tool_result",
+            Some(r#"{"tool_name":"read_file","tool_id":"t1","error":false}"#),
+        ))
+        .unwrap();
     store.append(&log("3", session, "response", None)).unwrap();
 
     let rows = store.query(session, 100).unwrap();
@@ -48,13 +63,22 @@ fn metadata_carries_only_display_scalars() {
     let store = store();
     let session = "s1";
     let scalar_meta = r#"{"tool_name":"read_file","tool_id":"t1"}"#;
-    store.append(&log("1", session, "tool_call", Some(scalar_meta))).unwrap();
+    store
+        .append(&log("1", session, "tool_call", Some(scalar_meta)))
+        .unwrap();
 
     let rows = store.query(session, 100).unwrap();
-    let meta: serde_json::Value = serde_json::from_str(rows[0].metadata.as_deref().unwrap()).unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_str(rows[0].metadata.as_deref().unwrap()).unwrap();
     assert!(meta.get("tool_name").is_some(), "tool_name present");
-    assert!(meta.get("args").is_none(), "args must NOT be in slim metadata");
-    assert!(meta.get("result").is_none(), "result must NOT be in slim metadata");
+    assert!(
+        meta.get("args").is_none(),
+        "args must NOT be in slim metadata"
+    );
+    assert!(
+        meta.get("result").is_none(),
+        "result must NOT be in slim metadata"
+    );
 }
 
 #[test]

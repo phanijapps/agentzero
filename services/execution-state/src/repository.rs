@@ -1190,7 +1190,7 @@ impl<D: StateDbProvider> StateRepository<D> {
             // Base query joining messages with executions
             let mut sql = String::from(
                 "SELECT m.id, m.execution_id, e.agent_id, e.delegation_type,
-                        m.role, m.content, m.created_at, m.tool_calls, m.tool_results
+                        m.role, m.content, m.created_at, m.tool_calls, m.tool_call_id
                  FROM messages m
                  JOIN agent_executions e ON m.execution_id = e.id
                  WHERE e.session_id = ?1",
@@ -1400,7 +1400,7 @@ impl<D: StateDbProvider> StateRepository<D> {
         row: &rusqlite::Row,
     ) -> Result<crate::handlers::SessionMessage, rusqlite::Error> {
         let tool_calls_json: Option<String> = row.get(7)?;
-        let tool_results_json: Option<String> = row.get(8)?;
+        let tool_call_id: Option<String> = row.get(8)?;
 
         Ok(crate::handlers::SessionMessage {
             id: row.get(0)?,
@@ -1411,7 +1411,8 @@ impl<D: StateDbProvider> StateRepository<D> {
             content: row.get(5)?,
             created_at: row.get(6)?,
             tool_calls: tool_calls_json.and_then(|s| serde_json::from_str(&s).ok()),
-            tool_results: tool_results_json.and_then(|s| serde_json::from_str(&s).ok()),
+            tool_call_id,
+            tool_results: None,
         })
     }
 }

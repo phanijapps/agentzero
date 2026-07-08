@@ -338,7 +338,10 @@ fn flush_all(
                 seq: 0, // assigned atomically inside append; ignored server-side
             };
             if let Err(e) = store.append(&message) {
-                tracing::warn!("BatchWriter: failed to append message via MessageStore: {}", e);
+                tracing::warn!(
+                    "BatchWriter: failed to append message via MessageStore: {}",
+                    e
+                );
             }
         }
     } else if let Some(repo) = conversation_repo {

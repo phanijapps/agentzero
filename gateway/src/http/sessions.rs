@@ -143,7 +143,6 @@ pub async fn get_session_state(
 ) -> Result<Json<SessionState>, (StatusCode, Json<SessionErrorResponse>)> {
     let builder = SessionStateBuilder::new(
         state.log_service.clone(),
-        state.conversations.clone(),
         state.messages.clone(),
         state.state_service.clone(),
     );

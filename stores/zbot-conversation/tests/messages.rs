@@ -4,7 +4,9 @@ use zbot_conversation::{open_conversation_pool, Message, MessageStore, SqliteMes
 
 fn store() -> Arc<SqliteMessageStore> {
     let f = NamedTempFile::new().unwrap();
-    Arc::new(SqliteMessageStore::new(open_conversation_pool(f.path()).unwrap()))
+    Arc::new(SqliteMessageStore::new(
+        open_conversation_pool(f.path()).unwrap(),
+    ))
 }
 
 fn msg(id: &str, session: &str, role: &str, content: &str, tool_calls: Option<&str>) -> Message {
@@ -26,11 +28,23 @@ fn msg(id: &str, session: &str, role: &str, content: &str, tool_calls: Option<&s
 fn append_then_replay_roundtrip() {
     let store = store();
     let session = "s1";
-    store.append(&msg("msg-1", session, "user", "hi", None)).unwrap();
     store
-        .append(&msg("msg-2", session, "assistant", "ok", Some(r#"[{"tool_id":"t1","tool_name":"read_file","args":{},"result":"","error":null}]"#)))
+        .append(&msg("msg-1", session, "user", "hi", None))
         .unwrap();
-    store.append(&msg("msg-3", session, "tool", "<result>", None)).unwrap();
+    store
+        .append(&msg(
+            "msg-2",
+            session,
+            "assistant",
+            "ok",
+            Some(
+                r#"[{"tool_id":"t1","tool_name":"read_file","args":{},"result":"","error":null}]"#,
+            ),
+        ))
+        .unwrap();
+    store
+        .append(&msg("msg-3", session, "tool", "<result>", None))
+        .unwrap();
 
     let replayed = store.replay(session, None, 100).unwrap();
     assert_eq!(replayed.len(), 3);
@@ -47,7 +61,15 @@ fn replay_respects_after_seq_cursor() {
     let store = store();
     let session = "s1";
     for i in 0..5 {
-        store.append(&msg(&format!("msg-{i}"), session, "user", &format!("m{i}"), None)).unwrap();
+        store
+            .append(&msg(
+                &format!("msg-{i}"),
+                session,
+                "user",
+                &format!("m{i}"),
+                None,
+            ))
+            .unwrap();
     }
     let tail = store.replay(session, Some(3), 100).unwrap();
     assert_eq!(tail.len(), 2);
@@ -60,12 +82,26 @@ fn tool_sequence_returns_tool_names_in_order() {
     let store = store();
     let session = "s1";
     store
-        .append(&msg("msg-1", session, "assistant", "a", Some(r#"[{"tool_name":"read_file"},{"tool_name":"grep"}]"#)))
+        .append(&msg(
+            "msg-1",
+            session,
+            "assistant",
+            "a",
+            Some(r#"[{"tool_name":"read_file"},{"tool_name":"grep"}]"#),
+        ))
         .unwrap();
     store
-        .append(&msg("msg-2", session, "assistant", "b", Some(r#"[{"tool_name":"write_file"}]"#)))
+        .append(&msg(
+            "msg-2",
+            session,
+            "assistant",
+            "b",
+            Some(r#"[{"tool_name":"write_file"}]"#),
+        ))
         .unwrap();
-    store.append(&msg("msg-3", session, "user", "c", None)).unwrap(); // non-assistant ignored
+    store
+        .append(&msg("msg-3", session, "user", "c", None))
+        .unwrap(); // non-assistant ignored
 
     let seq = store.tool_sequence_for_session(session).unwrap();
     assert_eq!(seq, vec!["read_file", "grep", "write_file"]);

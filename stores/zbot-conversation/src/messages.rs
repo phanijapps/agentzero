@@ -16,7 +16,12 @@ pub trait MessageStore: Send + Sync {
 
     /// Replay messages for a session, ordered by `seq`. If `after_seq` is set,
     /// return only rows with `seq > after_seq` (cursor pagination).
-    fn replay(&self, session_id: &str, after_seq: Option<i64>, limit: usize) -> Result<Vec<Message>>;
+    fn replay(
+        &self,
+        session_id: &str,
+        after_seq: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<Message>>;
 
     /// The ordered sequence of tool names invoked in a session's assistant
     /// turns (parses `tool_calls` blobs). Mirrors the legacy
@@ -59,7 +64,12 @@ impl MessageStore for SqliteMessageStore {
         Ok(())
     }
 
-    fn replay(&self, session_id: &str, after_seq: Option<i64>, limit: usize) -> Result<Vec<Message>> {
+    fn replay(
+        &self,
+        session_id: &str,
+        after_seq: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
         let conn = self.pool.get()?;
         let mut sql = String::from(
             "SELECT id, execution_id, session_id, role, content, created_at, token_count,
@@ -75,18 +85,20 @@ impl MessageStore for SqliteMessageStore {
         params.push(Box::new(limit as i64));
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(param_refs.as_slice(), |r| Ok(Message {
-            id: r.get(0)?,
-            execution_id: r.get(1)?,
-            session_id: r.get(2)?,
-            role: r.get(3)?,
-            content: r.get(4)?,
-            created_at: r.get(5)?,
-            token_count: r.get(6)?,
-            tool_calls: r.get(7)?,
-            tool_call_id: r.get(8)?,
-            seq: r.get(9)?,
-        }))?;
+        let rows = stmt.query_map(param_refs.as_slice(), |r| {
+            Ok(Message {
+                id: r.get(0)?,
+                execution_id: r.get(1)?,
+                session_id: r.get(2)?,
+                role: r.get(3)?,
+                content: r.get(4)?,
+                created_at: r.get(5)?,
+                token_count: r.get(6)?,
+                tool_calls: r.get(7)?,
+                tool_call_id: r.get(8)?,
+                seq: r.get(9)?,
+            })
+        })?;
         Ok(rows.filter_map(Result::ok).collect())
     }
 

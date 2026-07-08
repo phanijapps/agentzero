@@ -118,6 +118,7 @@ export interface SessionMessage {
   content: string;
   created_at: string;
   tool_calls?: unknown;
+  tool_call_id?: string | null;
   tool_results?: unknown;
 }
 

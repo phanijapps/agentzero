@@ -1,5 +1,7 @@
 use tempfile::NamedTempFile;
-use zbot_conversation::{open_conversation_pool, Checkpoint, CheckpointStore, SqliteCheckpointStore};
+use zbot_conversation::{
+    open_conversation_pool, Checkpoint, CheckpointStore, SqliteCheckpointStore,
+};
 
 fn store() -> SqliteCheckpointStore {
     let f = NamedTempFile::new().unwrap();
@@ -27,11 +29,16 @@ fn latest_returns_highest_turn() {
     let exec = "e1";
     store.write(&cp(exec, 1, None)).unwrap();
     store.write(&cp(exec, 2, None)).unwrap();
-    store.write(&cp(exec, 3, Some(r#"{"ward":"ward-a"}"#))).unwrap();
+    store
+        .write(&cp(exec, 3, Some(r#"{"ward":"ward-a"}"#)))
+        .unwrap();
 
     let latest = store.latest(exec).unwrap().expect("a checkpoint");
     assert_eq!(latest.llm_turn, 3);
-    assert_eq!(latest.context_state.as_deref(), Some(r#"{"ward":"ward-a"}"#));
+    assert_eq!(
+        latest.context_state.as_deref(),
+        Some(r#"{"ward":"ward-a"}"#)
+    );
 }
 
 #[test]

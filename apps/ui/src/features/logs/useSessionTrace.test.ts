@@ -7,9 +7,10 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import type { Transport } from '@/services/transport';
 
 const getLogSession = vi.fn<Transport['getLogSession']>();
+const getSessionMessages = vi.fn<Transport['getSessionMessages']>();
 
 vi.mock('@/services/transport', () => ({
-  getTransport: async () => ({ getLogSession }),
+  getTransport: async () => ({ getLogSession, getSessionMessages }),
 }));
 
 import { useSessionTrace } from './useSessionTrace';
@@ -19,6 +20,7 @@ import { useSessionTrace } from './useSessionTrace';
 function makeSession(id: string, agentId = 'root', status = 'completed', childIds: string[] = []) {
   return {
     session_id: id,
+    conversation_id: id.startsWith('exec-') ? 'sess-1' : id,
     agent_id: agentId,
     agent_name: agentId,
     title: `Title for ${id}`,
@@ -57,6 +59,8 @@ function makeDetail(sessionId: string, logs = [], childIds: string[] = []) {
 
 beforeEach(() => {
   getLogSession.mockReset();
+  getSessionMessages.mockReset();
+  getSessionMessages.mockResolvedValue({ success: true, data: [] });
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -133,6 +137,49 @@ describe('useSessionTrace', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.trace?.children.length).toBeGreaterThan(0);
     expect(result.current.trace?.children[0].type).toBe('tool_call');
+  });
+
+  it('enriches slim tool logs with input and output from session messages', async () => {
+    const toolLog = makeLog('l1', 'tool_call', {
+      metadata: { tool_name: 'shell', tool_id: 'tid1' },
+    });
+    const resultLog = makeLog('l2', 'tool_result', {
+      metadata: { tool_id: 'tid1' },
+    });
+    getLogSession.mockResolvedValue(makeDetail('exec-1', [toolLog, resultLog]));
+    getSessionMessages.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'm1',
+          execution_id: 'exec-1',
+          agent_id: 'root',
+          delegation_type: 'root',
+          role: 'assistant',
+          content: '[tool calls]',
+          created_at: '2024-01-01T00:00:01Z',
+          tool_calls: [{ tool_id: 'tid1', tool_name: 'shell', args: { command: 'pwd' } }],
+        },
+        {
+          id: 'm2',
+          execution_id: 'exec-1',
+          agent_id: 'root',
+          delegation_type: 'root',
+          role: 'tool',
+          content: '{"stdout":"/tmp"}',
+          created_at: '2024-01-01T00:00:02Z',
+          tool_call_id: 'tid1',
+        },
+      ],
+    });
+
+    const { result } = renderHook(() => useSessionTrace('exec-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(getSessionMessages).toHaveBeenCalledWith('sess-1', { scope: 'all' });
+    const tool = result.current.trace?.children[0];
+    expect(tool?.args).toBe('{"command":"pwd"}');
+    expect(tool?.result).toBe('{"stdout":"/tmp"}');
   });
 
   it('includes error log as child node', async () => {

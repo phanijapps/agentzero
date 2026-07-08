@@ -45,9 +45,9 @@ impl TraceAnalytics {
     /// literals. Bounded to keep a query from scanning an unbounded set.
     fn bounded_file_list(&self, cap: usize) -> Result<Vec<String>> {
         let mut files = Vec::new();
-        for entry in std::fs::read_dir(&self.dir).with_context(|| {
-            format!("read traces_dir {}", self.dir.display())
-        })? {
+        for entry in std::fs::read_dir(&self.dir)
+            .with_context(|| format!("read traces_dir {}", self.dir.display()))?
+        {
             let e = entry?;
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()) == Some("gz") {

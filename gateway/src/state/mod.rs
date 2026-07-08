@@ -663,9 +663,8 @@ impl AppState {
 
         // Build the conversation stores before the runtime so the runner can
         // be wired with MessageStore/CheckpointStore at construction.
-        let (messages, checkpoints, slim_logs, trace_analytics) =
-            build_conversation_stores(&paths)
-                .expect("Failed to initialize conversation/trace stores");
+        let (messages, checkpoints, slim_logs, trace_analytics) = build_conversation_stores(&paths)
+            .expect("Failed to initialize conversation/trace stores");
 
         // Create runtime with execution runner and connector registry
         let runtime = Arc::new(RuntimeService::with_runner_and_connectors(
@@ -977,9 +976,8 @@ impl AppState {
         let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
             Some(engram_store_bundle.kg_store.clone());
 
-        let (messages, checkpoints, slim_logs, trace_analytics) =
-            build_conversation_stores(&paths)
-                .expect("Failed to initialize conversation/trace stores");
+        let (messages, checkpoints, slim_logs, trace_analytics) = build_conversation_stores(&paths)
+            .expect("Failed to initialize conversation/trace stores");
 
         Self {
             messages,
@@ -1189,9 +1187,8 @@ impl AppState {
             None, // bus is set later by server.start()
         ));
 
-        let (messages, checkpoints, slim_logs, trace_analytics) =
-            build_conversation_stores(&paths)
-                .expect("Failed to initialize conversation/trace stores");
+        let (messages, checkpoints, slim_logs, trace_analytics) = build_conversation_stores(&paths)
+            .expect("Failed to initialize conversation/trace stores");
 
         Self {
             agents,

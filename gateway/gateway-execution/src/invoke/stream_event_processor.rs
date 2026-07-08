@@ -199,7 +199,10 @@ fn trace_tool_result(
             timestamp: chrono::Utc::now().to_rfc3339(),
             level: level.into(),
             category: "tool_result".into(),
-            message: format!("Tool result ({tool_id}): {}", error.as_deref().unwrap_or("ok")),
+            message: format!(
+                "Tool result ({tool_id}): {}",
+                error.as_deref().unwrap_or("ok")
+            ),
             duration_ms,
             // tool_name is not carried on StreamEvent::ToolResult; the
             // tool_call event (same span_id) carries it. Analytics joins on

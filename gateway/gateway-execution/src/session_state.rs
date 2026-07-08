@@ -21,7 +21,7 @@ use api_logs::{ExecutionLog, LogCategory, LogService, SessionStatus};
 use execution_state::StateService;
 use serde::Serialize;
 use zbot_conversation::{Message, MessageStore};
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 // ============================================================================
 // TYPES
@@ -158,11 +158,9 @@ const INTERNAL_TOOLS: &[&str] = &["analyze_intent", "update_plan", "set_session_
 ///   shape-agnostic; handles delegation `system` messages too).
 /// - `ward`, `title` ← `state_service.get_session()` (persisted by
 ///   `WardChanged`/`SessionTitleChanged` handlers), fallback to intent.
-/// - `user_message`, `token_count` ← `ConversationRepository` (unchanged —
-///   T13's concern; the new MessageStore reads the same table).
+/// - `user_message`, `token_count` ← `MessageStore::replay`.
 pub struct SessionStateBuilder {
     log_service: Arc<LogService<DatabaseManager>>,
-    conversations: Arc<ConversationRepository>,
     messages: Arc<dyn MessageStore>,
     state_service: Arc<StateService<DatabaseManager>>,
 }
@@ -171,13 +169,11 @@ impl SessionStateBuilder {
     /// Create a new builder.
     pub fn new(
         log_service: Arc<LogService<DatabaseManager>>,
-        conversations: Arc<ConversationRepository>,
         messages: Arc<dyn MessageStore>,
         state_service: Arc<StateService<DatabaseManager>>,
     ) -> Self {
         Self {
             log_service,
-            conversations,
             messages,
             state_service,
         }
@@ -204,20 +200,24 @@ impl SessionStateBuilder {
             .replay(&session.conversation_id, None, 10_000)
             .unwrap_or_default();
 
-        // user_message and token_count still come from ConversationRepository
-        // (T13's concern — same table, different reader). Kept here to avoid
-        // touching T13 in this slice.
-        let user_message = self.extract_user_message(&session.session_id);
+        let user_message = Self::extract_user_message(&root_messages);
         let intent_analysis = Self::extract_intent(logs);
 
         // ward / title: prefer the sessions row (WardChanged /
         // SessionTitleChanged handlers), fallback to legacy log scan, then
         // intent.
-        let session_row = self.state_service.get_session(&session.conversation_id).ok().flatten();
+        let session_row = self
+            .state_service
+            .get_session(&session.conversation_id)
+            .ok()
+            .flatten();
         let ward = session_row
             .as_ref()
             .and_then(|s| s.ward_id.clone())
-            .map(|name| WardInfo { name, content: None })
+            .map(|name| WardInfo {
+                name,
+                content: None,
+            })
             .or_else(|| Self::extract_ward(logs, intent_analysis.as_ref()));
         let title = session_row
             .as_ref()
@@ -244,7 +244,7 @@ impl SessionStateBuilder {
                 duration_ms: session.duration_ms,
                 // LogSession.token_count is often 0 — sum from messages table instead
                 token_count: self
-                    .sum_token_count(&session.session_id, &session.child_session_ids)
+                    .sum_token_count(&root_messages, &session.child_session_ids)
                     .unwrap_or(session.token_count),
                 model,
             },
@@ -321,18 +321,22 @@ impl SessionStateBuilder {
         }
     }
 
-    /// Sum token counts from the messages table for this execution.
-    fn sum_token_count(&self, execution_id: &str, child_session_ids: &[String]) -> Option<i32> {
-        let mut total: i32 = 0;
-        // Root session tokens
-        if let Ok(messages) = self.conversations.get_messages(execution_id) {
-            total += messages.iter().map(|m| m.token_count).sum::<i32>();
-        }
-        // Child session tokens
+    /// Sum token counts from the messages table for this conversation and its
+    /// child executions.
+    fn sum_token_count(
+        &self,
+        root_messages: &[Message],
+        child_session_ids: &[String],
+    ) -> Option<i32> {
+        let mut total: i32 = root_messages.iter().map(|m| m.token_count as i32).sum();
         for child_id in child_session_ids {
-            if let Ok(messages) = self.conversations.get_messages(child_id) {
-                total += messages.iter().map(|m| m.token_count).sum::<i32>();
-            }
+            let Some(child_messages) = self.messages_for_execution(child_id) else {
+                continue;
+            };
+            total += child_messages
+                .iter()
+                .map(|m| m.token_count as i32)
+                .sum::<i32>();
         }
         if total > 0 {
             Some(total)
@@ -342,12 +346,11 @@ impl SessionStateBuilder {
     }
 
     /// Extract the first user message from the conversation messages table.
-    fn extract_user_message(&self, conversation_id: &str) -> Option<String> {
-        let messages = self.conversations.get_messages(conversation_id).ok()?;
+    fn extract_user_message(messages: &[Message]) -> Option<String> {
         messages
-            .into_iter()
+            .iter()
             .find(|m| m.role == "user")
-            .map(|m| m.content)
+            .map(|m| m.content.clone())
     }
 
     /// Extract intent analysis metadata from the first Intent-category log.
@@ -414,15 +417,21 @@ impl SessionStateBuilder {
     /// may have produced the user-facing response (e.g. via `respond`).
     fn response_from_child_messages(&self, child_session_ids: &[String]) -> Option<String> {
         for child_id in child_session_ids {
-            let msgs = self
-                .messages
-                .replay(child_id, None, 10_000)
-                .unwrap_or_default();
+            let msgs = self.messages_for_execution(child_id).unwrap_or_default();
             if let Some(resp) = extract_response_from_messages(&msgs) {
                 return Some(resp);
             }
         }
         None
+    }
+
+    /// Resolve an execution id (`exec-*`) to its conversation id (`sess-*`) and
+    /// replay the child conversation messages.
+    fn messages_for_execution(&self, execution_id: &str) -> Option<Vec<Message>> {
+        let detail = self.log_service.get_session_detail(execution_id).ok()??;
+        self.messages
+            .replay(&detail.session.conversation_id, None, 10_000)
+            .ok()
     }
 
     /// Logs-only fallback for `response`: the slimmed `execution_logs` no
@@ -572,7 +581,9 @@ impl SessionStateBuilder {
                 }
                 let tool_id = tc.get("tool_id").and_then(|v| v.as_str());
                 let input = tc.get("args").map(|a| a.to_string());
-                let output = tool_id.and_then(|id| outputs.get(id)).map(|s| s.to_string());
+                let output = tool_id
+                    .and_then(|id| outputs.get(id))
+                    .map(|s| s.to_string());
                 let duration_ms = tool_id.and_then(|id| duration.get(id).copied());
                 entries.push(ToolCallEntry {
                     tool_name,
@@ -702,10 +713,7 @@ pub fn extract_plan_from_messages(messages: &[Message]) -> Vec<PlanStep> {
             continue;
         };
         for call in calls.iter().rev() {
-            let tool_name = call
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let tool_name = call.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
             if tool_name == "update_plan" {
                 let args = call.get("args").unwrap_or(&serde_json::Value::Null);
                 let parsed = parse_plan_steps_from_json(args);
@@ -955,10 +963,7 @@ pub fn extract_recalled_facts_from_messages(messages: &[Message]) -> Vec<String>
             continue;
         };
         for call in &calls {
-            let tool_name = call
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let tool_name = call.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
             if !(tool_name.contains("memory") || tool_name.contains("recall")) {
                 continue;
             }
@@ -1075,7 +1080,8 @@ mod tests {
 
     #[test]
     fn parse_plan_from_system_content_strips_delegation_completed_envelope() {
-        let content = "[DELEGATION COMPLETED. YOUR PLAN IS BELOW.\nReview it.\n]\n\n## Steps\n- One\n- Two";
+        let content =
+            "[DELEGATION COMPLETED. YOUR PLAN IS BELOW.\nReview it.\n]\n\n## Steps\n- One\n- Two";
         let steps = parse_plan_from_system_content(content);
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].text, "One");

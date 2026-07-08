@@ -190,8 +190,8 @@ pub async fn get_session_messages(
     let limit = query.limit.unwrap_or(100);
 
     let messages = state
-        .conversations
-        .get_session_conversation(&session_id, limit as usize)
+        .messages
+        .replay(&session_id, None, limit as usize)
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -206,7 +206,7 @@ pub async fn get_session_messages(
             role: m.role,
             content: m.content,
             tool_calls: m.tool_calls,
-            tool_results: m.tool_results,
+            tool_results: None,
             timestamp: m.created_at,
         })
         .collect();

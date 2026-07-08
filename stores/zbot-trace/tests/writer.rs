@@ -99,8 +99,14 @@ fn hostile_session_ids_rejected_and_path_confined() {
             "{bad:?} must be rejected for path confinement"
         );
     }
-    assert!(dir.path().read_dir().unwrap().count() == 0, "no stray files from rejected ids");
+    assert!(
+        dir.path().read_dir().unwrap().count() == 0,
+        "no stray files from rejected ids"
+    );
     let w = TraceWriter::open_confined(dir.path(), "s4").unwrap();
     drop(w);
-    assert!(dir.path().join("s4.jsonl.gz").exists(), "valid id creates the file in-dir");
+    assert!(
+        dir.path().join("s4.jsonl.gz").exists(),
+        "valid id creates the file in-dir"
+    );
 }

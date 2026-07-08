@@ -8,7 +8,9 @@ fn schema_initializes_all_tables() {
     for table in ["messages", "checkpoints"] {
         let n: i64 = conn
             .query_row(
-                &format!("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{table}'"),
+                &format!(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{table}'"
+                ),
                 [],
                 |r| r.get(0),
             )

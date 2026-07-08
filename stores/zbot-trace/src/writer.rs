@@ -81,7 +81,10 @@ mod tests {
     #[test]
     fn rejects_hostile_session_ids() {
         for bad in ["", "..", ".", "../x", "a/b", "a\\b", "C:x", "a\0b"] {
-            assert!(validate_session_id(bad).is_err(), "{bad:?} should be rejected");
+            assert!(
+                validate_session_id(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
         }
         assert!(validate_session_id("s1").is_ok());
         assert!(validate_session_id("550e8400-e29b-7d4a-a714-2d3a5c6b8e10").is_ok());

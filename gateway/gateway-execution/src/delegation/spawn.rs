@@ -23,8 +23,8 @@ use agent_runtime::ChatMessage;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
     broadcast_event, collect_agents_summary, collect_skills_summary, detect_subagent_role,
-    process_stream_event, select_engine, spawn_batch_writer_with_traces, subagent_rules, AgentLoader,
-    ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext,
+    process_stream_event, select_engine, spawn_batch_writer_with_traces, subagent_rules,
+    AgentLoader, ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext,
 };
 use crate::lifecycle::{
     complete_execution, crash_execution, emit_delegation_completed, emit_delegation_started,

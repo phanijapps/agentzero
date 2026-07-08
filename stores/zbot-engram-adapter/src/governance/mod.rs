@@ -1,8 +1,11 @@
 //! Zbot-owned ontology and taxonomy governance policy.
 //!
 //! This module is deliberately inert by default. It describes which local
-//! definitions are active for a scope, but it does not bootstrap definitions or
-//! change writes until later dynamic-ontology tasks wire those behaviors.
+//! definitions are active for a scope, and bootstraps the built-in definitions
+//! once governance is selected. Later dynamic-ontology tasks wire governed
+//! mapping, validation, and recall behavior.
+
+pub mod bootstrap;
 
 use std::{collections::BTreeSet, path::PathBuf};
 

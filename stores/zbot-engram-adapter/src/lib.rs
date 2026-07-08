@@ -32,8 +32,8 @@ pub use fixtures::{
     FixtureStatus, ScopeDimension, ScopeExpectation, ScopeFixture, StoreTraitFixture,
 };
 pub use governance::{
-    AllowUnclassifiedPolicy, GovernanceOverlay, GovernancePolicy, GovernanceScope,
-    GovernanceSelection, SkosExpansionPolicy, ValidationMode,
+    bootstrap::GovernanceBootstrapReport, AllowUnclassifiedPolicy, GovernanceOverlay,
+    GovernancePolicy, GovernanceScope, GovernanceSelection, SkosExpansionPolicy, ValidationMode,
 };
 pub use migration::{
     apply_migration, run_migration_dry_run, MigrationApplyReceipt, MigrationBlocker,

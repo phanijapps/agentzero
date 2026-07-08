@@ -217,6 +217,8 @@ tests that fail when the Rust vocabulary changes without governance updates.
 
 **Depends on:** T1, T2
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/governance/**`, `stores/zbot-engram-adapter/src/lib.rs`, `stores/zbot-engram-adapter/src/config.rs`
 
 **Tests:**

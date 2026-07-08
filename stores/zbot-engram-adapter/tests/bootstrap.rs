@@ -4,7 +4,7 @@ use engram_integration::{
 };
 use zbot_engram_adapter::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterErrorKind, AdapterFeature,
-    AdapterSqliteStorageLayout, EngramProvider,
+    AdapterSqliteStorageLayout, EngramProvider, GovernancePolicy, GovernanceSelection,
 };
 
 // STUB: AC1/AC2/AC3 - adapter config maps to Engram's provider facade config.
@@ -118,6 +118,46 @@ fn bootstrap_uses_engram_provider_facade_and_preserves_adapter_gates() {
     assert!(!provider.capabilities().supports(AdapterFeature::Recall));
     assert!(!provider.capabilities().supports(AdapterFeature::Migration));
     assert!(!provider.capabilities().supports(AdapterFeature::Auxiliary));
+}
+
+#[test]
+fn governance_bootstrap_is_idempotent_and_uses_single_file_layout() {
+    let root = tempfile::tempdir().expect("root");
+    let mut config = AdapterConfig::engram_for_data_root(root.path(), "engram");
+    config.governance = GovernancePolicy {
+        default_selection: GovernanceSelection {
+            ontology_ids: vec!["zbot.base:v1".to_string()],
+            taxonomy_scheme_ids: vec!["zbot.general:v1".to_string()],
+        },
+        ..GovernancePolicy::default()
+    };
+
+    let first = EngramProvider::open(config.clone()).expect("first provider");
+    let second = EngramProvider::open(config).expect("second provider");
+    let first_report = first
+        .governance_bootstrap()
+        .expect("first governance bootstrap");
+    let second_report = second
+        .governance_bootstrap()
+        .expect("second governance bootstrap");
+
+    assert_eq!(first_report, second_report);
+    assert_eq!(first_report.ontology_id, "zbot.base:v1");
+    assert_eq!(first_report.taxonomy_scheme_id, "zbot.general:v1");
+    assert!(first_report.class_count > 0);
+    assert!(first_report.property_count > 0);
+    assert!(first_report.concept_count > 0);
+    assert!(first.opened_components().contains(&"ontology"));
+    assert!(first.opened_components().contains(&"taxonomy"));
+
+    let engram_dir = root.path().join("engram");
+    assert!(engram_dir.join("engram_data.db").exists());
+    for file_name in ["ontology.db", "taxonomy.db", "knowledge.db"] {
+        assert!(
+            !engram_dir.join(file_name).exists(),
+            "{file_name} should be folded into engram_data.db"
+        );
+    }
 }
 
 // STUB: AC2 - configured paths are confined before provider bootstrap.

@@ -9,17 +9,20 @@ use engram_hierarchy::HierarchyRepository;
 use engram_integration::EngramProvider as UpstreamEngramProvider;
 use engram_knowledge::KnowledgeRepository;
 use engram_memory::MemoryService;
+use tokio::runtime::Handle;
 
 use crate::{
     capabilities::{AdapterFeature, CapabilityReport},
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
+    governance::bootstrap::{bootstrap_governance_definitions, GovernanceBootstrapReport},
 };
 
 /// Engram provider facade plus AgentZero-specific capability gates.
 pub struct EngramProvider {
     provider: UpstreamEngramProvider,
     capabilities: CapabilityReport,
+    governance_bootstrap: Option<GovernanceBootstrapReport>,
 }
 
 impl EngramProvider {
@@ -38,6 +41,7 @@ impl EngramProvider {
             component: "provider",
             reason: "provider facade bootstrap failed".to_string(),
         })?;
+        let governance_bootstrap = bootstrap_governance_if_configured(&config, &provider)?;
         let capabilities = CapabilityReport::from_verified_features(
             &config,
             adapter_features_supported_by(provider.capabilities()),
@@ -46,6 +50,7 @@ impl EngramProvider {
         Ok(Self {
             provider,
             capabilities,
+            governance_bootstrap,
         })
     }
 
@@ -85,6 +90,11 @@ impl EngramProvider {
     /// Startup capability report for AgentZero feature families.
     pub fn capabilities(&self) -> &CapabilityReport {
         &self.capabilities
+    }
+
+    /// Governance bootstrap summary, if governance definitions were configured.
+    pub fn governance_bootstrap(&self) -> Option<&GovernanceBootstrapReport> {
+        self.governance_bootstrap.as_ref()
     }
 
     /// Upstream Engram capability report.
@@ -131,6 +141,61 @@ impl EngramProvider {
             .cloned()
             .ok_or_else(|| unsupported_upstream_handle("hierarchy"))
     }
+}
+
+fn bootstrap_governance_if_configured(
+    config: &AdapterConfig,
+    provider: &UpstreamEngramProvider,
+) -> AdapterResult<Option<GovernanceBootstrapReport>> {
+    if config.governance.is_inert() {
+        return Ok(None);
+    }
+
+    let ontology_repo = provider
+        .ontology()
+        .cloned()
+        .ok_or_else(|| unsupported_upstream_handle("governance_ontology"))?;
+    let taxonomy_repo = provider
+        .taxonomy()
+        .cloned()
+        .ok_or_else(|| unsupported_upstream_handle("governance_taxonomy"))?;
+
+    let config = config.clone();
+    let report = match Handle::try_current() {
+        Ok(_) => std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| AdapterError::Bootstrap {
+                    component: "governance_runtime",
+                    reason: "failed to create bootstrap runtime".to_string(),
+                })?
+                .block_on(bootstrap_governance_definitions(
+                    &config,
+                    ontology_repo,
+                    taxonomy_repo,
+                ))
+        })
+        .join()
+        .map_err(|_| AdapterError::Bootstrap {
+            component: "governance_runtime",
+            reason: "bootstrap runtime thread panicked".to_string(),
+        })?,
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| AdapterError::Bootstrap {
+                component: "governance_runtime",
+                reason: "failed to create bootstrap runtime".to_string(),
+            })?
+            .block_on(bootstrap_governance_definitions(
+                &config,
+                ontology_repo,
+                taxonomy_repo,
+            )),
+    }?;
+
+    Ok(Some(report))
 }
 
 fn adapter_features_supported_by(

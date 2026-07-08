@@ -22,6 +22,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 zbot-stores-domain = { path = "../zbot-stores-domain" }

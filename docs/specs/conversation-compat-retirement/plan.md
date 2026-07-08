@@ -220,7 +220,7 @@ Completed 2026-07-08.
 **Done when:** no production code references `ConversationStore`.
 Completed 2026-07-08.
 
-### T7: Remove `AppState.conversations` and gateway metadata callers
+### T7: Remove `AppState.conversations` and gateway metadata callers — DONE
 
 **Depends on:** T1-T6
 
@@ -235,6 +235,7 @@ Completed 2026-07-08.
   `SessionMetaStore`.
 
 **Done when:** gateway has no `ConversationRepository` construction or field.
+Completed 2026-07-08.
 
 ### T8: Delete superseded legacy code
 
@@ -283,3 +284,6 @@ Completed 2026-07-08.
   reads now use `MessageStore` plus `SessionMetaStore`.
 - 2026-07-08: T6 completed; sleep-time pattern extraction and session handoff
   now read through `MessageStore`, removing runtime use of `ConversationStore`.
+- 2026-07-08: T7 completed; `AppState.conversations` is removed, graph metadata
+  reads use `SessionMetaStore`, and the legacy conversation messages endpoint
+  reads through `MessageStore`.

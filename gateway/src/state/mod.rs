@@ -22,8 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use zbot_stores_sqlite::kg::service::GraphService;
 use zbot_stores_sqlite::{
-    ConversationRepository, DatabaseManager, DistillationRepository, EpisodeRepository,
-    KgEpisodeRepository,
+    DatabaseManager, DistillationRepository, EpisodeRepository, KgEpisodeRepository,
 };
 
 /// Shared application state for the gateway.
@@ -53,11 +52,7 @@ pub struct AppState {
     /// Delegation registry for tracking agent delegations.
     pub delegation_registry: Arc<DelegationRegistry>,
 
-    /// Conversation repository for message persistence.
-    pub conversations: Arc<ConversationRepository>,
-
-    /// Message store (append-only conversation log) — the message surface of
-    /// the old `ConversationRepository` migrates here at the T11 cutover.
+    /// Message store (append-only conversation log).
     pub messages: Arc<dyn zbot_conversation::MessageStore>,
     /// Narrow session metadata reads used while retiring the old repository.
     pub session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
@@ -273,7 +268,6 @@ impl AppState {
             DatabaseManager::new(paths.clone())
                 .expect("Failed to initialize conversation database"),
         );
-        let conversation_repo = Arc::new(ConversationRepository::new(db_manager.clone()));
 
         // Semantic memory/knowledge now lives behind Engram. The only zbot-owned
         // runtime SQLite DB opened here is conversations.db via DatabaseManager.
@@ -886,7 +880,6 @@ impl AppState {
             slim_logs,
             trace_analytics,
             delegation_registry,
-            conversations: conversation_repo,
             settings,
             log_service,
             state_service,
@@ -938,7 +931,6 @@ impl AppState {
             DatabaseManager::new(paths.clone())
                 .expect("Failed to initialize conversation database"),
         );
-        let conversation_repo = Arc::new(ConversationRepository::new(db_manager.clone()));
         let log_service = Arc::new(LogService::new(db_manager.clone()));
         let bridge_outbox = Arc::new(gateway_bridge::OutboxRepository::new(db_manager.clone()));
         let state_service = Arc::new(StateService::new(db_manager));
@@ -995,7 +987,6 @@ impl AppState {
             event_bus,
             hook_registry: None,
             delegation_registry: Arc::new(DelegationRegistry::new()),
-            conversations: conversation_repo,
             settings: Arc::new(SettingsService::new(paths.clone())),
             log_service,
             state_service,
@@ -1146,7 +1137,6 @@ impl AppState {
         mcp_service: Arc<McpService>,
         runtime: Arc<RuntimeService>,
         event_bus: Arc<EventBus>,
-        conversations: Arc<ConversationRepository>,
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
         connector_registry: Arc<ConnectorRegistry>,
@@ -1208,7 +1198,6 @@ impl AppState {
             slim_logs,
             trace_analytics,
             delegation_registry: Arc::new(DelegationRegistry::new()),
-            conversations,
             settings: Arc::new(SettingsService::new(paths.clone())),
             log_service,
             state_service,
@@ -2196,7 +2185,6 @@ mod tests {
         let mcp_service = Arc::new(McpService::new(paths.clone()));
         let runtime = Arc::new(RuntimeService::new(event_bus.clone()));
         let db_manager = Arc::new(DatabaseManager::new(paths.clone()).expect("db manager"));
-        let conversations = Arc::new(ConversationRepository::new(db_manager.clone()));
         let log_service = Arc::new(LogService::new(db_manager.clone()));
         let state_service = Arc::new(StateService::new(db_manager.clone()));
         let connector_service = ConnectorService::new(paths.clone());
@@ -2209,7 +2197,6 @@ mod tests {
             mcp_service,
             runtime,
             event_bus,
-            conversations,
             log_service,
             state_service,
             connector_registry,

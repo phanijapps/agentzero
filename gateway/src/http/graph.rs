@@ -545,7 +545,7 @@ pub async fn trigger_distillation(
     };
 
     // Look up the root_agent_id for this session from the database
-    let agent_id = match state.conversations.get_session_agent_id(&session_id) {
+    let agent_id = match state.session_meta.session_agent_id(&session_id) {
         Ok(Some(aid)) => aid,
         Ok(None) => {
             return Err((

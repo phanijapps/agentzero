@@ -32,7 +32,7 @@ use crate::{
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
     mapping::knowledge::{
-        aggregate_entity_to_hierarchy_node, entity_to_knowledge_entity,
+        aggregate_entity_to_hierarchy_node, entity_to_knowledge_entity_with_governance,
         relationship_to_hierarchy_relation, relationship_to_knowledge_relationship,
     },
     scope::ScopeMapper,
@@ -47,6 +47,7 @@ pub struct EngramKnowledgeGraphStore {
     knowledge: Arc<dyn KnowledgeRepository>,
     hierarchy: Arc<dyn HierarchyRepository>,
     mapper: ScopeMapper,
+    governance: crate::governance::GovernancePolicy,
     sidecar: KnowledgeGraphSidecar,
 }
 
@@ -89,6 +90,7 @@ impl EngramKnowledgeGraphStore {
             knowledge,
             hierarchy,
             mapper,
+            governance: config.governance.clone(),
             sidecar,
         })
     }
@@ -103,8 +105,12 @@ impl EngramKnowledgeGraphStore {
         let embedding = entity.name_embedding.clone();
         self.knowledge
             .put_entity(
-                entity_to_knowledge_entity(&entity, &self.mapper)
-                    .map_err(|error| StoreError::Backend(error.to_string()))?,
+                entity_to_knowledge_entity_with_governance(
+                    &entity,
+                    &self.mapper,
+                    Some(&self.governance),
+                )
+                .map_err(|error| StoreError::Backend(error.to_string()))?,
             )
             .await
             .map_err(|error| StoreError::Backend(error.to_string()))?;

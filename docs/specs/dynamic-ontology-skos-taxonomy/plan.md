@@ -244,6 +244,8 @@ or report sanitized unsupported diagnostics before any governed write occurs.
 
 **Depends on:** T1-T3
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/mapping/knowledge.rs`, `stores/zbot-engram-adapter/src/stores/knowledge_graph.rs`, `stores/zbot-engram-adapter/src/stores/wiki.rs`
 
 **Tests:**

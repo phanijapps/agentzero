@@ -4,12 +4,12 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use engram_domain::{
-    Actor, ActorKind, AllowedUse, ChunkId, DeleteMode, DocumentId, EntityId as EngramEntityId,
-    EntityKind, EntityRef, HierarchyMemberType, HierarchyMembership, HierarchyNode,
-    HierarchyNodeId, HierarchyNodeKind, HierarchyNodeStatus, HierarchyRelation, KnowledgeChunk,
-    KnowledgeChunkKind, KnowledgeEntity, KnowledgeRelationship, KnowledgeSource, Metadata, Policy,
-    Provenance, RelationshipId as EngramRelationshipId, Retention, SourceDocument,
-    SourceDocumentKind, SourceId, SourceLocation, Visibility,
+    Actor, ActorKind, AllowedUse, ChunkId, ConceptRef, DeleteMode, DocumentId,
+    EntityId as EngramEntityId, EntityKind, EntityRef, HierarchyMemberType, HierarchyMembership,
+    HierarchyNode, HierarchyNodeId, HierarchyNodeKind, HierarchyNodeStatus, HierarchyRelation,
+    KnowledgeChunk, KnowledgeChunkKind, KnowledgeEntity, KnowledgeRelationship, KnowledgeSource,
+    Metadata, Policy, Provenance, RelationshipId as EngramRelationshipId, Retention,
+    SourceDocument, SourceDocumentKind, SourceId, SourceLocation, Visibility,
 };
 use knowledge_graph::types::{Entity, EntityType, Relationship};
 use serde_json::{json, Value};
@@ -17,6 +17,7 @@ use zbot_stores_domain::WikiArticle;
 
 use crate::{
     error::{AdapterError, AdapterResult},
+    governance::{classify_entity_type, ClassificationOutcome, GovernancePolicy, GovernanceScope},
     scope::ScopeMapper,
 };
 
@@ -35,6 +36,15 @@ pub struct WikiKnowledgeRecords {
 pub fn entity_to_knowledge_entity(
     entity: &Entity,
     mapper: &ScopeMapper,
+) -> AdapterResult<KnowledgeEntity> {
+    entity_to_knowledge_entity_with_governance(entity, mapper, None)
+}
+
+/// Map a zbot graph entity and attach configured governance metadata/refs.
+pub fn entity_to_knowledge_entity_with_governance(
+    entity: &Entity,
+    mapper: &ScopeMapper,
+    governance: Option<&GovernancePolicy>,
 ) -> AdapterResult<KnowledgeEntity> {
     let ward_id = ward_id_from_properties(&entity.properties);
     let scope = mapper.ward_scope(&ward_id)?;
@@ -69,6 +79,19 @@ pub fn entity_to_knowledge_entity(
     metadata.insert("agentId".to_string(), json!(entity.agent_id));
     metadata.insert("entityType".to_string(), json!(entity.entity_type.as_str()));
     metadata.insert("mentionCount".to_string(), json!(entity.mention_count));
+    let concept_refs = governance
+        .map(|policy| {
+            apply_entity_governance(
+                policy,
+                GovernanceScope {
+                    ward_id: Some(&ward_id),
+                    ..GovernanceScope::default()
+                },
+                &entity.entity_type,
+                &mut metadata,
+            )
+        })
+        .unwrap_or_default();
 
     Ok(KnowledgeEntity {
         id: EngramEntityId::from(entity.id.clone()),
@@ -78,7 +101,7 @@ pub fn entity_to_knowledge_entity(
         aliases: aliases_from_properties(&entity.properties),
         scope,
         source_refs: Vec::new(),
-        concept_refs: Vec::new(),
+        concept_refs,
         provenance: provenance(
             &entity.agent_id,
             entity.first_seen_at,
@@ -181,6 +204,15 @@ pub fn wiki_article_to_knowledge_records(
     article: &WikiArticle,
     mapper: &ScopeMapper,
 ) -> AdapterResult<WikiKnowledgeRecords> {
+    wiki_article_to_knowledge_records_with_governance(article, mapper, None)
+}
+
+/// Map a zbot wiki article and attach configured governance metadata/refs.
+pub fn wiki_article_to_knowledge_records_with_governance(
+    article: &WikiArticle,
+    mapper: &ScopeMapper,
+    governance: Option<&GovernancePolicy>,
+) -> AdapterResult<WikiKnowledgeRecords> {
     let scope = mapper.ward_scope(&article.ward_id)?;
     let created_at = parse_timestamp("created_at", &article.created_at)?;
     let updated_at = parse_timestamp("updated_at", &article.updated_at)?;
@@ -188,7 +220,19 @@ pub fn wiki_article_to_knowledge_records(
     let document_id = DocumentId::from(format!("zbot-wiki-document:{}", article.id));
     let chunk_id = ChunkId::from(format!("zbot-wiki-chunk:{}", article.id));
     let content_hash = content_hash(&article.content);
-    let metadata = wiki_metadata(article)?;
+    let mut metadata = wiki_metadata(article)?;
+    let concepts = governance
+        .map(|policy| {
+            apply_document_governance(
+                policy,
+                GovernanceScope {
+                    ward_id: Some(&article.ward_id),
+                    ..GovernanceScope::default()
+                },
+                &mut metadata,
+            )
+        })
+        .unwrap_or_default();
     let policy = durable_workspace_policy();
     let provenance = provenance(
         &article.agent_id,
@@ -252,7 +296,7 @@ pub fn wiki_article_to_knowledge_records(
                 anchor: Some(article.id.clone()),
             }),
             entities: Vec::new(),
-            concepts: Vec::new(),
+            concepts,
             embedding_refs: Vec::new(),
             content_hash,
             provenance,
@@ -262,6 +306,104 @@ pub fn wiki_article_to_knowledge_records(
             metadata: Some(metadata),
         },
     })
+}
+
+fn apply_entity_governance(
+    policy: &GovernancePolicy,
+    scope: GovernanceScope<'_>,
+    entity_type: &EntityType,
+    metadata: &mut Metadata,
+) -> Vec<ConceptRef> {
+    let selection = policy.select(scope);
+    apply_selection_metadata(
+        metadata,
+        &selection.ontology_ids,
+        &selection.taxonomy_scheme_ids,
+    );
+
+    let Some(scheme_id) = selection.taxonomy_scheme_ids.first() else {
+        return Vec::new();
+    };
+    let Some(concept_id) = entity_type_concept_id(entity_type) else {
+        if let ClassificationOutcome::UnclassifiedCustom(value) = classify_entity_type(entity_type)
+        {
+            metadata.insert("governanceUnclassifiedEntityType".to_string(), json!(value));
+        }
+        return Vec::new();
+    };
+
+    vec![concept_ref(scheme_id, concept_id, concept_id)]
+}
+
+fn apply_document_governance(
+    policy: &GovernancePolicy,
+    scope: GovernanceScope<'_>,
+    metadata: &mut Metadata,
+) -> Vec<ConceptRef> {
+    let selection = policy.select(scope);
+    apply_selection_metadata(
+        metadata,
+        &selection.ontology_ids,
+        &selection.taxonomy_scheme_ids,
+    );
+
+    selection
+        .taxonomy_scheme_ids
+        .first()
+        .map(|scheme_id| vec![concept_ref(scheme_id, "documents", "Documents")])
+        .unwrap_or_default()
+}
+
+fn apply_selection_metadata(
+    metadata: &mut Metadata,
+    ontology_ids: &[String],
+    taxonomy_scheme_ids: &[String],
+) {
+    if let Some(ontology_id) = ontology_ids.first() {
+        metadata
+            .entry("ontologyId".to_string())
+            .or_insert_with(|| json!(ontology_id));
+    }
+    if let Some(taxonomy_id) = taxonomy_scheme_ids.first() {
+        metadata
+            .entry("taxonomyId".to_string())
+            .or_insert_with(|| json!(taxonomy_id));
+    }
+    if !ontology_ids.is_empty() {
+        metadata.insert("governanceOntologyIds".to_string(), json!(ontology_ids));
+    }
+    if !taxonomy_scheme_ids.is_empty() {
+        metadata.insert(
+            "governanceTaxonomySchemeIds".to_string(),
+            json!(taxonomy_scheme_ids),
+        );
+    }
+}
+
+fn entity_type_concept_id(entity_type: &EntityType) -> Option<&'static str> {
+    match entity_type {
+        EntityType::Tool => Some("tools"),
+        EntityType::File | EntityType::Artifact => Some("artifacts"),
+        EntityType::Document => Some("documents"),
+        EntityType::Concept | EntityType::Role | EntityType::Ward => Some("work"),
+        EntityType::Project => Some("software_engineering"),
+        EntityType::Custom(_) => None,
+        EntityType::Person
+        | EntityType::Organization
+        | EntityType::Location
+        | EntityType::Event
+        | EntityType::TimePeriod => None,
+    }
+}
+
+fn concept_ref(scheme_id: &str, concept_id: &str, label: &str) -> ConceptRef {
+    ConceptRef {
+        id: Some(format!("{scheme_id}:concept:{concept_id}").into()),
+        uri: Some(format!(
+            "urn:zbot:taxonomy:{scheme_id}:concept:{concept_id}"
+        )),
+        label: Some(label.to_string()),
+    }
 }
 
 /// Build an Engram hierarchy node for a promoted aggregate graph entity.
@@ -542,4 +684,134 @@ fn content_hash(content: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        governance::{
+            GovernancePolicy, GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID,
+        },
+        scope::ScopeTarget,
+    };
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    fn mapper() -> ScopeMapper {
+        ScopeMapper::new(
+            "tenant-a".to_string(),
+            ScopeTarget::Workspace,
+            ScopeTarget::Workspace,
+        )
+        .expect("mapper")
+    }
+
+    fn governance() -> GovernancePolicy {
+        GovernancePolicy {
+            default_selection: GovernanceSelection {
+                ontology_ids: vec![ZBOT_BASE_ONTOLOGY_ID.to_string()],
+                taxonomy_scheme_ids: vec![ZBOT_GENERAL_SCHEME_ID.to_string()],
+            },
+            ..GovernancePolicy::default()
+        }
+    }
+
+    fn entity(entity_type: EntityType) -> Entity {
+        Entity {
+            id: "entity-1".to_string(),
+            agent_id: "agent-a".to_string(),
+            entity_type,
+            name: "Cargo".to_string(),
+            properties: HashMap::from([("ward_id".to_string(), json!("ward-a"))]),
+            first_seen_at: Utc::now(),
+            last_seen_at: Utc::now(),
+            mention_count: 1,
+            name_embedding: None,
+        }
+    }
+
+    #[test]
+    fn governed_entity_mapping_attaches_concept_ref_and_selection_metadata() {
+        let record = entity_to_knowledge_entity_with_governance(
+            &entity(EntityType::Tool),
+            &mapper(),
+            Some(&governance()),
+        )
+        .expect("entity record");
+        let metadata = record.metadata.as_ref().expect("metadata");
+
+        assert_eq!(record.concept_refs.len(), 1);
+        assert_eq!(
+            record.concept_refs[0].id.as_ref().map(|id| id.as_str()),
+            Some("zbot.general:v1:concept:tools")
+        );
+        assert_eq!(
+            metadata.get("ontologyId").and_then(Value::as_str),
+            Some("zbot.base:v1")
+        );
+        assert_eq!(
+            metadata.get("taxonomyId").and_then(Value::as_str),
+            Some("zbot.general:v1")
+        );
+    }
+
+    #[test]
+    fn governed_custom_entity_preserves_unclassified_outcome_without_write_failure() {
+        let record = entity_to_knowledge_entity_with_governance(
+            &entity(EntityType::Custom("dataset".to_string())),
+            &mapper(),
+            Some(&governance()),
+        )
+        .expect("entity record");
+        let metadata = record.metadata.as_ref().expect("metadata");
+
+        assert!(record.concept_refs.is_empty());
+        assert_eq!(
+            metadata
+                .get("governanceUnclassifiedEntityType")
+                .and_then(Value::as_str),
+            Some("dataset")
+        );
+    }
+
+    #[test]
+    fn governed_wiki_chunk_attaches_document_concept_and_metadata() {
+        let now = Utc::now().to_rfc3339();
+        let article = WikiArticle {
+            id: "wiki-1".to_string(),
+            ward_id: "ward-a".to_string(),
+            agent_id: "agent-a".to_string(),
+            title: "Research Notes".to_string(),
+            content: "notes".to_string(),
+            tags: Some("research".to_string()),
+            source_fact_ids: None,
+            embedding: None,
+            version: 1,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        let records = wiki_article_to_knowledge_records_with_governance(
+            &article,
+            &mapper(),
+            Some(&governance()),
+        )
+        .expect("wiki records");
+        let metadata = records.chunk.metadata.as_ref().expect("metadata");
+
+        assert_eq!(records.chunk.concepts.len(), 1);
+        assert_eq!(
+            records.chunk.concepts[0].id.as_ref().map(|id| id.as_str()),
+            Some("zbot.general:v1:concept:documents")
+        );
+        assert_eq!(
+            metadata.get("ontologyId").and_then(Value::as_str),
+            Some("zbot.base:v1")
+        );
+        assert_eq!(
+            metadata.get("taxonomyId").and_then(Value::as_str),
+            Some("zbot.general:v1")
+        );
+    }
 }

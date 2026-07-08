@@ -17,7 +17,7 @@ use crate::{
     capabilities::AdapterFeature,
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
-    mapping::knowledge::wiki_article_to_knowledge_records,
+    mapping::knowledge::wiki_article_to_knowledge_records_with_governance,
     scope::ScopeMapper,
 };
 
@@ -28,6 +28,7 @@ const SIDECAR_COMPONENT: &str = "wiki_sidecar";
 pub struct EngramWikiStore {
     knowledge: Arc<dyn KnowledgeRepository>,
     mapper: ScopeMapper,
+    governance: crate::governance::GovernancePolicy,
     sidecar: WikiSidecar,
 }
 
@@ -67,6 +68,7 @@ impl EngramWikiStore {
         Ok(Self {
             knowledge,
             mapper,
+            governance: config.governance.clone(),
             sidecar,
         })
     }
@@ -93,8 +95,12 @@ impl EngramWikiStore {
             article.embedding = Some(embedding);
         }
 
-        let records = wiki_article_to_knowledge_records(&article, &self.mapper)
-            .map_err(AdapterError::into_trait_error)?;
+        let records = wiki_article_to_knowledge_records_with_governance(
+            &article,
+            &self.mapper,
+            Some(&self.governance),
+        )
+        .map_err(AdapterError::into_trait_error)?;
         self.knowledge
             .put_source(records.source)
             .await

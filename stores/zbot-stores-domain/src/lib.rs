@@ -24,7 +24,6 @@ pub mod goal;
 pub mod kg_episode;
 pub mod kg_ops;
 pub mod memory_fact;
-pub mod message;
 pub mod procedure;
 pub mod route_hint;
 pub mod session_episode;
@@ -40,7 +39,6 @@ pub use kg_ops::{
     HierarchySummary, InterClusterRelationHit, RelationshipContext, StrategyCandidate,
 };
 pub use memory_fact::{MemoryFact, ScoredFact, StrategyFactInsert, StrategyFactMatch};
-pub use message::Message;
 pub use procedure::{PatternProcedureInsert, PatternStep, Procedure, ProcedureSummary};
 pub use route_hint::{RouteHint, RouteSourceKind};
 pub use session_episode::{ScoredEpisode, SessionEpisode, SuccessfulEpisode};

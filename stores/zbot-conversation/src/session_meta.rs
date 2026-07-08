@@ -1,7 +1,6 @@
 //! Narrow session metadata reads for runtime consumers.
 //!
-//! This replaces the metadata-only methods on the legacy
-//! `ConversationRepository` without growing a broad conversation facade.
+//! This provides metadata-only reads without growing a broad conversation facade.
 
 use anyhow::Result;
 use r2d2::Pool;

@@ -1,7 +1,7 @@
 # Plan: Conversation Compatibility Retirement
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Drafting
+- **Status:** Complete
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as we learn. When it changes substantially,
@@ -237,7 +237,7 @@ Completed 2026-07-08.
 **Done when:** gateway has no `ConversationRepository` construction or field.
 Completed 2026-07-08.
 
-### T8: Delete superseded legacy code
+### T8: Delete superseded legacy code — DONE
 
 **Depends on:** T1-T7
 
@@ -251,7 +251,8 @@ Completed 2026-07-08.
 - Remove stale comments/docs in touched files.
 - Keep historical mentions in specs only if explicitly useful.
 
-**Done when:** production grep is clean and workspace checks pass.
+**Done when:** production grep is clean and workspace checks pass. Completed
+2026-07-08.
 
 ## Rollout
 
@@ -287,3 +288,6 @@ Completed 2026-07-08.
 - 2026-07-08: T7 completed; `AppState.conversations` is removed, graph metadata
   reads use `SessionMetaStore`, and the legacy conversation messages endpoint
   reads through `MessageStore`.
+- 2026-07-08: T8 completed; deleted the legacy conversation repository,
+  conversation trait, and old message POD after old-symbol grep and workspace
+  checks passed.

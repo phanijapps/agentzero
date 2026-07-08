@@ -1,6 +1,6 @@
 # Spec: Conversation Compatibility Retirement
 
-- **Status:** Approved
+- **Status:** Complete
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`conversation-store-revamp`](../conversation-store-revamp/spec.md)
@@ -70,25 +70,25 @@ The three-tier guard that keeps an implementing agent inside the lines.
 
 ## Acceptance Criteria
 
-- [ ] No production Rust code references `ConversationRepository`.
-- [ ] No production Rust code references `ConversationStore`.
-- [ ] No production Rust code calls `append_session_message`,
+- [x] No production Rust code references `ConversationRepository`.
+- [x] No production Rust code references `ConversationStore`.
+- [x] No production Rust code calls `append_session_message`,
   `get_session_conversation`, `get_session_ward_id`, `get_session_agent_id`, or
   `session_messages_to_chat_format`.
-- [ ] `AppState` no longer has a `conversations` field.
-- [ ] Runner first-turn and continuation history loads from
+- [x] `AppState` no longer has a `conversations` field.
+- [x] Runner first-turn and continuation history loads from
   `MessageStore::replay` and converts through a pure helper.
-- [ ] Delegation spawn/callback writes and reads use `MessageStore` plus the
+- [x] Delegation spawn/callback writes and reads use `MessageStore` plus the
   narrow session metadata port.
-- [ ] Distillation transcript and ward lookup use `MessageStore` plus the
+- [x] Distillation transcript and ward lookup use `MessageStore` plus the
   narrow session metadata port.
-- [ ] Memory sleep, pattern extraction, and handoff writing no longer consume
+- [x] Memory sleep, pattern extraction, and handoff writing no longer consume
   `ConversationStore`.
-- [ ] `stores/zbot-stores-sqlite/src/repository.rs`,
+- [x] `stores/zbot-stores-sqlite/src/repository.rs`,
   `stores/zbot-stores-traits/src/conversation.rs`, and
   `stores/zbot-stores-domain/src/message.rs` are deleted or reduced so no
   superseded public symbols remain.
-- [ ] `cargo check --workspace --locked` and relevant Rust/UI tests pass.
+- [x] `cargo check --workspace --locked` and relevant Rust/UI tests pass.
 
 ## Assumptions
 

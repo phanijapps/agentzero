@@ -6,8 +6,7 @@ use zbot_conversation::Message;
 
 /// Convert stored `MessageStore` rows to the runtime LLM chat format.
 ///
-/// This preserves the legacy `ConversationRepository` conversion behavior:
-/// assistant `tool_calls` are parsed best-effort, malformed tool-call JSON is
+/// Assistant `tool_calls` are parsed best-effort, malformed tool-call JSON is
 /// ignored, and tool rows carry `tool_call_id`.
 pub fn messages_to_chat_format(messages: &[Message]) -> Vec<ChatMessage> {
     messages

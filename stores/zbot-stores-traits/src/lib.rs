@@ -11,7 +11,6 @@ pub mod auxiliary;
 pub mod belief;
 pub mod belief_contradiction;
 pub mod compaction;
-pub mod conversation;
 pub mod episodes;
 pub mod kg_episodes;
 pub mod memory_facts;
@@ -25,7 +24,6 @@ pub use belief_contradiction::BeliefContradictionStore;
 pub use compaction::{CompactionRunSummary, CompactionStore};
 // Re-export the Belief domain type so callers of BeliefStore only need
 // one crate in their imports.
-pub use conversation::ConversationStore;
 pub use episodes::{EpisodeStats, EpisodeStore, SessionEpisode, SuccessfulEpisode};
 pub use kg_episodes::{KgEpisodeStatusCounts, KgEpisodeStore};
 pub use memory_facts::{

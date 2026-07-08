@@ -24,8 +24,7 @@ pub trait MessageStore: Send + Sync {
     ) -> Result<Vec<Message>>;
 
     /// The ordered sequence of tool names invoked in a session's assistant
-    /// turns (parses `tool_calls` blobs). Mirrors the legacy
-    /// `ConversationStore::tool_sequence_for_session`.
+    /// turns (parses `tool_calls` blobs).
     fn tool_sequence_for_session(&self, session_id: &str) -> Result<Vec<String>>;
 }
 

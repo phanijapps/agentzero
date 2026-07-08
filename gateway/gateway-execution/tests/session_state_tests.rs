@@ -19,7 +19,7 @@ use gateway_services::VaultPaths;
 #[allow(deprecated)]
 use tempfile::tempdir;
 use zbot_conversation::{Message, MessageStore, SqliteMessageStore};
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 // ============================================================================
 // HELPERS
@@ -27,7 +27,7 @@ use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
 
 /// Spin up a temp DB with full schema and return the builder + DB handle.
 ///
-/// Returns `(builder, db, log_service, conversations, messages, state_service)`.
+/// Returns `(builder, db, log_service, messages, state_service)`.
 /// The MessageStore shares `conversations.db` (the same file
 /// `DatabaseManager` opens) via its own r2d2 pool, mirroring the production
 /// wiring in `AppState::build_conversation_stores`.
@@ -35,7 +35,6 @@ fn setup() -> (
     SessionStateBuilder,
     Arc<DatabaseManager>,
     Arc<LogService<DatabaseManager>>,
-    Arc<ConversationRepository>,
     Arc<dyn MessageStore>,
     Arc<StateService<DatabaseManager>>,
 ) {
@@ -45,7 +44,6 @@ fn setup() -> (
     let paths = Arc::new(VaultPaths::new(dir_path));
     let db = Arc::new(DatabaseManager::new(paths.clone()).expect("DB init"));
     let log_service = Arc::new(LogService::new(db.clone()));
-    let conversations = Arc::new(ConversationRepository::new(db.clone()));
     let messages: Arc<dyn MessageStore> = Arc::new(SqliteMessageStore::new(
         zbot_conversation::open_conversation_pool(&paths.conversations_db())
             .expect("conversation pool"),
@@ -53,14 +51,7 @@ fn setup() -> (
     let state_service = Arc::new(StateService::new(db.clone()));
     let builder =
         SessionStateBuilder::new(log_service.clone(), messages.clone(), state_service.clone());
-    (
-        builder,
-        db,
-        log_service,
-        conversations,
-        messages,
-        state_service,
-    )
+    (builder, db, log_service, messages, state_service)
 }
 
 /// Generate a unique session-style ID.
@@ -176,7 +167,7 @@ fn append_message_for_execution(
 
 #[test]
 fn test_session_state_uses_conversation_ids_for_message_replay() {
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let root_exec = format!("exec-{}", uid());
     let root_conv = format!("sess-{}", uid());
     let child_exec = format!("exec-{}", uid());
@@ -247,7 +238,7 @@ fn test_session_state_uses_conversation_ids_for_message_replay() {
 
 #[test]
 fn test_completed_session_with_response() {
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -358,7 +349,7 @@ fn test_completed_session_with_response() {
 
 #[test]
 fn test_crashed_session() {
-    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
+    let (builder, db, log_service, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -391,7 +382,7 @@ fn test_crashed_session() {
 
 #[test]
 fn test_session_not_found() {
-    let (builder, _db, _log_service, _conversations, _messages, _state_service) = setup();
+    let (builder, _db, _log_service, _messages, _state_service) = setup();
 
     let result = builder.build("nonexistent").unwrap();
     assert!(result.is_none());
@@ -402,7 +393,7 @@ fn test_title_from_sessions_row() {
     // Slice 3: title comes from sessions.title (persisted by
     // SessionTitleChanged handler) — set it directly rather than relying on
     // set_session_title tool args (now slimmed out of execution_logs).
-    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
+    let (builder, db, log_service, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -430,7 +421,7 @@ fn test_title_from_sessions_row() {
 
 #[test]
 fn test_title_falls_back_to_intent_primary_when_tool_skipped() {
-    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
+    let (builder, db, log_service, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -485,7 +476,7 @@ fn test_title_falls_back_to_intent_primary_when_tool_skipped() {
 fn test_title_sessions_row_wins_over_intent_fallback() {
     // Slice 3: sessions.title (set by SessionTitleChanged handler) takes
     // priority over the intent-analysis fallback.
-    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
+    let (builder, db, log_service, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -538,7 +529,7 @@ fn test_title_sessions_row_wins_over_intent_fallback() {
 
 #[test]
 fn test_response_skips_tool_calls_message() {
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -577,7 +568,7 @@ fn test_response_skips_tool_calls_message() {
 
 #[test]
 fn test_response_from_child_session() {
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -651,7 +642,7 @@ fn test_response_from_child_session() {
 
 #[test]
 fn test_token_count_cumulative() {
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -718,7 +709,7 @@ fn test_token_count_cumulative() {
 
 #[test]
 fn test_plan_completed_on_finished_session() {
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -787,7 +778,7 @@ fn test_plan_completed_on_finished_session() {
 
 #[test]
 fn test_subagent_task_from_parent_delegation() {
-    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
+    let (builder, db, log_service, _messages, _state_service) = setup();
     let root_sid = uid();
     let child_sid = uid();
     let conv_id = root_sid.clone();
@@ -860,7 +851,7 @@ fn test_ward_from_sessions_row() {
     // Slice 3: ward comes from sessions.ward_id (persisted by the
     // WardChanged handler) — set it directly rather than relying on
     // load_ward tool args (now slimmed out of execution_logs).
-    let (builder, db, log_service, _conversations, _messages, _state_service) = setup();
+    let (builder, db, log_service, _messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -901,7 +892,7 @@ fn test_ward_from_sessions_row() {
 
 #[test]
 fn test_delegation_session_plan_from_system_message() {
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";
@@ -1013,7 +1004,7 @@ fn test_delegation_session_continuation_envelope_plan() {
     // The continuation prompt at core.rs:319 wraps the plan in a
     // "[DELEGATION COMPLETED. YOUR PLAN IS BELOW....]" envelope. Verify
     // extract_plan_from_messages handles this shape too.
-    let (builder, db, log_service, _conversations, messages, _state_service) = setup();
+    let (builder, db, log_service, messages, _state_service) = setup();
     let sid = uid();
     let conv_id = sid.clone();
     let agent = "root";

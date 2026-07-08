@@ -35,7 +35,6 @@ pub mod memory_repository;
 pub mod procedure_repository;
 pub mod procedure_store;
 pub mod recall_log_repository;
-pub mod repository;
 mod schema;
 pub mod sqlite_vec_loader;
 pub mod system_profile;
@@ -70,7 +69,6 @@ pub use memory_repository::{MemoryFact, MemoryRepository, ScoredFact, SkillIndex
 pub use procedure_repository::{Procedure, ProcedureRepository};
 pub use procedure_store::GatewayProcedureStore;
 pub use recall_log_repository::RecallLogRepository;
-pub use repository::{ConversationRepository, Message};
 pub use vector_index::{SqliteVecIndex, VectorIndex};
 pub use wiki_repository::{WardWikiRepository, WikiArticle, WikiHit};
 pub use wiki_store::GatewayWikiStore;

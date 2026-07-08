@@ -116,7 +116,7 @@ runtime/delegation callback -> `MessageStore::append`.
 
 ## Tasks
 
-### T1: Add `SessionMetaStore` to `zbot-conversation`
+### T1: Add `SessionMetaStore` to `zbot-conversation` — DONE
 
 **Depends on:** none
 
@@ -130,7 +130,7 @@ runtime/delegation callback -> `MessageStore::append`.
 - Wire it into `AppState` using the same shared pool as `MessageStore`.
 
 **Done when:** `cargo test -p zbot-conversation` and `cargo check -p gateway`
-are green.
+are green. Completed 2026-07-08.
 
 ### T2: Add pure stored-message to chat-message conversion
 
@@ -267,3 +267,5 @@ methods are gone from runner code.
 ## Changelog
 
 - 2026-07-08: initial spec and plan.
+- 2026-07-08: T1 completed; added `SessionMetaStore` and wired it into
+  `AppState` on the shared conversation pool.

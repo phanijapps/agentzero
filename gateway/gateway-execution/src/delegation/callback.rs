@@ -6,7 +6,6 @@ use super::context::DelegationContext;
 use gateway_events::{EventBus, GatewayEvent};
 use serde_json::Value;
 use std::sync::Arc;
-use zbot_stores_sqlite::ConversationRepository;
 
 // ============================================================================
 // CALLBACK FORMATTING
@@ -228,21 +227,26 @@ pub fn validate_delegation_response(response: &str, schema: &Option<Value>) -> S
 ///
 /// Returns true if the message was sent successfully.
 pub async fn send_callback_to_parent(
-    conversation_repo: &ConversationRepository,
+    messages: &dyn zbot_conversation::MessageStore,
     event_bus: &EventBus,
     session_id: &str,
     parent_execution_id: &str,
     message: &str,
 ) -> bool {
-    // Write to parent session stream (new path) for continuity
-    match conversation_repo.append_session_message(
-        session_id,
-        parent_execution_id,
-        "system",
-        message,
-        None,
-        None,
-    ) {
+    let callback = zbot_conversation::Message {
+        id: format!("msg-{}", uuid::Uuid::new_v4()),
+        execution_id: Some(parent_execution_id.to_string()),
+        session_id: session_id.to_string(),
+        role: "system".to_string(),
+        content: message.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        token_count: message.len() as i64 / 4,
+        tool_calls: None,
+        tool_call_id: None,
+        seq: 0,
+    };
+
+    match messages.append(&callback) {
         Ok(_) => {
             // Emit event so frontend can refresh
             event_bus
@@ -274,7 +278,7 @@ pub async fn send_callback_to_parent(
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_delegation_success(
     delegation_ctx: Option<&DelegationContext>,
-    conversation_repo: &ConversationRepository,
+    messages: &dyn zbot_conversation::MessageStore,
     event_bus: &EventBus,
     session_id: &str,
     parent_execution_id: &str,
@@ -294,7 +298,7 @@ pub async fn handle_delegation_success(
             );
 
             if send_callback_to_parent(
-                conversation_repo,
+                messages,
                 event_bus,
                 session_id,
                 parent_execution_id,
@@ -315,7 +319,7 @@ pub async fn handle_delegation_success(
 
 /// Handle delegation failure with error callback.
 pub async fn handle_delegation_failure(
-    conversation_repo: &ConversationRepository,
+    messages: &dyn zbot_conversation::MessageStore,
     event_bus: &EventBus,
     session_id: &str,
     parent_execution_id: &str,
@@ -326,7 +330,7 @@ pub async fn handle_delegation_failure(
     let error_msg = format_error_callback_message(child_agent_id, error, child_conversation_id);
 
     if send_callback_to_parent(
-        conversation_repo,
+        messages,
         event_bus,
         session_id,
         parent_execution_id,
@@ -375,6 +379,33 @@ pub async fn handle_subagent_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingMessageStore {
+        appended: Mutex<Vec<zbot_conversation::Message>>,
+    }
+
+    impl zbot_conversation::MessageStore for RecordingMessageStore {
+        fn append(&self, msg: &zbot_conversation::Message) -> Result<()> {
+            self.appended.lock().unwrap().push(msg.clone());
+            Ok(())
+        }
+
+        fn replay(
+            &self,
+            _session_id: &str,
+            _after_seq: Option<i64>,
+            _limit: usize,
+        ) -> Result<Vec<zbot_conversation::Message>> {
+            Ok(Vec::new())
+        }
+
+        fn tool_sequence_for_session(&self, _session_id: &str) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn test_format_agent_display_name() {
@@ -384,6 +415,24 @@ mod tests {
         );
         assert_eq!(format_agent_display_name("code-reviewer"), "Code Reviewer");
         assert_eq!(format_agent_display_name("simple"), "Simple");
+    }
+
+    #[tokio::test]
+    async fn send_callback_to_parent_appends_system_message_via_message_store() {
+        let store = RecordingMessageStore::default();
+        let bus = EventBus::new();
+
+        assert!(send_callback_to_parent(&store, &bus, "sess-1", "exec-1", "child result").await);
+
+        let appended = store.appended.lock().unwrap();
+        assert_eq!(appended.len(), 1);
+        let msg = &appended[0];
+        assert_eq!(msg.session_id, "sess-1");
+        assert_eq!(msg.execution_id.as_deref(), Some("exec-1"));
+        assert_eq!(msg.role, "system");
+        assert_eq!(msg.content, "child result");
+        assert!(msg.tool_calls.is_none());
+        assert!(msg.tool_call_id.is_none());
     }
 
     #[test]

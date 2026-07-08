@@ -679,6 +679,7 @@ impl AppState {
             paths.clone(),
             conversation_repo.clone(),
             messages.clone(),
+            session_meta.clone(),
             checkpoints.clone(),
             mcp_service.clone(),
             skills.clone(),

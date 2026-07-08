@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock};
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::agent_pool::{AgentResultBus, AgentWaitError};
 
@@ -53,8 +53,8 @@ pub async fn spawn_delegated_agent(
     mcp_service: Arc<McpService>,
     skill_service: Arc<SkillService>,
     paths: SharedVaultPaths,
-    conversation_repo: Arc<ConversationRepository>,
     messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
     checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     delegation_registry: Arc<DelegationRegistry>,
@@ -435,8 +435,8 @@ pub async fn spawn_delegated_agent(
         child_session_id,
         conv_id: child_conversation_id.clone(),
         event_bus,
-        conversation_repo,
         messages,
+        session_meta,
         checkpoints,
         delegation_registry,
         delegation_tx,
@@ -528,8 +528,8 @@ struct SpawnContext {
 
     // --- Shared services ---
     event_bus: Arc<EventBus>,
-    conversation_repo: Arc<ConversationRepository>,
     messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
     checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     delegation_registry: Arc<DelegationRegistry>,
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
@@ -563,8 +563,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
         tool_result_context,
         delegation_permit,
         event_bus,
-        conversation_repo,
         messages,
+        session_meta,
         checkpoints,
         delegation_registry,
         delegation_tx,
@@ -591,12 +591,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
     // Inner layer (Phase 4b): <session_ctx ... /> tag with sid + tool
     // hint so the subagent can fetch more ctx fields on demand.
     //
-    // Ward lookup is cheap (single-row query via ConversationRepository)
-    // and falls back to "__global__" if the ward can't be resolved.
-    let ward_for_preamble = conversation_repo
-        .get_session_ward_id(&session_id)
-        .ok()
-        .flatten();
+    // Ward lookup is cheap and falls back to "__global__" if it can't be resolved.
+    let ward_for_preamble = session_meta.session_ward_id(&session_id).ok().flatten();
 
     // Step 1 of 2: session_ctx tag (always emitted, tiny)
     let with_ctx_tag = crate::session_ctx::preamble::prepend_to_task(
@@ -805,7 +801,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 agent_result_bus.resolve(&execution_id, &agent_id, &accumulated_response);
 
                 handle_execution_success(HandleExecutionSuccess {
-                    conversation_repo: &conversation_repo,
+                    messages: messages.as_ref(),
+                    session_meta: session_meta.as_ref(),
                     state_service: &state_service,
                     log_service: &log_service,
                     event_bus: &event_bus,
@@ -839,7 +836,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 let crash_report = build_crash_report(
                     &agent_id,
                     &e.to_string(),
-                    &conversation_repo,
+                    messages.as_ref(),
                     &child_session_id,
                     &state_service,
                     &session_id,
@@ -855,7 +852,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 );
 
                 handle_execution_failure(HandleExecutionFailure {
-                    conversation_repo: &conversation_repo,
+                    messages: messages.as_ref(),
                     state_service: &state_service,
                     log_service: &log_service,
                     event_bus: &event_bus,
@@ -905,7 +902,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
 /// Inputs for `handle_execution_success` — same pattern as `SpawnContext`
 /// but borrowed (these are called from inside the spawn-owned async closure).
 struct HandleExecutionSuccess<'a> {
-    conversation_repo: &'a ConversationRepository,
+    messages: &'a dyn zbot_conversation::MessageStore,
+    session_meta: &'a dyn zbot_conversation::SessionMetaStore,
     state_service: &'a StateService<DatabaseManager>,
     log_service: &'a LogService<DatabaseManager>,
     event_bus: &'a EventBus,
@@ -923,7 +921,8 @@ struct HandleExecutionSuccess<'a> {
 /// Handle successful execution completion.
 async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     let HandleExecutionSuccess {
-        conversation_repo,
+        messages,
+        session_meta,
         state_service,
         log_service,
         event_bus,
@@ -982,7 +981,7 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     // a race where the root can resume without the child result in context.
     handle_delegation_success(
         delegation_ctx.as_ref(),
-        conversation_repo,
+        messages,
         event_bus,
         session_id,
         parent_execution_id,
@@ -1021,8 +1020,8 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     // intent snapshots). Fire-and-forget — a failed write logs a warning
     // but never disrupts delegation completion.
     if let Some(fs) = fact_store_for_ctx {
-        let ward_id = conversation_repo
-            .get_session_ward_id(session_id)
+        let ward_id = session_meta
+            .session_ward_id(session_id)
             .ok()
             .flatten()
             .unwrap_or_else(|| "__global__".to_string());
@@ -1075,7 +1074,7 @@ fn crash_spawn_failure(
 /// named fields prevent order-swap bugs between `session_id` and
 /// `parent_execution_id`.
 struct HandleExecutionFailure<'a> {
-    conversation_repo: &'a ConversationRepository,
+    messages: &'a dyn zbot_conversation::MessageStore,
     state_service: &'a StateService<DatabaseManager>,
     log_service: &'a LogService<DatabaseManager>,
     event_bus: &'a EventBus,
@@ -1091,7 +1090,7 @@ struct HandleExecutionFailure<'a> {
 /// Handle execution failure.
 async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
     let HandleExecutionFailure {
-        conversation_repo,
+        messages,
         state_service,
         log_service,
         event_bus,
@@ -1121,7 +1120,7 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
 
     // Send error callback to parent
     handle_delegation_failure(
-        conversation_repo,
+        messages,
         event_bus,
         session_id,
         parent_execution_id,
@@ -1164,7 +1163,7 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
 fn build_crash_report(
     agent_id: &str,
     error: &str,
-    conversation_repo: &ConversationRepository,
+    messages: &dyn zbot_conversation::MessageStore,
     child_session_id: &str,
     state_service: &StateService<DatabaseManager>,
     parent_session_id: &str,
@@ -1175,7 +1174,7 @@ fn build_crash_report(
     // Try to extract plan status from child session messages.
     // Plan updates appear as tool results containing JSON with `__plan_update: true`.
     let mut found_plan = false;
-    if let Ok(messages) = conversation_repo.get_session_conversation(child_session_id, 200) {
+    if let Ok(messages) = messages.replay(child_session_id, None, 200) {
         // Scan tool-result messages for plan updates (last one is most recent)
         let plan_messages: Vec<_> = messages
             .iter()

@@ -167,7 +167,7 @@ migration follows in T3.
 **Done when:** `cargo test -p gateway-execution --lib` is green and old history
 methods are gone from runner code. Completed 2026-07-08.
 
-### T4: Move delegation off `ConversationRepository`
+### T4: Move delegation off `ConversationRepository` — DONE
 
 **Depends on:** T1, T2
 
@@ -183,6 +183,7 @@ methods are gone from runner code. Completed 2026-07-08.
 - Use `MessageStore::append` for callback system messages.
 
 **Done when:** delegation code has no `ConversationRepository` references.
+Completed 2026-07-08.
 
 ### T5: Move distillation off `ConversationRepository`
 
@@ -274,3 +275,5 @@ methods are gone from runner code. Completed 2026-07-08.
   conversion helper with malformed tool-call tolerance.
 - 2026-07-08: T3 completed; runner continuation and invoke bootstrap history
   now read from `MessageStore::replay`.
+- 2026-07-08: T4 completed; delegation callback persistence, ward lookup, and
+  crash-report transcript reads now use `MessageStore` plus `SessionMetaStore`.

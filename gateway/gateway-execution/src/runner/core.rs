@@ -21,7 +21,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock, Semaphore};
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 /// Callback invoked after session creation but before any events are emitted.
 /// Receives the session_id so the caller can set up subscriptions before events fire.
@@ -69,10 +69,10 @@ pub struct ExecutionRunner {
     paths: SharedVaultPaths,
     /// Active execution handles
     handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    /// Conversation repository for SQLite persistence
-    conversation_repo: Arc<ConversationRepository>,
     /// Message store (append-only conversation log).
     messages: Arc<dyn zbot_conversation::MessageStore>,
+    /// Narrow session metadata reads.
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
     /// Versioned agent-state checkpoints — written at each turn boundary.
     checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     /// Delegation registry for tracking parent-child relationships
@@ -157,7 +157,6 @@ pub struct ExecutionRunnerConfig {
     pub agent_service: Arc<AgentService>,
     pub provider_service: Arc<ProviderService>,
     pub paths: SharedVaultPaths,
-    pub conversation_repo: Arc<ConversationRepository>,
     pub mcp_service: Arc<McpService>,
     pub skill_service: Arc<gateway_services::SkillService>,
     pub log_service: Arc<LogService<DatabaseManager>>,
@@ -167,6 +166,8 @@ pub struct ExecutionRunnerConfig {
     pub ward_usage: Arc<gateway_services::WardUsage>,
     /// New message store (T11 — writes route here via BatchWriter).
     pub messages: Arc<dyn zbot_conversation::MessageStore>,
+    /// Narrow session metadata reads used while retiring the old repository.
+    pub session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
     /// Versioned checkpoints (T11 — written at each turn boundary).
     pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
 
@@ -416,7 +417,6 @@ impl ExecutionRunner {
             agent_service,
             provider_service,
             paths,
-            conversation_repo,
             mcp_service,
             skill_service,
             log_service,
@@ -434,6 +434,7 @@ impl ExecutionRunner {
             max_parallel_agents,
             ward_usage,
             messages,
+            session_meta,
             checkpoints,
         } = config;
 
@@ -495,8 +496,8 @@ impl ExecutionRunner {
             skill_service,
             paths,
             handles,
-            conversation_repo,
             messages,
+            session_meta,
             checkpoints,
             delegation_registry,
             delegation_tx,
@@ -715,8 +716,8 @@ impl ExecutionRunner {
             mcp_service: self.mcp_service.clone(),
             skill_service: self.skill_service.clone(),
             paths: self.paths.clone(),
-            conversation_repo: self.conversation_repo.clone(),
             messages: self.messages.clone(),
+            session_meta: self.session_meta.clone(),
             checkpoints: self.checkpoints.clone(),
             handles: self.handles.clone(),
             delegation_registry: self.delegation_registry.clone(),
@@ -1025,8 +1026,8 @@ impl ExecutionRunner {
             self.mcp_service.clone(),
             self.skill_service.clone(),
             self.paths.clone(),
-            self.conversation_repo.clone(),
             self.messages.clone(),
+            self.session_meta.clone(),
             self.checkpoints.clone(),
             self.handles.clone(),
             self.delegation_registry.clone(),

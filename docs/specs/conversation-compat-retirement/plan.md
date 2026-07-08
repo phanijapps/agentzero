@@ -150,7 +150,7 @@ are green. Completed 2026-07-08.
 repository conversion method. Helper added 2026-07-08; production caller
 migration follows in T3.
 
-### T3: Move runner history bootstrap off `ConversationRepository`
+### T3: Move runner history bootstrap off `ConversationRepository` — DONE
 
 **Depends on:** T2
 
@@ -165,7 +165,7 @@ migration follows in T3.
 - Replace old conversion method with the pure helper.
 
 **Done when:** `cargo test -p gateway-execution --lib` is green and old history
-methods are gone from runner code.
+methods are gone from runner code. Completed 2026-07-08.
 
 ### T4: Move delegation off `ConversationRepository`
 
@@ -272,3 +272,5 @@ methods are gone from runner code.
   `AppState` on the shared conversation pool.
 - 2026-07-08: T2 completed; added a pure stored-message to runtime chat-history
   conversion helper with malformed tool-call tolerance.
+- 2026-07-08: T3 completed; runner continuation and invoke bootstrap history
+  now read from `MessageStore::replay`.

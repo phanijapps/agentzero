@@ -71,8 +71,7 @@ pub struct ExecutionRunner {
     handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     /// Conversation repository for SQLite persistence
     conversation_repo: Arc<ConversationRepository>,
-    /// New message store (append-only conversation log). Writes route here
-    /// via the BatchWriter; reads stay on `conversation_repo` until T13.
+    /// Message store (append-only conversation log).
     messages: Arc<dyn zbot_conversation::MessageStore>,
     /// Versioned agent-state checkpoints — written at each turn boundary.
     checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
@@ -207,7 +206,6 @@ pub(super) struct ContinuationArgs<'a> {
     pub(super) mcp_service: Arc<McpService>,
     pub(super) skill_service: Arc<gateway_services::SkillService>,
     pub(super) paths: SharedVaultPaths,
-    pub(super) conversation_repo: Arc<ConversationRepository>,
     pub(super) messages: Arc<dyn zbot_conversation::MessageStore>,
     pub(super) checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub(super) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
@@ -468,7 +466,6 @@ impl ExecutionRunner {
             skill_service: skill_service.clone(),
             state_service: state_service.clone(),
             log_service: log_service.clone(),
-            conversation_repo: conversation_repo.clone(),
             messages: messages.clone(),
             paths: paths.clone(),
             memory_store: memory_store.clone(),
@@ -682,7 +679,6 @@ impl ExecutionRunner {
             skill_service: self.skill_service.clone(),
             paths: self.paths.clone(),
             handles: self.handles.clone(),
-            conversation_repo: self.conversation_repo.clone(),
             messages: self.messages.clone(),
             checkpoints: self.checkpoints.clone(),
             delegation_registry: self.delegation_registry.clone(),
@@ -1211,7 +1207,6 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         mcp_service,
         skill_service,
         paths,
-        conversation_repo,
         messages,
         checkpoints,
         handles,
@@ -1282,10 +1277,10 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         .with_settings(&settings_for_loader);
     let (agent, provider) = agent_loader.load_or_create_root(root_agent_id).await?;
 
-    // Load full session conversation (includes tool calls, results, and callbacks)
-    let mut history: Vec<ChatMessage> = conversation_repo
-        .get_session_conversation(session_id, 200)
-        .map(|messages| conversation_repo.session_messages_to_chat_format(&messages))
+    // Load full session conversation (includes tool calls, results, and callbacks).
+    let mut history: Vec<ChatMessage> = messages
+        .replay(session_id, None, 200)
+        .map(|rows| crate::conversation_history::messages_to_chat_format(&rows))
         .unwrap_or_default();
 
     // Look up active ward from session (needed for recall ward affinity)

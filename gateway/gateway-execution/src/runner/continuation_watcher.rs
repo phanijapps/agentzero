@@ -29,7 +29,7 @@ use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPat
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::delegation::{DelegationRegistry, DelegationRequest};
 use crate::handle::ExecutionHandle;
@@ -58,7 +58,6 @@ pub(crate) struct RunnerContinuationInvoker {
     pub(crate) skill_service: Arc<gateway_services::SkillService>,
     pub(crate) paths: SharedVaultPaths,
     pub(crate) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    pub(crate) conversation_repo: Arc<ConversationRepository>,
     pub(crate) messages: Arc<dyn zbot_conversation::MessageStore>,
     pub(crate) checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub(crate) delegation_registry: Arc<DelegationRegistry>,
@@ -105,7 +104,6 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             mcp_service: self.mcp_service.clone(),
             skill_service: self.skill_service.clone(),
             paths: self.paths.clone(),
-            conversation_repo: self.conversation_repo.clone(),
             messages: self.messages.clone(),
             checkpoints: self.checkpoints.clone(),
             handles: self.handles.clone(),

@@ -24,7 +24,7 @@ use gateway_services::{
     AgentService, McpService, ModelRegistry, ProviderService, SharedVaultPaths, SkillService,
 };
 use tokio::sync::RwLock;
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::agent_pool::AgentResultBus;
 use crate::config::ExecutionConfig;
@@ -52,7 +52,6 @@ pub(super) struct InvokeBootstrap {
     pub(super) skill_service: Arc<SkillService>,
     pub(super) state_service: Arc<StateService<DatabaseManager>>,
     pub(super) log_service: Arc<LogService<DatabaseManager>>,
-    pub(super) conversation_repo: Arc<ConversationRepository>,
     pub(super) messages: Arc<dyn zbot_conversation::MessageStore>,
     pub(super) paths: SharedVaultPaths,
     /// Trait-routed memory store used to build the executor's fact_store.
@@ -475,14 +474,11 @@ impl InvokeBootstrap {
             }
         };
 
-        // Load full session conversation (all messages including tool calls/results)
+        // Load full session conversation (all messages including tool calls/results).
         let mut history: Vec<ChatMessage> = self
-            .conversation_repo
-            .get_session_conversation(&session_id, 200)
-            .map(|messages| {
-                self.conversation_repo
-                    .session_messages_to_chat_format(&messages)
-            })
+            .messages
+            .replay(&session_id, None, 200)
+            .map(|rows| crate::conversation_history::messages_to_chat_format(&rows))
             .unwrap_or_default();
 
         // Graph-powered recall for first message — inject remembered facts, episodes, and
@@ -1320,7 +1316,7 @@ mod tests {
     use gateway_events::EventBus;
     use gateway_services::VaultPaths;
     use tokio::sync::RwLock;
-    use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+    use zbot_stores_sqlite::DatabaseManager;
 
     #[test]
     fn ward_doctrine_is_graduated_true_for_canonical_agents_md() {
@@ -1488,7 +1484,6 @@ mod tests {
             skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
             state_service: Arc::new(StateService::new(db.clone())),
             log_service: Arc::new(LogService::new(db.clone())),
-            conversation_repo: Arc::new(ConversationRepository::new(db)),
             messages,
             paths,
             memory_store: None,
@@ -1541,7 +1536,6 @@ mod tests {
             skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
             state_service: Arc::new(StateService::new(db.clone())),
             log_service: log_service.clone(),
-            conversation_repo: Arc::new(ConversationRepository::new(db)),
             messages,
             paths,
             memory_store: None,

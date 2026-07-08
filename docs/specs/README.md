@@ -6,12 +6,12 @@ Active feature specs for AgentZero.
 | --- | --- | --- |
 | [YFinance Market Analysis Skill Consolidation](yfinance-market-analysis-skill/spec.md) | Shipped | Consolidates bundled yfinance workflows into one primary skill while keeping old `yf-*` IDs as compatibility wrappers. |
 | [Tool Waste Visibility](tool-waste-visibility/spec.md) | Done | Makes blocked hooks, invalid tool arguments, planner skill drift, and tool durations visible in existing session telemetry. |
-| [Mission Control Performance](mission-control-performance/spec.md) | Draft | Makes Mission Control load bounded summary data first, then lazy-load selected-session detail as the database grows. |
+| [Mission Control Performance](mission-control-performance/spec.md) | Shipped | Makes Mission Control load bounded summary data first, then lazy-load selected-session detail as the database grows. |
 | [GitHub Release Installer](github-release-installer/spec.md) | Closed | Defines GitHub Release installers and artifact packaging for Linux, macOS, and Windows. |
 | [Release On Main](release-on-main/spec.md) | Done for now | Automates the daily CalVer release bump and tag when changes land on `main`, while preserving the manual release script. |
 | [Agent Handoff Notes](agent-handoff-notes/spec.md) | Done | Adds current-session agent discovery and one-way handoff notes over existing steering without implementing full Pattern 4 peer messaging. |
 | [Runtime Context Control](runtime-context-control/spec.md) | Draft | Consolidates live conversation compaction into runtime middleware while preserving `knowledge.db` durable memory. |
-| [Rig Engine Migration](rig-engine-migration/spec.md) | Implementing | Replaces the legacy execution engine with a Rig-backed execution facade while preserving gateway/UI, config, memory, and parity contracts. |
+| [Rig Engine Migration](rig-engine-migration/spec.md) | Shipped | Replaces the legacy execution engine with a Rig-backed execution facade while preserving gateway/UI, config, memory, and parity contracts. |
 | [Memory Hygiene](memory-hygiene/spec.md) | Draft | Adds durable-memory guards for recall embedding input, handoff persistence, KG relationship integrity, and hygiene observability. |
 | [Durable Ward Memory](durable-ward-memory/spec.md) | Closed | Defines Layer 4 as `knowledge.db` first-level indexing over durable executable ward workspaces, with preserved ward/file/artifact route hints. |
 | [Engram Memory Engine Cutover](engram-memory-engine-cutover/spec.md) | Shipped | Switches durable memory, knowledge, graph, belief, hierarchy, and recall backing to Engram through a fail-closed AgentZero adapter while preserving gateway/UI/sleep-cycle contracts. |

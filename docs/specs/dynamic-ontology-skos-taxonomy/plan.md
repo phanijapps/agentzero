@@ -392,6 +392,8 @@ operated without public contract drift or hidden Engram product coupling.
 
 **Depends on:** T4, T5
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/stores/knowledge_graph.rs`, `stores/zbot-engram-adapter/src/governance/**`, `docs/specs/dynamic-ontology-skos-taxonomy/**`
 
 **Tests:**
@@ -451,3 +453,5 @@ operated without public contract drift or hidden Engram product coupling.
   deduplication after governed predicate normalization.
 - 2026-07-08: completed T8 with path-free governance capability health on
   memory/graph read models and additive Observatory display.
+- 2026-07-08: completed T10 with normalized relationship-key deduplication
+  for writes and read models.

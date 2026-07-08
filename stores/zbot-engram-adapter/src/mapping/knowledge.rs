@@ -110,6 +110,8 @@ pub fn entity_to_knowledge_entity_with_governance(
         ),
         created_at: entity.first_seen_at,
         updated_at: Some(entity.last_seen_at),
+        valid_from: None,
+        valid_until: None,
         metadata: Some(metadata),
     })
 }

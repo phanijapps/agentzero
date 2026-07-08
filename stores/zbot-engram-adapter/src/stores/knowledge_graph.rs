@@ -1,7 +1,7 @@
 //! `KnowledgeGraphStore` implementation backed by Engram knowledge/hierarchy records.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -131,6 +131,7 @@ impl EngramKnowledgeGraphStore {
         mut relationship: Relationship,
     ) -> StoreResult<RelationshipId> {
         relationship.agent_id = agent_id.to_string();
+        relationship = self.sidecar.canonicalize_relationship(relationship)?;
         let id = RelationshipId(relationship.id.clone());
         let findings = self.validate_relationship(&relationship)?;
         self.knowledge
@@ -727,6 +728,16 @@ struct RelationshipEntry {
     relationship: Relationship,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelationshipDedupKey {
+    agent_id: String,
+    source_entity_id: String,
+    target_entity_id: String,
+    normalized_predicate: String,
+    ward_id: String,
+    visibility: String,
+}
+
 #[derive(Debug, Clone)]
 struct NeighborRow {
     neighbor_id: EntityId,
@@ -1089,6 +1100,18 @@ impl KnowledgeGraphSidecar {
         Ok(())
     }
 
+    fn canonicalize_relationship(&self, relationship: Relationship) -> StoreResult<Relationship> {
+        let key = self.relationship_dedup_key(&relationship)?;
+        let Some(existing) = self.find_duplicate_relationship(&key, &relationship.id)? else {
+            return Ok(relationship);
+        };
+
+        Ok(merge_duplicate_relationships(
+            existing.relationship,
+            relationship,
+        ))
+    }
+
     fn replace_governance_findings(
         &self,
         relationship_id: &str,
@@ -1419,6 +1442,19 @@ impl KnowledgeGraphSidecar {
     }
 
     fn load_all_relationships(&self) -> StoreResult<Vec<RelationshipEntry>> {
+        let mut rows = self.load_all_relationship_rows()?;
+        rows = self.deduplicate_relationship_entries(rows)?;
+        rows.sort_by(|left, right| {
+            right
+                .relationship
+                .mention_count
+                .cmp(&left.relationship.mention_count)
+                .then_with(|| left.relationship.id.cmp(&right.relationship.id))
+        });
+        Ok(rows)
+    }
+
+    fn load_all_relationship_rows(&self) -> StoreResult<Vec<RelationshipEntry>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -1430,6 +1466,68 @@ impl KnowledgeGraphSidecar {
             .query_map([], decode_relationship_entry)
             .map_err(to_backend)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(to_backend)
+    }
+
+    fn find_duplicate_relationship(
+        &self,
+        key: &RelationshipDedupKey,
+        incoming_id: &str,
+    ) -> StoreResult<Option<RelationshipEntry>> {
+        for entry in self.load_all_relationship_rows()? {
+            if entry.relationship.id == incoming_id {
+                continue;
+            }
+            if self.relationship_dedup_key(&entry.relationship)? == *key {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
+
+    fn deduplicate_relationship_entries(
+        &self,
+        rows: Vec<RelationshipEntry>,
+    ) -> StoreResult<Vec<RelationshipEntry>> {
+        let mut deduped: Vec<(RelationshipDedupKey, RelationshipEntry)> = Vec::new();
+        for entry in rows {
+            let key = self.relationship_dedup_key(&entry.relationship)?;
+            if let Some((_, existing)) = deduped.iter_mut().find(|(candidate, _)| *candidate == key)
+            {
+                existing.relationship = merge_duplicate_relationships(
+                    existing.relationship.clone(),
+                    entry.relationship,
+                );
+            } else {
+                deduped.push((key, entry));
+            }
+        }
+        Ok(deduped.into_iter().map(|(_, entry)| entry).collect())
+    }
+
+    fn relationship_dedup_key(
+        &self,
+        relationship: &Relationship,
+    ) -> StoreResult<RelationshipDedupKey> {
+        let ward_id = relationship_property_string(relationship, "ward_id")
+            .or_else(|| {
+                self.get_entity(&EntityId(relationship.source_entity_id.clone()))
+                    .ok()
+                    .flatten()
+                    .and_then(|entity| property_string(&entity, "ward_id"))
+            })
+            .unwrap_or_else(|| DEFAULT_WARD_ID.to_string());
+        Ok(RelationshipDedupKey {
+            agent_id: relationship.agent_id.clone(),
+            source_entity_id: relationship.source_entity_id.clone(),
+            target_entity_id: relationship.target_entity_id.clone(),
+            normalized_predicate: normalize_relationship_predicate(
+                relationship.relationship_type.as_str(),
+            ),
+            ward_id: normalize_key_part(&ward_id),
+            visibility: relationship_property_string(relationship, "visibility")
+                .map(|value| normalize_key_part(&value))
+                .unwrap_or_else(|| "workspace".to_string()),
+        })
     }
 
     fn count_entities(&self, agent_id: Option<&str>) -> StoreResult<usize> {
@@ -1910,6 +2008,90 @@ fn decode_governance_finding(
 ) -> rusqlite::Result<GovernanceValidationFinding> {
     let finding_json: String = row.get(0)?;
     serde_json::from_str::<GovernanceValidationFinding>(&finding_json).map_err(json_sql_error(0))
+}
+
+fn merge_duplicate_relationships(
+    mut canonical: Relationship,
+    incoming: Relationship,
+) -> Relationship {
+    canonical.first_seen_at = canonical.first_seen_at.min(incoming.first_seen_at);
+    canonical.last_seen_at = canonical.last_seen_at.max(incoming.last_seen_at);
+    canonical.mention_count = canonical
+        .mention_count
+        .saturating_add(incoming.mention_count.max(1));
+    merge_relationship_properties(&mut canonical.properties, incoming.properties);
+    canonical
+}
+
+fn merge_relationship_properties(
+    canonical: &mut HashMap<String, Value>,
+    incoming: HashMap<String, Value>,
+) {
+    for (key, incoming_value) in incoming {
+        match canonical.get_mut(&key) {
+            Some(existing_value) if is_evidence_property(&key) => {
+                merge_json_array_values(existing_value, incoming_value);
+            }
+            Some(_) => {}
+            None => {
+                canonical.insert(key, incoming_value);
+            }
+        }
+    }
+}
+
+fn is_evidence_property(key: &str) -> bool {
+    matches!(
+        key,
+        "evidence" | "evidence_ids" | "evidenceIds" | "source_refs" | "sourceRefs" | "contexts"
+    )
+}
+
+fn merge_json_array_values(existing: &mut Value, incoming: Value) {
+    let mut values = value_as_vec(existing.take());
+    values.extend(value_as_vec(incoming));
+
+    let mut seen = BTreeSet::new();
+    values.retain(|value| seen.insert(value.to_string()));
+    *existing = Value::Array(values);
+}
+
+fn value_as_vec(value: Value) -> Vec<Value> {
+    match value {
+        Value::Array(values) => values,
+        Value::Null => Vec::new(),
+        value => vec![value],
+    }
+}
+
+fn normalize_relationship_predicate(predicate: &str) -> String {
+    let compact = predicate
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect::<String>();
+    let normalized = RelationshipType::from_str(&compact).as_str().to_string();
+    normalize_key_part(&normalized)
+}
+
+fn normalize_key_part(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_separator = false;
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.extend(ch.to_lowercase());
+            previous_separator = false;
+        } else if !previous_separator {
+            normalized.push('_');
+            previous_separator = true;
+        }
+    }
+    let normalized = normalized.trim_matches('_').to_string();
+    if normalized.is_empty() {
+        "default".to_string()
+    } else {
+        normalized
+    }
 }
 
 fn json_sql_error(column: usize) -> impl FnOnce(serde_json::Error) -> rusqlite::Error {

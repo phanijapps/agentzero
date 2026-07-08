@@ -326,6 +326,147 @@ async fn graph_entities_relationships_and_read_models_round_trip() {
 }
 
 #[tokio::test]
+async fn duplicate_relationships_collapse_by_normalized_governed_key() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(engram_config(&root)).expect("store");
+    let mut source = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    source.id = "entity-dedup-alice".to_string();
+    source
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
+    let mut target = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
+    target.id = "entity-dedup-zbot".to_string();
+    target
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
+    let source_id = store
+        .upsert_entity("agent-a", source)
+        .await
+        .expect("source");
+    let target_id = store
+        .upsert_entity("agent-a", target)
+        .await
+        .expect("target");
+
+    let mut first = Relationship::new(
+        "agent-a".into(),
+        source_id.0.clone(),
+        target_id.0.clone(),
+        RelationshipType::Created,
+    );
+    first.id = "rel-dedup-created-a".to_string();
+    first
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
+    first
+        .properties
+        .insert("evidence".to_string(), json!(["trace-a"]));
+
+    let mut duplicate = Relationship::new(
+        "agent-a".into(),
+        source_id.0.clone(),
+        target_id.0.clone(),
+        RelationshipType::Custom("CREATED".to_string()),
+    );
+    duplicate.id = "rel-dedup-created-b".to_string();
+    duplicate
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
+    duplicate
+        .properties
+        .insert("evidence".to_string(), json!(["trace-b"]));
+
+    let first_id = store
+        .upsert_relationship("agent-a", first)
+        .await
+        .expect("first relationship");
+    let duplicate_id = store
+        .upsert_relationship("agent-a", duplicate)
+        .await
+        .expect("duplicate relationship");
+
+    assert_eq!(first_id.0, "rel-dedup-created-a");
+    assert_eq!(duplicate_id.0, "rel-dedup-created-a");
+    let relationships = store
+        .list_relationships("agent-a", None, 10, 0)
+        .await
+        .expect("relationships");
+    assert_eq!(relationships.len(), 1);
+    assert_eq!(relationships[0].id, "rel-dedup-created-a");
+    assert_eq!(relationships[0].mention_count, 2);
+    assert_eq!(
+        relationships[0].properties.get("evidence"),
+        Some(&json!(["trace-a", "trace-b"]))
+    );
+    assert_eq!(
+        store.count_all_relationships().await.expect("count"),
+        1,
+        "read models should expose one durable connection"
+    );
+    assert_eq!(
+        store
+            .graph_stats("agent-a")
+            .await
+            .expect("graph stats")
+            .relationship_count,
+        1
+    );
+}
+
+#[tokio::test]
+async fn relationship_dedup_respects_scope_and_visibility_boundaries() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(engram_config(&root)).expect("store");
+    let mut source = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    source.id = "entity-boundary-alice".to_string();
+    let mut target = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
+    target.id = "entity-boundary-zbot".to_string();
+    let source_id = store
+        .upsert_entity("agent-a", source)
+        .await
+        .expect("source");
+    let target_id = store
+        .upsert_entity("agent-a", target)
+        .await
+        .expect("target");
+
+    for (id, ward_id, visibility) in [
+        ("rel-boundary-base", "ward-a", "workspace"),
+        ("rel-boundary-other-ward", "ward-b", "workspace"),
+        ("rel-boundary-public", "ward-a", "public"),
+    ] {
+        let mut relationship = Relationship::new(
+            "agent-a".into(),
+            source_id.0.clone(),
+            target_id.0.clone(),
+            RelationshipType::Uses,
+        );
+        relationship.id = id.to_string();
+        relationship
+            .properties
+            .insert("ward_id".to_string(), json!(ward_id));
+        relationship
+            .properties
+            .insert("visibility".to_string(), json!(visibility));
+        store
+            .upsert_relationship("agent-a", relationship)
+            .await
+            .expect("relationship");
+    }
+
+    let relationships = store
+        .list_relationships("agent-a", None, 10, 0)
+        .await
+        .expect("relationships");
+    assert_eq!(relationships.len(), 3);
+    assert_eq!(
+        store.count_all_relationships().await.expect("count"),
+        3,
+        "scope and visibility boundaries must not be collapsed"
+    );
+}
+
+#[tokio::test]
 async fn advisory_governance_findings_do_not_block_relationship_writes() {
     let root = tempfile::tempdir().expect("root");
     let store = EngramKnowledgeGraphStore::open(governed_engram_config(&root)).expect("store");

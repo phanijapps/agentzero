@@ -323,7 +323,7 @@ pub async fn spawn_delegated_agent(
         .with_state_service(state_service.clone())
         .with_steering_registry(steering_registry.clone())
         .with_agent_result_bus(agent_result_bus.clone())
-        .with_conversation_repo(conversation_repo.clone());
+        .with_message_store(messages.clone());
 
     let mut executor = match builder
         .build(
@@ -646,13 +646,12 @@ fn spawn_execution_task(ctx: SpawnContext) {
             with_snapshot
         };
 
-        // Create batch writer with conversation repo for session message streaming
+        // Create batch writer for session message and trace streaming.
         let batch_writer = spawn_batch_writer_with_traces(
             state_service.clone(),
             log_service.clone(),
-            Some(conversation_repo.clone()),
             paths.traces_dir(),
-            Some(messages.clone()),
+            messages.clone(),
         );
 
         // Create stream context for event processing

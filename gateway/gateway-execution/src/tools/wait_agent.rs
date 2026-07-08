@@ -5,24 +5,25 @@ use execution_state::{ExecutionStatus, StateService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::time::Duration;
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_conversation::MessageStore;
+use zbot_stores_sqlite::DatabaseManager;
 
 pub struct WaitAgentTool {
     bus: Arc<AgentResultBus>,
     state_service: Arc<StateService<DatabaseManager>>,
-    conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn MessageStore>,
 }
 
 impl WaitAgentTool {
     pub fn new(
         bus: Arc<AgentResultBus>,
         state_service: Arc<StateService<DatabaseManager>>,
-        conversation_repo: Arc<ConversationRepository>,
+        messages: Arc<dyn MessageStore>,
     ) -> Self {
         Self {
             bus,
             state_service,
-            conversation_repo,
+            messages,
         }
     }
 }
@@ -77,11 +78,7 @@ impl Tool for WaitAgentTool {
                     let response = exec
                         .child_session_id
                         .as_deref()
-                        .and_then(|sid| {
-                            self.conversation_repo
-                                .get_session_conversation(sid, 10)
-                                .ok()
-                        })
+                        .and_then(|sid| self.messages.replay(sid, None, 10).ok())
                         .and_then(|msgs| {
                             msgs.into_iter()
                                 .rev()
@@ -147,28 +144,31 @@ mod tests {
     use gateway_services::VaultPaths;
     use serde_json::json;
     use tempfile::TempDir;
-    use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+    use zbot_stores_sqlite::DatabaseManager;
 
     struct Harness {
         _tmp: TempDir,
         bus: Arc<AgentResultBus>,
         state_service: Arc<StateService<DatabaseManager>>,
-        conversation_repo: Arc<ConversationRepository>,
+        messages: Arc<dyn MessageStore>,
     }
 
     fn setup() -> Harness {
         let tmp = TempDir::new().expect("tempdir");
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("ensure vault dirs");
+        let conversations_db = paths.conversations_db();
         let db = Arc::new(DatabaseManager::new(paths).expect("db init"));
         let state_service = Arc::new(StateService::new(db.clone()));
-        let conversation_repo = Arc::new(ConversationRepository::new(db));
+        let pool = zbot_conversation::open_conversation_pool(&conversations_db)
+            .expect("conversation pool");
+        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(pool));
         let bus = Arc::new(AgentResultBus::new());
         Harness {
             _tmp: tmp,
             bus,
             state_service,
-            conversation_repo,
+            messages,
         }
     }
 
@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn wait_agent_requires_execution_id_arg() {
         let h = setup();
-        let tool = WaitAgentTool::new(h.bus, h.state_service, h.conversation_repo);
+        let tool = WaitAgentTool::new(h.bus, h.state_service, h.messages);
         let err = tool.execute(dummy_ctx(), json!({})).await.unwrap_err();
         assert!(format!("{err}").contains("execution_id"));
     }
@@ -197,7 +197,7 @@ mod tests {
     async fn wait_agent_blocks_then_unblocks_on_resolve() {
         let h = setup();
         let bus_for_resolver = h.bus.clone();
-        let tool = WaitAgentTool::new(h.bus, h.state_service, h.conversation_repo);
+        let tool = WaitAgentTool::new(h.bus, h.state_service, h.messages);
 
         // Resolve after a short delay (long enough that the tool has
         // definitely entered timeout.await but well under the 300s
@@ -227,7 +227,7 @@ mod tests {
     async fn wait_agent_surfaces_crash_from_reject() {
         let h = setup();
         let bus_for_rejecter = h.bus.clone();
-        let tool = WaitAgentTool::new(h.bus, h.state_service, h.conversation_repo);
+        let tool = WaitAgentTool::new(h.bus, h.state_service, h.messages);
 
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -257,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn wait_agent_returns_timeout_when_no_resolver() {
         let h = setup();
-        let tool = WaitAgentTool::new(h.bus, h.state_service, h.conversation_repo);
+        let tool = WaitAgentTool::new(h.bus, h.state_service, h.messages);
 
         let result = tool
             .execute(
@@ -280,7 +280,7 @@ mod tests {
         h.bus
             .register_handle("exec-killed", ExecutionHandle::new(10));
         let bus_for_killer = h.bus.clone();
-        let tool = WaitAgentTool::new(h.bus, h.state_service, h.conversation_repo);
+        let tool = WaitAgentTool::new(h.bus, h.state_service, h.messages);
 
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;

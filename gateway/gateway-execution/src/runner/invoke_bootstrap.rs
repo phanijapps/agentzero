@@ -53,6 +53,7 @@ pub(super) struct InvokeBootstrap {
     pub(super) state_service: Arc<StateService<DatabaseManager>>,
     pub(super) log_service: Arc<LogService<DatabaseManager>>,
     pub(super) conversation_repo: Arc<ConversationRepository>,
+    pub(super) messages: Arc<dyn zbot_conversation::MessageStore>,
     pub(super) paths: SharedVaultPaths,
     /// Trait-routed memory store used to build the executor's fact_store.
     pub(super) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
@@ -831,7 +832,7 @@ impl InvokeBootstrap {
         if let Some(ref bus) = self.agent_result_bus {
             builder = builder
                 .with_agent_result_bus(bus.clone())
-                .with_conversation_repo(self.conversation_repo.clone());
+                .with_message_store(self.messages.clone());
         }
         if let Some(ref ps) = self.procedure_store {
             builder = builder.with_procedure_store(ps.clone());
@@ -1474,6 +1475,9 @@ mod tests {
         let path = dir.into_path();
         let paths = Arc::new(VaultPaths::new(path));
         let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
+        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(
+            zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+        ));
         let handles: Arc<RwLock<HashMap<String, ExecutionHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
@@ -1485,6 +1489,7 @@ mod tests {
             state_service: Arc::new(StateService::new(db.clone())),
             log_service: Arc::new(LogService::new(db.clone())),
             conversation_repo: Arc::new(ConversationRepository::new(db)),
+            messages,
             paths,
             memory_store: None,
             memory_recall: None,
@@ -1522,6 +1527,9 @@ mod tests {
         let path = dir.into_path();
         let paths = Arc::new(VaultPaths::new(path));
         let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
+        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(
+            zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+        ));
         let handles: Arc<RwLock<HashMap<String, ExecutionHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let log_service = Arc::new(LogService::new(db.clone()));
@@ -1534,6 +1542,7 @@ mod tests {
             state_service: Arc::new(StateService::new(db.clone())),
             log_service: log_service.clone(),
             conversation_repo: Arc::new(ConversationRepository::new(db)),
+            messages,
             paths,
             memory_store: None,
             memory_recall: None,

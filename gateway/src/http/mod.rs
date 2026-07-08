@@ -34,6 +34,7 @@ mod settings;
 mod setup;
 mod skills;
 mod tools;
+mod traces;
 mod upload;
 mod vault;
 mod ward_actions;
@@ -323,6 +324,7 @@ pub fn create_http_router(
         .route("/api/sessions/archive", post(sessions::archive_sessions))
         .route("/api/sessions/restore/:id", post(sessions::restore_session))
         .route("/api/sessions/:id/state", get(sessions::get_session_state))
+        .route("/api/traces/query", post(traces::query_traces))
         // Hard-delete a session with memory-preserving cascade (R18)
         .route("/api/sessions/:id", delete(sessions::delete_session))
         // Artifact endpoints

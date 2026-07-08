@@ -21,10 +21,7 @@ pub mod ward_usage_adapter;
 pub mod working_memory;
 pub mod working_memory_middleware;
 
-pub use batch_writer::{
-    spawn_batch_writer, spawn_batch_writer_with_repo, spawn_batch_writer_with_traces,
-    BatchWriterHandle,
-};
+pub use batch_writer::{spawn_batch_writer, spawn_batch_writer_with_traces, BatchWriterHandle};
 pub use executor::{
     build_context_capability_catalog, collect_agents_summary, collect_skills_summary,
     resolve_thinking_flag, select_engine, ExecutorBuilder, RuntimeActorKind,

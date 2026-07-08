@@ -3,7 +3,7 @@
 //! `SlimLog` is the payload-free row the live `/api/logs` UI reads (columns
 //! unchanged from the legacy `execution_logs` table; only the *writers* stop
 //! emitting payload blobs into `metadata`). `TraceEvent` is the full-fidelity
-//! OTel-GenAI-shaped record streamed to `traces/<session_id>.jsonl.zst`.
+//! OTel-GenAI-shaped record streamed to `traces/<session_id>.jsonl.gz`.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +29,7 @@ pub struct SlimLog {
     pub duration_ms: Option<i64>,
 }
 
-/// A full-fidelity trace event, written to `.jsonl.zst`. Attribute names
+/// A full-fidelity trace event, written to `.jsonl.gz`. Attribute names
 /// follow OpenTelemetry GenAI semantic conventions for portability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceEvent {

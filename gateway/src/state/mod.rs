@@ -1062,7 +1062,7 @@ impl AppState {
         )
         .with_actor_kind(actor_kind)
         .with_state_service(self.state_service.clone())
-        .with_conversation_repo(self.conversations.clone())
+        .with_message_store(self.messages.clone())
         .with_model_registry(self.model_registry.clone());
 
         if let Some(store) = &self.memory_store {

@@ -40,8 +40,9 @@ use gateway_services::{McpService, SettingsService, SkillService};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use zbot_conversation::MessageStore;
 use zbot_stores::MemoryFactStore;
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use super::setup::SubagentRole;
 use crate::agent_pool::AgentResultBus;
@@ -718,7 +719,7 @@ pub struct ExecutorBuilder {
     steering_registry: Option<Arc<agent_runtime::SteeringRegistry>>,
     agent_result_bus: Option<Arc<AgentResultBus>>,
     state_service: Option<Arc<StateService<DatabaseManager>>>,
-    conversation_repo: Option<Arc<ConversationRepository>>,
+    messages: Option<Arc<dyn MessageStore>>,
     /// Trait-routed procedure store for the `run_procedure` tool.
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     extra_initial_state: Option<Vec<(String, serde_json::Value)>>,
@@ -744,7 +745,7 @@ impl ExecutorBuilder {
             steering_registry: None,
             agent_result_bus: None,
             state_service: None,
-            conversation_repo: None,
+            messages: None,
             procedure_store: None,
             extra_initial_state: None,
             chat_mode: false,
@@ -863,9 +864,9 @@ impl ExecutorBuilder {
         self
     }
 
-    /// Set the conversation repo used by `wait_agent` fast-path.
-    pub fn with_conversation_repo(mut self, repo: Arc<ConversationRepository>) -> Self {
-        self.conversation_repo = Some(repo);
+    /// Set the message store used by `wait_agent` fast-path.
+    pub fn with_message_store(mut self, messages: Arc<dyn MessageStore>) -> Self {
+        self.messages = Some(messages);
         self
     }
 
@@ -1315,15 +1316,13 @@ impl ExecutorBuilder {
                 tool_registry.register(Arc::new(crate::tools::SteerAgentTool::new(sr.clone())));
             }
 
-            if let (Some(ref bus), Some(ref svc), Some(ref repo)) = (
-                &self.agent_result_bus,
-                &self.state_service,
-                &self.conversation_repo,
-            ) {
+            if let (Some(ref bus), Some(ref svc), Some(ref messages)) =
+                (&self.agent_result_bus, &self.state_service, &self.messages)
+            {
                 tool_registry.register(Arc::new(crate::tools::WaitAgentTool::new(
                     bus.clone(),
                     svc.clone(),
-                    repo.clone(),
+                    messages.clone(),
                 )));
                 tool_registry.register(Arc::new(crate::tools::KillAgentTool::new(bus.clone())));
             }
@@ -1793,13 +1792,17 @@ mod tests {
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("ensure vault dirs");
         let db = Arc::new(DatabaseManager::new(paths.clone()).expect("db init"));
+        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(
+            zbot_conversation::open_conversation_pool(&paths.conversations_db())
+                .expect("conversation pool"),
+        ));
         let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
 
         let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
             .with_actor_kind(actor_kind)
             .with_agent_result_bus(Arc::new(AgentResultBus::new()))
             .with_state_service(Arc::new(StateService::new(db.clone())))
-            .with_conversation_repo(Arc::new(ConversationRepository::new(db)))
+            .with_message_store(messages)
             .build_tool_registry(fs_context);
 
         build_context_capability_catalog(

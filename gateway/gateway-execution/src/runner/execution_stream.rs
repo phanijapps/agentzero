@@ -15,7 +15,7 @@ use execution_state::StateService;
 use gateway_events::EventBus;
 use gateway_services::SharedVaultPaths;
 use tokio::sync::{mpsc, RwLock};
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::delegation::extract_structured_result;
 use crate::delegation::{DelegationRegistry, DelegationRequest};
@@ -44,7 +44,6 @@ pub struct ExecutionStream {
     pub event_bus: Arc<EventBus>,
     pub state_service: Arc<StateService<DatabaseManager>>,
     pub log_service: Arc<LogService<DatabaseManager>>,
-    pub conversation_repo: Arc<ConversationRepository>,
     pub messages: Arc<dyn zbot_conversation::MessageStore>,
     pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
@@ -295,14 +294,12 @@ impl ExecutionStream {
             recommended_skills,
         } = ctx;
 
-        // Create batch writer for non-blocking DB writes (message writes route
-        // through MessageStore; conversation_repo stays as fallback).
+        // Create batch writer for non-blocking DB writes.
         let batch_writer = spawn_batch_writer_with_traces(
             self.state_service.clone(),
             self.log_service.clone(),
-            Some(self.conversation_repo.clone()),
             self.paths.traces_dir(),
-            Some(self.messages.clone()),
+            self.messages.clone(),
         );
 
         // Create stream context for event processing
@@ -810,7 +807,7 @@ mod tests {
     use gateway_events::EventBus;
     use gateway_services::VaultPaths;
     use tokio::sync::{mpsc, RwLock};
-    use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+    use zbot_stores_sqlite::DatabaseManager;
 
     #[test]
     fn execution_stream_constructs_with_minimum_required_deps() {
@@ -824,7 +821,6 @@ mod tests {
         let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
         let state = Arc::new(StateService::new(db.clone()));
         let logs = Arc::new(LogService::new(db.clone()));
-        let convo = Arc::new(ConversationRepository::new(db));
         let bus = Arc::new(EventBus::new());
         let (tx, _rx) = mpsc::unbounded_channel();
         let registry = Arc::new(crate::delegation::DelegationRegistry::new());
@@ -834,7 +830,6 @@ mod tests {
             event_bus: bus,
             state_service: state,
             log_service: logs,
-            conversation_repo: convo.clone(),
             messages: Arc::new(zbot_conversation::SqliteMessageStore::new(
                 zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
             )),

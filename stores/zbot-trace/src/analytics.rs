@@ -1,4 +1,4 @@
-//! `TraceAnalytics` — read-only DuckDB queries over `traces/*.jsonl.zst`.
+//! `TraceAnalytics` — read-only DuckDB queries over `traces/*.jsonl.gz`.
 //!
 //! Opens an in-memory DuckDB connection per query and runs `read_json_auto` over
 //! the (server-controlled, canonicalized) trace files. The user-influenced
@@ -41,7 +41,7 @@ impl TraceAnalytics {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
-    /// Up to `cap` `.jsonl.zst` files under `dir`, as quoted DuckDB path
+    /// Up to `cap` `.jsonl.gz` files under `dir`, as quoted DuckDB path
     /// literals. Bounded to keep a query from scanning an unbounded set.
     fn bounded_file_list(&self, cap: usize) -> Result<Vec<String>> {
         let mut files = Vec::new();

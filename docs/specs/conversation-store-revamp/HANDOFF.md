@@ -1,4 +1,4 @@
-# Conversation Store Revamp — Handoff (remaining: T13, T14, T15, T16)
+# Conversation Store Revamp — Handoff (remaining: T13 tail, T16)
 
 **Branch:** `feat/conversation-store-revamp` · **HEAD:** `ed18a139` · **Date:** 2026-07-07
 **Spec/Plan:** `docs/specs/conversation-store-revamp/{spec.md,plan.md}` (canonical, review-clean).
@@ -8,10 +8,15 @@
 The **bloat reduction + monitoring are done and daemon-verified**: `execution_logs.metadata` is slimmed (tool `args`/`result` removed; they live only in `messages` + `traces/*.jsonl.gz`), and Mission Control (`/api/sessions/:id/state`) renders fully — plan, response, recalled_facts, intent, subagents, and per-tool-call input/output — all sourced from `messages`. Both crates built + tested.
 
 **What remains is the cutover tail:**
-- **T13** — migrate the `ConversationRepository` *read* consumers (21 files still reference it).
-- **T14** — add the `/api/traces/query` endpoint (DuckDB backend already built; route missing).
-- **T15** — finish UI tests (`ToolsPane.tsx`, `ToolDetailPopover.test.tsx` assert the old metadata shape).
-- **T16** — delete the dead code (**irreversible — gate on the user**).
+- **T13 tail** — migrate the remaining `ConversationRepository`/`ConversationStore` consumers (memory sleep, handoff writer, delegation callback/spawn metadata reads, distillation, runner history bootstrap, gateway state/runtime).
+- **T16** — delete the dead code (**irreversible — only after T13 tail is grep-clean**).
+
+**Done after this handoff was written:**
+- **T14** — `/api/traces/query` implemented as a preset-only endpoint (`sessions_with_failed_tool`) with typed params and no raw SQL. Covered by `gateway/tests/traces_query.rs`.
+- **T15 UI cleanup** — mission-control/logs tests no longer assert old `metadata.args`/`metadata.result`; tool IO remains sourced from enriched message data.
+- Batch writer legacy fallback was removed: `spawn_batch_writer_with_repo` and `with_conversation_repo` are gone; batch session messages now require `MessageStore`.
+- `wait_agent` fast path now reads child assistant responses from `MessageStore::replay`.
+- `.jsonl.zst` comment drift in `zbot-trace` was corrected to `.jsonl.gz`.
 
 ## What's DONE + verified (don't redo)
 
@@ -53,15 +58,17 @@ These files still reference `ConversationRepository`. Group them:
 
 **Notes:** `tool_sequence_for_session` already moved to `MessageStore`. `get_session_ward_id`/`get_session_agent_id` read `sessions`/`agent_executions` (stay in `zbot-stores-sqlite`). `session_state.rs` still uses `conversation_repo` for `extract_user_message`/`sum_token_count` — move those to `MessageStore::replay`. `chat.rs` (`GET /api/sessions/:id/messages`) was partly migrated in the WIP — confirm it uses `MessageStore`.
 
-### T14 — `/api/traces/query` endpoint
+### T14 — `/api/traces/query` endpoint — DONE
 - `TraceAnalytics` (`stores/zbot-trace/src/analytics.rs`) is built: `sessions_with_failed_tool(tool)` via DuckDB `$1`-bound `read_json_auto('traces/*.jsonl.gz')`, 256-file cap.
-- **Missing:** the HTTP handler + route mount. Create `gateway/src/http/traces.rs` (`POST /api/traces/query { preset, params }` → `state.trace_analytics`; **preset enum `match`, 400 on unknown — no raw client SQL**), mount in `gateway/src/http/mod.rs`, extend `gateway/src/http/openapi.yaml` (hand-authored — no `api-contract` skill).
+- Implemented in `gateway/src/http/traces.rs`, mounted in `gateway/src/http/mod.rs`, and documented in `gateway/src/http/openapi.yaml`.
+- Verification: `cargo test -p gateway --test traces_query --locked`.
 - `AppState.trace_analytics` already wired (T9).
 
-### T15 — UI tests
-- `apps/ui/src/features/mission-control/ToolsPane.tsx` + `ToolDetailPopover.test.tsx` assert the old `metadata.args`/`result` shape (now slimmed). Update to the new shape: tool-call IO comes via `ToolCallEntry.input`/`output` (from `messages`), not `execution_logs.metadata`.
-- Add a gateway golden test: `GET /api/sessions/:id/messages` + `/api/sessions/:id/state` DTO field-sets stable.
-- `useSessionTrace.test.ts` was updated in the WIP — confirm.
+### T15 — UI tests — PARTIAL DONE
+- Done: `apps/ui/src/features/mission-control/SessionDetailPane.test.tsx` and `apps/ui/src/features/logs/useSessionTrace.test.ts` now use slim tool metadata and message-enriched IO.
+- Existing `ToolDetailPopover.test.tsx` already tests the `TraceNode.args`/`TraceNode.result` surface rather than log metadata.
+- Verification: `npm test -- useSessionTrace.test.ts SessionDetailPane.test.tsx ToolDetailPopover.test.tsx`.
+- Still useful before final cutover: add a broader gateway golden test for `GET /api/sessions/:id/messages` + `/api/sessions/:id/state` DTO field sets.
 
 ### T16 — delete dead code (IRREVERSIBLE — gate on user)
 After T13 (zero consumers), delete: `ConversationRepository` (struct + impl + lib re-export), legacy `Message` POD (`zbot-stores-domain/src/message.rs`), `ConversationStore` trait (`zbot-stores-traits/src/conversation.rs`), gz archiver (`gateway-execution/src/archiver.rs`), `session_state.rs` replay branch (if any remains), `agent_executions.checkpoint` column + `AgentExecution.checkpoint` field + `save_execution_checkpoint`, `BatchWrite::SessionMessage` + the `conversation_repo` param, `spawn_batch_writer_with_repo`, the `AppState.conversations` field. Also slim `services/api-logs/src/service.rs` `LogService::log_tool_*` (test-only, still write args/result). Run `grep -rn ConversationRepository` to confirm zero hits before deleting.

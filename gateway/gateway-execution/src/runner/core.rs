@@ -469,6 +469,7 @@ impl ExecutionRunner {
             state_service: state_service.clone(),
             log_service: log_service.clone(),
             conversation_repo: conversation_repo.clone(),
+            messages: messages.clone(),
             paths: paths.clone(),
             memory_store: memory_store.clone(),
             memory_recall: memory_recall.clone(),
@@ -597,7 +598,7 @@ impl ExecutionRunner {
         let mut builder = ExecutorBuilder::new(self.paths.vault_dir().clone(), tool_settings)
             .with_actor_kind(actor_kind)
             .with_state_service(self.state_service.clone())
-            .with_conversation_repo(self.conversation_repo.clone());
+            .with_message_store(self.messages.clone());
 
         if let Some(registry) = self.model_registry.load_full() {
             builder = builder.with_model_registry(registry);
@@ -803,7 +804,6 @@ impl ExecutionRunner {
             event_bus: self.event_bus.clone(),
             state_service: self.state_service.clone(),
             log_service: self.log_service.clone(),
-            conversation_repo: self.conversation_repo.clone(),
             messages: self.messages.clone(),
             checkpoints: self.checkpoints.clone(),
             delegation_tx: self.delegation_tx.clone(),
@@ -1398,14 +1398,12 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     let agent_id_clone = root_agent_id.to_string();
 
     tokio::spawn(async move {
-        // Create batch writer for non-blocking DB writes (message writes route
-        // through MessageStore; conversation_repo stays as fallback).
+        // Create batch writer for non-blocking DB writes.
         let batch_writer = spawn_batch_writer_with_traces(
             state_service.clone(),
             log_service.clone(),
-            Some(conversation_repo.clone()),
             paths.traces_dir(),
-            Some(messages.clone()),
+            messages.clone(),
         );
 
         let stream_ctx = StreamContext::new(

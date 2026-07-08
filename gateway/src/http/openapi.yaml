@@ -1627,6 +1627,45 @@ components:
           type: string
           enum: [queued, running, paused, completed, crashed]
 
+  /api/traces/query:
+    post:
+      tags: [Sessions]
+      summary: Query compressed session traces
+      description: |
+        Runs a fixed trace analytics preset over server-owned
+        `traces/*.jsonl.gz` files. Clients choose a preset and typed params;
+        raw SQL is never accepted.
+      operationId: queryTraces
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TraceQueryRequest'
+            example:
+              preset: sessions_with_failed_tool
+              params:
+                tool: read_file
+      responses:
+        '200':
+          description: Trace query results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceQueryResponse'
+        '400':
+          description: Unknown preset or invalid params
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Trace query failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     ErrorResponse:
       type: object
       properties:
@@ -1635,6 +1674,36 @@ components:
         code:
           type: string
           enum: [SESSION_NOT_FOUND, EXECUTION_NOT_FOUND, AGENT_ERROR, PROVIDER_ERROR, INVALID_STATE, INTERNAL_ERROR]
+
+    TraceQueryRequest:
+      type: object
+      required:
+        - preset
+      properties:
+        preset:
+          type: string
+          enum: [sessions_with_failed_tool]
+        params:
+          type: object
+          additionalProperties: true
+          properties:
+            tool:
+              type: string
+
+    TraceQueryResponse:
+      type: object
+      required:
+        - rows
+      properties:
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - session_id
+            properties:
+              session_id:
+                type: string
 
     # ============================================================================
     # Agent Schemas

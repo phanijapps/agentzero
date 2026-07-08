@@ -60,6 +60,23 @@ impl<'de> Deserialize<'de> for EntityType {
 }
 
 impl EntityType {
+    /// Built-in entity type IDs that zbot owns before custom extensions.
+    pub const BUILTIN_IDS: &'static [&'static str] = &[
+        "person",
+        "organization",
+        "location",
+        "concept",
+        "tool",
+        "project",
+        "file",
+        "event",
+        "time_period",
+        "document",
+        "role",
+        "artifact",
+        "ward",
+    ];
+
     /// Parse from string
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
@@ -194,6 +211,39 @@ impl<'de> Deserialize<'de> for RelationshipType {
 }
 
 impl RelationshipType {
+    /// Built-in relationship type IDs that zbot owns before custom extensions.
+    pub const BUILTIN_IDS: &'static [&'static str] = &[
+        "works_for",
+        "located_in",
+        "related_to",
+        "created",
+        "uses",
+        "part_of",
+        "mentions",
+        "before",
+        "after",
+        "during",
+        "concurrent_with",
+        "succeeded_by",
+        "preceded_by",
+        "president_of",
+        "founder_of",
+        "member_of",
+        "author_of",
+        "held_role",
+        "employed_by",
+        "held_at",
+        "born_in",
+        "died_in",
+        "caused",
+        "enabled",
+        "prevented",
+        "triggered_by",
+        "contains",
+        "instance_of",
+        "subtype_of",
+    ];
+
     /// Parse from string
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {

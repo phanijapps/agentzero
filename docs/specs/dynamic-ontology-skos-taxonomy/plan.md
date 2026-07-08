@@ -192,6 +192,8 @@ loaded, rejected, and selected deterministically without opening Engram.
 
 **Depends on:** T1
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/governance/**`, `services/knowledge-graph/src/types.rs`
 
 **Tests:**
@@ -351,7 +353,7 @@ operators without changing existing public contract shapes.
 
 ### T9: Parity, cleanup, and operator docs
 
-**Depends on:** T1-T8
+**Depends on:** T1-T8, T10
 
 **Touches:** `stores/zbot-engram-adapter/**`, `gateway/**`, `docs/specs/dynamic-ontology-skos-taxonomy/**`, `docs/guides/**`
 
@@ -374,6 +376,32 @@ operators without changing existing public contract shapes.
 **Done when:** tests and docs prove the feature can be enabled, disabled, and
 operated without public contract drift or hidden Engram product coupling.
 
+### T10: Deduplicate knowledge graph connections
+
+**Depends on:** T4, T5
+
+**Touches:** `stores/zbot-engram-adapter/src/stores/knowledge_graph.rs`, `stores/zbot-engram-adapter/src/governance/**`, `docs/specs/dynamic-ontology-skos-taxonomy/**`
+
+**Tests:**
+- TDD: duplicate relationships with the same source, target, normalized
+  predicate, scope, and visibility collapse into one durable connection while
+  preserving mention counts or evidence metadata.
+- TDD: relationships that differ by source, target, predicate, scope, or
+  visibility are not merged.
+- Goal-based integration: Graph/Observatory read models no longer show
+  duplicate node connections after the governed mapping path runs.
+
+**Approach:**
+- Add a post-governance normalization pass after ontology validation and before
+  final graph read-model exposure.
+- Use normalized relationship keys rather than display labels so aliases and
+  casing do not create parallel edges.
+- Keep dedup at the end of the feature so classification and validation can
+  contribute stable predicate IDs first.
+
+**Done when:** governed graph output is free of duplicate connections without
+  dropping distinct evidence or crossing scope boundaries.
+
 ## Rollout
 
 - **Delivery:** ship disabled-by-default for local overlay definitions. The
@@ -385,7 +413,8 @@ operated without public contract drift or hidden Engram product coupling.
   zbot to expose durable ontology/taxonomy repository behavior used by T3-T6.
 - **Deployment sequencing:** land config/selectors first, then bootstrap, then
   mapping/validation, then recall expansion, then migration/Observatory/docs.
-  Keep write-rejecting validation out of this rollout.
+  Keep write-rejecting validation out of this rollout. Deduplicate graph
+  connections after governed predicate normalization exists.
 - **Rollback:** remove local governance config or switch provider config back to
   no-definition/default behavior. Existing unclassified records remain readable.
 
@@ -406,3 +435,5 @@ operated without public contract drift or hidden Engram product coupling.
 ## Changelog
 
 - 2026-07-06: initial plan.
+- 2026-07-08: added T10 for end-of-feature knowledge graph connection
+  deduplication after governed predicate normalization.

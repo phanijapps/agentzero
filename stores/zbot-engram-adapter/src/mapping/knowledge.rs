@@ -584,6 +584,7 @@ fn entity_type_for(kind: &EntityKind, metadata: Option<&Metadata>) -> EntityType
         | EntityKind::Variable
         | EntityKind::Api
         | EntityKind::Unknown => EntityType::Concept,
+        _ => EntityType::Concept,
     }
 }
 

@@ -60,6 +60,36 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   runtime DB surface first, then shrinking the legacy crate until only
   migration/reference tests depend on it.
 
+## dynamic-ontology-local-definition-import
+
+- **dynamic-ontology-skos-taxonomy AC3/AC4:** Governance definition paths are
+  confined under `~/Documents/zbot/config`, validated, and fingerprinted in
+  migration manifests, but local ontology/SKOS JSON files are not parsed into
+  active Engram definitions yet. Runtime bootstrap currently loads the built-in
+  `zbot.base:v1` ontology and `zbot.general:v1` SKOS scheme. Blocked on a
+  focused local-definition import spec; unblocked by defining the JSON schema,
+  parser validation, overlay merge semantics, version conflict behavior, and
+  tests that prove local definitions bootstrap through Engram public
+  ontology/taxonomy repositories.
+
+## dynamic-ontology-proposed-term-queue
+
+- **dynamic-ontology-skos-taxonomy AC9:** Unknown predicates and mismatches now
+  produce sanitized advisory findings, but model/extraction-discovered ontology
+  terms and taxonomy concepts do not yet have a durable proposed-change queue.
+  Blocked on a governed merge-policy spec; unblocked by adding a read-only
+  proposed-term store, operator review semantics, and an explicit activation
+  path that cannot silently mutate active definitions.
+
+## engram-governance-finding-port
+
+- **dynamic-ontology-skos-taxonomy follow-up:** zbot persists governance
+  validation findings in adapter sidecars because Engram does not yet expose a
+  generic validation-finding write/read port with scope, code, severity,
+  target, and sanitized payload guarantees. Blocked on an Engram upstream port;
+  unblocked by adding generic finding persistence/query APIs to Engram and
+  moving zbot's sidecar-backed finding read model behind that public port.
+
 ## context-capability-resource-catalog-completion
 
 - **context-capability-registry AC2:** The shipped catalog is first-party

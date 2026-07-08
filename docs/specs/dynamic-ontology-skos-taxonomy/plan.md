@@ -367,6 +367,8 @@ operators without changing existing public contract shapes.
 
 **Depends on:** T1-T8, T10
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/**`, `gateway/**`, `docs/specs/dynamic-ontology-skos-taxonomy/**`, `docs/guides/**`
 
 **Tests:**
@@ -455,3 +457,6 @@ operated without public contract drift or hidden Engram product coupling.
   memory/graph read models and additive Observatory display.
 - 2026-07-08: completed T10 with normalized relationship-key deduplication
   for writes and read models.
+- 2026-07-08: completed T9 with a configured-governance cutover fixture,
+  operator guide, and explicit backlog entries for remaining local-definition
+  import/proposed-term/Engram-finding-port gaps.

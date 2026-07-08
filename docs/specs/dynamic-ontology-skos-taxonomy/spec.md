@@ -104,7 +104,9 @@ proceeding; *Never do* is a hard rule, even under time pressure.
   allow-unclassified policy.
 - [ ] Startup bootstraps active ontology and SKOS taxonomy definitions into
   Engram through public ontology/taxonomy repositories, idempotently, under the
-  trusted data root and configured SQLite storage layout.
+  trusted data root and configured SQLite storage layout. Local definition file
+  import beyond the built-in definitions is deferred:
+  `dynamic-ontology-local-definition-import`.
 - [ ] Knowledge entity and knowledge chunk writes attach Engram `OntologyRef`
   and `ConceptRef` values when the active policy can classify them, while
   preserving legacy `ontology_id` and `taxonomy_id` metadata for compatibility.
@@ -119,7 +121,9 @@ proceeding; *Never do* is a hard rule, even under time pressure.
   visibility boundaries.
 - [ ] Model- or extraction-discovered ontology terms and taxonomy concepts can
   be recorded as proposed changes or findings, but cannot become active
-  definitions unless an explicit governed merge policy is added later.
+  definitions unless an explicit governed merge policy is added later. The
+  durable proposed-change queue is deferred:
+  `dynamic-ontology-proposed-term-queue`.
 - [ ] Migration dry-run/apply manifests include ontology selection, taxonomy
   scheme selection, validation mode, unclassified-record policy, and definition
   fingerprints; apply mode fails if these differ from the accepted dry-run.

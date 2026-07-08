@@ -819,3 +819,7 @@ remaining only at the allowed non-runtime or non-memory SQLite points.
   gateway memory settings. Engram mode now defaults to
   `engram/engram_data.db` for Engram core stores and adapter compatibility
   tables.
+- 2026-07-08: dynamic ontology/SKOS follow-up extended migration manifests
+  with path-free governance evidence: selected ontology IDs, taxonomy scheme
+  IDs, validation mode, unclassified policy, SKOS expansion limits, and
+  definition-content fingerprints now participate in dry-run/apply matching.

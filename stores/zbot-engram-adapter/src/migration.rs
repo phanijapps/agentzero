@@ -19,6 +19,9 @@ use crate::{
     capabilities::AdapterFeature,
     config::{AdapterConfig, MigrationMode, ProviderMode},
     error::{AdapterError, AdapterResult},
+    governance::{
+        AllowUnclassifiedPolicy, GovernanceSelection, SkosExpansionPolicy, ValidationMode,
+    },
 };
 
 const MIGRATION_COMPONENT: &str = "migration";
@@ -241,6 +244,18 @@ pub struct MigrationManifest {
     pub provider_config_fingerprint: String,
     /// Hash over host-owned mapping policy evidence.
     pub mapping_config_fingerprint: String,
+    /// Versioned ontology IDs selected by the default governance policy.
+    pub governance_ontology_ids: Vec<String>,
+    /// Versioned SKOS taxonomy scheme IDs selected by the default governance policy.
+    pub governance_taxonomy_scheme_ids: Vec<String>,
+    /// Ontology validation mode selected for migration.
+    pub governance_validation_mode: ValidationMode,
+    /// Unclassified-record policy selected for migration.
+    pub governance_allow_unclassified: AllowUnclassifiedPolicy,
+    /// SKOS recall expansion limits selected for migration.
+    pub governance_skos_expansion: SkosExpansionPolicy,
+    /// Hash over path-free governance policy and definition fingerprints.
+    pub governance_config_fingerprint: String,
     /// Migration code version evidence.
     pub migration_code_version: String,
 }
@@ -280,6 +295,7 @@ pub fn run_migration_dry_run(input: &MigrationInput) -> AdapterResult<MigrationD
 
     let provider_config_fingerprint = provider_config_fingerprint(&input.config, &resolved)?;
     let mapping_config_fingerprint = mapping_config_fingerprint(input)?;
+    let governance_evidence = governance_manifest_evidence(input)?;
 
     let mut diagnostics = vec![diagnostic(
         "engram_path_validated",
@@ -319,6 +335,12 @@ pub fn run_migration_dry_run(input: &MigrationInput) -> AdapterResult<MigrationD
         engram_revision: input.engram_revision.clone(),
         provider_config_fingerprint,
         mapping_config_fingerprint,
+        governance_ontology_ids: governance_evidence.selection.ontology_ids,
+        governance_taxonomy_scheme_ids: governance_evidence.selection.taxonomy_scheme_ids,
+        governance_validation_mode: governance_evidence.validation_mode,
+        governance_allow_unclassified: governance_evidence.allow_unclassified,
+        governance_skos_expansion: governance_evidence.skos_expansion,
+        governance_config_fingerprint: governance_evidence.fingerprint,
         migration_code_version: input.migration_code_version.clone(),
     };
     manifest.fingerprint = manifest_fingerprint(&manifest)?;
@@ -669,6 +691,64 @@ fn mapping_config_fingerprint(input: &MigrationInput) -> AdapterResult<String> {
     })
 }
 
+struct GovernanceManifestEvidence {
+    selection: GovernanceSelection,
+    validation_mode: ValidationMode,
+    allow_unclassified: AllowUnclassifiedPolicy,
+    skos_expansion: SkosExpansionPolicy,
+    fingerprint: String,
+}
+
+fn governance_manifest_evidence(
+    input: &MigrationInput,
+) -> AdapterResult<GovernanceManifestEvidence> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GovernanceConfigPayload<'a> {
+        ontology_policy: &'a str,
+        taxonomy_policy: &'a str,
+        default_selection: &'a GovernanceSelection,
+        overlays: &'a [crate::governance::GovernanceOverlay],
+        validation_mode: ValidationMode,
+        allow_unclassified: AllowUnclassifiedPolicy,
+        skos_expansion: &'a SkosExpansionPolicy,
+        ontology_definition_fingerprints: Vec<String>,
+        taxonomy_definition_fingerprints: Vec<String>,
+    }
+
+    let resolved_paths = input.config.resolve_governance_definition_paths()?;
+    let ontology_definition_fingerprints = resolved_paths
+        .ontology_definition_paths
+        .iter()
+        .map(file_fingerprint)
+        .collect::<AdapterResult<Vec<_>>>()?;
+    let taxonomy_definition_fingerprints = resolved_paths
+        .taxonomy_definition_paths
+        .iter()
+        .map(file_fingerprint)
+        .collect::<AdapterResult<Vec<_>>>()?;
+    let policy = &input.config.governance;
+    let fingerprint = fingerprint_json(&GovernanceConfigPayload {
+        ontology_policy: &input.ontology_policy,
+        taxonomy_policy: &input.taxonomy_policy,
+        default_selection: &policy.default_selection,
+        overlays: &policy.overlays,
+        validation_mode: policy.validation_mode,
+        allow_unclassified: policy.allow_unclassified,
+        skos_expansion: &policy.skos_expansion,
+        ontology_definition_fingerprints,
+        taxonomy_definition_fingerprints,
+    })?;
+
+    Ok(GovernanceManifestEvidence {
+        selection: policy.default_selection.clone(),
+        validation_mode: policy.validation_mode,
+        allow_unclassified: policy.allow_unclassified,
+        skos_expansion: policy.skos_expansion.clone(),
+        fingerprint,
+    })
+}
+
 fn manifest_fingerprint(manifest: &MigrationManifest) -> AdapterResult<String> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -681,6 +761,12 @@ fn manifest_fingerprint(manifest: &MigrationManifest) -> AdapterResult<String> {
         engram_revision: &'a str,
         provider_config_fingerprint: &'a str,
         mapping_config_fingerprint: &'a str,
+        governance_ontology_ids: &'a [String],
+        governance_taxonomy_scheme_ids: &'a [String],
+        governance_validation_mode: ValidationMode,
+        governance_allow_unclassified: AllowUnclassifiedPolicy,
+        governance_skos_expansion: &'a SkosExpansionPolicy,
+        governance_config_fingerprint: &'a str,
         migration_code_version: &'a str,
     }
 
@@ -693,6 +779,12 @@ fn manifest_fingerprint(manifest: &MigrationManifest) -> AdapterResult<String> {
         engram_revision: &manifest.engram_revision,
         provider_config_fingerprint: &manifest.provider_config_fingerprint,
         mapping_config_fingerprint: &manifest.mapping_config_fingerprint,
+        governance_ontology_ids: &manifest.governance_ontology_ids,
+        governance_taxonomy_scheme_ids: &manifest.governance_taxonomy_scheme_ids,
+        governance_validation_mode: manifest.governance_validation_mode,
+        governance_allow_unclassified: manifest.governance_allow_unclassified,
+        governance_skos_expansion: &manifest.governance_skos_expansion,
+        governance_config_fingerprint: &manifest.governance_config_fingerprint,
         migration_code_version: &manifest.migration_code_version,
     })
 }
@@ -719,6 +811,14 @@ fn path_fingerprint(path: &Path) -> String {
     fingerprint_lossless(&identity)
 }
 
+fn file_fingerprint(path: &PathBuf) -> AdapterResult<String> {
+    let bytes = fs::read(path).map_err(|error| AdapterError::Storage {
+        component: MIGRATION_COMPONENT,
+        reason: format!("governance definition cannot be fingerprinted: {error}"),
+    })?;
+    Ok(fingerprint_bytes(&bytes))
+}
+
 fn fingerprint_json<T: Serialize>(value: &T) -> AdapterResult<String> {
     serde_json::to_string(value)
         .map(|json| fingerprint_lossless(&json))
@@ -732,6 +832,15 @@ fn fingerprint_json_lossy<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value)
         .map(|json| fingerprint_lossless(&json))
         .unwrap_or_else(|_| fingerprint_lossless("fingerprint_encode_error"))
+}
+
+fn fingerprint_bytes(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn fingerprint_lossless(value: &str) -> String {

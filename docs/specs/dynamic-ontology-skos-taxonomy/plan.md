@@ -319,6 +319,8 @@ the trace proves expansion stayed scoped and bounded.
 
 **Depends on:** T1-T4
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/migration.rs`, `docs/specs/engram-memory-engine-cutover/plan.md`
 
 **Tests:**

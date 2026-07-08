@@ -15,7 +15,7 @@ use crate::services::{AgentService, McpService, ProviderService, SharedVaultPath
 use api_logs::LogService;
 use execution_state::StateService;
 use std::sync::Arc;
-use zbot_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 /// Execution state for a conversation.
 #[derive(Debug, Clone)]
@@ -57,7 +57,6 @@ impl RuntimeService {
         agent_service: Arc<AgentService>,
         provider_service: Arc<ProviderService>,
         paths: SharedVaultPaths,
-        conversation_repo: Arc<ConversationRepository>,
         messages: Arc<dyn zbot_conversation::MessageStore>,
         session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
         checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
@@ -74,7 +73,6 @@ impl RuntimeService {
             agent_service,
             provider_service,
             paths,
-            conversation_repo,
             messages,
             session_meta,
             checkpoints,
@@ -107,7 +105,6 @@ impl RuntimeService {
         agent_service: Arc<AgentService>,
         provider_service: Arc<ProviderService>,
         paths: SharedVaultPaths,
-        conversation_repo: Arc<ConversationRepository>,
         messages: Arc<dyn zbot_conversation::MessageStore>,
         session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
         checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
@@ -135,12 +132,10 @@ impl RuntimeService {
             let llm = Arc::new(gateway_execution::sleep::LlmHandoffWriter::new(
                 memory_llm_factory.clone(),
             ));
-            let conversation_store: Arc<dyn zbot_stores_traits::ConversationStore> =
-                conversation_repo.clone();
             Arc::new(gateway_execution::sleep::HandoffWriter::new(
                 llm,
                 fs.clone(),
-                conversation_store,
+                messages.clone(),
             ))
         });
 
@@ -472,7 +467,6 @@ pub fn shared_runtime_service_with_runner(
     agent_service: Arc<AgentService>,
     provider_service: Arc<ProviderService>,
     paths: SharedVaultPaths,
-    conversation_repo: Arc<ConversationRepository>,
     messages: Arc<dyn zbot_conversation::MessageStore>,
     session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
     checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
@@ -486,7 +480,6 @@ pub fn shared_runtime_service_with_runner(
         agent_service,
         provider_service,
         paths,
-        conversation_repo,
         messages,
         session_meta,
         checkpoints,

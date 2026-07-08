@@ -29,6 +29,7 @@ zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
 # Domain types (MemoryFact, Procedure, ScoredFact, WikiArticle) used by recall.
 zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
+zbot-conversation = { path = "../../stores/zbot-conversation" }
 
 # Entity / EntityType types used by Compactor's PairwiseVerifier trait.
 knowledge-graph = { path = "../../services/knowledge-graph" }

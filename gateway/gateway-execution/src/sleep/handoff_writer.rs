@@ -7,7 +7,7 @@
 //! all bake in zbot-specific chat-prompt conventions and tool references —
 //! they are application-layer concerns, not generic memory primitives.
 //!
-//! The engine takes `Arc<dyn ConversationStore>` (POD `Message` rows) for
+//! The engine takes `Arc<dyn zbot_conversation::MessageStore>` for
 //! consistency with the broader execution layer. Rich-type conversion
 //! (POD `Message` → `agent_runtime::ChatMessage`) lives here as
 //! `messages_to_chat_format`.
@@ -19,8 +19,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gateway_memory::{LlmClientConfig, MemoryLlmFactory};
 use serde::{Deserialize, Serialize};
-use zbot_stores_domain::{Message, RouteHint, RouteSourceKind};
-use zbot_stores_traits::ConversationStore;
+use zbot_stores_domain::{RouteHint, RouteSourceKind};
 
 pub const HANDOFF_MAX_AGE_DAYS: i64 = 7;
 
@@ -234,32 +233,29 @@ impl HandoffLlm for LlmHandoffWriter {
 
 /// Writes session handoff to the memory fact store.
 ///
-/// Backend-agnostic: takes `Arc<dyn ConversationStore>` so it does not
-/// pull `zbot-stores-sqlite` into this crate (which would form a cycle
-/// with `gateway-services`).
 pub struct HandoffWriter {
     llm: Arc<dyn HandoffLlm>,
     fact_store: Arc<dyn zbot_stores::MemoryFactStore>,
-    conversation_store: Arc<dyn ConversationStore>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
 }
 
 impl HandoffWriter {
     pub fn new(
         llm: Arc<dyn HandoffLlm>,
         fact_store: Arc<dyn zbot_stores::MemoryFactStore>,
-        conversation_store: Arc<dyn ConversationStore>,
+        messages: Arc<dyn zbot_conversation::MessageStore>,
     ) -> Self {
         Self {
             llm,
             fact_store,
-            conversation_store,
+            messages,
         }
     }
 
     /// Fire-and-forget entry point: loads last 50 messages then calls
     /// `write_with_messages`. All errors are logged at warn and swallowed.
     pub async fn write(&self, session_id: &str, agent_id: &str, ward_id: &str) {
-        let messages_raw = match self.conversation_store.get_session_messages(session_id, 50) {
+        let messages_raw = match self.messages.replay(session_id, None, 50) {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!(session_id, "handoff: failed to load messages: {e}");
@@ -574,12 +570,10 @@ fn push_route_hint(
 
 /// Convert POD `Message` rows into `agent_runtime::ChatMessage` for LLM use.
 ///
-/// Mirrors `zbot_stores_sqlite::ConversationRepository::session_messages_to_chat_format`,
-/// hoisted here so the trait surface in `zbot-stores-traits` stays free of
-/// `agent-runtime`. Parses `tool_calls` JSON on assistant messages from the
+/// Parses `tool_calls` JSON on assistant messages from the
 /// stored format `[{"tool_id", "tool_name", "args", ...}]` into the LLM's
 /// `ToolCall { id, name, arguments }` shape.
-pub fn messages_to_chat_format(messages: &[Message]) -> Vec<ChatMessage> {
+pub fn messages_to_chat_format(messages: &[zbot_conversation::Message]) -> Vec<ChatMessage> {
     messages
         .iter()
         .map(|m| {
@@ -835,7 +829,7 @@ mod tests {
         }
     }
 
-    // ---- Mock ConversationStore ----
+    // ---- Mock MessageStore ----
     // Minimal impl — `HandoffWriter::write_with_messages` doesn't read from
     // the store (caller pre-loads messages), so these methods are not
     // exercised. Kept here so the writer can be constructed in tests.
@@ -843,12 +837,22 @@ mod tests {
     #[derive(Default)]
     struct MockConvStore;
 
-    impl ConversationStore for MockConvStore {
-        fn get_session_ward_id(&self, _session_id: &str) -> Result<Option<String>, String> {
-            Ok(None)
+    impl zbot_conversation::MessageStore for MockConvStore {
+        fn append(&self, _msg: &zbot_conversation::Message) -> anyhow::Result<()> {
+            Ok(())
         }
-        fn get_session_agent_id(&self, _session_id: &str) -> Result<Option<String>, String> {
-            Ok(None)
+
+        fn replay(
+            &self,
+            _session_id: &str,
+            _after_seq: Option<i64>,
+            _limit: usize,
+        ) -> anyhow::Result<Vec<zbot_conversation::Message>> {
+            Ok(Vec::new())
+        }
+
+        fn tool_sequence_for_session(&self, _session_id: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
         }
     }
 
@@ -1247,29 +1251,29 @@ mod tests {
         }])
         .to_string();
         let msgs = vec![
-            Message {
+            zbot_conversation::Message {
                 id: "m1".into(),
                 execution_id: None,
-                session_id: Some("s".into()),
+                session_id: "s".into(),
                 role: "user".into(),
                 content: "hi".into(),
                 created_at: "now".into(),
                 token_count: 1,
                 tool_calls: None,
-                tool_results: None,
                 tool_call_id: None,
+                seq: 1,
             },
-            Message {
+            zbot_conversation::Message {
                 id: "m2".into(),
                 execution_id: None,
-                session_id: Some("s".into()),
+                session_id: "s".into(),
                 role: "assistant".into(),
                 content: "ok".into(),
                 created_at: "now".into(),
                 token_count: 1,
                 tool_calls: Some(stored_tc),
-                tool_results: None,
                 tool_call_id: None,
+                seq: 2,
             },
         ];
         let out = messages_to_chat_format(&msgs);

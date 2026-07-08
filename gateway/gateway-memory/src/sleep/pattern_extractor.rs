@@ -17,8 +17,8 @@ use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use zbot_stores_traits::{
-    CompactionStore, ConversationStore, EpisodeStore, PatternProcedureInsert, PatternStep,
-    ProcedureStore, SuccessfulEpisode,
+    CompactionStore, EpisodeStore, PatternProcedureInsert, PatternStep, ProcedureStore,
+    SuccessfulEpisode,
 };
 
 use crate::util::parse_llm_json;
@@ -93,7 +93,7 @@ pub trait PatternExtractLlm: Send + Sync {
 /// repos, Surreal via SurrealDB queries).
 pub struct PatternExtractor {
     episode_store: Arc<dyn EpisodeStore>,
-    conversation_store: Arc<dyn ConversationStore>,
+    message_store: Arc<dyn zbot_conversation::MessageStore>,
     procedure_store: Arc<dyn ProcedureStore>,
     compaction_store: Arc<dyn CompactionStore>,
     llm: Arc<dyn PatternExtractLlm>,
@@ -111,7 +111,7 @@ pub struct PatternExtractor {
 impl PatternExtractor {
     pub fn new(
         episode_store: Arc<dyn EpisodeStore>,
-        conversation_store: Arc<dyn ConversationStore>,
+        message_store: Arc<dyn zbot_conversation::MessageStore>,
         procedure_store: Arc<dyn ProcedureStore>,
         compaction_store: Arc<dyn CompactionStore>,
         llm: Arc<dyn PatternExtractLlm>,
@@ -120,7 +120,7 @@ impl PatternExtractor {
     ) -> Self {
         Self {
             episode_store,
-            conversation_store,
+            message_store,
             procedure_store,
             compaction_store,
             llm,
@@ -161,7 +161,7 @@ impl PatternExtractor {
         let ep_b = &episodes[pair.idx_b];
 
         let tools_a = match self
-            .conversation_store
+            .message_store
             .tool_sequence_for_session(&ep_a.session_id)
         {
             Ok(v) => v,
@@ -172,7 +172,7 @@ impl PatternExtractor {
             }
         };
         let tools_b = match self
-            .conversation_store
+            .message_store
             .tool_sequence_for_session(&ep_b.session_id)
         {
             Ok(v) => v,
@@ -518,9 +518,9 @@ mod tests {
     use std::sync::Mutex;
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::{
-        CompactionRepository, ConversationRepository, DatabaseManager, EpisodeRepository,
-        GatewayCompactionStore, GatewayEpisodeStore, GatewayProcedureStore, KnowledgeDatabase,
-        Procedure, ProcedureRepository,
+        CompactionRepository, DatabaseManager, EpisodeRepository, GatewayCompactionStore,
+        GatewayEpisodeStore, GatewayProcedureStore, KnowledgeDatabase, Procedure,
+        ProcedureRepository,
     };
 
     struct MockLlm {
@@ -552,7 +552,7 @@ mod tests {
         procedure_repo: Arc<ProcedureRepository>,
         compaction_repo: Arc<CompactionRepository>,
         episode_store: Arc<dyn EpisodeStore>,
-        conversation_store: Arc<dyn ConversationStore>,
+        message_store: Arc<dyn zbot_conversation::MessageStore>,
         procedure_store: Arc<dyn ProcedureStore>,
         compaction_store: Arc<dyn CompactionStore>,
     }
@@ -561,6 +561,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         std::fs::create_dir_all(paths.conversations_db().parent().expect("parent")).expect("mkdir");
+        let conversation_pool =
+            zbot_conversation::open_conversation_pool(&paths.conversations_db())
+                .expect("conversation pool");
         let knowledge_db = Arc::new(KnowledgeDatabase::new(paths.clone()).expect("knowledge db"));
         let conversations_db = Arc::new(DatabaseManager::new(paths).expect("convo db"));
         let vec_index: Arc<dyn VectorIndex> = Arc::new(
@@ -576,8 +579,9 @@ mod tests {
         );
         let episode_repo = Arc::new(EpisodeRepository::new(knowledge_db.clone(), episode_vec));
         let episode_store: Arc<dyn EpisodeStore> = Arc::new(GatewayEpisodeStore::new(episode_repo));
-        let conv_repo = Arc::new(ConversationRepository::new(conversations_db.clone()));
-        let conversation_store: Arc<dyn ConversationStore> = conv_repo;
+        let message_store: Arc<dyn zbot_conversation::MessageStore> = Arc::new(
+            zbot_conversation::SqliteMessageStore::new(conversation_pool),
+        );
         let procedure_store: Arc<dyn ProcedureStore> =
             Arc::new(GatewayProcedureStore::new(procedure_repo.clone()));
         let compaction_store: Arc<dyn CompactionStore> =
@@ -589,7 +593,7 @@ mod tests {
             procedure_repo,
             compaction_repo,
             episode_store,
-            conversation_store,
+            message_store,
             procedure_store,
             compaction_store,
         }
@@ -731,7 +735,7 @@ mod tests {
         let mock = Arc::new(MockLlm::new(ok_response("investigate_postgres_issue")));
         let ext = PatternExtractor::new(
             h.episode_store.clone(),
-            h.conversation_store.clone(),
+            h.message_store.clone(),
             h.procedure_store.clone(),
             h.compaction_store.clone(),
             mock.clone(),
@@ -793,7 +797,7 @@ mod tests {
         let mock = Arc::new(MockLlm::new(ok_response("investigate_postgres_issue")));
         let ext = PatternExtractor::new(
             h.episode_store.clone(),
-            h.conversation_store.clone(),
+            h.message_store.clone(),
             h.procedure_store.clone(),
             h.compaction_store.clone(),
             mock,
@@ -920,7 +924,7 @@ mod tests {
 
         let ext = PatternExtractor::new(
             h.episode_store.clone(),
-            h.conversation_store.clone(),
+            h.message_store.clone(),
             store.clone() as Arc<dyn ProcedureStore>,
             Arc::new(NoopCompactionStore) as Arc<dyn CompactionStore>,
             mock_llm,

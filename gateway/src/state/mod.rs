@@ -428,12 +428,6 @@ impl AppState {
                 .as_ref()
                 .map(|bundle| bundle.episode_store.clone());
 
-        // Conversation store is always SQLite-backed (per the design doc:
-        // conversations.db is SQLite-only). The sleep worker's
-        // PatternExtractor needs it on both backends.
-        let conversation_store_for_state: Arc<dyn zbot_stores_traits::ConversationStore> = Arc::new(
-            zbot_stores_sqlite::ConversationRepository::new(db_manager.clone()),
-        );
         if let (Some(recall), Some(mem)) =
             (memory_recall_inner.as_mut(), early_memory_store.as_ref())
         {
@@ -678,7 +672,6 @@ impl AppState {
             agents.clone(),
             provider_service.clone(),
             paths.clone(),
-            conversation_repo.clone(),
             messages.clone(),
             session_meta.clone(),
             checkpoints.clone(),
@@ -796,7 +789,7 @@ impl AppState {
                         memory_store: mems.clone(),
                         compaction_store: compstore.clone(),
                         procedure_store: prs.clone(),
-                        conversation_store: conversation_store_for_state.clone(),
+                        message_store: messages.clone(),
                         embedding_client: embedding_client.clone(),
                         kg_decay_config: recall_config.kg_decay.clone(),
                         corrections_abstractor_interval: std::time::Duration::from_secs(

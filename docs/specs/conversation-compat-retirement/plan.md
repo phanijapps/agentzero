@@ -201,7 +201,7 @@ Completed 2026-07-08.
 **Done when:** `distillation.rs` has no `ConversationRepository` references.
 Completed 2026-07-08.
 
-### T6: Move memory sleep/handoff off `ConversationStore`
+### T6: Move memory sleep/handoff off `ConversationStore` — DONE
 
 **Depends on:** T1, T2
 
@@ -218,6 +218,7 @@ Completed 2026-07-08.
 - Replace ward/agent metadata reads with `SessionMetaStore`.
 
 **Done when:** no production code references `ConversationStore`.
+Completed 2026-07-08.
 
 ### T7: Remove `AppState.conversations` and gateway metadata callers
 
@@ -280,3 +281,5 @@ Completed 2026-07-08.
   crash-report transcript reads now use `MessageStore` plus `SessionMetaStore`.
 - 2026-07-08: T5 completed; `SessionDistiller` transcript and ward metadata
   reads now use `MessageStore` plus `SessionMetaStore`.
+- 2026-07-08: T6 completed; sleep-time pattern extraction and session handoff
+  now read through `MessageStore`, removing runtime use of `ConversationStore`.

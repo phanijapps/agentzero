@@ -2578,6 +2578,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zbot-conversation",
  "zbot-stores",
  "zbot-stores-domain",
  "zbot-stores-sqlite",

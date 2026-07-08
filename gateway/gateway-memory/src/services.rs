@@ -12,8 +12,8 @@ use std::time::Duration;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_traits::{
-    BeliefContradictionStore, BeliefStore, CompactionStore, ConversationStore, EpisodeStore,
-    MemoryFactStore, ProcedureStore,
+    BeliefContradictionStore, BeliefStore, CompactionStore, EpisodeStore, MemoryFactStore,
+    ProcedureStore,
 };
 
 use crate::sleep::{
@@ -42,7 +42,7 @@ pub struct MemoryServicesConfig {
     pub memory_store: Arc<dyn MemoryFactStore>,
     pub compaction_store: Arc<dyn CompactionStore>,
     pub procedure_store: Arc<dyn ProcedureStore>,
-    pub conversation_store: Arc<dyn ConversationStore>,
+    pub message_store: Arc<dyn zbot_conversation::MessageStore>,
     pub embedding_client: Option<Arc<dyn EmbeddingClient>>,
     pub kg_decay_config: KgDecayConfig,
     pub corrections_abstractor_interval: Duration,
@@ -123,7 +123,7 @@ impl MemoryServices {
             memory_store,
             compaction_store,
             procedure_store,
-            conversation_store,
+            message_store,
             embedding_client,
             kg_decay_config,
             corrections_abstractor_interval,
@@ -190,7 +190,7 @@ impl MemoryServices {
         let pattern_llm = Arc::new(LlmPatternExtractor::new(llm_factory.clone()));
         let pattern_extractor = Arc::new(PatternExtractor::new(
             episode_store.clone(),
-            conversation_store.clone(),
+            message_store.clone(),
             procedure_store.clone(),
             compaction_store.clone(),
             pattern_llm,

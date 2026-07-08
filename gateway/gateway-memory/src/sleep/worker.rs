@@ -411,26 +411,26 @@ mod tests {
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::SqliteKgStore;
     use zbot_stores_sqlite::{
-        CompactionRepository, DatabaseManager, KnowledgeDatabase, MemoryRepository,
-        ProcedureRepository,
+        CompactionRepository, KnowledgeDatabase, MemoryRepository, ProcedureRepository,
     };
 
     struct Harness {
         _tmp: tempfile::TempDir,
         db: Arc<KnowledgeDatabase>,
-        convo: Arc<DatabaseManager>,
         graph: Arc<GraphStorage>,
         compaction_repo: Arc<CompactionRepository>,
         memory_repo: Arc<MemoryRepository>,
         procedure_repo: Arc<ProcedureRepository>,
+        message_store: Arc<dyn zbot_conversation::MessageStore>,
     }
 
     fn harness() -> Harness {
         let tmp = tempdir().unwrap();
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
+        let conversation_pool =
+            zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
         let db = Arc::new(KnowledgeDatabase::new(paths.clone()).unwrap());
-        let convo = Arc::new(DatabaseManager::new(paths).unwrap());
         let graph = Arc::new(GraphStorage::new(db.clone()).unwrap());
         let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
         let mem_vec: Arc<dyn VectorIndex> = Arc::new(
@@ -443,14 +443,17 @@ mod tests {
                 .expect("vec index init"),
         );
         let procedure_repo = Arc::new(ProcedureRepository::new(db.clone(), proc_vec));
+        let message_store: Arc<dyn zbot_conversation::MessageStore> = Arc::new(
+            zbot_conversation::SqliteMessageStore::new(conversation_pool),
+        );
         Harness {
             _tmp: tmp,
             db,
-            convo,
             graph,
             compaction_repo,
             memory_repo,
             procedure_repo,
+            message_store,
         }
     }
 
@@ -558,16 +561,12 @@ mod tests {
             }),
             None,
         ));
-        let conv_repo = Arc::new(zbot_stores_sqlite::ConversationRepository::new(
-            h.convo.clone(),
-        ));
-        let conversation_store: Arc<dyn zbot_stores_traits::ConversationStore> = conv_repo;
         let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(
             zbot_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
         );
         let px = Arc::new(PatternExtractor::new(
             episode_store.clone(),
-            conversation_store,
+            h.message_store.clone(),
             procedure_store,
             compaction_store.clone(),
             Arc::new(RecordingPatternLlm),
@@ -676,16 +675,12 @@ mod tests {
         let counter = Arc::new(CountingPatternLlm {
             calls: Mutex::new(0),
         });
-        let conv_repo = Arc::new(zbot_stores_sqlite::ConversationRepository::new(
-            h.convo.clone(),
-        ));
-        let conversation_store: Arc<dyn zbot_stores_traits::ConversationStore> = conv_repo;
         let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(
             zbot_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
         );
         let px = Arc::new(PatternExtractor::new(
             episode_store.clone(),
-            conversation_store,
+            h.message_store.clone(),
             procedure_store,
             compaction_store.clone(),
             counter.clone(),

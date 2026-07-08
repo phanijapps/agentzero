@@ -268,6 +268,8 @@ existing zbot entity/wiki round-trips still pass.
 
 **Depends on:** T3, T4
 
+**Status:** Done on 2026-07-08.
+
 **Touches:** `stores/zbot-engram-adapter/src/governance/**`, `stores/zbot-engram-adapter/src/stores/knowledge_graph.rs`, `stores/zbot-engram-adapter/src/sidecars.rs`
 
 **Tests:**

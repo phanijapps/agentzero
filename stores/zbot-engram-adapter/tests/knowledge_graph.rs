@@ -4,6 +4,7 @@ use serde_json::json;
 use zbot_engram_adapter::{
     mapping::knowledge::{entity_to_knowledge_entity, knowledge_entity_to_entity},
     AdapterConfig, AdapterFeature, CapabilityReport, EngramKnowledgeGraphStore, EngramWikiStore,
+    GovernancePolicy, GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID,
 };
 use zbot_stores::{types::Direction, KnowledgeGraphStore};
 use zbot_stores_domain::WikiArticle;
@@ -19,6 +20,18 @@ fn engram_config_with_embedding_dimensions(
 ) -> AdapterConfig {
     let mut config = engram_config(root);
     config.embedding_provider.dimensions = dimensions;
+    config
+}
+
+fn governed_engram_config(root: &tempfile::TempDir) -> AdapterConfig {
+    let mut config = engram_config(root);
+    config.governance = GovernancePolicy {
+        default_selection: GovernanceSelection {
+            ontology_ids: vec![ZBOT_BASE_ONTOLOGY_ID.to_string()],
+            taxonomy_scheme_ids: Vec::new(),
+        },
+        ..GovernancePolicy::default()
+    };
     config
 }
 
@@ -310,6 +323,99 @@ async fn graph_entities_relationships_and_read_models_round_trip() {
             .len(),
         0
     );
+}
+
+#[tokio::test]
+async fn advisory_governance_findings_do_not_block_relationship_writes() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(governed_engram_config(&root)).expect("store");
+    let mut source = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    source.id = "entity-governed-alice".to_string();
+    let mut target = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
+    target.id = "entity-governed-zbot".to_string();
+    let source_id = store
+        .upsert_entity("agent-a", source)
+        .await
+        .expect("source");
+    let target_id = store
+        .upsert_entity("agent-a", target)
+        .await
+        .expect("target");
+    let mut relationship = Relationship::new(
+        "agent-a".into(),
+        source_id.0.clone(),
+        target_id.0.clone(),
+        RelationshipType::Custom("indexes_secret_path".to_string()),
+    );
+    relationship.id = "rel-governance-custom".to_string();
+    relationship.properties.insert(
+        "raw_context".to_string(),
+        json!("absolute path /home/example/Documents/zbot/providers.json with placeholder TOKEN_VALUE"),
+    );
+
+    let relationship_id = store
+        .upsert_relationship("agent-a", relationship)
+        .await
+        .expect("advisory write succeeds");
+
+    assert_eq!(
+        store
+            .list_relationships("agent-a", None, 10, 0)
+            .await
+            .expect("relationships")
+            .len(),
+        1
+    );
+    let findings = store
+        .list_governance_findings(Some("agent-a"), 10)
+        .expect("findings");
+    assert_eq!(relationship_id.0, "rel-governance-custom");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].code, "unknown_predicate");
+    let finding_json = serde_json::to_string(&findings[0]).expect("finding json");
+    assert!(!finding_json.contains("/home/example"));
+    assert!(!finding_json.contains("providers.json"));
+    assert!(!finding_json.contains("TOKEN_VALUE"));
+    assert!(!finding_json.contains("raw_context"));
+}
+
+#[tokio::test]
+async fn advisory_governance_records_domain_and_range_mismatches() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(governed_engram_config(&root)).expect("store");
+    let mut source = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
+    source.id = "entity-source-project".to_string();
+    let mut target = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    target.id = "entity-target-person".to_string();
+    let source_id = store
+        .upsert_entity("agent-a", source)
+        .await
+        .expect("source");
+    let target_id = store
+        .upsert_entity("agent-a", target)
+        .await
+        .expect("target");
+    let mut relationship = Relationship::new(
+        "agent-a".into(),
+        source_id.0,
+        target_id.0,
+        RelationshipType::WorksFor,
+    );
+    relationship.id = "rel-governance-mismatch".to_string();
+
+    store
+        .upsert_relationship("agent-a", relationship)
+        .await
+        .expect("advisory write succeeds");
+
+    let mut codes = store
+        .list_governance_findings(Some("agent-a"), 10)
+        .expect("findings")
+        .into_iter()
+        .map(|finding| finding.code)
+        .collect::<Vec<_>>();
+    codes.sort();
+    assert_eq!(codes, vec!["domain_mismatch", "range_mismatch"]);
 }
 
 #[tokio::test]

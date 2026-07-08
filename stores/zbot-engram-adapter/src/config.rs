@@ -720,27 +720,29 @@ mod tests {
 
     #[test]
     fn governance_selector_precedence_is_deterministic() {
-        let mut config = AdapterConfig::default();
-        config.governance = GovernancePolicy {
-            default_selection: selection("default"),
-            overlays: vec![
-                GovernanceOverlay {
-                    ward_id: Some("ward".to_string()),
-                    selection: selection("ward"),
-                    ..GovernanceOverlay::default()
-                },
-                GovernanceOverlay {
-                    session_id: Some("session".to_string()),
-                    selection: selection("session"),
-                    ..GovernanceOverlay::default()
-                },
-                GovernanceOverlay {
-                    task_id: Some("task".to_string()),
-                    selection: selection("task"),
-                    ..GovernanceOverlay::default()
-                },
-            ],
-            ..GovernancePolicy::default()
+        let config = AdapterConfig {
+            governance: GovernancePolicy {
+                default_selection: selection("default"),
+                overlays: vec![
+                    GovernanceOverlay {
+                        ward_id: Some("ward".to_string()),
+                        selection: selection("ward"),
+                        ..GovernanceOverlay::default()
+                    },
+                    GovernanceOverlay {
+                        session_id: Some("session".to_string()),
+                        selection: selection("session"),
+                        ..GovernanceOverlay::default()
+                    },
+                    GovernanceOverlay {
+                        task_id: Some("task".to_string()),
+                        selection: selection("task"),
+                        ..GovernanceOverlay::default()
+                    },
+                ],
+                ..GovernancePolicy::default()
+            },
+            ..AdapterConfig::default()
         };
 
         let selected = config.governance.select(GovernanceScope {

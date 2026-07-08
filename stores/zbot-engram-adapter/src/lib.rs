@@ -32,8 +32,10 @@ pub use fixtures::{
     FixtureStatus, ScopeDimension, ScopeExpectation, ScopeFixture, StoreTraitFixture,
 };
 pub use governance::{
-    bootstrap::GovernanceBootstrapReport, AllowUnclassifiedPolicy, GovernanceOverlay,
-    GovernancePolicy, GovernanceScope, GovernanceSelection, SkosExpansionPolicy, ValidationMode,
+    bootstrap::GovernanceBootstrapReport, AllowUnclassifiedPolicy, GovernanceFindingSeverity,
+    GovernanceOverlay, GovernancePolicy, GovernanceScope, GovernanceSelection,
+    GovernanceValidationFinding, SkosExpansionPolicy, ValidationMode, ZBOT_BASE_ONTOLOGY_ID,
+    ZBOT_GENERAL_SCHEME_ID,
 };
 pub use migration::{
     apply_migration, run_migration_dry_run, MigrationApplyReceipt, MigrationBlocker,

@@ -31,6 +31,10 @@ use crate::{
     capabilities::AdapterFeature,
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
+    governance::{
+        validate_relationship_against_builtin_ontology, GovernanceScope,
+        GovernanceValidationFinding, ValidationMode,
+    },
     mapping::knowledge::{
         aggregate_entity_to_hierarchy_node, entity_to_knowledge_entity_with_governance,
         relationship_to_hierarchy_relation, relationship_to_knowledge_relationship,
@@ -128,6 +132,7 @@ impl EngramKnowledgeGraphStore {
     ) -> StoreResult<RelationshipId> {
         relationship.agent_id = agent_id.to_string();
         let id = RelationshipId(relationship.id.clone());
+        let findings = self.validate_relationship(&relationship)?;
         self.knowledge
             .put_relationship(
                 relationship_to_knowledge_relationship(&relationship, &self.mapper)
@@ -136,7 +141,72 @@ impl EngramKnowledgeGraphStore {
             .await
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.sidecar.store_relationship(&relationship)?;
+        self.sidecar.replace_governance_findings(
+            &relationship.id,
+            &relationship.agent_id,
+            &findings,
+        )?;
         Ok(id)
+    }
+
+    fn validate_relationship(
+        &self,
+        relationship: &Relationship,
+    ) -> StoreResult<Vec<GovernanceValidationFinding>> {
+        if self.governance.validation_mode == ValidationMode::Disabled {
+            return Ok(Vec::new());
+        }
+
+        let ward_id = relationship_property_string(relationship, "ward_id")
+            .or_else(|| {
+                self.sidecar
+                    .get_entity(&EntityId(relationship.source_entity_id.clone()))
+                    .ok()
+                    .flatten()
+                    .and_then(|entity| property_string(&entity, "ward_id"))
+            })
+            .unwrap_or_else(|| DEFAULT_WARD_ID.to_string());
+        let selection = self.governance.select(GovernanceScope {
+            ward_id: Some(&ward_id),
+            ..GovernanceScope::default()
+        });
+        if selection.ontology_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let source = self
+            .sidecar
+            .get_entity(&EntityId(relationship.source_entity_id.clone()))?;
+        let target = self
+            .sidecar
+            .get_entity(&EntityId(relationship.target_entity_id.clone()))?;
+        let source = source
+            .as_ref()
+            .map(|entity| (entity.id.as_str(), &entity.entity_type));
+        let target = target
+            .as_ref()
+            .map(|entity| (entity.id.as_str(), &entity.entity_type));
+
+        let mut findings = Vec::new();
+        for ontology_id in selection.ontology_ids {
+            findings.extend(validate_relationship_against_builtin_ontology(
+                &relationship.id,
+                &relationship.relationship_type,
+                source,
+                target,
+                &ontology_id,
+            ));
+        }
+        Ok(findings)
+    }
+
+    /// Additive governance diagnostics for later Observatory/API read models.
+    pub fn list_governance_findings(
+        &self,
+        agent_id: Option<&str>,
+        limit: usize,
+    ) -> StoreResult<Vec<GovernanceValidationFinding>> {
+        self.sidecar.list_governance_findings(agent_id, limit)
     }
 }
 
@@ -735,6 +805,23 @@ impl KnowledgeGraphSidecar {
                     ON kg_relationships(source_entity_id);
                 CREATE INDEX IF NOT EXISTS idx_kg_relationships_target
                     ON kg_relationships(target_entity_id);
+                CREATE TABLE IF NOT EXISTS kg_governance_findings (
+                    id TEXT PRIMARY KEY,
+                    relationship_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    ontology_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    target_entity_id TEXT,
+                    target_entity_type TEXT,
+                    message TEXT NOT NULL,
+                    finding_json TEXT NOT NULL,
+                    detected_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_kg_governance_findings_agent
+                    ON kg_governance_findings(agent_id, detected_at);
+                CREATE INDEX IF NOT EXISTS idx_kg_governance_findings_relationship
+                    ON kg_governance_findings(relationship_id);
                 "#,
             )
             .map_err(|error| AdapterError::Storage {
@@ -1000,6 +1087,93 @@ impl KnowledgeGraphSidecar {
             )
             .map_err(to_backend)?;
         Ok(())
+    }
+
+    fn replace_governance_findings(
+        &self,
+        relationship_id: &str,
+        agent_id: &str,
+        findings: &[GovernanceValidationFinding],
+    ) -> StoreResult<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        transaction
+            .execute(
+                "DELETE FROM kg_governance_findings WHERE relationship_id = ?1",
+                params![relationship_id],
+            )
+            .map_err(to_backend)?;
+        for finding in findings {
+            let finding_json = serde_json::to_string(finding).map_err(to_backend)?;
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO kg_governance_findings
+                        (id, relationship_id, agent_id, ontology_id, code, severity,
+                         target_entity_id, target_entity_type, message, finding_json, detected_at)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                    ON CONFLICT(id) DO UPDATE SET
+                        relationship_id = excluded.relationship_id,
+                        agent_id = excluded.agent_id,
+                        ontology_id = excluded.ontology_id,
+                        code = excluded.code,
+                        severity = excluded.severity,
+                        target_entity_id = excluded.target_entity_id,
+                        target_entity_type = excluded.target_entity_type,
+                        message = excluded.message,
+                        finding_json = excluded.finding_json,
+                        detected_at = excluded.detected_at
+                    "#,
+                    params![
+                        finding.id,
+                        relationship_id,
+                        agent_id,
+                        finding.ontology_id,
+                        finding.code,
+                        format!("{:?}", finding.severity).to_lowercase(),
+                        finding.target_entity_id,
+                        finding.target_entity_type,
+                        finding.message,
+                        finding_json,
+                        Utc::now().to_rfc3339(),
+                    ],
+                )
+                .map_err(to_backend)?;
+        }
+        transaction.commit().map_err(to_backend)?;
+        Ok(())
+    }
+
+    fn list_governance_findings(
+        &self,
+        agent_id: Option<&str>,
+        limit: usize,
+    ) -> StoreResult<Vec<GovernanceValidationFinding>> {
+        let limit = limit.max(1) as i64;
+        let connection = self.lock()?;
+        if let Some(agent_id) = agent_id {
+            let mut statement = connection
+                .prepare(
+                    "SELECT finding_json FROM kg_governance_findings
+                     WHERE agent_id = ?1 ORDER BY detected_at DESC, id LIMIT ?2",
+                )
+                .map_err(to_backend)?;
+            let rows = statement
+                .query_map(params![agent_id, limit], decode_governance_finding)
+                .map_err(to_backend)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(to_backend)
+        } else {
+            let mut statement = connection
+                .prepare(
+                    "SELECT finding_json FROM kg_governance_findings
+                     ORDER BY detected_at DESC, id LIMIT ?1",
+                )
+                .map_err(to_backend)?;
+            let rows = statement
+                .query_map(params![limit], decode_governance_finding)
+                .map_err(to_backend)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(to_backend)
+        }
     }
 
     fn get_relationship_entry(
@@ -1729,6 +1903,13 @@ fn decode_relationship_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Relati
     let relationship =
         serde_json::from_str::<Relationship>(&relationship_json).map_err(json_sql_error(0))?;
     Ok(RelationshipEntry { relationship })
+}
+
+fn decode_governance_finding(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<GovernanceValidationFinding> {
+    let finding_json: String = row.get(0)?;
+    serde_json::from_str::<GovernanceValidationFinding>(&finding_json).map_err(json_sql_error(0))
 }
 
 fn json_sql_error(column: usize) -> impl FnOnce(serde_json::Error) -> rusqlite::Error {

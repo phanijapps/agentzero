@@ -191,6 +191,30 @@ pub enum ClassificationOutcome {
     UnclassifiedCustom(String),
 }
 
+/// Sanitized severity for persisted governance validation findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernanceFindingSeverity {
+    Info,
+    Warning,
+}
+
+/// Sanitized advisory finding persisted by the zbot adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernanceValidationFinding {
+    pub id: String,
+    pub ontology_id: String,
+    pub relationship_id: String,
+    pub code: String,
+    pub severity: GovernanceFindingSeverity,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_entity_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_entity_type: Option<String>,
+}
+
 /// Code-owned SKOS-style concept scheme.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -468,6 +492,104 @@ pub fn classify_relationship_type(relationship_type: &RelationshipType) -> Class
     }
 }
 
+/// Validate a relationship against the built-in ontology in advisory mode.
+pub fn validate_relationship_against_builtin_ontology(
+    relationship_id: &str,
+    relationship_type: &RelationshipType,
+    source: Option<(&str, &EntityType)>,
+    target: Option<(&str, &EntityType)>,
+    ontology_id: &str,
+) -> Vec<GovernanceValidationFinding> {
+    if ontology_id != ZBOT_BASE_ONTOLOGY_ID {
+        return vec![finding(
+            ontology_id,
+            relationship_id,
+            "missing_ontology_definition",
+            GovernanceFindingSeverity::Warning,
+            "selected ontology definition is not available to the adapter",
+            None,
+        )];
+    }
+
+    let ontology = builtin_base_ontology();
+    let property_id = match classify_relationship_type(relationship_type) {
+        ClassificationOutcome::Classified(id) => id,
+        ClassificationOutcome::UnclassifiedCustom(_) => {
+            return vec![finding(
+                ontology_id,
+                relationship_id,
+                "unknown_predicate",
+                GovernanceFindingSeverity::Warning,
+                "relationship predicate is not declared by the active ontology",
+                None,
+            )];
+        }
+    };
+    let Some(property) = ontology
+        .relationship_properties
+        .iter()
+        .find(|property| property.id == property_id)
+    else {
+        return vec![finding(
+            ontology_id,
+            relationship_id,
+            "unknown_predicate",
+            GovernanceFindingSeverity::Warning,
+            "relationship predicate is not declared by the active ontology",
+            None,
+        )];
+    };
+
+    let mut findings = Vec::new();
+    match class_id_for_endpoint(source) {
+        Some((entity_id, class_id)) => {
+            if !property.domain.is_empty() && !property.domain.iter().any(|id| id == class_id) {
+                findings.push(finding(
+                    ontology_id,
+                    relationship_id,
+                    "domain_mismatch",
+                    GovernanceFindingSeverity::Warning,
+                    "relationship source class is outside the property domain",
+                    Some((entity_id, class_id)),
+                ));
+            }
+        }
+        None => findings.push(finding(
+            ontology_id,
+            relationship_id,
+            "missing_source_class",
+            GovernanceFindingSeverity::Warning,
+            "relationship source class is missing or unclassified",
+            source.map(|(entity_id, entity_type)| (entity_id, entity_type.as_str())),
+        )),
+    }
+
+    match class_id_for_endpoint(target) {
+        Some((entity_id, class_id)) => {
+            if !property.range.is_empty() && !property.range.iter().any(|id| id == class_id) {
+                findings.push(finding(
+                    ontology_id,
+                    relationship_id,
+                    "range_mismatch",
+                    GovernanceFindingSeverity::Warning,
+                    "relationship target class is outside the property range",
+                    Some((entity_id, class_id)),
+                ));
+            }
+        }
+        None => findings.push(finding(
+            ontology_id,
+            relationship_id,
+            "missing_target_class",
+            GovernanceFindingSeverity::Warning,
+            "relationship target class is missing or unclassified",
+            target.map(|(entity_id, entity_type)| (entity_id, entity_type.as_str())),
+        )),
+    }
+
+    findings
+}
+
 impl Default for GovernancePolicy {
     fn default() -> Self {
         Self {
@@ -602,6 +724,66 @@ fn concept(
     }
 }
 
+fn class_id_for_endpoint<'a>(
+    endpoint: Option<(&'a str, &'a EntityType)>,
+) -> Option<(&'a str, &'a str)> {
+    let (entity_id, entity_type) = endpoint?;
+    match classify_entity_type(entity_type) {
+        ClassificationOutcome::Classified(_) => Some((entity_id, entity_type.as_str())),
+        ClassificationOutcome::UnclassifiedCustom(_) => None,
+    }
+}
+
+fn finding(
+    ontology_id: &str,
+    relationship_id: &str,
+    code: &str,
+    severity: GovernanceFindingSeverity,
+    message: &str,
+    target: Option<(&str, &str)>,
+) -> GovernanceValidationFinding {
+    let ontology_id = sanitize_identifier(ontology_id);
+    let relationship_id = sanitize_identifier(relationship_id);
+    let target_suffix = target
+        .map(|(entity_id, entity_type)| {
+            format!(
+                ":{}:{}",
+                sanitize_identifier(entity_id),
+                sanitize_identifier(entity_type)
+            )
+        })
+        .unwrap_or_default();
+    GovernanceValidationFinding {
+        id: format!("governance:{ontology_id}:{relationship_id}:{code}{target_suffix}"),
+        ontology_id,
+        relationship_id,
+        code: code.to_string(),
+        severity,
+        message: message.to_string(),
+        target_entity_id: target.map(|(entity_id, _)| sanitize_identifier(entity_id)),
+        target_entity_type: target.map(|(_, entity_type)| sanitize_identifier(entity_type)),
+    }
+}
+
+fn sanitize_identifier(value: &str) -> String {
+    let mut sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    sanitized.truncate(128);
+    if sanitized.trim_matches('_').is_empty() {
+        "redacted".to_string()
+    } else {
+        sanitized
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,6 +897,24 @@ mod tests {
             classify_relationship_type(&RelationshipType::Custom("indexes".to_string())),
             ClassificationOutcome::UnclassifiedCustom("indexes".to_string())
         );
+    }
+
+    #[test]
+    fn relationship_validation_reports_missing_classes_and_sanitizes_ids() {
+        let findings = validate_relationship_against_builtin_ontology(
+            "rel-/home/example/providers.json",
+            &RelationshipType::WorksFor,
+            None,
+            Some(("/tmp/raw-target", &EntityType::Organization)),
+            ZBOT_BASE_ONTOLOGY_ID,
+        );
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].code, "missing_source_class");
+        let json = serde_json::to_string(&findings[0]).expect("finding json");
+        assert!(!json.contains("/home/example"));
+        assert!(!json.contains("/tmp/raw-target"));
+        assert!(json.contains("rel-_home_example_providers.json"));
     }
 
     #[test]

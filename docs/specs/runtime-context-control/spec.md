@@ -1,6 +1,6 @@
 # Spec: Runtime Context Control
 
-- **Status:** Draft
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0001: Unified Compaction and Memory Policy; [`openai-prompt-cache-contract`](../openai-prompt-cache-contract/spec.md)

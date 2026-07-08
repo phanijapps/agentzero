@@ -1,7 +1,7 @@
 # Plan: Memory Hygiene
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Ready for implementation
+- **Status:** Closed
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as you learn. When it changes substantially
@@ -9,6 +9,12 @@
 > at the bottom.
 
 ## Approach
+
+This plan is closed as superseded. Do not execute these tasks directly; see the
+closure note in [`spec.md`](spec.md). Any remaining hygiene work should be
+opened against the active Engram, embedding-backed recall, context capability,
+or runtime context-control specs instead of reviving this `knowledge.db`-era
+plan.
 
 Implement the hygiene guards at the callers that know intent: recall bounds
 retrieval queries before embedding, handoff routes full machine state through

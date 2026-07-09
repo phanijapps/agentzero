@@ -90,18 +90,6 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   unblocked by adding generic finding persistence/query APIs to Engram and
   moving zbot's sidecar-backed finding read model behind that public port.
 
-## connector-resource-invoke-split
-
-- **context-capability-registry follow-up:** `query_resource` still combines
-  connector discovery/listing, read-only resource queries, and side-effecting
-  connector invokes. `memory` and `graph_query` have moved out of default
-  model-visible registration, and `shell`/`ward`/`load_skill` are explicit
-  action surfaces, but connector reads and connector actions need separate
-  model-visible contracts before `query_resource` can be hidden. Blocked on a
-  focused connector split spec; unblocked by adding read-only connector
-  resources/resource handles and a narrow connector invoke action with
-  compatibility tests for current MCP/connector journeys.
-
 ## spec-driven-research-development-contract-defect
 
 - **Defect:** The spec-driven research/development loop uses markdown prose as

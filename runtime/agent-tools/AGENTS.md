@@ -29,7 +29,7 @@ cargo test -p agent-tools      # 25 tests
 | `ui.rs` | `RequestInputTool`, `ShowContentTool` (optional) |
 | `agent.rs` | `ListAgentsTool`, `CreateAgentTool` (optional) |
 | `multimodal.rs` | `MultimodalAnalyzeTool` — vision fallback |
-| `connectors.rs` | `QueryResourceTool` — query bridge worker resources |
+| `connectors.rs` | `ConnectorResourceTool`, `ConnectorInvokeTool`, `QueryResourceTool` compatibility wrapper |
 
 ## Registration Functions
 

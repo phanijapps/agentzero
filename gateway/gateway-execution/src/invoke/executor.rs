@@ -13,6 +13,8 @@ use agent_runtime::{
     TriggerCondition,
 };
 use agent_tools::{
+    ConnectorInvokeTool,
+    ConnectorResourceTool,
     EditFileTool,
     GlobTool,
     // Knowledge graph query tool
@@ -231,7 +233,9 @@ impl From<SubagentRole> for RuntimeActorKind {
 enum ToolCapability {
     AgentControl,
     AgentDelegate,
+    ConnectorInvoke,
     ConnectorQuery,
+    ConnectorResourceRead,
     FileRead,
     FileWrite,
     GoalWrite,
@@ -254,7 +258,9 @@ impl ToolCapability {
         match self {
             Self::AgentControl => "agent.control",
             Self::AgentDelegate => "agent.delegate",
+            Self::ConnectorInvoke => "connector.invoke",
             Self::ConnectorQuery => "connector.query",
+            Self::ConnectorResourceRead => "connector.resource.read",
             Self::FileRead => "fs.read",
             Self::FileWrite => "fs.write",
             Self::GoalWrite => "goal.write",
@@ -280,7 +286,9 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::ConnectorInvoke
                 | ToolCapability::ConnectorQuery
+                | ToolCapability::ConnectorResourceRead
                 | ToolCapability::FileRead
                 | ToolCapability::GoalWrite
                 | ToolCapability::GraphRead
@@ -336,7 +344,9 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
     const ALL: &[ToolCapability] = &[
         ToolCapability::AgentControl,
         ToolCapability::AgentDelegate,
+        ToolCapability::ConnectorInvoke,
         ToolCapability::ConnectorQuery,
+        ToolCapability::ConnectorResourceRead,
         ToolCapability::FileRead,
         ToolCapability::FileWrite,
         ToolCapability::GoalWrite,
@@ -459,6 +469,8 @@ fn display_name(tool_name: &str) -> String {
 fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
     match name {
         "delegate_to_agent" => vec![ToolCapability::AgentDelegate],
+        "connector_invoke" => vec![ToolCapability::ConnectorInvoke],
+        "connector_resource" => vec![ToolCapability::ConnectorResourceRead],
         "edit" | "edit_file" | "write" | "write_file" => vec![ToolCapability::FileWrite],
         "glob" | "read" => vec![ToolCapability::FileRead],
         "goal" => vec![ToolCapability::GoalWrite],
@@ -489,6 +501,9 @@ fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
     }
     if capabilities.contains(&ToolCapability::Shell) {
         return ContextSideEffects::Execute;
+    }
+    if capabilities.contains(&ToolCapability::ConnectorInvoke) {
+        return ContextSideEffects::WriteExternal;
     }
     if capabilities.contains(&ToolCapability::Respond) {
         return ContextSideEffects::WriteExternal;
@@ -522,6 +537,9 @@ fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRi
     if capabilities.contains(&ToolCapability::Shell) {
         return ContextRiskLevel::High;
     }
+    if capabilities.contains(&ToolCapability::ConnectorInvoke) {
+        return ContextRiskLevel::Moderate;
+    }
     if capabilities.iter().any(|capability| {
         matches!(
             capability,
@@ -540,6 +558,8 @@ fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRi
 fn cost_hint_for_tool(_name: &str, capabilities: &[ToolCapability]) -> ContextCostHint {
     if capabilities.contains(&ToolCapability::MultimodalAnalyze)
         || capabilities.contains(&ToolCapability::ConnectorQuery)
+        || capabilities.contains(&ToolCapability::ConnectorResourceRead)
+        || capabilities.contains(&ToolCapability::ConnectorInvoke)
     {
         ContextCostHint::Moderate
     } else {
@@ -552,6 +572,8 @@ fn latency_hint_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
         return ContextLatencyHint::Background;
     }
     if capabilities.contains(&ToolCapability::ConnectorQuery)
+        || capabilities.contains(&ToolCapability::ConnectorResourceRead)
+        || capabilities.contains(&ToolCapability::ConnectorInvoke)
         || capabilities.contains(&ToolCapability::MultimodalAnalyze)
     {
         ContextLatencyHint::Slow
@@ -563,7 +585,8 @@ fn latency_hint_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
 fn token_hint_for_tool(name: &str) -> Option<u32> {
     match name {
         "load_skill" => Some(1200),
-        "memory" | "graph_query" | "query_resource" => Some(800),
+        "memory" | "graph_query" | "query_resource" | "connector_resource" => Some(800),
+        "connector_invoke" => Some(300),
         "shell" | "read" => Some(400),
         "wait_agent" => Some(120),
         _ => Some(200),
@@ -600,7 +623,7 @@ fn audit_policy_for_tool(name: &str, capabilities: &[ToolCapability]) -> &'stati
 fn default_visible_for_tool(name: &str, _actor: RuntimeActorKind) -> bool {
     !matches!(
         name,
-        "edit" | "write" | "wait_agent" | "memory" | "graph_query"
+        "edit" | "write" | "wait_agent" | "memory" | "graph_query" | "query_resource"
     )
 }
 
@@ -609,7 +632,10 @@ fn visibility_policy_for_tool(name: &str, _actor: RuntimeActorKind) -> &'static 
         "wait_agent" => "visible_when_parallel_children_active",
         "edit" | "write" => "legacy_alias_hidden",
         "memory" | "graph_query" => "hidden_from_model_use_context_resources",
+        "query_resource" => "hidden_from_model_use_connector_split",
         "memory_write" => "default_visible_memory_write_action",
+        "connector_resource" => "default_visible_connector_resource_read",
+        "connector_invoke" => "default_visible_connector_invoke_action",
         "load_skill" => "default_visible_bounded_packet",
         "shell" | "ward" => "default_visible_action_tool",
         _ => "default_visible",
@@ -620,7 +646,9 @@ fn split_target_for_tool(name: &str) -> Option<&'static str> {
     match name {
         "memory" => Some("action:memory_write; resources:memory_recall/context_atoms"),
         "memory_write" => Some("action:memory_write"),
-        "query_resource" => Some("resources:connector_resource_handles"),
+        "query_resource" => Some("action:connector_invoke; resources:connector_resource"),
+        "connector_resource" => Some("resources:connector_resource"),
+        "connector_invoke" => Some("action:connector_invoke"),
         "graph_query" => Some("resources:context_graph_retrieval"),
         "shell" => Some("actions:shell_execute; resources:command_result_handles"),
         "ward" => Some("actions:ward_lifecycle; resources:ward_context"),
@@ -631,7 +659,7 @@ fn split_target_for_tool(name: &str) -> Option<&'static str> {
 }
 
 fn model_hidden_tools_for_actor(_actor: RuntimeActorKind) -> Vec<&'static str> {
-    vec!["memory", "graph_query"]
+    vec!["memory", "graph_query", "query_resource"]
 }
 
 fn build_runtime_middleware_pipeline(
@@ -774,7 +802,7 @@ impl ExecutorBuilder {
         self
     }
 
-    /// Set the connector resource provider for query_resource tool.
+    /// Set the connector resource provider for connector tools.
     pub fn with_connector_provider(mut self, provider: Arc<dyn ConnectorResourceProvider>) -> Self {
         self.connector_provider = Some(provider);
         self
@@ -1397,6 +1425,21 @@ impl ExecutorBuilder {
                         .with_optional_evidence_intake(self.ingestion_adapter.clone()),
                 ),
             );
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::ConnectorResourceRead],
+                Arc::new(
+                    ConnectorResourceTool::new(provider.clone())
+                        .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+                ),
+            );
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::ConnectorInvoke],
+                Arc::new(ConnectorInvokeTool::new(provider.clone())),
+            );
         }
 
         Arc::new(tool_registry)
@@ -1460,12 +1503,56 @@ pub async fn collect_skills_summary(skill_service: &SkillService) -> Vec<serde_j
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
     use agent_runtime::llm::{ChatResponse, LlmError, StreamCallback};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::collections::{BTreeSet, HashMap};
 
     struct StubSummaryClient;
+
+    struct MockConnectorProvider;
+
+    #[async_trait]
+    impl ConnectorResourceProvider for MockConnectorProvider {
+        async fn list_connectors(&self) -> std::result::Result<Vec<ConnectorInfo>, String> {
+            Ok(vec![ConnectorInfo {
+                id: "signal".to_string(),
+                name: "Signal Bridge".to_string(),
+                resources: vec![ResourceInfo {
+                    name: "aliases".to_string(),
+                    uri: "http://localhost/aliases".to_string(),
+                    method: "GET".to_string(),
+                    description: Some("List aliases".to_string()),
+                }],
+                capabilities: vec![CapabilityInfo {
+                    name: "send_message".to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: Some("Send message".to_string()),
+                }],
+            }])
+        }
+
+        async fn query_resource(
+            &self,
+            _connector_id: &str,
+            _resource_name: &str,
+            _params: Option<HashMap<String, String>>,
+        ) -> std::result::Result<Value, String> {
+            Ok(serde_json::json!([]))
+        }
+
+        async fn invoke_capability(
+            &self,
+            _connector_id: &str,
+            _capability: &str,
+            _payload: Value,
+            _session_id: &str,
+            _agent_id: &str,
+        ) -> std::result::Result<Value, String> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
 
     #[async_trait]
     impl LlmClient for StubSummaryClient {
@@ -1795,7 +1882,7 @@ mod tests {
         assert!(executor.tool_registry().contains("memory_write"));
         assert!(executor.config().model_hidden_tools.contains("memory"));
         assert!(executor.config().model_hidden_tools.contains("graph_query"));
-        assert!(!executor
+        assert!(executor
             .config()
             .model_hidden_tools
             .contains("query_resource"));
@@ -1808,6 +1895,47 @@ mod tests {
         assert!(visible_names.contains("memory_write"));
         assert!(visible_names.contains("shell"));
         assert!(visible_names.contains("ward"));
+    }
+
+    #[tokio::test]
+    async fn builder_exposes_connector_split_and_hides_query_resource_from_model_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_connector_provider(Arc::new(MockConnectorProvider))
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        assert!(executor.tool_registry().contains("query_resource"));
+        assert!(executor.tool_registry().contains("connector_resource"));
+        assert!(executor.tool_registry().contains("connector_invoke"));
+
+        let visible_names = executor
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(!visible_names.contains("query_resource"));
+        assert!(visible_names.contains("connector_resource"));
+        assert!(visible_names.contains("connector_invoke"));
     }
 
     fn registry_names(actor_kind: RuntimeActorKind) -> BTreeSet<String> {
@@ -1845,6 +1973,22 @@ mod tests {
         let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
         let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
             .with_actor_kind(actor_kind)
+            .build_tool_registry(fs_context);
+
+        build_context_capability_catalog(
+            actor_kind,
+            registry.as_ref(),
+            Some("session-1".to_string()),
+            Some("agent-1".to_string()),
+        )
+    }
+
+    fn catalog_for_actor_with_connector(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .with_connector_provider(Arc::new(MockConnectorProvider))
             .build_tool_registry(fs_context);
 
         build_context_capability_catalog(
@@ -2198,15 +2342,47 @@ mod tests {
             assert!(split_target_for_tool(name).is_some());
         }
 
-        assert!(default_visible_for_tool(
+        assert!(!default_visible_for_tool(
             "query_resource",
             RuntimeActorKind::Root
         ));
         assert_eq!(
             visibility_policy_for_tool("query_resource", RuntimeActorKind::Root),
-            "default_visible"
+            "hidden_from_model_use_connector_split"
         );
         assert!(split_target_for_tool("query_resource").is_some());
+
+        let connector_catalog = catalog_for_actor_with_connector(RuntimeActorKind::Root);
+        let query_resource = catalog_capability(&connector_catalog, "query_resource");
+        assert!(!query_resource.default_visible);
+        assert_eq!(
+            query_resource.visibility_policy,
+            "hidden_from_model_use_connector_split"
+        );
+        assert_eq!(
+            query_resource.split_target.as_deref(),
+            Some("action:connector_invoke; resources:connector_resource")
+        );
+        let connector_resource = catalog_capability(&connector_catalog, "connector_resource");
+        assert!(connector_resource.default_visible);
+        assert_eq!(
+            connector_resource.visibility_policy,
+            "default_visible_connector_resource_read"
+        );
+        assert_eq!(
+            connector_resource.side_effects,
+            ContextSideEffects::ReadExternal
+        );
+        let connector_invoke = catalog_capability(&connector_catalog, "connector_invoke");
+        assert!(connector_invoke.default_visible);
+        assert_eq!(
+            connector_invoke.visibility_policy,
+            "default_visible_connector_invoke_action"
+        );
+        assert_eq!(
+            connector_invoke.side_effects,
+            ContextSideEffects::WriteExternal
+        );
 
         for name in ["shell", "ward"] {
             let capability = catalog_capability(&catalog, name);

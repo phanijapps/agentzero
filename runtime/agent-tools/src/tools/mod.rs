@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use zbot_stores_traits::MemoryFactStore;
 
 pub use agent::{CreateAgentTool, ListAgentsTool};
-pub use connectors::QueryResourceTool;
+pub use connectors::{ConnectorInvokeTool, ConnectorResourceTool, QueryResourceTool};
 pub use execution::EditFileTool;
 pub use execution::ExecutionGraphTool;
 pub use execution::PythonTool;

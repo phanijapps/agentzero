@@ -74,9 +74,10 @@ def main() -> None:
         "gateway/templates/agents/builder-agent.md",
         "gateway/templates/agents/planner-agent.md",
         "runtime/AGENTS.md",
+        "runtime/agent-tools/AGENTS.md",
     ]
     for rel in prompt_paths:
-        assert_absent(rel, retired_tools)
+        assert_absent(rel, retired_tools + ["query_resource"])
 
     assert_absent("runtime/agent-tools/src/lib.rs", retired_tools)
     assert_absent("runtime/agent-tools/src/tools/mod.rs", retired_tools + ["introspection"])

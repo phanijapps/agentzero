@@ -468,10 +468,9 @@ the measured deltas.
 **Depends on:** T10 and accepted Engram parity/manual smoke.
 
 **Status:** Done on 2026-07-09 for obsolete model-visible
-discovery/title/todo tools, production SQLite semantic fallback removal, and
-default hiding of broad memory/graph context-pull wrappers. Connector
-read/action splitting remains a focused follow-up because `query_resource`
-still owns connector invokes.
+discovery/title/todo tools, production SQLite semantic fallback removal,
+default hiding of broad memory/graph context-pull wrappers, and connector
+read/action splitting.
 
 **Touches:** `runtime/agent-tools/src/tools/*`,
 `gateway/gateway-execution/src/invoke/*`, `gateway/templates/**`,
@@ -489,9 +488,9 @@ model-visible tool or memory provider surface.
   AC10.
 - Goal-based: repository search proves broad context-pull tools are either
   removed from default model registration or converted to non-model resources:
-  `memory`, `graph_query`, and legacy full-body `load_skill`. Verifies AC11.
-  `query_resource` stays visible until connector invokes are split from
-  read-only connector resources.
+  `memory`, `graph_query`, `query_resource`, and legacy full-body
+  `load_skill`. Verifies AC11. Connector reads use `connector_resource`;
+  connector actions use `connector_invoke`.
 - Goal-based: repository search proves production memory/knowledge code no
   longer constructs or depends on `KnowledgeDatabase`, `MemoryRepository`,
   `GatewayMemoryFactStore`, `SqliteMemoryStore`, `SqliteKgStore`,
@@ -596,3 +595,7 @@ all targeted tests pass.
   Rig adapter through model-visible tools only, and updated active templates
   plus local config prompts to prefer injected context packets over recall
   tools.
+- 2026-07-09: completed connector split follow-up. Added
+  `connector_resource` and `connector_invoke`, hid broad `query_resource` from
+  model-visible schemas while preserving internal compatibility dispatch, and
+  removed the resolved backlog deferral.

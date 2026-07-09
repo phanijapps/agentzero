@@ -17,6 +17,8 @@ mod tools;
 pub use tools::guards;
 
 pub use tools::{
+    ConnectorInvokeTool,
+    ConnectorResourceTool,
     EditFileTool,
     // Knowledge graph query types
     EntityInfo,

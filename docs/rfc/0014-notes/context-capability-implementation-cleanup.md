@@ -46,6 +46,6 @@ production SQLite semantic startup/reindex hooks.
 
 ## Still Open
 
-- Split connector resource reads from connector invokes so `query_resource` can
-  move out of the default model-visible surface without breaking connector
-  actions.
+- No context-capability tool-surface cleanup item remains open. Release/manual
+  readiness and unrelated Engram/governance follow-ups are tracked in
+  `docs/backlog.md`.

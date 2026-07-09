@@ -14,7 +14,8 @@ use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
 
 use super::ingest::{EvidenceRecord, IngestionAccess};
 
-/// Tool for querying resources and invoking capabilities on external connectors.
+/// Compatibility tool for querying resources and invoking capabilities on
+/// external connectors.
 ///
 /// Provides three actions:
 /// - `list_resources`: Discover available connectors, resources (GET), and capabilities (POST)
@@ -43,6 +44,48 @@ impl QueryResourceTool {
     ) -> Self {
         self.evidence_intake = evidence_intake;
         self
+    }
+}
+
+/// Narrow model-facing tool for connector discovery and read-only resource
+/// queries.
+pub struct ConnectorResourceTool {
+    provider: Arc<dyn ConnectorResourceProvider>,
+    evidence_intake: Option<Arc<dyn IngestionAccess>>,
+}
+
+impl ConnectorResourceTool {
+    /// Create a new ConnectorResourceTool with the given provider.
+    #[must_use]
+    pub fn new(provider: Arc<dyn ConnectorResourceProvider>) -> Self {
+        Self {
+            provider,
+            evidence_intake: None,
+        }
+    }
+
+    /// Wire the shared evidence-intake boundary used for explicit
+    /// resource-read distillation.
+    #[must_use]
+    pub fn with_optional_evidence_intake(
+        mut self,
+        evidence_intake: Option<Arc<dyn IngestionAccess>>,
+    ) -> Self {
+        self.evidence_intake = evidence_intake;
+        self
+    }
+}
+
+/// Narrow model-facing tool for side-effecting connector capability calls.
+pub struct ConnectorInvokeTool {
+    provider: Arc<dyn ConnectorResourceProvider>,
+}
+
+impl ConnectorInvokeTool {
+    /// Create a new ConnectorInvokeTool with the given provider.
+    #[must_use]
+    pub fn new(provider: Arc<dyn ConnectorResourceProvider>) -> Self {
+        Self { provider }
     }
 }
 
@@ -131,181 +174,25 @@ impl Tool for QueryResourceTool {
 
         match action {
             "list_resources" => {
-                let connectors = self
-                    .provider
-                    .list_connectors()
-                    .await
-                    .map_err(AgentError::Tool)?;
-
-                if connectors.is_empty() {
-                    return Ok(json!({
-                        "message": "No connectors configured. Add connectors via the web UI or API.",
-                        "connectors": []
-                    }));
-                }
-
-                // Format for agent consumption
-                let summary: Vec<Value> = connectors
-                    .iter()
-                    .map(|c| {
-                        let resources: Vec<Value> = c
-                            .resources
-                            .iter()
-                            .map(|r| {
-                                json!({
-                                    "name": r.name,
-                                    "type": "resource",
-                                    "method": r.method,
-                                    "description": r.description,
-                                })
-                            })
-                            .collect();
-
-                        let capabilities: Vec<Value> = c
-                            .capabilities
-                            .iter()
-                            .map(|cap| {
-                                json!({
-                                    "name": cap.name,
-                                    "type": "capability",
-                                    "method": "POST",
-                                    "description": cap.description,
-                                    "schema": cap.schema,
-                                })
-                            })
-                            .collect();
-
-                        json!({
-                            "connector_id": c.id,
-                            "name": c.name,
-                            "resources": resources,
-                            "capabilities": capabilities,
-                        })
-                    })
-                    .collect();
-
-                Ok(json!({
-                    "connectors": summary,
-                    "usage": "query_resource(action='query', ...) to fetch data from resources. query_resource(action='invoke', connector_id='...', capability='...', payload={...}) to call a capability."
-                }))
+                list_connector_resources(
+                    self.provider.as_ref(),
+                    "connector_resource(action='query', ...) fetches data from resources. connector_invoke(connector_id='...', capability='...', payload={...}) calls a capability.",
+                )
+                .await
             }
 
             "query" => {
-                let connector_id = args
-                    .get("connector_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AgentError::Tool(
-                            "Missing 'connector_id' parameter for query action".to_string(),
-                        )
-                    })?;
-
-                let resource = args
-                    .get("resource")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AgentError::Tool(
-                            "Missing 'resource' parameter for query action".to_string(),
-                        )
-                    })?;
-
-                // Parse params from JSON object to HashMap<String, String>
-                let params: Option<HashMap<String, String>> = args.get("params").and_then(|v| {
-                    v.as_object().map(|obj| {
-                        obj.iter()
-                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                            .collect()
-                    })
-                });
-
-                let should_record = args
-                    .get("record_evidence")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let intake = if should_record {
-                    Some(self.evidence_intake.as_ref().ok_or_else(|| {
-                        AgentError::Tool(
-                            "record_evidence=true requires evidence intake to be configured"
-                                .to_string(),
-                        )
-                    })?)
-                } else {
-                    None
-                };
-
-                let result = self
-                    .provider
-                    .query_resource(connector_id, resource, params)
-                    .await
-                    .map_err(AgentError::Tool)?;
-
-                if let Some(intake) = intake {
-                    let source_id = args
-                        .get("source_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                        .unwrap_or_else(|| {
-                            format!("{connector_id}:{resource}:{}", ctx.function_call_id())
-                        });
-                    let source_type = format!("resource_read:{connector_id}:{resource}");
-                    let record = resource_read_evidence_record(
-                        ctx.as_ref(),
-                        &source_id,
-                        &source_type,
-                        &args,
-                    );
-                    intake
-                        .record_evidence(record)
-                        .await
-                        .map_err(AgentError::Tool)?;
-                    let serialized = serde_json::to_string(&result)
-                        .map_err(|e| AgentError::Tool(format!("serialize resource result: {e}")))?;
-                    intake
-                        .enqueue(
-                            &source_id,
-                            &source_type,
-                            &serialized,
-                            non_empty(ctx.session_id()),
-                            ctx.agent_name(),
-                        )
-                        .await
-                        .map_err(AgentError::Tool)?;
-                }
-
-                Ok(result)
+                query_connector_resource(
+                    self.provider.as_ref(),
+                    self.evidence_intake.as_deref(),
+                    ctx.as_ref(),
+                    &args,
+                )
+                .await
             }
 
             "invoke" => {
-                let connector_id = args
-                    .get("connector_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AgentError::Tool(
-                            "Missing 'connector_id' parameter for invoke action".to_string(),
-                        )
-                    })?;
-
-                let capability =
-                    args.get("capability")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            AgentError::Tool(
-                                "Missing 'capability' parameter for invoke action".to_string(),
-                            )
-                        })?;
-
-                let payload = args.get("payload").cloned().unwrap_or(json!({}));
-
-                let session_id = ctx.session_id().to_string();
-                let agent_id = ctx.agent_name().to_string();
-
-                let result = self
-                    .provider
-                    .invoke_capability(connector_id, capability, payload, &session_id, &agent_id)
-                    .await
-                    .map_err(AgentError::Tool)?;
-
-                Ok(result)
+                invoke_connector_capability(self.provider.as_ref(), ctx.as_ref(), &args).await
             }
 
             _ => Err(AgentError::Tool(format!(
@@ -314,6 +201,310 @@ impl Tool for QueryResourceTool {
             ))),
         }
     }
+}
+
+#[async_trait]
+impl Tool for ConnectorResourceTool {
+    fn name(&self) -> &str {
+        "connector_resource"
+    }
+
+    fn description(&self) -> &str {
+        "Discover external connector resources and fetch read-only connector resource data. Use connector_invoke for side-effecting connector actions."
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "query"],
+                    "description": "Use 'list' to discover connectors/resources/capabilities, or 'query' to fetch one read-only resource."
+                },
+                "connector_id": {
+                    "type": "string",
+                    "description": "Connector ID (required for 'query')"
+                },
+                "resource": {
+                    "type": "string",
+                    "description": "Resource name to query (required for 'query')"
+                },
+                "params": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Parameters for URI template expansion (for 'query')"
+                },
+                "record_evidence": {
+                    "type": "boolean",
+                    "description": "For query action only. Defaults false. When true, explicitly records the successful resource read through the evidence intake boundary and enqueues the response for background extraction.",
+                    "default": false
+                },
+                "source_id": {
+                    "type": "string",
+                    "description": "Optional provenance id for record_evidence=true. Defaults to '<connector_id>:<resource>:<tool_call_id>'."
+                },
+                "retention_policy": {
+                    "type": "string",
+                    "description": "Durable evidence retention policy for record_evidence=true. Defaults to 'durable'.",
+                    "default": "durable"
+                },
+                "ontology_labels": {
+                    "type": "array",
+                    "description": "Optional host-selected dynamic ontology labels for record_evidence=true.",
+                    "items": {"type": "string"}
+                },
+                "taxonomy_labels": {
+                    "type": "array",
+                    "description": "Optional host-selected SKOS/taxonomy labels for record_evidence=true.",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["action"]
+        }))
+    }
+
+    fn permissions(&self) -> ToolPermissions {
+        ToolPermissions::moderate(vec!["network:http".into()])
+    }
+
+    async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("Missing 'action' parameter".to_string()))?;
+
+        match action {
+            "list" => {
+                list_connector_resources(
+                    self.provider.as_ref(),
+                    "connector_resource(action='query', connector_id='...', resource='...', params={...}) fetches read-only resource data. connector_invoke(connector_id='...', capability='...', payload={...}) calls a capability.",
+                )
+                .await
+            }
+            "query" => {
+                query_connector_resource(
+                    self.provider.as_ref(),
+                    self.evidence_intake.as_deref(),
+                    ctx.as_ref(),
+                    &args,
+                )
+                .await
+            }
+            _ => Err(AgentError::Tool(format!(
+                "Unknown action '{}'. Valid: list, query",
+                action
+            ))),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ConnectorInvokeTool {
+    fn name(&self) -> &str {
+        "connector_invoke"
+    }
+
+    fn description(&self) -> &str {
+        "Invoke a side-effecting capability on an external connector. Use connector_resource for read-only connector discovery and resource queries."
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "connector_id": {
+                    "type": "string",
+                    "description": "Connector ID."
+                },
+                "capability": {
+                    "type": "string",
+                    "description": "Capability name to invoke, e.g. 'send_message'."
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "Payload to send when invoking the connector capability.",
+                    "default": {}
+                }
+            },
+            "required": ["connector_id", "capability"]
+        }))
+    }
+
+    fn permissions(&self) -> ToolPermissions {
+        ToolPermissions::moderate(vec!["network:http".into()])
+    }
+
+    async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+        invoke_connector_capability(self.provider.as_ref(), ctx.as_ref(), &args).await
+    }
+}
+
+async fn list_connector_resources(
+    provider: &dyn ConnectorResourceProvider,
+    usage: &str,
+) -> Result<Value> {
+    let connectors = provider.list_connectors().await.map_err(AgentError::Tool)?;
+
+    if connectors.is_empty() {
+        return Ok(json!({
+            "message": "No connectors configured. Add connectors via the web UI or API.",
+            "connectors": []
+        }));
+    }
+
+    let summary: Vec<Value> = connectors
+        .iter()
+        .map(|c| {
+            let resources: Vec<Value> = c
+                .resources
+                .iter()
+                .map(|r| {
+                    json!({
+                        "name": r.name,
+                        "type": "resource",
+                        "method": r.method,
+                        "description": r.description,
+                    })
+                })
+                .collect();
+
+            let capabilities: Vec<Value> = c
+                .capabilities
+                .iter()
+                .map(|cap| {
+                    json!({
+                        "name": cap.name,
+                        "type": "capability",
+                        "method": "POST",
+                        "description": cap.description,
+                        "schema": cap.schema,
+                    })
+                })
+                .collect();
+
+            json!({
+                "connector_id": c.id,
+                "name": c.name,
+                "resources": resources,
+                "capabilities": capabilities,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "connectors": summary,
+        "usage": usage
+    }))
+}
+
+async fn query_connector_resource(
+    provider: &dyn ConnectorResourceProvider,
+    evidence_intake: Option<&dyn IngestionAccess>,
+    ctx: &dyn ToolContext,
+    args: &Value,
+) -> Result<Value> {
+    let connector_id = args
+        .get("connector_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AgentError::Tool("Missing 'connector_id' parameter for query action".to_string())
+        })?;
+
+    let resource = args
+        .get("resource")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AgentError::Tool("Missing 'resource' parameter for query action".to_string())
+        })?;
+
+    let params: Option<HashMap<String, String>> = args.get("params").and_then(|v| {
+        v.as_object().map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+    });
+
+    let should_record = args
+        .get("record_evidence")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let intake = if should_record {
+        Some(evidence_intake.ok_or_else(|| {
+            AgentError::Tool(
+                "record_evidence=true requires evidence intake to be configured".to_string(),
+            )
+        })?)
+    } else {
+        None
+    };
+
+    let result = provider
+        .query_resource(connector_id, resource, params)
+        .await
+        .map_err(AgentError::Tool)?;
+
+    if let Some(intake) = intake {
+        let source_id = args
+            .get("source_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{connector_id}:{resource}:{}", ctx.function_call_id()));
+        let source_type = format!("resource_read:{connector_id}:{resource}");
+        let record = resource_read_evidence_record(ctx, &source_id, &source_type, args);
+        intake
+            .record_evidence(record)
+            .await
+            .map_err(AgentError::Tool)?;
+        let serialized = serde_json::to_string(&result)
+            .map_err(|e| AgentError::Tool(format!("serialize resource result: {e}")))?;
+        intake
+            .enqueue(
+                &source_id,
+                &source_type,
+                &serialized,
+                non_empty(ctx.session_id()),
+                ctx.agent_name(),
+            )
+            .await
+            .map_err(AgentError::Tool)?;
+    }
+
+    Ok(result)
+}
+
+async fn invoke_connector_capability(
+    provider: &dyn ConnectorResourceProvider,
+    ctx: &dyn ToolContext,
+    args: &Value,
+) -> Result<Value> {
+    let connector_id = args
+        .get("connector_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AgentError::Tool("Missing 'connector_id' parameter for invoke action".to_string())
+        })?;
+
+    let capability = args
+        .get("capability")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AgentError::Tool("Missing 'capability' parameter for invoke action".to_string())
+        })?;
+
+    let payload = args.get("payload").cloned().unwrap_or(json!({}));
+
+    provider
+        .invoke_capability(
+            connector_id,
+            capability,
+            payload,
+            ctx.session_id(),
+            ctx.agent_name(),
+        )
+        .await
+        .map_err(AgentError::Tool)
 }
 
 fn non_empty(value: &str) -> Option<&str> {
@@ -590,6 +781,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connector_resource_lists_resources_and_capabilities() {
+        let tool = ConnectorResourceTool::new(mock_provider());
+        let ctx = mock_context();
+
+        let result = tool.execute(ctx, json!({"action": "list"})).await.unwrap();
+
+        let connectors = result["connectors"].as_array().unwrap();
+        assert_eq!(connectors.len(), 1);
+        assert_eq!(connectors[0]["connector_id"], "signal");
+        assert_eq!(connectors[0]["resources"][0]["name"], "aliases");
+        assert_eq!(connectors[0]["capabilities"][0]["name"], "send_message");
+        assert!(
+            result["usage"]
+                .as_str()
+                .unwrap()
+                .contains("connector_invoke")
+        );
+        assert!(!result["usage"].as_str().unwrap().contains("query_resource"));
+    }
+
+    #[tokio::test]
+    async fn connector_resource_queries_read_only_resource() {
+        let tool = ConnectorResourceTool::new(mock_provider());
+        let ctx = mock_context();
+
+        let result = tool
+            .execute(
+                ctx,
+                json!({
+                    "action": "query",
+                    "connector_id": "signal",
+                    "resource": "aliases"
+                }),
+            )
+            .await
+            .unwrap();
+
+        let aliases = result.as_array().unwrap();
+        assert_eq!(aliases.len(), 2);
+        assert_eq!(aliases[0]["alias"], "dev-team");
+    }
+
+    #[tokio::test]
     async fn test_query_resource() {
         let tool = QueryResourceTool::new(mock_provider());
         let ctx = mock_context();
@@ -677,6 +911,38 @@ mod tests {
         assert!(enqueued[0].2.contains("dev-team"));
         assert_eq!(enqueued[0].3.as_deref(), Some("test"));
         assert_eq!(enqueued[0].4, "test-agent");
+    }
+
+    #[tokio::test]
+    async fn connector_resource_records_evidence_when_explicitly_requested() {
+        let intake = Arc::new(MockIntake::default());
+        let tool = ConnectorResourceTool::new(mock_provider())
+            .with_optional_evidence_intake(Some(intake.clone()));
+        let ctx = mock_context();
+
+        let result = tool
+            .execute(
+                ctx,
+                json!({
+                    "action": "query",
+                    "connector_id": "signal",
+                    "resource": "aliases",
+                    "record_evidence": true,
+                    "source_id": "signal:aliases:snapshot-2",
+                    "ontology_labels": ["contact_alias"],
+                    "taxonomy_labels": ["skos:communications"]
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.as_array().unwrap().len(), 2);
+        assert_eq!(intake.records.lock().unwrap().len(), 1);
+        assert_eq!(
+            intake.records.lock().unwrap()[0].source_id,
+            "signal:aliases:snapshot-2"
+        );
+        assert_eq!(intake.enqueued.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -802,6 +1068,32 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["success"], true);
+    }
+
+    #[tokio::test]
+    async fn connector_invoke_invokes_capability_without_read_controls() {
+        let tool = ConnectorInvokeTool::new(mock_provider());
+        let ctx = mock_context();
+
+        let result = tool
+            .execute(
+                ctx,
+                json!({
+                    "connector_id": "signal",
+                    "capability": "send_message",
+                    "payload": {"text": "hello", "recipient": "+1234567890"},
+                    "record_evidence": true,
+                    "resource": "aliases"
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        let schema = tool.parameters_schema().unwrap();
+        assert!(schema["properties"].get("payload").is_some());
+        assert!(schema["properties"].get("resource").is_none());
+        assert!(schema["properties"].get("record_evidence").is_none());
     }
 
     #[tokio::test]

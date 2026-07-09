@@ -146,9 +146,9 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   registration after parity; durable writes move to the narrow
   `memory_write` action, graph/memory reads move through injected context
   packets/resources, and action tools (`shell`, `ward`, `load_skill`) keep
-  explicit default visibility policies. `query_resource` remains a
-  model-visible connector action/resource compatibility surface until a
-  dedicated connector invoke/resource split lands.
+  explicit default visibility policies. `query_resource` remains internally
+  executable for compatibility but is hidden from the default model-visible
+  schema after the dedicated connector split.
 - [x] The ingestion path records a single internal evidence intake boundary for
   durable memory/knowledge writes, with separate model-facing actions for
   `memory_write`, `ingest`, resource reads, and context graph retrieval.

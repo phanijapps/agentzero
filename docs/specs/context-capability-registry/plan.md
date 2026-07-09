@@ -408,9 +408,10 @@ remain green.
 
 **Depends on:** T4
 
-**Status:** Partial on 2026-07-07. The `ingest` tool records evidence with
-retention, ontology, taxonomy, and provenance; memory fact writes,
-tool-result distillation, and resource-read distillation remain deferred under
+**Status:** Partial on 2026-07-09. The `ingest` tool, `memory save_fact`, and
+real-time tool-result extraction record evidence with retention, ontology,
+taxonomy, and provenance through the shared intake boundary. Resource-read
+distillation remains deferred under
 `context-capability-evidence-intake-completion`.
 
 **Touches:** `runtime/agent-tools/src/tools/ingest.rs`, `gateway/gateway-memory/src/*`, `stores/*`

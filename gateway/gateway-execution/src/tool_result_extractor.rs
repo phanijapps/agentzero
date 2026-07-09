@@ -8,6 +8,7 @@
 //! and `source_ref = tool_call_id`, enabling drill-down from graph to
 //! the exact tool invocation that produced it.
 
+use agent_tools::{EvidenceRecord, IngestionAccess};
 use knowledge_graph::{Entity, EntityType};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -28,12 +29,21 @@ pub async fn extract_and_persist(
     result_text: &str,
     session_id: &str,
     agent_id: &str,
+    evidence_intake: Option<&dyn IngestionAccess>,
     episode_store: &dyn KgEpisodeStore,
     kg: &dyn KnowledgeGraphStore,
 ) {
     let entities = extract_from_tool(tool_name, result_text);
     if entities.is_empty() {
         return;
+    }
+
+    if let Some(intake) = evidence_intake {
+        let record = tool_result_evidence_record(tool_name, tool_call_id, session_id, agent_id);
+        if let Err(e) = intake.record_evidence(record).await {
+            tracing::warn!(tool = %tool_name, error = %e, "Failed to record tool-result evidence intake");
+            return;
+        }
     }
 
     let episode_id = match ensure_episode(
@@ -253,6 +263,25 @@ fn hash_content(content: &str) -> String {
     format!("{:x}", h.finalize())
 }
 
+fn tool_result_evidence_record(
+    tool_name: &str,
+    tool_call_id: &str,
+    session_id: &str,
+    agent_id: &str,
+) -> EvidenceRecord {
+    EvidenceRecord {
+        evidence_id: format!("{agent_id}:tool_result:{tool_call_id}"),
+        action: "tool_result_distillation".to_string(),
+        source_id: tool_call_id.to_string(),
+        source_type: format!("tool_result:{tool_name}"),
+        session_id: (!session_id.is_empty()).then(|| session_id.to_string()),
+        agent_id: agent_id.to_string(),
+        retention_policy: "durable".to_string(),
+        ontology_labels: Vec::new(),
+        taxonomy_labels: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +368,18 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("archival")
         );
+    }
+
+    #[test]
+    fn tool_result_evidence_record_uses_tool_call_provenance() {
+        let record = tool_result_evidence_record("shell", "call-42", "sess-1", "root");
+
+        assert_eq!(record.evidence_id, "root:tool_result:call-42");
+        assert_eq!(record.action, "tool_result_distillation");
+        assert_eq!(record.source_id, "call-42");
+        assert_eq!(record.source_type, "tool_result:shell");
+        assert_eq!(record.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(record.retention_policy, "durable");
     }
 
     #[test]

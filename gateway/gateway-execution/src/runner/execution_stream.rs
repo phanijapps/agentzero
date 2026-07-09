@@ -53,6 +53,7 @@ pub struct ExecutionStream {
     pub kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
     pub paths: SharedVaultPaths,
     pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     pub memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     pub bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
@@ -103,6 +104,7 @@ struct EventHandlerDeps<'a> {
     tool_result_context: &'a ToolResultContextConfig,
     kg_episode_repo: Option<&'a Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
     kg_store: Option<&'a Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    ingestion_adapter: Option<&'a Arc<dyn agent_tools::IngestionAccess>>,
 }
 
 /// Pull the `message` (or `text`) arg from a `respond` tool call in
@@ -238,6 +240,7 @@ fn handle_tool_result(
             zbot_stores_sqlite::GatewayKgEpisodeStore::new(ep_repo.clone()),
         );
         let kg_cl = kg.clone();
+        let intake_cl = deps.ingestion_adapter.cloned();
         tokio::spawn(async move {
             crate::tool_result_extractor::extract_and_persist(
                 &tool_name_cl,
@@ -245,6 +248,7 @@ fn handle_tool_result(
                 &result_cl,
                 &session_id_cl,
                 &agent_id_cl,
+                intake_cl.as_deref(),
                 ep_store.as_ref(),
                 kg_cl.as_ref(),
             )
@@ -435,6 +439,7 @@ impl ExecutionStream {
         let batch_writer_inner = batch_writer.clone();
         let kg_episode_repo_inner = self.kg_episode_repo.clone();
         let kg_store_inner = self.kg_store.clone();
+        let ingestion_adapter_inner = self.ingestion_adapter.clone();
 
         // Execute with streaming — closure dispatches into free-fn
         // handlers defined at module scope (handle_tool_call_start,
@@ -462,6 +467,7 @@ impl ExecutionStream {
                 tool_result_context: &tool_result_context,
                 kg_episode_repo: kg_episode_repo_inner.as_ref(),
                 kg_store: kg_store_inner.as_ref(),
+                ingestion_adapter: ingestion_adapter_inner.as_ref(),
             };
 
             // Stream messages to session as they happen
@@ -843,6 +849,7 @@ mod tests {
             kg_episode_repo: None,
             paths,
             kg_store: None,
+            ingestion_adapter: None,
             memory_store: None,
             connector_registry: None,
             bridge_registry: None,

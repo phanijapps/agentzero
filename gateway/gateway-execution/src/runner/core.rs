@@ -811,6 +811,7 @@ impl ExecutionRunner {
             kg_episode_repo: self.kg_episode_repo.clone(),
             paths: self.paths.clone(),
             kg_store: self.kg_store.clone(),
+            ingestion_adapter: self.ingestion_adapter.clone(),
             memory_store: self.memory_store.clone(),
             connector_registry: self.connector_registry.clone(),
             bridge_registry: self.bridge_registry.clone(),
@@ -1341,7 +1342,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     if let Some(ks) = kg_store.clone() {
         builder = builder.with_kg_store(ks);
     }
-    if let Some(a) = ingestion_adapter {
+    if let Some(a) = ingestion_adapter.clone() {
         builder = builder.with_ingestion_adapter(a);
     }
     if let Some(a) = goal_adapter {
@@ -1525,6 +1526,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
                             zbot_stores_sqlite::GatewayKgEpisodeStore::new(ep_repo.clone()),
                         );
                         let kg_cl = kg.clone();
+                        let intake_cl = ingestion_adapter.clone();
                         tokio::spawn(async move {
                             crate::tool_result_extractor::extract_and_persist(
                                 &tool_name_cl,
@@ -1532,6 +1534,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
                                 &result_cl,
                                 &session_id_cl,
                                 &agent_id_cl,
+                                intake_cl.as_deref(),
                                 ep_store.as_ref(),
                                 kg_cl.as_ref(),
                             )

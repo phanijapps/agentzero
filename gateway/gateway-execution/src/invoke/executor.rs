@@ -1256,7 +1256,10 @@ impl ExecutorBuilder {
             &mut tool_registry,
             actor,
             &[ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
-            Arc::new(MemoryTool::new(fs_context.clone(), self.fact_store.clone())),
+            Arc::new(
+                MemoryTool::new(fs_context.clone(), self.fact_store.clone())
+                    .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+            ),
         );
         register_if_allowed(
             &mut tool_registry,

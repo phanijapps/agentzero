@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 use agent_primitives::{AgentError, FileSystemContext, Result, Tool, ToolContext, ToolPermissions};
 use zbot_stores_traits::{BeliefContradictionStore, BeliefStore, MemoryFactStore};
 
+use super::ingest::{EvidenceRecord, IngestionAccess};
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -73,6 +75,7 @@ pub struct MemoryStore {
 pub struct MemoryTool {
     fs: Arc<dyn FileSystemContext>,
     fact_store: Option<Arc<dyn MemoryFactStore>>,
+    evidence_intake: Option<Arc<dyn IngestionAccess>>,
     /// Optional belief store — when present, the `belief` action returns
     /// synthesized aggregate stances about a subject. Mirrors the
     /// `fact_store` plumbing so callers that don't wire the Belief
@@ -94,9 +97,28 @@ impl MemoryTool {
         Self {
             fs,
             fact_store,
+            evidence_intake: None,
             belief_store: None,
             contradiction_store: None,
         }
+    }
+
+    /// Wire the shared evidence-intake boundary used by durable
+    /// memory/knowledge write paths.
+    #[must_use]
+    pub fn with_evidence_intake(mut self, evidence_intake: Arc<dyn IngestionAccess>) -> Self {
+        self.evidence_intake = Some(evidence_intake);
+        self
+    }
+
+    /// Wire evidence intake when a runtime adapter is available.
+    #[must_use]
+    pub fn with_optional_evidence_intake(
+        mut self,
+        evidence_intake: Option<Arc<dyn IngestionAccess>>,
+    ) -> Self {
+        self.evidence_intake = evidence_intake;
+        self
     }
 
     /// Variant of [`MemoryTool::new`] that also wires the Belief Network
@@ -110,6 +132,7 @@ impl MemoryTool {
         Self {
             fs,
             fact_store,
+            evidence_intake: None,
             belief_store,
             contradiction_store: None,
         }
@@ -128,6 +151,7 @@ impl MemoryTool {
         Self {
             fs,
             fact_store,
+            evidence_intake: None,
             belief_store,
             contradiction_store,
         }
@@ -325,6 +349,21 @@ impl Tool for MemoryTool {
                     "type": "string",
                     "format": "date-time",
                     "description": "ISO-8601 timestamp (for recall action). When set, returns facts that were valid at this time. When omitted, returns currently-valid facts."
+                },
+                "retention_policy": {
+                    "type": "string",
+                    "description": "Durable evidence retention policy selected by the host for save_fact. Defaults to 'durable'.",
+                    "default": "durable"
+                },
+                "ontology_labels": {
+                    "type": "array",
+                    "description": "Optional zbot-selected dynamic ontology labels attached to save_fact evidence intake.",
+                    "items": {"type": "string"}
+                },
+                "taxonomy_labels": {
+                    "type": "array",
+                    "description": "Optional zbot-selected SKOS/taxonomy labels attached to save_fact evidence intake.",
+                    "items": {"type": "string"}
                 }
             },
             "required": ["action"]
@@ -604,6 +643,14 @@ impl MemoryTool {
             return Err(AgentError::Tool(
                 "Fact content too long. Keep to 1-2 sentences (max 500 chars).".to_string(),
             ));
+        }
+
+        if let Some(intake) = &self.evidence_intake {
+            let record = memory_evidence_record(ctx, agent_id, category, key, args);
+            intake
+                .record_evidence(record)
+                .await
+                .map_err(AgentError::Tool)?;
         }
 
         // Use DB-backed fact store if available
@@ -1144,6 +1191,46 @@ fn parse_ctx_key(key: &str) -> std::result::Result<(&str, &str), String> {
     Ok((sid, sub_key))
 }
 
+fn memory_evidence_record(
+    ctx: &dyn ToolContext,
+    agent_id: &str,
+    category: &str,
+    key: &str,
+    args: &Value,
+) -> EvidenceRecord {
+    let session_id = ctx.session_id();
+    EvidenceRecord {
+        evidence_id: format!("{agent_id}:memory:{category}:{key}"),
+        action: "memory_write".to_string(),
+        source_id: key.to_string(),
+        source_type: format!("memory_fact:{category}"),
+        session_id: (!session_id.is_empty()).then(|| session_id.to_string()),
+        agent_id: agent_id.to_string(),
+        retention_policy: args
+            .get("retention_policy")
+            .and_then(Value::as_str)
+            .unwrap_or("durable")
+            .to_string(),
+        ontology_labels: string_array_arg(args, "ontology_labels"),
+        taxonomy_labels: string_array_arg(args, "taxonomy_labels"),
+    }
+}
+
+fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn bounded_recall_query(query: &str) -> String {
     let compact = query.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= MAX_RECALL_QUERY_CHARS {
@@ -1515,6 +1602,141 @@ mod tests {
                 "error should explain policy fact restriction: {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn save_fact_records_evidence_intake_before_db_write() {
+        use crate::tools::ingest::{StructuredCounts, StructuredEntity, StructuredRelationship};
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct RecordingFactStore {
+            calls: Mutex<Vec<String>>,
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        #[async_trait]
+        impl MemoryFactStore for RecordingFactStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> std::result::Result<Value, String> {
+                self.events.lock().unwrap().push("fact");
+                self.calls.lock().unwrap().push(key.to_string());
+                Ok(json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> std::result::Result<Value, String> {
+                Ok(json!([]))
+            }
+
+            async fn recall_facts_prioritized(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+                _as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> std::result::Result<Value, String> {
+                Ok(json!({"results": []}))
+            }
+        }
+
+        #[derive(Default)]
+        struct RecordingIntake {
+            records: Mutex<Vec<EvidenceRecord>>,
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        #[async_trait]
+        impl IngestionAccess for RecordingIntake {
+            async fn record_evidence(
+                &self,
+                record: EvidenceRecord,
+            ) -> std::result::Result<(), String> {
+                self.events.lock().unwrap().push("intake");
+                self.records.lock().unwrap().push(record);
+                Ok(())
+            }
+
+            async fn enqueue(
+                &self,
+                _source_id: &str,
+                _source_type: &str,
+                _text: &str,
+                _session_id: Option<&str>,
+                _agent_id: &str,
+            ) -> std::result::Result<(String, usize), String> {
+                Ok((String::new(), 0))
+            }
+
+            async fn ingest_structured(
+                &self,
+                _agent_id: &str,
+                _entities: Vec<StructuredEntity>,
+                _relationships: Vec<StructuredRelationship>,
+            ) -> std::result::Result<StructuredCounts, String> {
+                Ok(StructuredCounts {
+                    entities_upserted: 0,
+                    relationships_upserted: 0,
+                })
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let fs = Arc::new(TestFileSystem::new(dir.path().to_path_buf()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let fact_store = Arc::new(RecordingFactStore {
+            calls: Mutex::new(Vec::new()),
+            events: events.clone(),
+        });
+        let intake = Arc::new(RecordingIntake {
+            records: Mutex::new(Vec::new()),
+            events: events.clone(),
+        });
+        let tool =
+            MemoryTool::new(fs, Some(fact_store.clone())).with_evidence_intake(intake.clone());
+        let ctx = TestToolCtx::new("sess-current");
+
+        tool.action_save_fact(
+            &ctx,
+            "root",
+            &json!({
+                "category": "domain",
+                "key": "valuation.aapl",
+                "content": "AAPL valuation depends on services margin.",
+                "confidence": 0.9,
+                "retention_policy": "durable",
+                "ontology_labels": ["financial_metric"],
+                "taxonomy_labels": ["skos:finance"]
+            }),
+        )
+        .await
+        .expect("save fact");
+
+        assert_eq!(
+            fact_store.calls.lock().unwrap().as_slice(),
+            ["valuation.aapl"]
+        );
+        assert_eq!(events.lock().unwrap().as_slice(), ["intake", "fact"]);
+        let records = intake.records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "memory_write");
+        assert_eq!(records[0].source_id, "valuation.aapl");
+        assert_eq!(records[0].source_type, "memory_fact:domain");
+        assert_eq!(records[0].session_id.as_deref(), Some("sess-current"));
+        assert_eq!(records[0].ontology_labels, vec!["financial_metric"]);
+        assert_eq!(records[0].taxonomy_labels, vec!["skos:finance"]);
     }
 
     #[tokio::test]

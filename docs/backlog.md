@@ -113,12 +113,11 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
 ## context-capability-evidence-intake-completion
 
 - **context-capability-registry AC12:** The `ingest` tool records structured
-  evidence with retention, ontology, taxonomy, and provenance. `memory`
-  fact writes, tool-result distillation, and resource-read distillation still
-  need to route through the same internal evidence intake boundary. Blocked on a
-  focused distillation/write-lane slice; unblocked by adding shared evidence
-  recording behind those paths without making read-only resource access persist
-  by default.
+  evidence with retention, ontology, taxonomy, and provenance. `memory save_fact`
+  and real-time tool-result extraction now route through the same
+  internal evidence intake boundary. Resource-read distillation still needs a
+  focused write-lane slice that preserves the current rule that read-only
+  resource access does not persist by default.
 
 ## spec-driven-research-development-contract-defect
 

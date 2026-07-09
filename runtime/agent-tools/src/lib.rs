@@ -20,6 +20,8 @@ pub use tools::{
     EditFileTool,
     // Knowledge graph query types
     EntityInfo,
+    // Ingestion tool (enqueue text for background extraction + bulk structured)
+    EvidenceRecord,
     GlobTool,
     // Goal tool (agent intent lifecycle)
     GoalAccess,
@@ -27,7 +29,6 @@ pub use tools::{
     GoalTool,
     GraphQueryTool,
     GraphStorageAccess,
-    // Ingestion tool (enqueue text for background extraction + bulk structured)
     IngestTool,
     IngestionAccess,
     ListAgentsTool,

@@ -110,11 +110,10 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   `contracts/jsonschema/context-capability-catalog.schema.json` and includes
   actor kind, capability id, kind, display name, actor policy, risk level, side
   effects, schemas, hints, health, owner crate, and audit policy.
-- [ ] The catalog is populated from the existing first-party tool registry,
+- [x] The catalog is populated from the existing first-party tool registry,
   gateway actor capability filters, MCP manager metadata when configured,
   connector resource provider metadata, memory/graph/recall services, and
-  resource providers without changing tool execution behavior. (deferred:
-  context-capability-resource-catalog-completion)
+  resource providers without changing tool execution behavior.
 - [x] `/api/tools` and `/api/tools/:name` return actor-filtered catalog data
   instead of placeholder empty/404 responses while preserving existing route
   paths.

@@ -90,15 +90,6 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   unblocked by adding generic finding persistence/query APIs to Engram and
   moving zbot's sidecar-backed finding read model behind that public port.
 
-## context-capability-resource-catalog-completion
-
-- **context-capability-registry AC2:** The shipped catalog is first-party
-  tool/actor-policy backed. It still needs live MCP manager metadata, connector
-  read-only resource metadata, and memory/graph/recall resource provider
-  entries as first-class catalog resources. Blocked on a focused resource
-  catalog provider slice; unblocked by adding catalog sources that do not
-  change tool execution behavior.
-
 ## context-capability-broad-tool-split-completion
 
 - **context-capability-registry AC11:** Broad tools now expose split-target

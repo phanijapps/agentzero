@@ -14,10 +14,17 @@ use crate::services::{
     AgentService, McpService, ModelRegistry, ProviderService, RuntimeService, SettingsService,
     SharedVaultPaths, SkillService, VaultPaths,
 };
+use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
 use agent_runtime::llm::EmbeddingClient;
+use agent_runtime::{
+    ContextActorKind, ContextCapability, ContextCapabilityCatalog, ContextCapabilityHealth,
+    ContextCapabilityKind, ContextCostHint, ContextLatencyHint, ContextRiskLevel,
+    ContextSideEffects,
+};
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_services::{EmbeddingService, WardProvenance, WardUsage};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use zbot_engram_adapter::GovernanceCapabilityHealth;
@@ -1135,6 +1142,50 @@ impl AppState {
         builder.build_context_capability_catalog(session_id, agent_id)
     }
 
+    /// Build the HTTP-facing capability catalog and enrich the first-party tool
+    /// snapshot with read-only resource/context provider metadata. This never
+    /// registers or executes tools; it only reports discoverable surfaces.
+    pub async fn context_capability_catalog_with_resources(
+        &self,
+        actor_kind: gateway_execution::invoke::RuntimeActorKind,
+        session_id: Option<String>,
+        agent_id: Option<String>,
+    ) -> agent_runtime::ContextCapabilityCatalog {
+        let mut catalog = self.context_capability_catalog(actor_kind, session_id, agent_id);
+
+        let mut resource_capabilities = local_context_provider_capabilities(LocalProviderStatus {
+            memory_store: self.memory_store.is_some(),
+            kg_store: self.kg_store.is_some(),
+            ingestion_queue: self.ingestion_queue.is_some(),
+            compaction_store: self.compaction_store.is_some(),
+            belief_store: self.belief_store.is_some(),
+        });
+
+        match self.mcp_service.list_summaries() {
+            Ok(summaries) => resource_capabilities.extend(mcp_catalog_capabilities(summaries)),
+            Err(error) => {
+                tracing::warn!(%error, "Failed to enrich capability catalog with MCP metadata");
+            }
+        }
+
+        if let Some(provider) = self.connector_resource_provider() {
+            match provider.list_connectors().await {
+                Ok(connectors) => {
+                    resource_capabilities.extend(connector_catalog_capabilities(connectors));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Failed to enrich capability catalog with connector resource metadata"
+                    );
+                }
+            }
+        }
+
+        append_actor_visible_capabilities(&mut catalog, resource_capabilities);
+        catalog
+    }
+
     fn connector_resource_provider(
         &self,
     ) -> Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> {
@@ -1872,6 +1923,404 @@ impl AppState {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct LocalProviderStatus {
+    memory_store: bool,
+    kg_store: bool,
+    ingestion_queue: bool,
+    compaction_store: bool,
+    belief_store: bool,
+}
+
+fn append_actor_visible_capabilities(
+    catalog: &mut ContextCapabilityCatalog,
+    capabilities: Vec<ContextCapability>,
+) {
+    let mut seen: BTreeSet<String> = catalog
+        .capabilities
+        .iter()
+        .map(|capability| capability.id.clone())
+        .collect();
+
+    for capability in capabilities {
+        if !capability.actor_policy.contains(&catalog.actor_kind) {
+            continue;
+        }
+        if seen.insert(capability.id.clone()) {
+            catalog.capabilities.push(capability);
+        }
+    }
+}
+
+fn local_context_provider_capabilities(status: LocalProviderStatus) -> Vec<ContextCapability> {
+    let read_policy = all_actor_policy();
+    let mut capabilities = Vec::new();
+
+    capabilities.push(ContextCapability {
+        id: "memory:facts".to_string(),
+        kind: ContextCapabilityKind::Resource,
+        display_name: "Memory Facts".to_string(),
+        description: "Semantic memory fact resource exposed through the selected memory provider."
+            .to_string(),
+        actor_policy: read_policy.clone(),
+        risk_level: ContextRiskLevel::Low,
+        side_effects: ContextSideEffects::ReadExternal,
+        input_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+            }
+        })),
+        output_schema: None,
+        resource_uri_template: Some("zbot://memory/facts{?query,limit}".to_string()),
+        cost_hint: Some(ContextCostHint::Cheap),
+        latency_hint: Some(ContextLatencyHint::Fast),
+        token_hint: Some(500),
+        health: health_for(status.memory_store),
+        owner_crate: Some("zbot-stores-traits".to_string()),
+        audit_policy: Some("memory_read_audit".to_string()),
+        default_visible: false,
+        visibility_policy: "resource_catalog_only".to_string(),
+        split_target: Some("context:memory_recall".to_string()),
+    });
+
+    capabilities.push(ContextCapability {
+        id: "memory:recall_unified".to_string(),
+        kind: ContextCapabilityKind::ContextGraph,
+        display_name: "Unified Recall".to_string(),
+        description: "Context packet provider for semantic memory, procedures, wiki, and graph-enriched recall."
+            .to_string(),
+        actor_policy: read_policy.clone(),
+        risk_level: ContextRiskLevel::Low,
+        side_effects: ContextSideEffects::ReadExternal,
+        input_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string" },
+                "session_id": { "type": "string" },
+                "agent_id": { "type": "string" }
+            },
+            "required": ["prompt"]
+        })),
+        output_schema: None,
+        resource_uri_template: Some("zbot://context/recall/unified{?prompt,session_id,agent_id}".to_string()),
+        cost_hint: Some(ContextCostHint::Moderate),
+        latency_hint: Some(ContextLatencyHint::Slow),
+        token_hint: Some(1_500),
+        health: health_for(status.memory_store),
+        owner_crate: Some("gateway-memory".to_string()),
+        audit_policy: Some("context_packet_trace".to_string()),
+        default_visible: false,
+        visibility_policy: "context_provider_only".to_string(),
+        split_target: Some("context_packet:recall_unified".to_string()),
+    });
+
+    capabilities.push(ContextCapability {
+        id: "knowledge_graph:entities".to_string(),
+        kind: ContextCapabilityKind::ContextGraph,
+        display_name: "Knowledge Graph Entities".to_string(),
+        description: "Entity and relationship graph resource exposed through the selected knowledge provider."
+            .to_string(),
+        actor_policy: read_policy.clone(),
+        risk_level: ContextRiskLevel::Low,
+        side_effects: ContextSideEffects::ReadExternal,
+        input_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+            }
+        })),
+        output_schema: None,
+        resource_uri_template: Some("zbot://knowledge-graph/entities{?query,limit}".to_string()),
+        cost_hint: Some(ContextCostHint::Cheap),
+        latency_hint: Some(ContextLatencyHint::Fast),
+        token_hint: Some(900),
+        health: health_for(status.kg_store),
+        owner_crate: Some("zbot-stores-traits".to_string()),
+        audit_policy: Some("graph_read_audit".to_string()),
+        default_visible: false,
+        visibility_policy: "resource_catalog_only".to_string(),
+        split_target: Some("context_graph:knowledge_graph".to_string()),
+    });
+
+    capabilities.push(ContextCapability {
+        id: "knowledge_graph:ingestion_queue".to_string(),
+        kind: ContextCapabilityKind::Catalog,
+        display_name: "Knowledge Graph Ingestion Queue".to_string(),
+        description: "Ingestion queue health and intake boundary for evidence destined for the knowledge graph."
+            .to_string(),
+        actor_policy: vec![ContextActorKind::Root, ContextActorKind::WardAgent],
+        risk_level: ContextRiskLevel::Moderate,
+        side_effects: ContextSideEffects::WriteLocal,
+        input_schema: None,
+        output_schema: None,
+        resource_uri_template: Some("zbot://knowledge-graph/ingestion-queue".to_string()),
+        cost_hint: Some(ContextCostHint::Cheap),
+        latency_hint: Some(ContextLatencyHint::Background),
+        token_hint: Some(150),
+        health: health_for(status.ingestion_queue),
+        owner_crate: Some("gateway-execution".to_string()),
+        audit_policy: Some("evidence_intake_audit".to_string()),
+        default_visible: false,
+        visibility_policy: "catalog_only".to_string(),
+        split_target: Some("tool:ingest".to_string()),
+    });
+
+    capabilities.push(ContextCapability {
+        id: "memory:compaction".to_string(),
+        kind: ContextCapabilityKind::Catalog,
+        display_name: "Memory Compaction".to_string(),
+        description:
+            "Compaction audit resource for sleep-time memory maintenance and consolidation."
+                .to_string(),
+        actor_policy: vec![ContextActorKind::Root, ContextActorKind::WardAgent],
+        risk_level: ContextRiskLevel::Low,
+        side_effects: ContextSideEffects::ReadExternal,
+        input_schema: None,
+        output_schema: None,
+        resource_uri_template: Some("zbot://memory/compaction".to_string()),
+        cost_hint: Some(ContextCostHint::Free),
+        latency_hint: Some(ContextLatencyHint::Fast),
+        token_hint: Some(200),
+        health: health_for(status.compaction_store),
+        owner_crate: Some("gateway-memory".to_string()),
+        audit_policy: Some("compaction_read_audit".to_string()),
+        default_visible: false,
+        visibility_policy: "catalog_only".to_string(),
+        split_target: Some("context:memory_compaction".to_string()),
+    });
+
+    capabilities.push(ContextCapability {
+        id: "memory:belief_network".to_string(),
+        kind: ContextCapabilityKind::ContextGraph,
+        display_name: "Belief Network".to_string(),
+        description: "Belief and contradiction graph resource when the belief network is enabled."
+            .to_string(),
+        actor_policy: read_policy,
+        risk_level: ContextRiskLevel::Low,
+        side_effects: ContextSideEffects::ReadExternal,
+        input_schema: None,
+        output_schema: None,
+        resource_uri_template: Some("zbot://memory/belief-network".to_string()),
+        cost_hint: Some(ContextCostHint::Cheap),
+        latency_hint: Some(ContextLatencyHint::Fast),
+        token_hint: Some(700),
+        health: health_for(status.belief_store),
+        owner_crate: Some("gateway-memory".to_string()),
+        audit_policy: Some("belief_read_audit".to_string()),
+        default_visible: false,
+        visibility_policy: "resource_catalog_only".to_string(),
+        split_target: Some("context_graph:belief_network".to_string()),
+    });
+
+    capabilities
+}
+
+fn mcp_catalog_capabilities(
+    summaries: Vec<gateway_services::mcp::McpServerSummary>,
+) -> Vec<ContextCapability> {
+    summaries
+        .into_iter()
+        .map(|summary| {
+            let id_component = catalog_id_component(&summary.id);
+            let mut description = summary.description;
+            if let Some(auth_status) = summary.auth_status {
+                if !auth_status.is_empty() {
+                    description = format!("{description} Auth status: {auth_status}.");
+                }
+            }
+
+            ContextCapability {
+                id: format!("mcp:{id_component}"),
+                kind: ContextCapabilityKind::Catalog,
+                display_name: format!("MCP: {}", summary.name),
+                description,
+                actor_policy: all_actor_policy(),
+                risk_level: ContextRiskLevel::Low,
+                side_effects: ContextSideEffects::None,
+                input_schema: None,
+                output_schema: None,
+                resource_uri_template: Some(format!("zbot://mcp/{id_component}")),
+                cost_hint: Some(ContextCostHint::Free),
+                latency_hint: Some(ContextLatencyHint::Local),
+                token_hint: Some(120),
+                health: if summary.enabled {
+                    ContextCapabilityHealth::Available
+                } else {
+                    ContextCapabilityHealth::Disabled
+                },
+                owner_crate: Some("gateway-services".to_string()),
+                audit_policy: Some("catalog_read".to_string()),
+                default_visible: false,
+                visibility_policy: "catalog_only".to_string(),
+                split_target: Some(format!("mcp_transport:{}", summary.transport_type)),
+            }
+        })
+        .collect()
+}
+
+fn connector_catalog_capabilities(connectors: Vec<ConnectorInfo>) -> Vec<ContextCapability> {
+    let mut capabilities = Vec::new();
+
+    for connector in connectors {
+        let connector_id = catalog_id_component(&connector.id);
+        let connector_name = connector.name;
+        for resource in connector.resources {
+            capabilities.push(connector_resource_capability(
+                &connector_name,
+                &connector_id,
+                resource,
+            ));
+        }
+        for capability in connector.capabilities {
+            capabilities.push(connector_action_capability(
+                &connector_name,
+                &connector_id,
+                capability,
+            ));
+        }
+    }
+
+    capabilities
+}
+
+fn connector_resource_capability(
+    connector_name: &str,
+    connector_id: &str,
+    resource: ResourceInfo,
+) -> ContextCapability {
+    let resource_id = catalog_id_component(&resource.name);
+    let method = resource.method.to_uppercase();
+    let description = resource.description.unwrap_or_else(|| {
+        format!(
+            "Read {} from connector {} via {}.",
+            resource.name, connector_name, method
+        )
+    });
+
+    ContextCapability {
+        id: format!("connector:{connector_id}:resource:{resource_id}"),
+        kind: ContextCapabilityKind::Resource,
+        display_name: format!("{}: {}", connector_name, resource.name),
+        description,
+        actor_policy: connector_actor_policy(),
+        risk_level: ContextRiskLevel::Moderate,
+        side_effects: ContextSideEffects::ReadExternal,
+        input_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "params": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                }
+            }
+        })),
+        output_schema: None,
+        resource_uri_template: Some(format!(
+            "zbot://connectors/{connector_id}/resources/{resource_id}{{?params}}"
+        )),
+        cost_hint: Some(ContextCostHint::Moderate),
+        latency_hint: Some(ContextLatencyHint::Slow),
+        token_hint: Some(800),
+        health: ContextCapabilityHealth::Available,
+        owner_crate: Some("gateway-connectors".to_string()),
+        audit_policy: Some("connector_resource_read_audit".to_string()),
+        default_visible: false,
+        visibility_policy: "resource_catalog_only".to_string(),
+        split_target: Some("tool:query_resource?action=query".to_string()),
+    }
+}
+
+fn connector_action_capability(
+    connector_name: &str,
+    connector_id: &str,
+    capability: CapabilityInfo,
+) -> ContextCapability {
+    let capability_id = catalog_id_component(&capability.name);
+    let schema = if capability.schema.is_null() {
+        None
+    } else {
+        Some(capability.schema)
+    };
+
+    ContextCapability {
+        id: format!("connector:{connector_id}:capability:{capability_id}"),
+        kind: ContextCapabilityKind::Tool,
+        display_name: format!("{}: {}", connector_name, capability.name),
+        description: capability.description.unwrap_or_else(|| {
+            format!(
+                "Invoke connector capability {} on {}.",
+                capability.name, connector_name
+            )
+        }),
+        actor_policy: connector_actor_policy(),
+        risk_level: ContextRiskLevel::Moderate,
+        side_effects: ContextSideEffects::WriteExternal,
+        input_schema: schema,
+        output_schema: None,
+        resource_uri_template: Some(format!(
+            "zbot://connectors/{connector_id}/capabilities/{capability_id}"
+        )),
+        cost_hint: Some(ContextCostHint::Moderate),
+        latency_hint: Some(ContextLatencyHint::Slow),
+        token_hint: Some(900),
+        health: ContextCapabilityHealth::Available,
+        owner_crate: Some("gateway-connectors".to_string()),
+        audit_policy: Some("connector_capability_invoke_audit".to_string()),
+        default_visible: false,
+        visibility_policy: "resource_catalog_only".to_string(),
+        split_target: Some("tool:query_resource?action=invoke".to_string()),
+    }
+}
+
+fn all_actor_policy() -> Vec<ContextActorKind> {
+    vec![
+        ContextActorKind::Root,
+        ContextActorKind::DelegatedExecutor,
+        ContextActorKind::DelegatedReviewer,
+        ContextActorKind::WardAgent,
+    ]
+}
+
+fn connector_actor_policy() -> Vec<ContextActorKind> {
+    vec![ContextActorKind::Root, ContextActorKind::WardAgent]
+}
+
+fn health_for(enabled: bool) -> ContextCapabilityHealth {
+    if enabled {
+        ContextCapabilityHealth::Available
+    } else {
+        ContextCapabilityHealth::Disabled
+    }
+}
+
+fn catalog_id_component(raw: &str) -> String {
+    let mut normalized = String::with_capacity(raw.len());
+    let mut last_was_separator = false;
+    for ch in raw.chars() {
+        let next = if ch.is_ascii_alphanumeric() {
+            last_was_separator = false;
+            Some(ch.to_ascii_lowercase())
+        } else if !last_was_separator {
+            last_was_separator = true;
+            Some('_')
+        } else {
+            None
+        };
+        if let Some(ch) = next {
+            normalized.push(ch);
+        }
+    }
+    let normalized = normalized.trim_matches('_');
+    if normalized.is_empty() {
+        "unnamed".to_string()
+    } else {
+        normalized.to_string()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PythonVenvCommand {
     program: &'static str,
@@ -1944,6 +2393,164 @@ mod tests {
         assert!(state.procedure_store.is_some());
         assert!(state.kg_store.is_some());
         assert!(state.kg_episode_store.is_some());
+    }
+
+    #[test]
+    fn local_context_provider_catalog_entries_report_resource_health() {
+        let capabilities = local_context_provider_capabilities(LocalProviderStatus {
+            memory_store: true,
+            kg_store: true,
+            ingestion_queue: false,
+            compaction_store: false,
+            belief_store: false,
+        });
+
+        let memory = capabilities
+            .iter()
+            .find(|capability| capability.id == "memory:facts")
+            .expect("memory resource");
+        assert_eq!(memory.kind, ContextCapabilityKind::Resource);
+        assert_eq!(memory.health, ContextCapabilityHealth::Available);
+        assert!(!memory.default_visible);
+        assert!(memory
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedReviewer));
+
+        let graph = capabilities
+            .iter()
+            .find(|capability| capability.id == "knowledge_graph:entities")
+            .expect("knowledge graph resource");
+        assert_eq!(graph.kind, ContextCapabilityKind::ContextGraph);
+        assert_eq!(
+            graph.resource_uri_template.as_deref(),
+            Some("zbot://knowledge-graph/entities{?query,limit}")
+        );
+
+        let ingestion = capabilities
+            .iter()
+            .find(|capability| capability.id == "knowledge_graph:ingestion_queue")
+            .expect("ingestion queue resource");
+        assert_eq!(ingestion.health, ContextCapabilityHealth::Disabled);
+        assert_eq!(ingestion.side_effects, ContextSideEffects::WriteLocal);
+    }
+
+    #[test]
+    fn connector_catalog_entries_use_logical_resource_uris() {
+        let connectors = vec![ConnectorInfo {
+            id: "Local Mail".to_string(),
+            name: "Local Mail".to_string(),
+            resources: vec![ResourceInfo {
+                name: "Recent Messages".to_string(),
+                uri: "http://127.0.0.1:9999/private/messages".to_string(),
+                method: "GET".to_string(),
+                description: Some("Read recent messages.".to_string()),
+            }],
+            capabilities: vec![CapabilityInfo {
+                name: "Send Message".to_string(),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "to": { "type": "string" },
+                        "body": { "type": "string" }
+                    }
+                }),
+                description: None,
+            }],
+        }];
+
+        let capabilities = connector_catalog_capabilities(connectors);
+        let resource = capabilities
+            .iter()
+            .find(|capability| capability.id == "connector:local_mail:resource:recent_messages")
+            .expect("connector resource");
+        assert_eq!(resource.kind, ContextCapabilityKind::Resource);
+        assert_eq!(resource.side_effects, ContextSideEffects::ReadExternal);
+        assert_eq!(
+            resource.resource_uri_template.as_deref(),
+            Some("zbot://connectors/local_mail/resources/recent_messages{?params}")
+        );
+        assert!(!serde_json::to_string(resource)
+            .unwrap()
+            .contains("127.0.0.1"));
+
+        let action = capabilities
+            .iter()
+            .find(|capability| capability.id == "connector:local_mail:capability:send_message")
+            .expect("connector action");
+        assert_eq!(action.side_effects, ContextSideEffects::WriteExternal);
+        assert_eq!(
+            action.actor_policy,
+            vec![ContextActorKind::Root, ContextActorKind::WardAgent]
+        );
+    }
+
+    #[test]
+    fn resource_catalog_filters_entries_by_actor_and_dedupes() {
+        let mut catalog = ContextCapabilityCatalog {
+            version: "test".to_string(),
+            actor_kind: ContextActorKind::DelegatedReviewer,
+            session_id: None,
+            agent_id: None,
+            capabilities: vec![ContextCapability {
+                id: "memory:facts".to_string(),
+                kind: ContextCapabilityKind::Tool,
+                display_name: "Existing".to_string(),
+                description: "Existing entry wins.".to_string(),
+                actor_policy: vec![ContextActorKind::DelegatedReviewer],
+                risk_level: ContextRiskLevel::Low,
+                side_effects: ContextSideEffects::None,
+                input_schema: None,
+                output_schema: None,
+                resource_uri_template: None,
+                cost_hint: None,
+                latency_hint: None,
+                token_hint: None,
+                health: ContextCapabilityHealth::Available,
+                owner_crate: None,
+                audit_policy: None,
+                default_visible: true,
+                visibility_policy: "default_visible".to_string(),
+                split_target: None,
+            }],
+        };
+
+        let mut extra = local_context_provider_capabilities(LocalProviderStatus {
+            memory_store: true,
+            kg_store: true,
+            ingestion_queue: true,
+            compaction_store: true,
+            belief_store: true,
+        });
+        extra.extend(connector_catalog_capabilities(vec![ConnectorInfo {
+            id: "crm".to_string(),
+            name: "CRM".to_string(),
+            resources: vec![ResourceInfo {
+                name: "contacts".to_string(),
+                uri: "https://crm.example/resources/contacts".to_string(),
+                method: "GET".to_string(),
+                description: None,
+            }],
+            capabilities: vec![],
+        }]));
+
+        append_actor_visible_capabilities(&mut catalog, extra);
+        let ids: BTreeSet<_> = catalog
+            .capabilities
+            .iter()
+            .map(|capability| capability.id.as_str())
+            .collect();
+
+        assert_eq!(
+            catalog
+                .capabilities
+                .iter()
+                .filter(|capability| capability.id == "memory:facts")
+                .count(),
+            1
+        );
+        assert!(ids.contains("knowledge_graph:entities"));
+        assert!(!ids.contains("knowledge_graph:ingestion_queue"));
+        assert!(!ids.contains("connector:crm:resource:contacts"));
     }
 
     #[test]

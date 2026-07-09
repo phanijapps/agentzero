@@ -243,14 +243,16 @@ fn handle_tool_result(
         let intake_cl = deps.ingestion_adapter.cloned();
         tokio::spawn(async move {
             crate::tool_result_extractor::extract_and_persist(
-                &tool_name_cl,
-                &tool_id_cl,
-                &result_cl,
-                &session_id_cl,
-                &agent_id_cl,
-                intake_cl.as_deref(),
-                ep_store.as_ref(),
-                kg_cl.as_ref(),
+                crate::tool_result_extractor::ExtractAndPersistRequest {
+                    tool_name: &tool_name_cl,
+                    tool_call_id: &tool_id_cl,
+                    result_text: &result_cl,
+                    session_id: &session_id_cl,
+                    agent_id: &agent_id_cl,
+                    evidence_intake: intake_cl.as_deref(),
+                    episode_store: ep_store.as_ref(),
+                    kg: kg_cl.as_ref(),
+                },
             )
             .await;
         });

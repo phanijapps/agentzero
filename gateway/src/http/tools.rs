@@ -38,11 +38,11 @@ pub async fn list_tools(
     Query(query): Query<ToolCatalogQuery>,
 ) -> Result<Json<ContextCapabilityCatalog>, (StatusCode, Json<ErrorResponse>)> {
     let actor_kind = parse_actor_kind(query.actor.as_deref())?;
-    Ok(Json(state.context_capability_catalog(
-        actor_kind,
-        query.session_id,
-        query.agent_id,
-    )))
+    Ok(Json(
+        state
+            .context_capability_catalog_with_resources(actor_kind, query.session_id, query.agent_id)
+            .await,
+    ))
 }
 
 /// GET /api/tools/:name - Get a tool by name.
@@ -52,7 +52,9 @@ pub async fn get_tool(
     Path(name): Path<String>,
 ) -> Result<Json<ContextCapability>, (StatusCode, Json<ErrorResponse>)> {
     let actor_kind = parse_actor_kind(query.actor.as_deref())?;
-    let catalog = state.context_capability_catalog(actor_kind, query.session_id, query.agent_id);
+    let catalog = state
+        .context_capability_catalog_with_resources(actor_kind, query.session_id, query.agent_id)
+        .await;
 
     catalog
         .capabilities

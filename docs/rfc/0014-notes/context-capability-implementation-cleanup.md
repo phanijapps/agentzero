@@ -46,8 +46,6 @@ production SQLite semantic startup/reindex hooks.
 
 ## Still Open
 
-- Complete live MCP/connector/resource/memory/graph catalog population:
-  `context-capability-resource-catalog-completion`.
 - Finish broad read-heavy tool splits:
   `context-capability-broad-tool-split-completion`.
 - Route memory writes, resource-read distillation, and tool-result distillation

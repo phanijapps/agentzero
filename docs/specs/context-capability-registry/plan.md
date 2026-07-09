@@ -585,3 +585,7 @@ all targeted tests pass.
   with retention, ontology, taxonomy, and provenance. Full memory-write,
   resource-read, and tool-result distillation routing is deferred in
   `docs/backlog.md`.
+- 2026-07-09: completed AC2 resource catalog population. `/api/tools` now
+  enriches the first-party tool catalog with MCP summaries, connector
+  resource/action metadata, and memory/graph/recall provider resources without
+  changing tool execution registration.

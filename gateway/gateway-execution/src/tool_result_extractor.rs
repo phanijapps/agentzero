@@ -23,56 +23,67 @@ use zbot_stores_traits::KgEpisodeStore;
 ///
 /// Errors are logged at warn level and never propagate — extraction is
 /// best-effort and must never block the execution loop.
-pub async fn extract_and_persist(
-    tool_name: &str,
-    tool_call_id: &str,
-    result_text: &str,
-    session_id: &str,
-    agent_id: &str,
-    evidence_intake: Option<&dyn IngestionAccess>,
-    episode_store: &dyn KgEpisodeStore,
-    kg: &dyn KnowledgeGraphStore,
-) {
-    let entities = extract_from_tool(tool_name, result_text);
+pub struct ExtractAndPersistRequest<'a> {
+    pub tool_name: &'a str,
+    pub tool_call_id: &'a str,
+    pub result_text: &'a str,
+    pub session_id: &'a str,
+    pub agent_id: &'a str,
+    pub evidence_intake: Option<&'a dyn IngestionAccess>,
+    pub episode_store: &'a dyn KgEpisodeStore,
+    pub kg: &'a dyn KnowledgeGraphStore,
+}
+
+pub async fn extract_and_persist(request: ExtractAndPersistRequest<'_>) {
+    let entities = extract_from_tool(request.tool_name, request.result_text);
     if entities.is_empty() {
         return;
     }
 
-    if let Some(intake) = evidence_intake {
-        let record = tool_result_evidence_record(tool_name, tool_call_id, session_id, agent_id);
+    if let Some(intake) = request.evidence_intake {
+        let record = tool_result_evidence_record(
+            request.tool_name,
+            request.tool_call_id,
+            request.session_id,
+            request.agent_id,
+        );
         if let Err(e) = intake.record_evidence(record).await {
-            tracing::warn!(tool = %tool_name, error = %e, "Failed to record tool-result evidence intake");
+            tracing::warn!(tool = %request.tool_name, error = %e, "Failed to record tool-result evidence intake");
             return;
         }
     }
 
     let episode_id = match ensure_episode(
-        episode_store,
-        tool_call_id,
-        result_text,
-        session_id,
-        agent_id,
+        request.episode_store,
+        request.tool_call_id,
+        request.result_text,
+        request.session_id,
+        request.agent_id,
     )
     .await
     {
         Ok(id) => id,
         Err(e) => {
-            tracing::warn!(tool = %tool_name, error = %e, "Failed to create tool-result episode");
+            tracing::warn!(tool = %request.tool_name, error = %e, "Failed to create tool-result episode");
             return;
         }
     };
 
     let stamped = entities
         .into_iter()
-        .map(|e| stamp_provenance(e, &episode_id, tool_call_id))
+        .map(|e| stamp_provenance(e, &episode_id, request.tool_call_id))
         .collect::<Vec<_>>();
 
     let knowledge = ExtractedKnowledge {
         entities: stamped,
         relationships: Vec::new(),
     };
-    if let Err(e) = kg.store_knowledge(agent_id, knowledge).await {
-        tracing::warn!(tool = %tool_name, error = %e, "Failed to persist tool-result entities");
+    if let Err(e) = request
+        .kg
+        .store_knowledge(request.agent_id, knowledge)
+        .await
+    {
+        tracing::warn!(tool = %request.tool_name, error = %e, "Failed to persist tool-result entities");
     }
 }
 

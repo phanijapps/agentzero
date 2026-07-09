@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 
-use gateway_execution::sleep::{Compactor, DecayConfig, DecayEngine, Pruner, SleepTimeWorker};
+use gateway_memory::sleep::{Compactor, DecayConfig, DecayEngine, Pruner, SleepTimeWorker};
 use gateway_services::VaultPaths;
 use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_sqlite::kg::storage::GraphStorage;

@@ -28,3 +28,4 @@ Active feature specs for AgentZero.
 | [Subagent Capability Policy](subagent-role-gating/spec.md) | Done | Enforces root, executor, reviewer, and ward-agent tool capabilities with an explicit reviewer-agent identity. |
 | [Builder Delegation Hygiene](builder-delegation-hygiene/spec.md) | Done | Adds delegation modes so builder-agent can distinguish direct artifacts, ward hygiene, ward-backed builds, and step execution. |
 | [Agent Tool Surface Cleanup](agent-tool-surface-cleanup/spec.md) | Shipped | Deletes unreachable model-tool implementations, unused factory registry paths, and stale settings/UI toggles so the tool surface matches the live gateway executor. |
+| [Gateway Execution Sleep Shim Cleanup](gateway-execution-sleep-shim-cleanup/spec.md) | Shipped | Removes gateway-execution compatibility shims for sleep maintenance operations now owned by gateway-memory, leaving only execution-specific handoff writing. |

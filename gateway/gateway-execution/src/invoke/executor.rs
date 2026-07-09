@@ -1375,7 +1375,10 @@ impl ExecutorBuilder {
                 &mut tool_registry,
                 actor,
                 &[ToolCapability::ConnectorQuery],
-                Arc::new(QueryResourceTool::new(provider.clone())),
+                Arc::new(
+                    QueryResourceTool::new(provider.clone())
+                        .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+                ),
             );
         }
 

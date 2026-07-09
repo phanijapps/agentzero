@@ -110,15 +110,6 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   removing each broad wrapper from default model registration once its split
   target has parity.
 
-## context-capability-evidence-intake-completion
-
-- **context-capability-registry AC12:** The `ingest` tool records structured
-  evidence with retention, ontology, taxonomy, and provenance. `memory save_fact`
-  and real-time tool-result extraction now route through the same
-  internal evidence intake boundary. Resource-read distillation still needs a
-  focused write-lane slice that preserves the current rule that read-only
-  resource access does not persist by default.
-
 ## spec-driven-research-development-contract-defect
 
 - **Defect:** The spec-driven research/development loop uses markdown prose as

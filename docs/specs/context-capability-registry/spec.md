@@ -148,10 +148,9 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   broad context-pull wrappers are removed from default model registration or
   converted into non-model internal services/resources. (deferred:
   context-capability-broad-tool-split-completion)
-- [ ] The ingestion path records a single internal evidence intake boundary for
+- [x] The ingestion path records a single internal evidence intake boundary for
   durable memory/knowledge writes, with separate model-facing actions for
   `memory_write`, `ingest`, resource reads, and context graph retrieval.
-  (deferred: context-capability-evidence-intake-completion)
 - [x] Previous SQLite memory/knowledge production paths are gone after terminal
   cleanup: no production memory, recall, graph, hierarchy, belief, or sleep
   worker path constructs or depends on `KnowledgeDatabase`, `MemoryRepository`,

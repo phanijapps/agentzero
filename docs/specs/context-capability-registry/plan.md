@@ -408,11 +408,10 @@ remain green.
 
 **Depends on:** T4
 
-**Status:** Partial on 2026-07-09. The `ingest` tool, `memory save_fact`, and
-real-time tool-result extraction record evidence with retention, ontology,
-taxonomy, and provenance through the shared intake boundary. Resource-read
-distillation remains deferred under
-`context-capability-evidence-intake-completion`.
+**Status:** Done on 2026-07-09. The `ingest` tool, `memory save_fact`,
+real-time tool-result extraction, and explicit resource-read distillation all
+record evidence with retention, ontology, taxonomy, and provenance through the
+shared intake boundary. Ordinary resource reads remain read-only by default.
 
 **Touches:** `runtime/agent-tools/src/tools/ingest.rs`, `gateway/gateway-memory/src/*`, `stores/*`
 

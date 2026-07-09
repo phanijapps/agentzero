@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use agent_primitives::connectors::ConnectorResourceProvider;
 use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
 
+use super::ingest::{EvidenceRecord, IngestionAccess};
+
 /// Tool for querying resources and invoking capabilities on external connectors.
 ///
 /// Provides three actions:
@@ -20,12 +22,27 @@ use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
 /// - `invoke`: Invoke a capability on a connector (e.g., send_message)
 pub struct QueryResourceTool {
     provider: Arc<dyn ConnectorResourceProvider>,
+    evidence_intake: Option<Arc<dyn IngestionAccess>>,
 }
 
 impl QueryResourceTool {
     /// Create a new QueryResourceTool with the given provider.
     pub fn new(provider: Arc<dyn ConnectorResourceProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            evidence_intake: None,
+        }
+    }
+
+    /// Wire the shared evidence-intake boundary used for explicit
+    /// resource-read distillation.
+    #[must_use]
+    pub fn with_optional_evidence_intake(
+        mut self,
+        evidence_intake: Option<Arc<dyn IngestionAccess>>,
+    ) -> Self {
+        self.evidence_intake = evidence_intake;
+        self
     }
 }
 
@@ -72,6 +89,30 @@ impl Tool for QueryResourceTool {
                 "payload": {
                     "type": "object",
                     "description": "Payload to send when invoking a capability (for 'invoke')"
+                },
+                "record_evidence": {
+                    "type": "boolean",
+                    "description": "For query action only. Defaults false. When true, explicitly records the successful resource read through the evidence intake boundary and enqueues the response for background extraction.",
+                    "default": false
+                },
+                "source_id": {
+                    "type": "string",
+                    "description": "Optional provenance id for record_evidence=true. Defaults to '<connector_id>:<resource>:<tool_call_id>'."
+                },
+                "retention_policy": {
+                    "type": "string",
+                    "description": "Durable evidence retention policy for record_evidence=true. Defaults to 'durable'.",
+                    "default": "durable"
+                },
+                "ontology_labels": {
+                    "type": "array",
+                    "description": "Optional host-selected dynamic ontology labels for record_evidence=true.",
+                    "items": {"type": "string"}
+                },
+                "taxonomy_labels": {
+                    "type": "array",
+                    "description": "Optional host-selected SKOS/taxonomy labels for record_evidence=true.",
+                    "items": {"type": "string"}
                 }
             },
             "required": ["action"]
@@ -177,11 +218,59 @@ impl Tool for QueryResourceTool {
                     })
                 });
 
+                let should_record = args
+                    .get("record_evidence")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let intake = if should_record {
+                    Some(self.evidence_intake.as_ref().ok_or_else(|| {
+                        AgentError::Tool(
+                            "record_evidence=true requires evidence intake to be configured"
+                                .to_string(),
+                        )
+                    })?)
+                } else {
+                    None
+                };
+
                 let result = self
                     .provider
                     .query_resource(connector_id, resource, params)
                     .await
                     .map_err(AgentError::Tool)?;
+
+                if let Some(intake) = intake {
+                    let source_id = args
+                        .get("source_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            format!("{connector_id}:{resource}:{}", ctx.function_call_id())
+                        });
+                    let source_type = format!("resource_read:{connector_id}:{resource}");
+                    let record = resource_read_evidence_record(
+                        ctx.as_ref(),
+                        &source_id,
+                        &source_type,
+                        &args,
+                    );
+                    intake
+                        .record_evidence(record)
+                        .await
+                        .map_err(AgentError::Tool)?;
+                    let serialized = serde_json::to_string(&result)
+                        .map_err(|e| AgentError::Tool(format!("serialize resource result: {e}")))?;
+                    intake
+                        .enqueue(
+                            &source_id,
+                            &source_type,
+                            &serialized,
+                            non_empty(ctx.session_id()),
+                            ctx.agent_name(),
+                        )
+                        .await
+                        .map_err(AgentError::Tool)?;
+                }
 
                 Ok(result)
             }
@@ -227,6 +316,49 @@ impl Tool for QueryResourceTool {
     }
 }
 
+fn non_empty(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn resource_read_evidence_record(
+    ctx: &dyn ToolContext,
+    source_id: &str,
+    source_type: &str,
+    args: &Value,
+) -> EvidenceRecord {
+    let session_id = ctx.session_id();
+    EvidenceRecord {
+        evidence_id: format!("{}:resource_read:{source_id}", ctx.agent_name()),
+        action: "resource_read_distillation".to_string(),
+        source_id: source_id.to_string(),
+        source_type: source_type.to_string(),
+        session_id: non_empty(session_id).map(str::to_string),
+        agent_id: ctx.agent_name().to_string(),
+        retention_policy: args
+            .get("retention_policy")
+            .and_then(Value::as_str)
+            .unwrap_or("durable")
+            .to_string(),
+        ontology_labels: string_array_arg(args, "ontology_labels"),
+        taxonomy_labels: string_array_arg(args, "taxonomy_labels"),
+    }
+}
+
+fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,10 +366,57 @@ mod tests {
     use agent_primitives::context::{CallbackContext, ReadonlyContext};
     use agent_primitives::event::EventActions;
     use agent_primitives::types::Content;
+    use std::sync::Mutex;
 
     /// Mock provider for testing.
     struct MockProvider {
         connectors: Vec<ConnectorInfo>,
+    }
+
+    struct PanicQueryProvider;
+
+    #[derive(Default)]
+    struct MockIntake {
+        records: Mutex<Vec<EvidenceRecord>>,
+        enqueued: Mutex<Vec<(String, String, String, Option<String>, String)>>,
+    }
+
+    #[async_trait]
+    impl IngestionAccess for MockIntake {
+        async fn record_evidence(&self, record: EvidenceRecord) -> std::result::Result<(), String> {
+            self.records.lock().unwrap().push(record);
+            Ok(())
+        }
+
+        async fn enqueue(
+            &self,
+            source_id: &str,
+            source_type: &str,
+            text: &str,
+            session_id: Option<&str>,
+            agent_id: &str,
+        ) -> std::result::Result<(String, usize), String> {
+            self.enqueued.lock().unwrap().push((
+                source_id.to_string(),
+                source_type.to_string(),
+                text.to_string(),
+                session_id.map(str::to_string),
+                agent_id.to_string(),
+            ));
+            Ok((source_id.to_string(), 1))
+        }
+
+        async fn ingest_structured(
+            &self,
+            _agent_id: &str,
+            _entities: Vec<super::super::ingest::StructuredEntity>,
+            _relationships: Vec<super::super::ingest::StructuredRelationship>,
+        ) -> std::result::Result<super::super::ingest::StructuredCounts, String> {
+            Ok(super::super::ingest::StructuredCounts {
+                entities_upserted: 0,
+                relationships_upserted: 0,
+            })
+        }
     }
 
     #[async_trait]
@@ -281,6 +460,33 @@ mod tests {
                     capability, connector_id
                 ))
             }
+        }
+    }
+
+    #[async_trait]
+    impl ConnectorResourceProvider for PanicQueryProvider {
+        async fn list_connectors(&self) -> std::result::Result<Vec<ConnectorInfo>, String> {
+            Ok(Vec::new())
+        }
+
+        async fn query_resource(
+            &self,
+            _connector_id: &str,
+            _resource_name: &str,
+            _params: Option<HashMap<String, String>>,
+        ) -> std::result::Result<serde_json::Value, String> {
+            panic!("query_resource should not run when evidence intake is unavailable")
+        }
+
+        async fn invoke_capability(
+            &self,
+            _connector_id: &str,
+            _capability: &str,
+            _payload: serde_json::Value,
+            _session_id: &str,
+            _agent_id: &str,
+        ) -> std::result::Result<serde_json::Value, String> {
+            Ok(json!({}))
         }
     }
 
@@ -403,6 +609,95 @@ mod tests {
         let aliases = result.as_array().unwrap();
         assert_eq!(aliases.len(), 2);
         assert_eq!(aliases[0]["alias"], "dev-team");
+    }
+
+    #[tokio::test]
+    async fn query_resource_does_not_record_evidence_by_default() {
+        let intake = Arc::new(MockIntake::default());
+        let tool = QueryResourceTool::new(mock_provider())
+            .with_optional_evidence_intake(Some(intake.clone()));
+        let ctx = mock_context();
+
+        let result = tool
+            .execute(
+                ctx,
+                json!({
+                    "action": "query",
+                    "connector_id": "signal",
+                    "resource": "aliases"
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.as_array().unwrap().len(), 2);
+        assert!(intake.records.lock().unwrap().is_empty());
+        assert!(intake.enqueued.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn query_resource_records_evidence_when_explicitly_requested() {
+        let intake = Arc::new(MockIntake::default());
+        let tool = QueryResourceTool::new(mock_provider())
+            .with_optional_evidence_intake(Some(intake.clone()));
+        let ctx = mock_context();
+
+        let result = tool
+            .execute(
+                ctx,
+                json!({
+                    "action": "query",
+                    "connector_id": "signal",
+                    "resource": "aliases",
+                    "record_evidence": true,
+                    "source_id": "signal:aliases:snapshot-1",
+                    "retention_policy": "durable",
+                    "ontology_labels": ["contact_alias"],
+                    "taxonomy_labels": ["skos:communications"]
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.as_array().unwrap().len(), 2);
+
+        let records = intake.records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "resource_read_distillation");
+        assert_eq!(records[0].source_id, "signal:aliases:snapshot-1");
+        assert_eq!(records[0].source_type, "resource_read:signal:aliases");
+        assert_eq!(records[0].session_id.as_deref(), Some("test"));
+        assert_eq!(records[0].ontology_labels, vec!["contact_alias"]);
+        assert_eq!(records[0].taxonomy_labels, vec!["skos:communications"]);
+
+        let enqueued = intake.enqueued.lock().unwrap();
+        assert_eq!(enqueued.len(), 1);
+        assert_eq!(enqueued[0].0, "signal:aliases:snapshot-1");
+        assert_eq!(enqueued[0].1, "resource_read:signal:aliases");
+        assert!(enqueued[0].2.contains("dev-team"));
+        assert_eq!(enqueued[0].3.as_deref(), Some("test"));
+        assert_eq!(enqueued[0].4, "test-agent");
+    }
+
+    #[tokio::test]
+    async fn query_resource_record_evidence_requires_intake() {
+        let tool = QueryResourceTool::new(Arc::new(PanicQueryProvider));
+        let ctx = mock_context();
+
+        let err = tool
+            .execute(
+                ctx,
+                json!({
+                    "action": "query",
+                    "connector_id": "signal",
+                    "resource": "aliases",
+                    "record_evidence": true
+                }),
+            )
+            .await
+            .expect_err("record_evidence should fail without intake");
+
+        assert!(err.to_string().contains("requires evidence intake"));
     }
 
     #[tokio::test]

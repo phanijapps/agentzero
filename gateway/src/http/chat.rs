@@ -9,6 +9,15 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
+
+// Serializes the read/create/update sequence for the singleton chat slot.
+static CHAT_SESSION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn chat_session_lock() -> &'static Mutex<()> {
+    CHAT_SESSION_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 // ============================================================================
 // REQUEST / RESPONSE TYPES
@@ -57,6 +66,8 @@ pub struct SessionMessageResponse {
 pub async fn init_chat_session(
     State(state): State<AppState>,
 ) -> Result<Json<ChatInitResponse>, (StatusCode, String)> {
+    let _guard = chat_session_lock().lock().await;
+
     let settings = state
         .settings
         .get_execution_settings()
@@ -136,6 +147,8 @@ pub async fn init_chat_session(
 pub async fn clear_chat_session(
     State(state): State<AppState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let _guard = chat_session_lock().lock().await;
+
     let settings = state
         .settings
         .get_execution_settings()

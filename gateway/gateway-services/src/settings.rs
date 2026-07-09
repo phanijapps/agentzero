@@ -535,9 +535,8 @@ mod tests {
         let service = SettingsService::new_legacy(dir.path().to_path_buf());
 
         let settings = service.load().unwrap();
-        // Optional tools are disabled by default
-        assert!(!settings.tools.python);
-        assert!(!settings.tools.web_fetch);
+        assert!(!settings.tools.file_tools);
+        assert!(settings.tools.offload_large_results);
         // Logging is enabled by default (quiet mode)
         assert!(settings.logs.enabled);
     }
@@ -548,14 +547,14 @@ mod tests {
         let service = SettingsService::new_legacy(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
-        settings.tools.python = true;
-        settings.tools.web_fetch = true;
+        settings.tools.file_tools = true;
+        settings.tools.offload_large_results = false;
 
         service.save(&settings).unwrap();
 
         let loaded = service.load().unwrap();
-        assert!(loaded.tools.python);
-        assert!(loaded.tools.web_fetch);
+        assert!(loaded.tools.file_tools);
+        assert!(!loaded.tools.offload_large_results);
     }
 
     #[test]
@@ -604,7 +603,7 @@ mod tests {
         let service = SettingsService::new_legacy(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
-        settings.tools.python = true;
+        settings.tools.file_tools = true;
         settings.logs.enabled = true;
         settings.logs.max_files = 30;
 
@@ -698,7 +697,7 @@ mod tests {
         let service = SettingsService::new_legacy(dir.path().to_path_buf());
 
         let initial_json = r#"{
-  "tools": { "python": false, "webFetch": false },
+  "tools": { "fileTools": true, "offloadLargeResults": true },
   "embeddings": {
     "backend": "ollama",
     "dimensions": 1024,
@@ -714,7 +713,7 @@ mod tests {
         // wizard, etc. call. Before the fix this wiped the file wholesale.
         service.invalidate_cache();
         let mut settings = service.load().unwrap();
-        settings.tools.python = true;
+        settings.tools.file_tools = true;
         service.save(&settings).unwrap();
 
         // Reread raw so we can assert unknown keys survived.
@@ -741,7 +740,7 @@ mod tests {
             "arbitrary unknown keys must survive typed save"
         );
         assert_eq!(
-            parsed["tools"]["python"].as_bool(),
+            parsed["tools"]["fileTools"].as_bool(),
             Some(true),
             "typed field update must still take effect"
         );

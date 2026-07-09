@@ -33,7 +33,6 @@ pub use tools::{
     GraphStorageAccess,
     IngestTool,
     IngestionAccess,
-    ListAgentsTool,
     LoadSkillTool,
     MemoryEntry,
     MemoryStore,
@@ -56,9 +55,6 @@ pub use tools::{
     // Ward-curator observer trait (see gateway/gateway-execution/.../ward_usage_adapter.rs)
     WardUsageAccess,
     WriteFileTool,
-    builtin_tools_with_fs,
-    core_tools,
-    optional_tools,
 };
 
 // Re-export from agent-primitives

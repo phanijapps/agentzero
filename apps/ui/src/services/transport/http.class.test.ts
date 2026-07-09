@@ -503,13 +503,13 @@ describe('HttpTransport — settings envelope', () => {
   it('getToolSettings unwraps a successful envelope to its data field', async () => {
     fetchMock.mockResolvedValue(
       mockResponse({
-        body: { success: true, data: { python: true, web_fetch: false } },
+        body: { success: true, data: { fileTools: true, offloadLargeResults: true } },
       }),
     );
     const t = newTransport();
     const res = await t.getToolSettings();
     expect(res.success).toBe(true);
-    expect(res.data).toEqual({ python: true, web_fetch: false });
+    expect(res.data).toEqual({ fileTools: true, offloadLargeResults: true });
   });
 
   it('getToolSettings surfaces envelope-level error messages', async () => {
@@ -526,15 +526,15 @@ describe('HttpTransport — settings envelope', () => {
 
   it('updateToolSettings PUTs and unwraps the response envelope', async () => {
     fetchMock.mockResolvedValue(
-      mockResponse({ body: { success: true, data: { python: false } } }),
+      mockResponse({ body: { success: true, data: { fileTools: false } } }),
     );
     const t = newTransport();
-    const res = await t.updateToolSettings({ python: false } as never);
+    const res = await t.updateToolSettings({ fileTools: false } as never);
     expect(res.success).toBe(true);
-    expect(res.data).toEqual({ python: false });
+    expect(res.data).toEqual({ fileTools: false });
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({ python: false });
+    expect(JSON.parse(init.body)).toEqual({ fileTools: false });
   });
 });
 

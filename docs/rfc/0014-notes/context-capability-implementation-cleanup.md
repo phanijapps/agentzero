@@ -20,9 +20,12 @@ Date: 2026-07-07
 
 - Removed retired model-visible tool implementations from `agent-tools`:
   `list_tools`, `list_skills`, `list_mcps`, `set_session_title`, and `todos`.
-- Removed the retired tools from `core_tools`, `optional_tools`,
-  `builtin_tools_with_fs`, active gateway templates, and default model-facing
-  registry construction.
+- Removed the second-wave retired model-visible tool implementations and legacy
+  aliases from `agent-tools`: `ListAgentsTool`, `CreateAgentTool`, `PythonTool`,
+  `WebFetchTool`, `RequestInputTool`, `ShowContentTool`,
+  `ExecutionGraphTool`, `WriteTool`, and `EditTool`.
+- Removed `core_tools`, `optional_tools`, and `builtin_tools_with_fs`; gateway
+  execution is the only runtime registry path.
 - Removed `AppState.knowledge_db`, gateway boot SQLite semantic reindex, and
   SQLite KG backfill hooks from production runtime composition.
 - Memory stats now size configured Engram storage instead of `knowledge.db`.

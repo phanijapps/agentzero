@@ -27,3 +27,4 @@ Active feature specs for AgentZero.
 | [MCP OAuth](mcp-oauth/spec.md) | Done | Adds OAuth metadata, authorization flow endpoints, token storage, and runtime bearer injection for protected remote MCP servers. |
 | [Subagent Capability Policy](subagent-role-gating/spec.md) | Done | Enforces root, executor, reviewer, and ward-agent tool capabilities with an explicit reviewer-agent identity. |
 | [Builder Delegation Hygiene](builder-delegation-hygiene/spec.md) | Done | Adds delegation modes so builder-agent can distinguish direct artifacts, ward hygiene, ward-backed builds, and step execution. |
+| [Agent Tool Surface Cleanup](agent-tool-surface-cleanup/spec.md) | Shipped | Deletes unreachable model-tool implementations, unused factory registry paths, and stale settings/UI toggles so the tool surface matches the live gateway executor. |

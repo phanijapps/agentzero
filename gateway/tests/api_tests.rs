@@ -648,13 +648,7 @@ async fn tool_settings_update() {
     let (server, _dir) = setup_test_server().await;
 
     let settings = json!({
-        "grep": true,
-        "glob": true,
-        "python": false,
-        "webFetch": false,
-        "loadSkill": true,
-        "uiTools": true,
-        "createAgent": true,
+        "fileTools": true,
         "offloadLargeResults": true,
         "offloadThresholdTokens": 5000
     });

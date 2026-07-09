@@ -48,6 +48,3 @@ production SQLite semantic startup/reindex hooks.
 
 - Finish broad read-heavy tool splits:
   `context-capability-broad-tool-split-completion`.
-- Route memory writes, resource-read distillation, and tool-result distillation
-  through the same evidence intake boundary as `ingest`:
-  `context-capability-evidence-intake-completion`.

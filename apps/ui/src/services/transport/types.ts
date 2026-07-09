@@ -393,12 +393,8 @@ export interface ToolSettings {
   uiTools: boolean;
   /** Enable create_agent tool */
   createAgent: boolean;
-  /** Compatibility flag for retired introspection tools */
-  introspection: boolean;
   /** Enable file tools (read, write, edit, glob) as separate tools */
   fileTools: boolean;
-  /** Compatibility flag for retired heavyweight todos tool */
-  todos: boolean;
   /** Offload large tool results to filesystem instead of keeping in context */
   offloadLargeResults: boolean;
   /** Token threshold for offloading (default: 5000 tokens ≈ 20000 chars) */

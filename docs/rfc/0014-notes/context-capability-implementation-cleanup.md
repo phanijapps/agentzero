@@ -46,5 +46,6 @@ production SQLite semantic startup/reindex hooks.
 
 ## Still Open
 
-- Finish broad read-heavy tool splits:
-  `context-capability-broad-tool-split-completion`.
+- Split connector resource reads from connector invokes so `query_resource` can
+  move out of the default model-visible surface without breaking connector
+  actions.

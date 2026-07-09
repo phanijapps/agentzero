@@ -467,9 +467,11 @@ the measured deltas.
 
 **Depends on:** T10 and accepted Engram parity/manual smoke.
 
-**Status:** Done on 2026-07-07 for obsolete model-visible discovery/title/todo
-tools and production SQLite semantic fallback removal. Broad read-heavy tool
-splits remain deferred under `context-capability-broad-tool-split-completion`.
+**Status:** Done on 2026-07-09 for obsolete model-visible
+discovery/title/todo tools, production SQLite semantic fallback removal, and
+default hiding of broad memory/graph context-pull wrappers. Connector
+read/action splitting remains a focused follow-up because `query_resource`
+still owns connector invokes.
 
 **Touches:** `runtime/agent-tools/src/tools/*`,
 `gateway/gateway-execution/src/invoke/*`, `gateway/templates/**`,
@@ -487,8 +489,9 @@ model-visible tool or memory provider surface.
   AC10.
 - Goal-based: repository search proves broad context-pull tools are either
   removed from default model registration or converted to non-model resources:
-  `memory`, `query_resource`, `graph_query`, `ward`, and legacy
-  full-body `load_skill`. Verifies AC11.
+  `memory`, `graph_query`, and legacy full-body `load_skill`. Verifies AC11.
+  `query_resource` stays visible until connector invokes are split from
+  read-only connector resources.
 - Goal-based: repository search proves production memory/knowledge code no
   longer constructs or depends on `KnowledgeDatabase`, `MemoryRepository`,
   `GatewayMemoryFactStore`, `SqliteMemoryStore`, `SqliteKgStore`,
@@ -582,10 +585,14 @@ all targeted tests pass.
   SQLite semantic reindex/backfill hooks, and added
   `tools/context_capability_cleanup.py` as the reproducible deny-list gate.
 - 2026-07-07: partially completed T9. The `ingest` tool now records evidence
-  with retention, ontology, taxonomy, and provenance. Full memory-write,
-  resource-read, and tool-result distillation routing is deferred in
-  `docs/backlog.md`.
+  with retention, ontology, taxonomy, and provenance.
 - 2026-07-09: completed AC2 resource catalog population. `/api/tools` now
   enriches the first-party tool catalog with MCP summaries, connector
   resource/action metadata, and memory/graph/recall provider resources without
   changing tool execution registration.
+- 2026-07-09: completed T9/T11 broad context-pull cleanup. Added the narrow
+  `memory_write` action, hid broad `memory` and `graph_query` from
+  model-visible schemas while keeping them internally executable, bridged the
+  Rig adapter through model-visible tools only, and updated active templates
+  plus local config prompts to prefer injected context packets over recall
+  tools.

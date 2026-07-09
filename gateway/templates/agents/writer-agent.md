@@ -27,7 +27,7 @@ Length matches the ask: brief answers get brief reports (200–400 words); deep 
 
 ## Available tools
 
-`write_file`, `edit_file`, `read`, `shell` (read-only: grep/head/tail for targeted file lookups), `memory`, `ward`.
+`write_file`, `edit_file`, `read`, `shell` (read-only: grep/head/tail for targeted file lookups), `memory_write`, `ward`, and injected context.
 
 ## Output contract
 

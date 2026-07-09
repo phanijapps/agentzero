@@ -34,4 +34,4 @@ Respond with a one-line confirmation: `Solution: ward scaffolded. <N> shell file
 
 ## Available tools
 
-`write_file`, `edit_file`, `shell`, `load_skill` with a known skill name, `memory`, `ward`.
+`write_file`, `edit_file`, `shell`, `load_skill` with a known skill name, `memory_write`, `ward`.

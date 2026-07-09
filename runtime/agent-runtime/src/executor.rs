@@ -110,6 +110,10 @@ pub struct ExecutorConfig {
     /// Enable tools
     pub tools_enabled: bool,
 
+    /// Registered tools that remain executable internally but are not offered
+    /// in the model-visible tool schema.
+    pub model_hidden_tools: HashSet<String>,
+
     /// MCP servers to use
     pub mcps: Vec<String>,
 
@@ -208,6 +212,7 @@ impl ExecutorConfig {
             thinking_enabled: false,
             system_instruction: None,
             tools_enabled: true,
+            model_hidden_tools: HashSet::new(),
             mcps: Vec::new(),
             skills: Vec::new(),
             conversation_id: None,
@@ -239,6 +244,18 @@ impl ExecutorConfig {
         self.initial_state.insert(key.into(), value);
         self
     }
+
+    /// Hide registered tools from model-visible schemas while preserving
+    /// executor-internal dispatch for procedures, hooks, and compatibility.
+    #[must_use]
+    pub fn with_model_hidden_tools<I, S>(mut self, tool_names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.model_hidden_tools = tool_names.into_iter().map(Into::into).collect();
+        self
+    }
 }
 
 impl fmt::Debug for ExecutorConfig {
@@ -252,6 +269,7 @@ impl fmt::Debug for ExecutorConfig {
             .field("thinking_enabled", &self.thinking_enabled)
             .field("system_instruction", &self.system_instruction)
             .field("tools_enabled", &self.tools_enabled)
+            .field("model_hidden_tools", &self.model_hidden_tools)
             .field("mcps", &self.mcps)
             .field("skills", &self.skills)
             .field("conversation_id", &self.conversation_id)
@@ -430,6 +448,18 @@ impl AgentExecutor {
     #[must_use]
     pub fn tool_registry(&self) -> &Arc<ToolRegistry> {
         &self.tool_registry
+    }
+
+    /// Registered tools that should be offered to the model. Hidden tools stay
+    /// in `tool_registry` so internal dispatch can still execute them.
+    #[must_use]
+    pub fn model_visible_tools(&self) -> Vec<Arc<dyn agent_primitives::Tool>> {
+        self.tool_registry
+            .get_all()
+            .iter()
+            .filter(|tool| !self.config.model_hidden_tools.contains(tool.name()))
+            .cloned()
+            .collect()
     }
 
     /// Execute the agent with streaming
@@ -1574,7 +1604,7 @@ impl AgentExecutor {
     async fn build_tools_schema(&self) -> Result<Value, ExecutorError> {
         let mut tools = Vec::new();
 
-        for tool in self.tool_registry.get_all() {
+        for tool in self.model_visible_tools() {
             let tool_name = tool.name();
             let tool_desc = tool.description();
             let schema = tool.parameters_schema().map_or_else(|| json!({"type": "object", "properties": {}, "additionalProperties": false, "required": []}), Self::harden_tool_schema);
@@ -1889,8 +1919,36 @@ mod token_cache_tests {
 mod executor_helper_coverage_tests {
     use super::*;
     use crate::llm::client::{ChatResponse, LlmError, StreamCallback};
+    use agent_primitives::Tool;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct NamedTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &'static str {
+            "test tool"
+        }
+
+        fn parameters_schema(&self) -> Option<Value> {
+            Some(json!({"type": "object", "properties": {}}))
+        }
+
+        async fn execute(
+            &self,
+            _ctx: Arc<dyn ZeroToolContext>,
+            _args: Value,
+        ) -> agent_primitives::Result<Value> {
+            Ok(json!({"ok": true}))
+        }
+    }
 
     // ------------- normalize_tool_name -------------
     #[test]
@@ -2141,6 +2199,40 @@ mod executor_helper_coverage_tests {
             .as_str()
             .unwrap();
         assert_eq!(name, "respond");
+    }
+
+    #[tokio::test]
+    async fn build_tools_schema_omits_model_hidden_registered_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(NamedTool { name: "respond" }));
+        registry.register(Arc::new(NamedTool { name: "memory" }));
+        let cfg = ExecutorConfig::new("a".into(), "p".into(), "m".into())
+            .with_model_hidden_tools(["memory"]);
+        let exec = AgentExecutor::new(
+            cfg,
+            Arc::new(InertLlm),
+            Arc::new(registry),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+
+        assert!(exec.tool_registry().contains("memory"));
+        let visible_names = exec
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(visible_names, vec!["respond"]);
+
+        let schema = exec.build_tools_schema().await.unwrap();
+        let names = schema
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["respond"]);
     }
 
     #[test]

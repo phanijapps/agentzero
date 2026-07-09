@@ -45,7 +45,8 @@ When the verbatim ask names an existing ward plus a specific missing capability 
 - `write_file`, `edit_file` — to write plan.md and step files.
 - `shell` — read-only probes only (grep, head, tail, test, ls). Never execute scripts.
 - Task analysis and recall provide the relevant skill and agent names; load only the concrete skills named above.
-- `memory` (actions: `recall`, `get_fact`, `save_fact`) — for recall of prior-domain context.
+- Injected context packet — for prior-domain context, skills, agents, and policies.
+- `memory_write` — persist durable planning facts only when they will be useful across sessions.
 - `ward` (action: `use`) — enter the ward.
 
 ## What you do NOT do

@@ -36,6 +36,7 @@ pub use tools::{
     MemoryEntry,
     MemoryStore,
     MemoryTool,
+    MemoryWriteTool,
     // Multimodal vision fallback
     MultimodalAnalyzeTool,
     NeighborInfo,

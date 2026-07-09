@@ -54,11 +54,7 @@ pub struct UpdateToolSettingsRequest {
     #[serde(default)]
     pub create_agent: bool,
     #[serde(default)]
-    pub introspection: bool,
-    #[serde(default)]
     pub file_tools: bool,
-    #[serde(default)]
-    pub todos: bool,
     #[serde(default)]
     pub offload_large_results: bool,
     #[serde(default = "default_offload_threshold")]
@@ -76,9 +72,7 @@ impl From<UpdateToolSettingsRequest> for ToolSettings {
             web_fetch: req.web_fetch,
             ui_tools: req.ui_tools,
             create_agent: req.create_agent,
-            introspection: req.introspection,
             file_tools: req.file_tools,
-            todos: req.todos,
             offload_large_results: req.offload_large_results,
             offload_threshold_tokens: req.offload_threshold_tokens,
         }

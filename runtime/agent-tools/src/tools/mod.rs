@@ -46,7 +46,7 @@ pub use ingest::{
     EvidenceRecord, IngestTool, IngestionAccess, StructuredCounts, StructuredEntity,
     StructuredRelationship,
 };
-pub use memory::{MemoryEntry, MemoryStore, MemoryTool};
+pub use memory::{MemoryEntry, MemoryStore, MemoryTool, MemoryWriteTool};
 pub use multimodal::MultimodalAnalyzeTool;
 pub use search::GlobTool;
 pub use ui::{RequestInputTool, ShowContentTool};
@@ -93,13 +93,6 @@ pub struct ToolSettings {
     #[serde(default)]
     pub create_agent: bool,
 
-    /// Compatibility flag for retired introspection tools.
-    ///
-    /// Preserved in settings payloads so older clients can round-trip their
-    /// config without re-enabling removed tools.
-    #[serde(default)]
-    pub introspection: bool,
-
     /// Enable legacy file tools (write, edit, glob) as separate tools.
     /// `read` is a core safe tool. When false (default), the model uses the
     /// core `read` / `write_file` / `edit_file` tools instead. These optional
@@ -107,10 +100,6 @@ pub struct ToolSettings {
     /// patterns).
     #[serde(default)]
     pub file_tools: bool,
-
-    /// Compatibility flag for the retired heavyweight todos tool.
-    #[serde(default)]
-    pub todos: bool,
 
     /// Offload large tool results to filesystem instead of keeping in context.
     /// When a tool result exceeds the token threshold, it's saved to a temp file
@@ -229,9 +218,7 @@ pub fn builtin_tools_with_fs(fs: Arc<dyn FileSystemContext>) -> Vec<Arc<dyn Tool
         web_fetch: true,
         ui_tools: true,
         create_agent: true,
-        introspection: true,
         file_tools: true,
-        todos: true,
         offload_large_results: false, // Not relevant for this legacy function
         offload_threshold_tokens: default_offload_threshold(),
     };

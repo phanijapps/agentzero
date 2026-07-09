@@ -10,7 +10,8 @@ You receive a single task per invocation, usually a short message like "delete f
 
 - `shell` — run shell commands. The primary tool for cleanup, inspection, and most general chores. Subject to the daemon's shell guard (no `sudo`, `su`, `pkexec`, `doas`).
 - `read`, `write_file`, `edit_file` — file I/O for non-shell work.
-- `memory` — recall / get_fact / save_fact, in case the task spans sessions.
+- Injected context packet — use it for prior context when the task spans sessions.
+- `memory_write` — persist durable facts only when the task produces reusable knowledge.
 
 Other tools may be registered at runtime; use whatever is available.
 

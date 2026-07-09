@@ -141,12 +141,14 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   `set_session_title`, `todo`, legacy `write`/`edit`, and eventually `glob`)
   are hidden from the default model-visible catalog during migration and their
   model-visible registrations are deleted or quarantined after journey parity.
-- [ ] Broad tools (`memory`, `query_resource`, `graph_query`, `shell`,
-  `ward`, `load_skill`) have catalog metadata naming the split target and
-  default visibility policy before any default hiding lands; after parity,
-  broad context-pull wrappers are removed from default model registration or
-  converted into non-model internal services/resources. (deferred:
-  context-capability-broad-tool-split-completion)
+- [x] Broad context-pull wrappers (`memory`, `graph_query`) have catalog
+  metadata naming the split target and are hidden from default model
+  registration after parity; durable writes move to the narrow
+  `memory_write` action, graph/memory reads move through injected context
+  packets/resources, and action tools (`shell`, `ward`, `load_skill`) keep
+  explicit default visibility policies. `query_resource` remains a
+  model-visible connector action/resource compatibility surface until a
+  dedicated connector invoke/resource split lands.
 - [x] The ingestion path records a single internal evidence intake boundary for
   durable memory/knowledge writes, with separate model-facing actions for
   `memory_write`, `ingest`, resource reads, and context graph retrieval.

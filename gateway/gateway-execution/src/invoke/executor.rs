@@ -149,10 +149,8 @@ fn select_engine_with(executor: AgentExecutor, use_rig: bool) -> BoxedAgentEngin
     // — the Rig `ToolDyn` type is never named here (Rig stays confined to
     // `agent-runtime`; gateway-execution does not depend on it).
     let tools: Vec<_> = executor
-        .tool_registry()
-        .get_all()
-        .iter()
-        .cloned()
+        .model_visible_tools()
+        .into_iter()
         .map(RigToolAdapter::boxed)
         .collect();
     let shared = Arc::new(ToolContext::full_with_state(
@@ -473,6 +471,7 @@ fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
         "ingest" => vec![ToolCapability::IngestWrite],
         "load_skill" => vec![ToolCapability::SkillLoad],
         "memory" => vec![ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
+        "memory_write" => vec![ToolCapability::MemoryWrite],
         "multimodal_analyze" => vec![ToolCapability::MultimodalAnalyze],
         "query_resource" => vec![ToolCapability::ConnectorQuery],
         "respond" => vec![ToolCapability::Respond],
@@ -599,24 +598,28 @@ fn audit_policy_for_tool(name: &str, capabilities: &[ToolCapability]) -> &'stati
 }
 
 fn default_visible_for_tool(name: &str, _actor: RuntimeActorKind) -> bool {
-    !matches!(name, "edit" | "write") && name != "wait_agent"
+    !matches!(
+        name,
+        "edit" | "write" | "wait_agent" | "memory" | "graph_query"
+    )
 }
 
 fn visibility_policy_for_tool(name: &str, _actor: RuntimeActorKind) -> &'static str {
     match name {
         "wait_agent" => "visible_when_parallel_children_active",
         "edit" | "write" => "legacy_alias_hidden",
+        "memory" | "graph_query" => "hidden_from_model_use_context_resources",
+        "memory_write" => "default_visible_memory_write_action",
         "load_skill" => "default_visible_bounded_packet",
-        "memory" | "query_resource" | "graph_query" | "shell" | "ward" => {
-            "default_visible_until_split_parity"
-        }
+        "shell" | "ward" => "default_visible_action_tool",
         _ => "default_visible",
     }
 }
 
 fn split_target_for_tool(name: &str) -> Option<&'static str> {
     match name {
-        "memory" => Some("actions:memory_write; resources:memory_recall/context_atoms"),
+        "memory" => Some("action:memory_write; resources:memory_recall/context_atoms"),
+        "memory_write" => Some("action:memory_write"),
         "query_resource" => Some("resources:connector_resource_handles"),
         "graph_query" => Some("resources:context_graph_retrieval"),
         "shell" => Some("actions:shell_execute; resources:command_result_handles"),
@@ -625,6 +628,10 @@ fn split_target_for_tool(name: &str) -> Option<&'static str> {
         "wait_agent" => Some("action:parallel_join"),
         _ => None,
     }
+}
+
+fn model_hidden_tools_for_actor(_actor: RuntimeActorKind) -> Vec<&'static str> {
+    vec!["memory", "graph_query"]
 }
 
 fn build_runtime_middleware_pipeline(
@@ -929,7 +936,8 @@ impl ExecutorBuilder {
             agent.id.clone(),
             provider.id.clone().unwrap_or_else(|| provider.name.clone()),
             agent.model.clone(),
-        );
+        )
+        .with_model_hidden_tools(model_hidden_tools_for_actor(self.actor_kind));
 
         // Add hook context to initial state if present
         if let Some(hook_ctx) = hook_context {
@@ -1258,6 +1266,15 @@ impl ExecutorBuilder {
             &[ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
             Arc::new(
                 MemoryTool::new(fs_context.clone(), self.fact_store.clone())
+                    .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+            ),
+        );
+        register_if_allowed(
+            &mut tool_registry,
+            actor,
+            &[ToolCapability::MemoryWrite],
+            Arc::new(
+                agent_tools::MemoryWriteTool::new(fs_context.clone(), self.fact_store.clone())
                     .with_optional_evidence_intake(self.ingestion_adapter.clone()),
             ),
         );
@@ -1748,6 +1765,51 @@ mod tests {
         assert!(rig.model.thinking_enabled);
     }
 
+    #[tokio::test]
+    async fn builder_hides_broad_context_pull_tools_from_model_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        assert!(executor.tool_registry().contains("memory"));
+        assert!(executor.tool_registry().contains("memory_write"));
+        assert!(executor.config().model_hidden_tools.contains("memory"));
+        assert!(executor.config().model_hidden_tools.contains("graph_query"));
+        assert!(!executor
+            .config()
+            .model_hidden_tools
+            .contains("query_resource"));
+        let visible_names = executor
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(!visible_names.contains("memory"));
+        assert!(visible_names.contains("memory_write"));
+        assert!(visible_names.contains("shell"));
+        assert!(visible_names.contains("ward"));
+    }
+
     fn registry_names(actor_kind: RuntimeActorKind) -> BTreeSet<String> {
         let dir = tempfile::tempdir().expect("tempdir");
         let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
@@ -1858,7 +1920,14 @@ mod tests {
         assert_eq!(catalog.actor_kind, ContextActorKind::Root);
         assert_has(
             &ids,
-            &["shell", "memory", "ward", "respond", "delegate_to_agent"],
+            &[
+                "shell",
+                "memory",
+                "memory_write",
+                "ward",
+                "respond",
+                "delegate_to_agent",
+            ],
         );
         assert_missing(
             &ids,
@@ -1908,6 +1977,7 @@ mod tests {
                 "edit_file",
                 "ward",
                 "memory",
+                "memory_write",
                 "delegate_to_agent",
                 "wait_agent",
                 "set_session_title",
@@ -1980,6 +2050,7 @@ mod tests {
                 "read",
                 "ward",
                 "memory",
+                "memory_write",
                 "respond",
                 "load_skill",
             ],
@@ -2014,6 +2085,7 @@ mod tests {
                 "edit_file",
                 "ward",
                 "memory",
+                "memory_write",
                 "delegate_to_agent",
                 "wait_agent",
                 "kill_agent",
@@ -2035,6 +2107,7 @@ mod tests {
             &[
                 "shell",
                 "memory",
+                "memory_write",
                 "ward",
                 "update_plan",
                 "read",
@@ -2070,6 +2143,7 @@ mod tests {
                 "glob",
                 "ward",
                 "memory",
+                "memory_write",
                 "update_plan",
                 "respond",
                 "delegate_to_agent",
@@ -2085,20 +2159,66 @@ mod tests {
     #[test]
     fn broad_tools_expose_split_target_metadata() {
         let catalog = catalog_for_actor(RuntimeActorKind::Root);
-        for name in ["shell", "memory", "ward"] {
+        for name in ["memory"] {
             let capability = catalog_capability(&catalog, name);
             assert!(
-                capability.default_visible,
-                "{name} should remain visible until split parity"
+                !capability.default_visible,
+                "{name} should move behind resource/context packet lanes"
             );
             assert!(
                 capability.split_target.is_some(),
-                "{name} must name its future split target"
+                "{name} must name its split target"
             );
             assert_eq!(
                 capability.visibility_policy,
-                "default_visible_until_split_parity"
+                "hidden_from_model_use_context_resources"
             );
+        }
+
+        let memory_write = catalog_capability(&catalog, "memory_write");
+        assert!(memory_write.default_visible);
+        assert_eq!(
+            memory_write.visibility_policy,
+            "default_visible_memory_write_action"
+        );
+        assert_eq!(
+            memory_write.split_target.as_deref(),
+            Some("action:memory_write")
+        );
+
+        for name in ["graph_query"] {
+            assert!(
+                !default_visible_for_tool(name, RuntimeActorKind::Root),
+                "{name} should move behind resource/context packet lanes"
+            );
+            assert_eq!(
+                visibility_policy_for_tool(name, RuntimeActorKind::Root),
+                "hidden_from_model_use_context_resources"
+            );
+            assert!(split_target_for_tool(name).is_some());
+        }
+
+        assert!(default_visible_for_tool(
+            "query_resource",
+            RuntimeActorKind::Root
+        ));
+        assert_eq!(
+            visibility_policy_for_tool("query_resource", RuntimeActorKind::Root),
+            "default_visible"
+        );
+        assert!(split_target_for_tool("query_resource").is_some());
+
+        for name in ["shell", "ward"] {
+            let capability = catalog_capability(&catalog, name);
+            assert!(
+                capability.default_visible,
+                "{name} remains a default-visible action tool"
+            );
+            assert!(
+                capability.split_target.is_some(),
+                "{name} must name its split target"
+            );
+            assert_eq!(capability.visibility_policy, "default_visible_action_tool");
         }
 
         let ward_catalog = catalog_for_actor(RuntimeActorKind::WardAgent);

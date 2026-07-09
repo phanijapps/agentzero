@@ -42,7 +42,7 @@ Always include artifacts for files the user would want to see or download. Paths
 ## Skills, Memory, Wards, Delegation
 
 - `load_skill(skill)` — load domain expertise (coding, yfinance-market-analysis, etc.)
-- `memory(action, scope, ...)` — persistent key-value store across sessions
+- `memory_write(category, key, content, confidence?)` — persist durable facts across sessions
 - `ward(action, name)` — project directory management
 - `delegate_to_agent(agent_id, task)` — spawn subagent.
 - `list_session_agents()` — list delegated agents in the current session.
@@ -53,14 +53,14 @@ Always include artifacts for files the user would want to see or download. Paths
   completed result. Do not call this after `delegate_to_agent` with
   `wait_for_result: true`; that path auto-resumes you with the result.
 
-### Discovering agents and skills — recall first, tool as fallback
+### Discovering agents and skills — context first, catalog as fallback
 
-Skills and agents are indexed as memory facts (category `skill` / `agent`, keyed by name, content carries description + activation triggers). So:
+Skills and agents are indexed as recall/context facts (category `skill` / `agent`, keyed by name, content carries description + activation triggers). So:
 
-1. `memory(action="recall", query="<what you need>")` first — recall surfaces matching skills/agents by description similarity.
-2. Only if the recall is empty or insufficient, fall back to the context capability catalog or task-analysis recommendations.
+1. Read the injected context packet first — it surfaces matching skills/agents by description similarity when available.
+2. Only if context is empty or insufficient, fall back to the context capability catalog or task-analysis recommendations.
 
-This avoids round-tripping a discovery tool when the same information is already in the recall context.
+This avoids round-tripping a discovery tool when the same information is already in context.
 
 ## Execution Graphs
 

@@ -436,6 +436,103 @@ impl Tool for MemoryTool {
     }
 }
 
+/// Narrow model-facing durable memory writer.
+///
+/// The broad `memory` tool remains available for internal compatibility and
+/// exact legacy calls, but model-visible prompts should use this write-only
+/// surface for durable facts.
+pub struct MemoryWriteTool {
+    inner: MemoryTool,
+}
+
+impl MemoryWriteTool {
+    /// Create a memory write tool with the same durable fact backend as
+    /// [`MemoryTool`].
+    #[must_use]
+    pub fn new(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+    ) -> Self {
+        Self {
+            inner: MemoryTool::new(fs, fact_store),
+        }
+    }
+
+    /// Wire evidence intake when a runtime adapter is available.
+    #[must_use]
+    pub fn with_optional_evidence_intake(
+        mut self,
+        evidence_intake: Option<Arc<dyn IngestionAccess>>,
+    ) -> Self {
+        self.inner = self.inner.with_optional_evidence_intake(evidence_intake);
+        self
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryWriteTool {
+    fn name(&self) -> &str {
+        "memory_write"
+    }
+
+    fn description(&self) -> &str {
+        "Persist one durable structured memory fact with category, key, content, and optional confidence. Use for important user preferences, corrections, decisions, domain notes, or reusable patterns."
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["user", "pattern", "domain", "ctx"],
+                    "description": "'ctx' is reserved for session state; ordinary durable notes should use user, pattern, or domain."
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Dot-notation key such as user.preferred_format or domain.finance.valuation_rule."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "One or two sentence fact content."
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "Confidence from 0.0 to 1.0. Defaults to 0.8."
+                },
+                "retention_policy": {
+                    "type": "string",
+                    "description": "Durable evidence retention policy selected by the host. Defaults to durable.",
+                    "default": "durable"
+                },
+                "ontology_labels": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional dynamic ontology labels."
+                },
+                "taxonomy_labels": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional SKOS/taxonomy labels."
+                }
+            },
+            "required": ["category", "key", "content"]
+        }))
+    }
+
+    fn permissions(&self) -> ToolPermissions {
+        ToolPermissions::safe()
+    }
+
+    async fn execute(&self, ctx: Arc<dyn ToolContext>, mut args: Value) -> Result<Value> {
+        let obj = args
+            .as_object_mut()
+            .ok_or_else(|| AgentError::Tool("memory_write expects an object".to_string()))?;
+        obj.insert("action".to_string(), Value::String("save_fact".to_string()));
+        self.inner.execute(ctx, args).await
+    }
+}
+
 impl MemoryTool {
     /// Get a memory entry by key
     async fn action_get(&self, path: &PathBuf, args: &Value) -> Result<Value> {
@@ -1240,14 +1337,6 @@ fn bounded_recall_query(query: &str) -> String {
 }
 
 fn classify_recall_degradation(message: &str) -> Option<&'static str> {
-    if message.contains("no such table: memory_facts_index")
-        || message.contains("no such table: kg_name_index")
-        || message.contains("no such table: session_episodes_index")
-        || message.contains("no such table: wiki_articles_index")
-        || message.contains("no such table: procedures_index")
-    {
-        return Some("vector index table missing - recall disabled until reindex");
-    }
     if message.contains("embedding dim mismatch") || message.contains("embedding_identity_mismatch")
     {
         return Some("embedding identity mismatch - recall disabled until reindex");

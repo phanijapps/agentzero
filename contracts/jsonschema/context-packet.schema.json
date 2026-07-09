@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zbot.local/contracts/context-packet.schema.json",
+  "title": "Context Packet",
+  "description": "Bounded, traceable context assembled before an LLM call.",
+  "type": "object",
+  "x-spec": "docs/specs/context-capability-registry/spec.md",
+  "required": [
+    "request_id",
+    "agent_id",
+    "actor_kind",
+    "budget",
+    "atoms",
+    "graph_nodes",
+    "graph_edges",
+    "resource_handles",
+    "tool_result_handles",
+    "dropped",
+    "trace"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "conversation_id": {
+      "type": ["string", "null"]
+    },
+    "ward_id": {
+      "type": ["string", "null"]
+    },
+    "actor_kind": {
+      "type": "string",
+      "enum": ["root", "delegated_executor", "delegated_reviewer", "ward_agent"]
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    },
+    "atoms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/atom"
+      }
+    },
+    "graph_nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/graph_node"
+      }
+    },
+    "graph_edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/graph_edge"
+      }
+    },
+    "resource_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource_handle"
+      }
+    },
+    "tool_result_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource_handle"
+      }
+    },
+    "dropped": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/dropped"
+      }
+    },
+    "trace": {
+      "$ref": "#/$defs/trace"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "required": ["max_tokens", "estimated_tokens"],
+      "properties": {
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "estimated_tokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "atom": {
+      "type": "object",
+      "required": ["id", "kind", "content", "score", "confidence", "source", "provenance", "visibility", "token_estimate", "render_policy"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": ["string", "null"]
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "valid_from": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "valid_until": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "visibility": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["root", "delegated_executor", "delegated_reviewer", "ward_agent"]
+          },
+          "uniqueItems": true
+        },
+        "route_hint": {
+          "type": ["object", "null"]
+        },
+        "token_estimate": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "render_policy": {
+          "type": "string",
+          "enum": ["inline", "summary", "handle_only", "hidden"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "graph_node": {
+      "type": "object",
+      "required": ["id", "kind", "label"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "graph_edge": {
+      "type": "object",
+      "required": ["source", "target", "kind"],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "resource_handle": {
+      "type": "object",
+      "required": ["uri", "kind", "summary"],
+      "properties": {
+        "uri": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "token_estimate": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "dropped": {
+      "type": "object",
+      "required": ["id", "reason"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "trace": {
+      "type": "object",
+      "required": ["selected_count", "dropped_count"],
+      "properties": {
+        "selected_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dropped_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_mix": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

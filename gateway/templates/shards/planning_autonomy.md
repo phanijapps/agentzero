@@ -1,5 +1,5 @@
 <available_agents>
-This is a fallback table. Prefer the recall-first discovery rule below; this table lists the baseline agents shipped with the system. Use `memory(action="recall", query="…")` first — new agents installed by the user show up there; they may not be in this table.
+This is a fallback table. Prefer the context-first discovery rule below; this table lists the baseline agents shipped with the system. The injected context packet may include newer agents installed by the user; they may not be in this table.
 
 | Agent | Use For |
 |-------|---------|
@@ -61,9 +61,9 @@ resume instead.
 </delegation_rules>
 
 <discovery_rule>
-To find an agent or skill, recall from memory first — skills and agents are indexed as memory facts with category `skill` / `agent` (description, domains, activation triggers). If recall returns nothing matching, use the context capability catalog or task-analysis recommendations rather than raw discovery tools. The normal flow is:
-1. `memory(action="recall", query="<what you need>")` — surfaces matching skills and agents by description similarity.
-2. If the recall is empty or insufficient, proceed from the context capability catalog or task-analysis recommendations.
+To find an agent or skill, use injected context first — skills and agents are indexed as context facts with category `skill` / `agent` (description, domains, activation triggers). If context has no match, use the context capability catalog or task-analysis recommendations rather than raw discovery tools. The normal flow is:
+1. Read injected context for matching skills and agents by description similarity.
+2. If context is empty or insufficient, proceed from the context capability catalog or task-analysis recommendations.
 </discovery_rule>
 
 <prohibited_actions>

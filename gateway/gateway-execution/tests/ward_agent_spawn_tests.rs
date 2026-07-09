@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use gateway_execution::invoke::setup::AgentLoader;
-use gateway_services::{AgentService, ProviderService, VaultPaths};
+use gateway_services::{AgentService, ProviderService, SettingsService, VaultPaths};
 
 // ============================================================================
 // HELPERS
@@ -86,6 +86,44 @@ async fn load_or_create_root_ignores_on_disk_root_agent() {
     assert_eq!(agent.provider_id, "test-provider");
     assert_eq!(provider.name, "Test Provider");
     assert!(!agent.instructions.contains("malicious persisted root"));
+}
+
+#[tokio::test]
+async fn load_or_create_root_disables_thinking_in_chat_mode() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+    paths.ensure_dirs_exist().unwrap();
+    seed_default_provider(&paths);
+
+    let settings = SettingsService::new(paths.clone());
+    let mut exec = settings.get_execution_settings().unwrap_or_default();
+    exec.orchestrator.thinking_enabled = true;
+    settings.update_execution_settings(exec).unwrap();
+
+    let (agent_service, provider_service) = make_services(&paths);
+    let research_loader =
+        AgentLoader::new(&agent_service, &provider_service, paths.clone()).with_settings(&settings);
+    let chat_loader = AgentLoader::new(&agent_service, &provider_service, paths.clone())
+        .with_settings(&settings)
+        .with_chat_mode(true);
+
+    let (research_agent, _) = research_loader
+        .load_or_create_root("root")
+        .await
+        .expect("research root should synthesize");
+    let (chat_agent, _) = chat_loader
+        .load_or_create_root("root")
+        .await
+        .expect("chat root should synthesize");
+
+    assert!(
+        research_agent.thinking_enabled,
+        "research mode should honor orchestrator thinking"
+    );
+    assert!(
+        !chat_agent.thinking_enabled,
+        "Quick Chat must not request model reasoning"
+    );
 }
 
 #[tokio::test]

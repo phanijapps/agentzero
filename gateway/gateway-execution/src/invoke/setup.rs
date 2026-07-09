@@ -198,8 +198,10 @@ impl<'a> AgentLoader<'a> {
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| provider.default_model().to_string());
 
-        // Both modes respect orchestrator thinking config — chat UI toggles visibility
-        let thinking_enabled = orch.thinking_enabled;
+        // Quick Chat should answer immediately. Research mode respects the
+        // orchestrator thinking toggle; chat mode keeps reasoning off even
+        // when the root agent uses a reasoning-capable model.
+        let thinking_enabled = !self.chat_mode && orch.thinking_enabled;
 
         tracing::info!(
             provider = %provider.name,

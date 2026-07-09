@@ -211,9 +211,15 @@ async fn graph_entities_relationships_and_read_models_round_trip() {
     let mut alice = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
     alice.id = "entity-alice".to_string();
     alice.name_embedding = Some(vec![1.0, 0.0, 0.0]);
+    alice
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
     let mut project = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
     project.id = "entity-zbot".to_string();
     project.name_embedding = Some(vec![0.0, 1.0, 0.0]);
+    project
+        .properties
+        .insert("ward_id".to_string(), json!("ward-b"));
 
     let alice_id = store
         .upsert_entity("agent-a", alice.clone())
@@ -272,6 +278,33 @@ async fn graph_entities_relationships_and_read_models_round_trip() {
     assert_eq!(subgraph.relationships.len(), 1);
 
     assert_eq!(store.count_all_entities().await.expect("entity count"), 2);
+    let all_entities = store
+        .list_all_entities(None, None, 1)
+        .await
+        .expect("all entities");
+    assert_eq!(all_entities.len(), 1);
+    assert_eq!(
+        all_entities[0].id, "entity-alice",
+        "aggregate entity list should preserve mention-count ordering"
+    );
+    let project_entities = store
+        .list_all_entities(None, Some("project"), 10)
+        .await
+        .expect("project entities");
+    assert_eq!(project_entities.len(), 1);
+    assert_eq!(project_entities[0].id, "entity-zbot");
+    let ward_entities = store
+        .list_all_entities(Some("ward-a"), None, 10)
+        .await
+        .expect("ward entities");
+    assert_eq!(ward_entities.len(), 1);
+    assert_eq!(ward_entities[0].id, "entity-alice");
+    let all_relationships = store
+        .list_all_relationships(10)
+        .await
+        .expect("all relationships");
+    assert_eq!(all_relationships.len(), 1);
+    assert_eq!(all_relationships[0].id, "rel-created");
     assert_eq!(
         store
             .search_entities_by_name("agent-a", "zbot", 10)

@@ -13,7 +13,7 @@ use engram_knowledge::KnowledgeRepository;
 use knowledge_graph::types::{
     Entity, EntityType, GraphStats, NeighborInfo, Relationship, RelationshipType, Subgraph,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde_json::{json, Value};
 use uuid::Uuid;
 use zbot_stores::types::{
@@ -785,6 +785,10 @@ impl KnowledgeGraphSidecar {
                     ON kg_entities(agent_id, entity_type, name);
                 CREATE INDEX IF NOT EXISTS idx_kg_entities_layer
                     ON kg_entities(agent_id, layer);
+                CREATE INDEX IF NOT EXISTS idx_kg_entities_mentions
+                    ON kg_entities(pruned, mention_count DESC, name);
+                CREATE INDEX IF NOT EXISTS idx_kg_entities_type_mentions
+                    ON kg_entities(entity_type, pruned, mention_count DESC, name);
                 CREATE TABLE IF NOT EXISTS entity_aliases (
                     entity_id TEXT NOT NULL,
                     agent_id TEXT NOT NULL,
@@ -816,6 +820,10 @@ impl KnowledgeGraphSidecar {
                     ON kg_relationships(source_entity_id);
                 CREATE INDEX IF NOT EXISTS idx_kg_relationships_target
                     ON kg_relationships(target_entity_id);
+                CREATE INDEX IF NOT EXISTS idx_kg_relationships_mentions
+                    ON kg_relationships(archived, mention_count DESC, id);
+                CREATE INDEX IF NOT EXISTS idx_kg_relationships_type_mentions
+                    ON kg_relationships(relationship_type, archived, mention_count DESC, id);
                 CREATE TABLE IF NOT EXISTS kg_governance_findings (
                     id TEXT PRIMARY KEY,
                     relationship_id TEXT NOT NULL,
@@ -1374,26 +1382,41 @@ impl KnowledgeGraphSidecar {
         limit: usize,
         offset: usize,
     ) -> StoreResult<Vec<EntityEntry>> {
-        let rows = self.load_all_entities()?;
-        let mut rows = rows
-            .into_iter()
-            .filter(|entry| {
-                agent_id
-                    .map(|agent_id| entry.entity.agent_id == agent_id)
-                    .unwrap_or(true)
-                    && entity_type
-                        .map(|entity_type| entry.entity.entity_type.as_str() == entity_type)
-                        .unwrap_or(true)
-            })
-            .collect::<Vec<_>>();
-        rows.sort_by(|left, right| {
-            right
-                .entity
-                .mention_count
-                .cmp(&left.entity.mention_count)
-                .then_with(|| left.entity.name.cmp(&right.entity.name))
-        });
-        Ok(rows.into_iter().skip(offset).take(limit.max(1)).collect())
+        let connection = self.lock()?;
+        let mut conditions = vec!["pruned = 0".to_string()];
+        let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
+
+        if let Some(agent_id) = agent_id {
+            conditions.push(format!("agent_id = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(agent_id.to_string()));
+        }
+        if let Some(entity_type) = entity_type {
+            conditions.push(format!("entity_type = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(entity_type.to_string()));
+        }
+
+        let mut sql = format!(
+            "SELECT entity_json, embedding_json, embedding_identity_json FROM kg_entities
+             WHERE {}
+             ORDER BY mention_count DESC, name",
+            conditions.join(" AND ")
+        );
+        if limit != usize::MAX {
+            sql.push_str(&format!(
+                " LIMIT ?{} OFFSET ?{}",
+                param_values.len() + 1,
+                param_values.len() + 2
+            ));
+            param_values.push(Box::new(limit.max(1) as i64));
+            param_values.push(Box::new(offset as i64));
+        }
+
+        let params_refs: Vec<&dyn ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let mut statement = connection.prepare(&sql).map_err(to_backend)?;
+        let rows = statement
+            .query_map(params_refs.as_slice(), decode_entity_entry)
+            .map_err(to_backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(to_backend)
     }
 
     fn list_relationship_entries(
@@ -1403,20 +1426,40 @@ impl KnowledgeGraphSidecar {
         limit: usize,
         offset: usize,
     ) -> StoreResult<Vec<RelationshipEntry>> {
-        let mut rows = self
-            .load_all_relationships()?
-            .into_iter()
-            .filter(|entry| {
-                agent_id
-                    .map(|agent_id| entry.relationship.agent_id == agent_id)
-                    .unwrap_or(true)
-                    && relationship_type
-                        .map(|relationship_type| {
-                            entry.relationship.relationship_type.as_str() == relationship_type
-                        })
-                        .unwrap_or(true)
-            })
-            .collect::<Vec<_>>();
+        let mut conditions = vec!["archived = 0".to_string()];
+        let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
+
+        if let Some(agent_id) = agent_id {
+            conditions.push(format!("agent_id = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(agent_id.to_string()));
+        }
+        if let Some(relationship_type) = relationship_type {
+            conditions.push(format!("relationship_type = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(relationship_type.to_string()));
+        }
+
+        let candidate_limit = offset.saturating_add(limit.max(1).saturating_mul(4));
+        let mut sql = format!(
+            "SELECT relationship_json FROM kg_relationships
+             WHERE {}
+             ORDER BY mention_count DESC, id",
+            conditions.join(" AND ")
+        );
+        if limit != usize::MAX {
+            sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1,));
+            param_values.push(Box::new(candidate_limit as i64));
+        }
+
+        let rows = {
+            let connection = self.lock()?;
+            let params_refs: Vec<&dyn ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+            let mut statement = connection.prepare(&sql).map_err(to_backend)?;
+            let rows = statement
+                .query_map(params_refs.as_slice(), decode_relationship_entry)
+                .map_err(to_backend)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(to_backend)?
+        };
+        let mut rows = self.deduplicate_relationship_entries(rows)?;
         rows.sort_by(|left, right| {
             right
                 .relationship
@@ -1704,17 +1747,39 @@ impl KnowledgeGraphSidecar {
         entity_type: Option<&str>,
         limit: usize,
     ) -> StoreResult<Vec<Entity>> {
-        let mut rows = self.load_all_entities()?;
-        rows.retain(|entry| {
-            ward_id
-                .map(|ward_id| ward_id_for_entity(&entry.entity).as_deref() == Some(ward_id))
-                .unwrap_or(true)
-                && entity_type
-                    .map(|entity_type| entry.entity.entity_type.as_str() == entity_type)
-                    .unwrap_or(true)
-        });
-        rows.truncate(limit.max(1));
-        Ok(rows.into_iter().map(|entry| entry.entity).collect())
+        let connection = self.lock()?;
+        let mut conditions = vec!["pruned = 0".to_string()];
+        let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
+
+        if let Some(ward_id) = ward_id {
+            conditions.push(format!(
+                "json_extract(properties_json, '$.ward_id') = ?{}",
+                param_values.len() + 1
+            ));
+            param_values.push(Box::new(ward_id.to_string()));
+        }
+        if let Some(entity_type) = entity_type {
+            conditions.push(format!("entity_type = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(entity_type.to_string()));
+        }
+
+        let sql = format!(
+            "SELECT entity_json, NULL, NULL FROM kg_entities
+             WHERE {}
+             ORDER BY mention_count DESC, name
+             LIMIT ?{}",
+            conditions.join(" AND "),
+            param_values.len() + 1
+        );
+        param_values.push(Box::new(limit.max(1) as i64));
+        let params_refs: Vec<&dyn ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let mut statement = connection.prepare(&sql).map_err(to_backend)?;
+        let rows = statement
+            .query_map(params_refs.as_slice(), decode_entity_entry)
+            .map_err(to_backend)?;
+        rows.map(|row| row.map(|entry| entry.entity))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_backend)
     }
 
     fn connectivity_strength(

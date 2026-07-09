@@ -88,4 +88,8 @@ Architecture, design, and product documentation lives in `docs/`:
 
 See `docs/architecture/architecture.md` for the complete system overview.
 
+## Skills To use 
+- codegraph-* skills is used for indexing and retrieving code intelligence. Since the codebase is vast, these skills can help with finding deadcode, impact analysis and searching relationships and more. 
+- Before you use filesearch try codegraph* skills.
+
 Also see `CLAUDE.md` for behavioral guidelines and development patterns.

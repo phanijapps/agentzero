@@ -1,7 +1,7 @@
 # Plan: Dynamic Ontology and SKOS Taxonomy
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Closed with deferred follow-ups
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as you learn. When it changes substantially
@@ -460,3 +460,5 @@ operated without public contract drift or hidden Engram product coupling.
 - 2026-07-08: completed T9 with a configured-governance cutover fixture,
   operator guide, and explicit backlog entries for remaining local-definition
   import/proposed-term/Engram-finding-port gaps.
+- 2026-07-08: closed the spec with deferred follow-ups tracked in
+  `docs/backlog.md`.

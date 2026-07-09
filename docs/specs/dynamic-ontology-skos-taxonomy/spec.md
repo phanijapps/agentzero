@@ -1,6 +1,6 @@
 # Spec: Dynamic Ontology and SKOS Taxonomy
 
-- **Status:** Implementing
+- **Status:** Closed with deferred follow-ups
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`RFC-0011`](../../rfc/0011-engram-memory-engine-cutover.md); [`RFC-0012`](../../rfc/0012-engram-upstream-risk-reduction.md); [`engram-memory-engine-cutover`](../engram-memory-engine-cutover/spec.md)
@@ -92,31 +92,31 @@ proceeding; *Never do* is a hard rule, even under time pressure.
 
 ## Acceptance Criteria
 
-- [ ] With no configured ontology or taxonomy files, Engram-backed memory,
+- [x] With no configured ontology or taxonomy files, Engram-backed memory,
   knowledge graph, recall, migration dry-run, and Observatory behavior match
   the current supported zbot behavior except for explicitly additive diagnostics.
-- [ ] A built-in zbot base ontology is generated or loaded deterministically
+- [x] A built-in zbot base ontology is generated or loaded deterministically
   from the current entity and relationship vocabulary, including `Custom`
   escape hatches that remain allowed and traceable.
-- [ ] Local governance config supports scoped selection by ward, project,
+- [x] Local governance config supports scoped selection by ward, project,
   session, source, and task, with ordered overlays, versioned ontology IDs,
   versioned SKOS concept scheme IDs, validation mode, and
   allow-unclassified policy.
-- [ ] Startup bootstraps active ontology and SKOS taxonomy definitions into
+- [x] Startup bootstraps active ontology and SKOS taxonomy definitions into
   Engram through public ontology/taxonomy repositories, idempotently, under the
   trusted data root and configured SQLite storage layout. Local definition file
   import beyond the built-in definitions is deferred:
   `dynamic-ontology-local-definition-import`.
-- [ ] Knowledge entity and knowledge chunk writes attach Engram `OntologyRef`
+- [x] Knowledge entity and knowledge chunk writes attach Engram `OntologyRef`
   and `ConceptRef` values when the active policy can classify them, while
   preserving legacy `ontology_id` and `taxonomy_id` metadata for compatibility.
-- [ ] Relationship writes run advisory ontology validation for active ontologies
+- [x] Relationship writes run advisory ontology validation for active ontologies
   and persist sanitized findings for unknown predicates, missing classes, and
   domain/range mismatches without blocking writes by default.
-- [ ] Taxonomy lookups use SKOS-compatible `prefLabel`, `altLabel`,
+- [x] Taxonomy lookups use SKOS-compatible `prefLabel`, `altLabel`,
   `broader`, `narrower`, and `related` semantics for classification and recall
   expansion, bounded by configured depth, fan-out, and total candidate limits.
-- [ ] Recall traces identify which concept labels and SKOS relations expanded a
+- [x] Recall traces identify which concept labels and SKOS relations expanded a
   query, and expansion cannot cross tenant, ward, workspace, session, or
   visibility boundaries.
 - [ ] Model- or extraction-discovered ontology terms and taxonomy concepts can
@@ -124,13 +124,13 @@ proceeding; *Never do* is a hard rule, even under time pressure.
   definitions unless an explicit governed merge policy is added later. The
   durable proposed-change queue is deferred:
   `dynamic-ontology-proposed-term-queue`.
-- [ ] Migration dry-run/apply manifests include ontology selection, taxonomy
+- [x] Migration dry-run/apply manifests include ontology selection, taxonomy
   scheme selection, validation mode, unclassified-record policy, and definition
   fingerprints; apply mode fails if these differ from the accepted dry-run.
-- [ ] Existing gateway/UI/settings/events/Observatory route and payload shapes
+- [x] Existing gateway/UI/settings/events/Observatory route and payload shapes
   remain compatible; any governance health or findings output is additive,
   sanitized, and covered by focused tests.
-- [ ] Tests prove custom entity/relationship values, unclassified records,
+- [x] Tests prove custom entity/relationship values, unclassified records,
   empty taxonomy schemes, deprecated concepts, cyclic SKOS relations, duplicate
   labels, and missing ontology definitions degrade predictably.
 

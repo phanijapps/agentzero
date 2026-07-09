@@ -24,11 +24,12 @@ use agent_runtime::llm::config::LlmConfig;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use agent_runtime::llm::openai::OpenAiClient;
 use agent_runtime::types::ChatMessage;
-use gateway_services::{ProviderService, SettingsService, VaultPaths};
+use gateway_services::{
+    models::DEFAULT_MAX_OUTPUT_TOKENS, ProviderService, SettingsService, VaultPaths,
+};
 use knowledge_graph::{Entity, EntityType, Relationship, RelationshipType};
 use serde::{Deserialize, Serialize};
-use zero_stores_domain::{MemoryFact, SessionEpisode};
-use zero_stores_sqlite::ConversationRepository;
+use zbot_stores_domain::{MemoryFact, SessionEpisode};
 
 /// Distills completed sessions into structured memory facts.
 ///
@@ -38,21 +39,22 @@ use zero_stores_sqlite::ConversationRepository;
 pub struct SessionDistiller {
     provider_service: Arc<ProviderService>,
     embedding_client: Option<Arc<dyn EmbeddingClient>>,
-    conversation_repo: Arc<ConversationRepository>,
-    memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
-    kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     /// Trait-routed distillation store. Run-tracking writes flow
     /// through this handle.
-    distillation_store: Option<Arc<dyn zero_stores_traits::DistillationStore>>,
+    distillation_store: Option<Arc<dyn zbot_stores_traits::DistillationStore>>,
     /// Trait-routed episode store for episode storage, strategy
     /// emergence, and failure clustering.
-    episode_store: Option<Arc<dyn zero_stores_traits::EpisodeStore>>,
+    episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>>,
     paths: Arc<VaultPaths>,
     settings_service: Option<Arc<SettingsService>>,
     /// Trait-routed wiki store for ward-wiki compilation.
-    pub wiki_store: Option<Arc<dyn zero_stores_traits::WikiStore>>,
+    pub wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>>,
     /// Trait-routed procedure store for procedure upsert.
-    pub procedure_store: Option<Arc<dyn zero_stores_traits::ProcedureStore>>,
+    pub procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
 }
 
 /// A single fact extracted by the distillation LLM call.
@@ -207,14 +209,16 @@ impl SessionDistiller {
     pub fn new(
         provider_service: Arc<ProviderService>,
         embedding_client: Option<Arc<dyn EmbeddingClient>>,
-        conversation_repo: Arc<ConversationRepository>,
+        messages: Arc<dyn zbot_conversation::MessageStore>,
+        session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
         paths: Arc<VaultPaths>,
         settings_service: Option<Arc<SettingsService>>,
     ) -> Self {
         Self {
             provider_service,
             embedding_client,
-            conversation_repo,
+            messages,
+            session_meta,
             memory_store: None,
             kg_store: None,
             distillation_store: None,
@@ -228,25 +232,25 @@ impl SessionDistiller {
 
     /// Wire the trait-routed memory store. Upsert + supersede route
     /// through this handle.
-    pub fn set_memory_store(&mut self, store: Arc<dyn zero_stores::MemoryFactStore>) {
+    pub fn set_memory_store(&mut self, store: Arc<dyn zbot_stores::MemoryFactStore>) {
         self.memory_store = Some(store);
     }
 
     /// Wire the trait-routed knowledge-graph store. Entity / relationship
     /// writes route through this handle.
-    pub fn set_kg_store(&mut self, store: Arc<dyn zero_stores::KnowledgeGraphStore>) {
+    pub fn set_kg_store(&mut self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) {
         self.kg_store = Some(store);
     }
 
     /// Wire the trait-routed episode store. Episode insert and
     /// similarity-search route through this handle.
-    pub fn set_episode_store(&mut self, store: Arc<dyn zero_stores_traits::EpisodeStore>) {
+    pub fn set_episode_store(&mut self, store: Arc<dyn zbot_stores_traits::EpisodeStore>) {
         self.episode_store = Some(store);
     }
 
     /// Wire the trait-routed wiki store (Phase E6b). When set, ward-wiki
     /// compilation routes through this handle. Falls back to `wiki_repo`.
-    pub fn set_wiki_store(&mut self, store: Arc<dyn zero_stores_traits::WikiStore>) {
+    pub fn set_wiki_store(&mut self, store: Arc<dyn zbot_stores_traits::WikiStore>) {
         self.wiki_store = Some(store);
     }
 
@@ -256,14 +260,14 @@ impl SessionDistiller {
     /// field.
     pub fn set_distillation_store(
         &mut self,
-        store: Arc<dyn zero_stores_traits::DistillationStore>,
+        store: Arc<dyn zbot_stores_traits::DistillationStore>,
     ) {
         self.distillation_store = Some(store);
     }
 
     /// Wire the trait-routed procedure store (Phase E6b). Procedure
     /// upserts during distillation flow through this when set.
-    pub fn set_procedure_store(&mut self, store: Arc<dyn zero_stores_traits::ProcedureStore>) {
+    pub fn set_procedure_store(&mut self, store: Arc<dyn zbot_stores_traits::ProcedureStore>) {
         self.procedure_store = Some(store);
     }
 
@@ -273,7 +277,7 @@ impl SessionDistiller {
     /// 1. distillation.provider_id / distillation.model (if set)
     /// 2. orchestrator.provider_id / orchestrator.model (if set)
     /// 3. None (falls through to default provider in extract_all)
-    fn resolve_distillation_target(&self) -> (Option<String>, Option<String>) {
+    fn resolve_distillation_target(&self) -> (Option<String>, Option<String>, u32) {
         let settings = self
             .settings_service
             .as_ref()
@@ -281,7 +285,7 @@ impl SessionDistiller {
 
         let settings = match settings {
             Some(s) => s,
-            None => return (None, None),
+            None => return (None, None, DEFAULT_MAX_OUTPUT_TOKENS),
         };
 
         let provider_id = settings
@@ -296,15 +300,21 @@ impl SessionDistiller {
             .clone()
             .or_else(|| settings.orchestrator.model.clone());
 
+        let max_tokens = settings
+            .distillation
+            .max_tokens
+            .unwrap_or(settings.orchestrator.max_tokens);
+
         if provider_id.is_some() || model.is_some() {
             tracing::debug!(
                 provider = ?provider_id,
                 model = ?model,
+                max_tokens,
                 "Distillation using configured target"
             );
         }
 
-        (provider_id, model)
+        (provider_id, model, max_tokens)
     }
 
     /// Load the distillation prompt from filesystem or use embedded default.
@@ -351,8 +361,8 @@ impl SessionDistiller {
 
         // 1. Load session messages
         let messages = self
-            .conversation_repo
-            .get_session_conversation(session_id, MAX_MESSAGES_FOR_DISTILLATION)
+            .messages
+            .replay(session_id, None, MAX_MESSAGES_FOR_DISTILLATION)
             .map_err(|e| format!("Failed to load session messages: {}", e))?;
 
         if messages.len() < MIN_MESSAGES_FOR_DISTILLATION {
@@ -726,8 +736,8 @@ impl SessionDistiller {
         // 6b. Store extracted procedure (if any) through the trait surface.
         if let Some(ref procedure) = response.procedure {
             let ward_id = self
-                .conversation_repo
-                .get_session_ward_id(session_id)
+                .session_meta
+                .session_ward_id(session_id)
                 .unwrap_or(None);
             self.process_procedure_upsert(agent_id, ward_id, procedure)
                 .await;
@@ -757,8 +767,8 @@ impl SessionDistiller {
         // Ward memory-bank/ward.md is curated manually; distillation no longer
         // writes an auto-generated summary. Facts remain in the memory_facts DB.
         let ward_id = self
-            .conversation_repo
-            .get_session_ward_id(session_id)
+            .session_meta
+            .session_ward_id(session_id)
             .unwrap_or(None);
 
         // 9. Compile ward wiki from extracted facts (best-effort)
@@ -887,7 +897,7 @@ impl SessionDistiller {
             return Err("No providers configured".to_string());
         }
 
-        let (target_provider_id, target_model) = self.resolve_distillation_target();
+        let (target_provider_id, target_model, max_tokens) = self.resolve_distillation_target();
 
         // Pick target provider, or default, or first
         let provider = target_provider_id
@@ -911,7 +921,7 @@ impl SessionDistiller {
             provider_id,
         )
         .with_temperature(0.3)
-        .with_max_tokens(4096);
+        .with_max_tokens(max_tokens);
 
         let client =
             OpenAiClient::new(config).map_err(|e| format!("Failed to create LLM client: {e}"))?;
@@ -945,7 +955,7 @@ impl SessionDistiller {
 
         // Resolve distillation provider/model from settings chain:
         // distillation config → orchestrator config → default provider
-        let (target_provider_id, target_model) = self.resolve_distillation_target();
+        let (target_provider_id, target_model, max_tokens) = self.resolve_distillation_target();
 
         // Order providers: target first (if specified), then default, then rest
         let default_idx = providers.iter().position(|p| p.is_default);
@@ -994,7 +1004,7 @@ impl SessionDistiller {
                 provider_id.clone(),
             )
             .with_temperature(0.3)
-            .with_max_tokens(4096);
+            .with_max_tokens(max_tokens);
 
             let client = match OpenAiClient::new(config) {
                 Ok(c) => Arc::new(c) as Arc<dyn LlmClient>,
@@ -1120,8 +1130,8 @@ impl SessionDistiller {
 
         // Look up ward_id from the sessions table
         let ward_id = self
-            .conversation_repo
-            .get_session_ward_id(session_id)
+            .session_meta
+            .session_ward_id(session_id)
             .unwrap_or(None)
             .unwrap_or_else(|| "__global__".to_string());
 
@@ -1540,7 +1550,7 @@ impl SessionDistiller {
             .as_ref()
             .ok_or_else(|| "no kg store wired".to_string())?;
         store
-            .bump_entity_mention(&zero_stores::EntityId::from(id.to_string()))
+            .bump_entity_mention(&zbot_stores::EntityId::from(id.to_string()))
             .await
             .map_err(|e| e.to_string())
     }
@@ -1657,7 +1667,7 @@ impl SessionDistiller {
             .as_ref()
             .map(|p| serde_json::to_string(p).unwrap_or_default());
 
-        let proc = zero_stores_sqlite::Procedure {
+        let proc = zbot_stores_sqlite::Procedure {
             id: format!("proc-{}", uuid::Uuid::new_v4()),
             agent_id: agent_id.to_string(),
             ward_id: ward_id.or_else(|| Some("__global__".to_string())),
@@ -1742,7 +1752,7 @@ impl SessionDistiller {
 /// conversation repo + paths + settings + embedding client).
 #[cfg(test)]
 fn resolve_relationship_endpoint(
-    graph: &zero_stores_sqlite::kg::storage::GraphStorage,
+    graph: &zbot_stores_sqlite::kg::storage::GraphStorage,
     agent_id: &str,
     name: &str,
     entity_map: &mut std::collections::HashMap<String, String>,
@@ -1939,7 +1949,7 @@ fn compute_session_metrics(transcript: &str) -> SessionMetrics {
 }
 
 /// Build a compact transcript from session messages.
-fn build_transcript(messages: &[zero_stores_sqlite::Message]) -> String {
+fn build_transcript(messages: &[zbot_conversation::Message]) -> String {
     let mut parts = Vec::with_capacity(messages.len());
 
     for msg in messages {
@@ -1957,7 +1967,7 @@ fn build_transcript(messages: &[zero_stores_sqlite::Message]) -> String {
         } else if msg.content.len() > 1000 {
             format!(
                 "{}... [truncated, {} chars total]",
-                zero_core::truncate_str(&msg.content, 1000),
+                agent_primitives::truncate_str(&msg.content, 1000),
                 msg.content.len()
             )
         } else {
@@ -2055,7 +2065,10 @@ fn summarize_tool_result(content: &str) -> String {
     }
     // Fallback: truncate raw content
     if content.len() > 500 {
-        format!("{}... [truncated]", zero_core::truncate_str(content, 500))
+        format!(
+            "{}... [truncated]",
+            agent_primitives::truncate_str(content, 500)
+        )
     } else {
         content.to_string()
     }
@@ -2247,8 +2260,8 @@ mod tests {
         use std::collections::HashMap;
         use std::sync::Arc;
         use tempfile::tempdir;
-        use zero_stores_sqlite::kg::storage::GraphStorage;
-        use zero_stores_sqlite::KnowledgeDatabase;
+        use zbot_stores_sqlite::kg::storage::GraphStorage;
+        use zbot_stores_sqlite::KnowledgeDatabase;
 
         fn fresh_graph() -> GraphStorage {
             let dir = tempdir().unwrap();
@@ -2372,17 +2385,17 @@ mod tests {
     #[test]
     fn test_build_transcript_truncates() {
         let long_content = "x".repeat(2000);
-        let messages = vec![zero_stores_sqlite::Message {
+        let messages = vec![zbot_conversation::Message {
             id: "msg-1".to_string(),
             execution_id: Some("exec-1".to_string()),
-            session_id: Some("sess-1".to_string()),
+            session_id: "sess-1".to_string(),
             role: "user".to_string(),
             content: long_content,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             token_count: 500,
             tool_calls: None,
-            tool_results: None,
             tool_call_id: None,
+            seq: 1,
         }];
 
         let transcript = build_transcript(&messages);
@@ -2635,8 +2648,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::Mutex;
         use tempfile::tempdir;
-        use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
-        use zero_stores_traits::ProcedureStore;
+        use zbot_stores_traits::ProcedureStore;
 
         /// `ProcedureStore` that captures every `upsert_procedure` call so
         /// the test can assert on the inserted shape + embedding.
@@ -2682,14 +2694,17 @@ mod tests {
             let dir = tempdir().unwrap();
             let paths = Arc::new(VaultPaths::new(dir.keep()));
             std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-            let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
-            let conversation_repo = Arc::new(ConversationRepository::new(db));
+            let pool =
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
+            let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone()));
+            let session_meta = Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool));
             let provider_service = Arc::new(ProviderService::new(paths.clone()));
 
             let mut distiller = SessionDistiller::new(
                 provider_service,
                 Some(embed as Arc<dyn EmbeddingClient>),
-                conversation_repo,
+                messages,
+                session_meta,
                 paths,
                 None,
             );
@@ -2744,12 +2759,14 @@ mod tests {
             let dir = tempdir().unwrap();
             let paths = Arc::new(VaultPaths::new(dir.keep()));
             std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-            let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
-            let conversation_repo = Arc::new(ConversationRepository::new(db));
+            let pool =
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
+            let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone()));
+            let session_meta = Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool));
             let provider_service = Arc::new(ProviderService::new(paths.clone()));
 
             let mut distiller =
-                SessionDistiller::new(provider_service, None, conversation_repo, paths, None);
+                SessionDistiller::new(provider_service, None, messages, session_meta, paths, None);
             distiller.set_procedure_store(store.clone() as Arc<dyn ProcedureStore>);
 
             let procedure = sample_procedure();

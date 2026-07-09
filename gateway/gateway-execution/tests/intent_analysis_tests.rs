@@ -6,10 +6,11 @@
 use agent_runtime::{ChatMessage, ChatResponse, LlmClient, LlmError, StreamCallback};
 use async_trait::async_trait;
 use gateway_execution::middleware::intent_analysis::{
-    analyze_intent, format_intent_injection, DEFAULT_INTENT_ANALYSIS_PROMPT,
+    analyze_intent, format_intent_injection, ExecutionApproach, WardAction,
+    DEFAULT_INTENT_ANALYSIS_PROMPT,
 };
 use serde_json::Value;
-use zero_stores::MemoryFactStore;
+use zbot_stores::MemoryFactStore;
 
 // ===========================================================================
 // Mock LLM clients
@@ -45,12 +46,9 @@ impl LlmClient for MockLlmClient {
         _tools: Option<Value>,
         _callback: StreamCallback,
     ) -> Result<ChatResponse, LlmError> {
-        Ok(ChatResponse {
-            content: self.response.clone(),
-            tool_calls: None,
-            reasoning: None,
-            usage: None,
-        })
+        Err(LlmError::ApiError(
+            "chat_stream not used by typed intent analysis".into(),
+        ))
     }
 }
 
@@ -172,7 +170,7 @@ async fn test_full_enrichment_flow() {
     let fact_store = MockFactStore;
 
     let analysis = analyze_intent(
-        &mock,
+        std::sync::Arc::new(mock),
         "Analyze my investment portfolio",
         &fact_store,
         None,
@@ -192,7 +190,10 @@ async fn test_full_enrichment_flow() {
         vec!["web-search", "code-exec", "file-write"]
     );
     assert_eq!(analysis.recommended_agents, vec!["researcher", "analyst"]);
-    assert_eq!(analysis.execution_strategy.approach, "graph");
+    assert_eq!(
+        analysis.execution_strategy.approach,
+        ExecutionApproach::Graph
+    );
 
     let graph = analysis
         .execution_strategy
@@ -209,14 +210,14 @@ async fn test_full_enrichment_flow() {
     assert!(injection.contains("planner-agent"));
 }
 
-/// LLM call failure should propagate as Err.
+/// LLM call failure should degrade to a simple fallback analysis.
 #[tokio::test]
 async fn test_graceful_degradation_on_llm_failure() {
     let client = FailingLlmClient;
     let fact_store = MockFactStore;
 
     let result = analyze_intent(
-        &client,
+        std::sync::Arc::new(client),
         "Create a dashboard for monitoring server metrics",
         &fact_store,
         None,
@@ -227,16 +228,16 @@ async fn test_graceful_degradation_on_llm_failure() {
     )
     .await;
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("Intent analysis LLM call failed"),
-        "unexpected error message: {}",
-        err
+    let analysis = result.expect("LLM failure should fall back, not abort execution");
+    assert_eq!(
+        analysis.execution_strategy.approach,
+        ExecutionApproach::Simple
     );
+    assert_eq!(analysis.ward_recommendation.action, WardAction::CreateNew);
+    assert_eq!(analysis.ward_recommendation.ward_name, "general");
 }
 
-/// Malformed (non-JSON) LLM output should return a parse error.
+/// Malformed LLM output should degrade to a simple fallback analysis.
 #[tokio::test]
 async fn test_graceful_degradation_on_malformed_json() {
     let mock = MockLlmClient {
@@ -245,7 +246,7 @@ async fn test_graceful_degradation_on_malformed_json() {
     let fact_store = MockFactStore;
 
     let result = analyze_intent(
-        &mock,
+        std::sync::Arc::new(mock),
         "Do something",
         &fact_store,
         None,
@@ -256,13 +257,13 @@ async fn test_graceful_degradation_on_malformed_json() {
     )
     .await;
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("Failed to parse intent analysis JSON"),
-        "unexpected error message: {}",
-        err
+    let analysis = result.expect("malformed output should fall back, not abort execution");
+    assert_eq!(
+        analysis.execution_strategy.approach,
+        ExecutionApproach::Simple
     );
+    assert_eq!(analysis.ward_recommendation.action, WardAction::CreateNew);
+    assert_eq!(analysis.ward_recommendation.ward_name, "general");
 }
 
 /// Simple strategy without a graph should parse correctly.
@@ -292,7 +293,7 @@ async fn test_simple_request_no_graph() {
     let fact_store = MockFactStore;
 
     let analysis = analyze_intent(
-        &mock,
+        std::sync::Arc::new(mock),
         "What is the weather forecast for this weekend",
         &fact_store,
         None,
@@ -305,7 +306,10 @@ async fn test_simple_request_no_graph() {
     .expect("should parse simple intent");
 
     assert_eq!(analysis.primary_intent, "greeting");
-    assert_eq!(analysis.execution_strategy.approach, "simple");
+    assert_eq!(
+        analysis.execution_strategy.approach,
+        ExecutionApproach::Simple
+    );
     assert!(analysis.execution_strategy.graph.is_none());
 }
 
@@ -318,7 +322,7 @@ async fn test_skills_recommended() {
     let fact_store = MockFactStore;
 
     let analysis = analyze_intent(
-        &mock,
+        std::sync::Arc::new(mock),
         "Analyze my portfolio",
         &fact_store,
         None,
@@ -335,5 +339,8 @@ async fn test_skills_recommended() {
         vec!["web-search", "code-exec", "file-write"]
     );
     assert_eq!(analysis.recommended_agents, vec!["researcher", "analyst"]);
-    assert_eq!(analysis.execution_strategy.approach, "graph");
+    assert_eq!(
+        analysis.execution_strategy.approach,
+        ExecutionApproach::Graph
+    );
 }

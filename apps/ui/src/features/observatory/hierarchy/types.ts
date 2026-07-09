@@ -2,7 +2,7 @@
 // Hierarchical-memory wire types
 //
 // Mirrors `gateway/src/http/hierarchy.rs::HierarchyStatsResponse` and
-// the carriers re-exported from `zero-stores`. Kept hand-written rather
+// the carriers re-exported from `zbot-stores`. Kept hand-written rather
 // than codegen'd because the surface is tiny and the codebase doesn't
 // run an OpenAPI codegen step yet.
 // ============================================================================

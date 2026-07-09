@@ -34,6 +34,9 @@ import { randomId } from "@/shared/utils/randomId";
 // ============================================================================
 
 const POLL_INTERVAL_MS = 5000;
+const OAUTH_STATUS_POLL_INTERVAL_MS = 2000;
+const OAUTH_STATUS_POLL_MAX_ATTEMPTS = 150;
+type McpAuthStatus = NonNullable<McpServerSummary["authStatus"]>;
 
 const MCP_EMOJIS = [
   "\u{1F9F0}", "\u{1F310}", "\u{1F5C4}", "\u{26A1}", "\u{1F4E6}", "\u{1F50C}", "\u{1F4BB}",
@@ -112,6 +115,30 @@ function typeToIconClass(type: string): string {
   return "ts-card__icon--http";
 }
 
+function isOAuthMcp(config: Pick<McpServerConfig, "auth"> | Pick<CreateMcpRequest, "auth"> | null | undefined): boolean {
+  return config?.auth?.type === "oauth2";
+}
+
+function mcpConfigId(config: Pick<McpServerConfig, "id" | "name">): string {
+  return config.id || config.name;
+}
+
+function authStatusLabel(status?: McpAuthStatus): string {
+  switch (status) {
+    case "connected": return "Connected";
+    case "reauth_required": return "Reconnect required";
+    case "not_connected": return "Not connected";
+    case "not_configured":
+    default: return "Not configured";
+  }
+}
+
+function authStatusVariant(status?: McpAuthStatus): "enabled" | "disabled" | "error" {
+  if (status === "connected") return "enabled";
+  if (status === "reauth_required") return "error";
+  return "disabled";
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -143,6 +170,8 @@ export function WebIntegrationsPanel() {
   const [workerSearch, setWorkerSearch] = useState("");
   const [workerFilter, setWorkerFilter] = useState<string>("all");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const oauthPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const oauthPollAttemptRef = useRef(0);
 
   // ── Slideover state (Tool Server) ──
   const [tsSlideoverOpen, setTsSlideoverOpen] = useState(false);
@@ -151,6 +180,9 @@ export function WebIntegrationsPanel() {
   const [selectedMcpDetail, setSelectedMcpDetail] = useState<McpServerConfig | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<McpTestResult | null>(null);
+  const [isAuthorizing, setIsAuthorizing] = useState(false);
+  const [oauthMessage, setOauthMessage] = useState<string | null>(null);
+  const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null);
 
   // ── Slideover state (Plugin/Worker) ──
   const [pwSlideoverOpen, setPwSlideoverOpen] = useState(false);
@@ -251,9 +283,73 @@ export function WebIntegrationsPanel() {
     }
   }, [transport]);
 
+  const clearOAuthPoll = useCallback(() => {
+    if (oauthPollRef.current) {
+      clearTimeout(oauthPollRef.current);
+      oauthPollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearOAuthPoll, [clearOAuthPoll]);
+
+  const refreshMcpOAuthStatus = useCallback(async (id: string): Promise<McpAuthStatus | null> => {
+    if (!transport) return null;
+    const result = await transport.getMcpOAuthStatus(id);
+    if (!result.success || !result.data) return null;
+    const { status } = result.data;
+    setSelectedMcpSummary((current) =>
+      current && current.id === id
+        ? { ...current, authStatus: status }
+        : current,
+    );
+    setMcpServers((current) =>
+      current.map((mcp) =>
+        mcp.id === id ? { ...mcp, authStatus: status } : mcp,
+      ),
+    );
+    return status;
+  }, [transport]);
+
+  const waitForMcpOAuthConnection = useCallback((id: string) => {
+    clearOAuthPoll();
+    oauthPollAttemptRef.current = 0;
+
+    const poll = async () => {
+      const status = await refreshMcpOAuthStatus(id);
+      if (status === "connected") {
+        clearOAuthPoll();
+        setOauthAuthUrl(null);
+        setOauthMessage("Authorization complete. This tool server is connected.");
+        if (transport) {
+          await loadMcps(transport);
+        }
+        return;
+      }
+
+      if (status === "reauth_required") {
+        clearOAuthPoll();
+        setOauthMessage("Authorization did not complete. Retry Authorize and check the callback tab for the exact error.");
+        return;
+      }
+
+      oauthPollAttemptRef.current += 1;
+      if (oauthPollAttemptRef.current >= OAUTH_STATUS_POLL_MAX_ATTEMPTS) {
+        clearOAuthPoll();
+        setOauthMessage("Still waiting for authorization. If the provider tab shows an error, retry Authorize.");
+        return;
+      }
+
+      oauthPollRef.current = setTimeout(poll, OAUTH_STATUS_POLL_INTERVAL_MS);
+    };
+
+    void poll();
+  }, [clearOAuthPoll, refreshMcpOAuthStatus, loadMcps, transport]);
+
   const handleSelectMcp = useCallback(async (mcp: McpServerSummary) => {
     setSelectedMcpSummary(mcp);
     setTestResult(null);
+    setOauthMessage(null);
+    setOauthAuthUrl(null);
     setTsSlideoverMode("view");
     setTsSlideoverOpen(true);
     // Load detail
@@ -286,6 +382,8 @@ export function WebIntegrationsPanel() {
     setSelectedMcpSummary(null);
     setSelectedMcpDetail(null);
     setTestResult(null);
+    setOauthMessage(null);
+    setOauthAuthUrl(null);
     setTsSlideoverOpen(true);
   }, []);
 
@@ -299,12 +397,34 @@ export function WebIntegrationsPanel() {
       description: selectedMcpDetail.description,
       command: selectedMcpDetail.command || "",
       url: selectedMcpDetail.url || "",
+      auth: selectedMcpDetail.auth,
       enabled: selectedMcpDetail.enabled,
     });
     setArgsInput(selectedMcpDetail.args?.join(", ") || "");
     setEnvVars(recordToEnvVars(selectedMcpDetail.env));
     setShowEnvValues(new Set());
+    setOauthMessage(null);
+    setOauthAuthUrl(null);
   }, [selectedMcpDetail, selectedMcpSummary]);
+
+  const showSavedMcp = useCallback(async (saved: McpServerConfig) => {
+    const id = mcpConfigId(saved);
+    await loadMcps(transport!);
+    setSelectedMcpDetail(saved);
+    setSelectedMcpSummary({
+      id,
+      name: saved.name,
+      description: saved.description,
+      type: saved.type,
+      enabled: saved.enabled,
+      authStatus: isOAuthMcp(saved) ? "not_connected" : undefined,
+    });
+    setTsSlideoverMode("view");
+    setTsSlideoverOpen(true);
+    if (isOAuthMcp(saved)) {
+      await refreshMcpOAuthStatus(id);
+    }
+  }, [transport, loadMcps, refreshMcpOAuthStatus]);
 
   const handleSaveSuccess = useCallback(async () => {
     await loadMcps(transport!);
@@ -339,6 +459,7 @@ export function WebIntegrationsPanel() {
         request.env = envVarsToRecord(envVars);
       } else {
         request.url = formData.url || "";
+        request.auth = formData.auth;
       }
 
       let result;
@@ -348,7 +469,9 @@ export function WebIntegrationsPanel() {
         result = await transport.createMcp(request);
       }
 
-      if (result.success) {
+      if (result.success && result.data && isOAuthMcp(result.data)) {
+        await showSavedMcp(result.data);
+      } else if (result.success) {
         await handleSaveSuccess();
       } else {
         setError(result.error || `Failed to ${tsSlideoverMode} tool server`);
@@ -356,7 +479,7 @@ export function WebIntegrationsPanel() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     }
-  }, [transport, formData, argsInput, envVars, tsSlideoverMode, editingId, selectedMcpSummary, loadMcps, loadMcpDetail, handleSaveSuccess]);
+  }, [transport, formData, argsInput, envVars, tsSlideoverMode, editingId, handleSaveSuccess, showSavedMcp]);
 
   const handleDelete = useCallback(async () => {
     if (!transport || !selectedMcpSummary) return;
@@ -396,6 +519,47 @@ export function WebIntegrationsPanel() {
       setIsTesting(false);
     }
   }, [transport, selectedMcpSummary]);
+
+  const handleAuthorizeMcp = useCallback(async () => {
+    if (!transport || !selectedMcpSummary) return;
+    const authWindow = window.open("about:blank", "_blank");
+    if (authWindow) {
+      authWindow.opener = null;
+    }
+    clearOAuthPoll();
+    setIsAuthorizing(true);
+    setOauthMessage(null);
+    setOauthAuthUrl(null);
+
+    try {
+      const redirectUri = `${window.location.origin}/api/mcps/oauth/callback`;
+      const result = await transport.startMcpOAuth(selectedMcpSummary.id, { redirectUri });
+      if (result.success && result.data) {
+        setOauthAuthUrl(result.data.authUrl);
+        if (authWindow) {
+          authWindow.location.href = result.data.authUrl;
+          setOauthMessage("Authorization opened in a new tab. Waiting for the provider callback.");
+        } else {
+          setOauthMessage("Popup blocked. Use the authorization link below. This page will update after the callback completes.");
+        }
+        waitForMcpOAuthConnection(selectedMcpSummary.id);
+      } else {
+        authWindow?.close();
+        setError(result.error || "Failed to start OAuth authorization");
+      }
+    } catch (err) {
+      authWindow?.close();
+      setError(err instanceof Error ? err.message : "Unknown OAuth error");
+    } finally {
+      setIsAuthorizing(false);
+    }
+  }, [transport, selectedMcpSummary, clearOAuthPoll, waitForMcpOAuthConnection]);
+
+  const handleRefreshMcpAuth = useCallback(async () => {
+    if (!selectedMcpSummary) return;
+    await refreshMcpOAuthStatus(selectedMcpSummary.id);
+    await loadMcps(transport!);
+  }, [selectedMcpSummary, refreshMcpOAuthStatus, loadMcps, transport]);
 
   // ── Filtered lists ──
 
@@ -532,6 +696,17 @@ export function WebIntegrationsPanel() {
         footer={
           tsSlideoverMode === "view" ? (
             <div style={{ display: "flex", gap: "var(--spacing-2)", width: "100%" }}>
+              {isOAuthMcp(selectedMcpDetail) && selectedMcpSummary?.authStatus !== "connected" && (
+                <button className="btn btn--primary btn--sm" onClick={handleAuthorizeMcp} disabled={isAuthorizing}>
+                  {isAuthorizing ? <Loader2 style={{ width: 14, height: 14 }} className="animate-spin" /> : <Key style={{ width: 14, height: 14 }} />}
+                  Authorize
+                </button>
+              )}
+              {isOAuthMcp(selectedMcpDetail) && (
+                <button className="btn btn--outline btn--sm" onClick={handleRefreshMcpAuth}>
+                  <RefreshCw style={{ width: 14, height: 14 }} /> Refresh
+                </button>
+              )}
               <button className="btn btn--outline btn--sm" onClick={handleTest} disabled={isTesting}>
                 {isTesting ? <Loader2 style={{ width: 14, height: 14 }} className="animate-spin" /> : <Play style={{ width: 14, height: 14 }} />}
                 Test
@@ -570,6 +745,8 @@ export function WebIntegrationsPanel() {
             summary={selectedMcpSummary}
             detail={selectedMcpDetail}
             testResult={testResult}
+            oauthMessage={oauthMessage}
+            oauthAuthUrl={oauthAuthUrl}
           />
         ) : (
           <ToolServerForm
@@ -694,6 +871,12 @@ function ToolServerCard({ mcp, onClick }: { mcp: McpServerSummary; onClick: () =
       )}
 
       <div className="ts-card__meta">
+        {mcp.authStatus && mcp.authStatus !== "not_configured" && (
+          <MetaChip variant={authStatusVariant(mcp.authStatus)}>
+            <Key style={{ width: 12, height: 12 }} />
+            {authStatusLabel(mcp.authStatus)}
+          </MetaChip>
+        )}
         <MetaChip variant={mcp.enabled ? "enabled" : "disabled"}>
           <Power style={{ width: 12, height: 12 }} />
           {mcp.enabled ? "Enabled" : "Disabled"}
@@ -727,9 +910,11 @@ interface ToolServerDetailProps {
   summary: McpServerSummary | null;
   detail: McpServerConfig | null;
   testResult: McpTestResult | null;
+  oauthMessage: string | null;
+  oauthAuthUrl: string | null;
 }
 
-function ToolServerDetail({ summary, detail, testResult }: ToolServerDetailProps) {
+function ToolServerDetail({ summary, detail, testResult, oauthMessage, oauthAuthUrl }: ToolServerDetailProps) {
   if (!summary || !detail) {
     return (
       <div style={{ padding: "var(--spacing-6)", textAlign: "center", color: "var(--muted-foreground)" }}>
@@ -742,6 +927,21 @@ function ToolServerDetail({ summary, detail, testResult }: ToolServerDetailProps
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-5)" }}>
       {/* Test result */}
+      {oauthMessage && (
+        <div className="ts-test-result ts-test-result--success">
+          <Key style={{ width: 18, height: 18, flexShrink: 0 }} />
+          <span className="ts-test-result__text">
+            {oauthMessage}
+            {oauthAuthUrl && (
+              <>
+                {" "}
+                <a href={oauthAuthUrl} target="_blank" rel="noreferrer">Open authorization</a>
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
       {testResult && (
         <div className={`ts-test-result ${testResult.success ? "ts-test-result--success" : "ts-test-result--error"}`}>
           {testResult.success ? (
@@ -800,6 +1000,18 @@ function ToolServerDetail({ summary, detail, testResult }: ToolServerDetailProps
           <div className="ts-detail-row">
             <span className="ts-detail-label">URL</span>
             <span className="ts-detail-value ts-detail-value--mono">{detail.url}</span>
+          </div>
+        )}
+
+        {isOAuthMcp(detail) && (
+          <div className="ts-detail-row">
+            <span className="ts-detail-label">Auth</span>
+            <span className="ts-detail-value">
+              <MetaChip variant={authStatusVariant(summary.authStatus)}>
+                <Key style={{ width: 12, height: 12 }} />
+                OAuth 2.0 · {authStatusLabel(summary.authStatus)}
+              </MetaChip>
+            </span>
           </div>
         )}
 
@@ -885,7 +1097,14 @@ function ToolServerForm({
           id="ts-type"
           className="form-select"
           value={formData.type}
-          onChange={(e) => setFormData({ ...formData, type: e.target.value as CreateMcpRequest["type"] })}
+          onChange={(e) => {
+            const type = e.target.value as CreateMcpRequest["type"];
+            setFormData({
+              ...formData,
+              type,
+              auth: type === "stdio" ? undefined : formData.auth,
+            });
+          }}
         >
           <option value="stdio">Stdio (Local Process)</option>
           <option value="http">HTTP</option>
@@ -1026,17 +1245,35 @@ function ToolServerForm({
           </div>
         </>
       ) : (
-        <div className="form-group">
-          <label className="form-label" htmlFor="ts-url">URL</label>
-          <input
-            id="ts-url"
-            className="form-input"
-            type="text"
-            value={formData.url || ""}
-            onChange={(e) => setFormData({ ...formData, url: e.target.value })}
-            placeholder="http://localhost:8080/mcp"
-          />
-        </div>
+        <>
+          <div className="form-group">
+            <label className="form-label" htmlFor="ts-url">URL</label>
+            <input
+              id="ts-url"
+              className="form-input"
+              type="text"
+              value={formData.url || ""}
+              onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+              placeholder="http://localhost:8080/mcp"
+            />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="ts-oauth" style={{ display: "flex", alignItems: "center", gap: "var(--spacing-2)", fontSize: "var(--text-sm)", color: "var(--foreground)" }}>
+              <input
+                type="checkbox"
+                id="ts-oauth"
+                checked={isOAuthMcp(formData)}
+                onChange={(e) => setFormData({
+                  ...formData,
+                  auth: e.target.checked ? { type: "oauth2" } : undefined,
+                })}
+                style={{ width: 16, height: 16 }}
+              />
+              OAuth 2.0
+            </label>
+          </div>
+        </>
       )}
 
       {/* Enabled toggle */}
@@ -1099,7 +1336,7 @@ function PluginsWorkersTab({ plugins, workers, allWorkers, search, onSearchChang
         <EmptyState
           icon={Cable}
           title="No plugins or workers connected"
-          description={`To install a plugin, drop its folder into ${pluginsHint}/ and restart zerod`}
+          description={`To install a plugin, drop its folder into ${pluginsHint}/ and restart zbotd`}
         />
       ) : (
         <div className="card-grid">

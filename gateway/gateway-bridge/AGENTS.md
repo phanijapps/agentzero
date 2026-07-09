@@ -51,7 +51,7 @@ Workers (any language)
 ## Intra-Repo Dependencies
 
 - `gateway-services` — `VaultPaths`, plugin config loading
-- `zero-stores-sqlite` — outbox SQLite operations
+- `zbot-stores-sqlite` — outbox SQLite operations
 
 ## Notes
 

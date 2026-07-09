@@ -51,17 +51,20 @@ install-build:
 	cd apps/ui && npm install && npm run build
 
 install: install-build
-	install -d $(BIN_DIR) $(DIST_DIR) $(UNIT_DIR)
+	install -d $(BIN_DIR) $(DIST_DIR) $(UNIT_DIR) $(VAULT_DIR)/logs
 	install -m 755 target/release/zbotd $(BIN_DIR)/zbotd
 	install -m 755 target/release/zbot $(BIN_DIR)/zbot
 	rm -rf $(DIST_DIR)/* && cp -r $(UI_BUILD_DIR)/* $(DIST_DIR)/
-	@sed 's|@@BIN@@|$(BIN_DIR)/zbotd|g; s|@@DIST@@|$(DIST_DIR)|g; s|@@VERSION@@|$(VERSION)|g' \
+	@sed 's|@@BIN@@|$(BIN_DIR)/zbotd|g; s|@@DIST@@|$(DIST_DIR)|g; s|@@LOG_DIR@@|$(VAULT_DIR)/logs|g; s|@@VERSION@@|$(VERSION)|g' \
 	    scripts/zbot.service.in > $(UNIT_DIR)/zbot.service
 	@# Migrate from the legacy `agentzero.service` if present.
 	@if systemctl --user is-enabled agentzero.service >/dev/null 2>&1; then \
 	    echo "Migrating from agentzero.service → zbot.service"; \
 	    systemctl --user disable --now agentzero.service || true; \
 	    rm -f $(UNIT_DIR)/agentzero.service; \
+	fi
+	@if command -v loginctl >/dev/null 2>&1; then \
+	    loginctl enable-linger "$(USER)" || true; \
 	fi
 	systemctl --user daemon-reload
 	systemctl --user enable --now zbot

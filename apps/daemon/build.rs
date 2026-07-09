@@ -5,7 +5,7 @@
 //! env var, so dev builds keep the bare `CARGO_PKG_VERSION` — no
 //! spurious branch suffix during normal work.
 //!
-//! See `memory-bank/future-state/2026-05-03-versioning-and-rename-plan.md`
+//! See `docs/architecture/future-state/2026-05-03-versioning-and-rename-plan.md`
 //! for the broader versioning + rename context.
 
 use std::process::Command;

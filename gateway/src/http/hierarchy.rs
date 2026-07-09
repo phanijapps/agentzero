@@ -17,11 +17,11 @@
 
 use crate::state::AppState;
 use axum::{
-    Json,
     extract::{Query, State},
+    Json,
 };
 use serde::{Deserialize, Serialize};
-use zero_stores::HierarchySummary;
+use zbot_stores::HierarchySummary;
 
 /// `agent_id` queried by the stats endpoint. Mirrors the root-agent
 /// convention used everywhere else in the gateway (see also

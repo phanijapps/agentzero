@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::{Result, Tool, ToolContext};
+use agent_primitives::{Result, Tool, ToolContext};
 
 // ============================================================================
 // REQUEST INPUT TOOL
@@ -59,13 +59,17 @@ impl Tool for RequestInputTool {
         let form_id = args
             .get("form_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("Missing 'form_id' parameter".to_string()))?
+            .ok_or_else(|| {
+                agent_primitives::AgentError::Tool("Missing 'form_id' parameter".to_string())
+            })?
             .to_string();
 
         let title = args
             .get("title")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("Missing 'title' parameter".to_string()))?
+            .ok_or_else(|| {
+                agent_primitives::AgentError::Tool("Missing 'title' parameter".to_string())
+            })?
             .to_string();
 
         let description = args
@@ -73,10 +77,9 @@ impl Tool for RequestInputTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let schema = args
-            .get("schema")
-            .cloned()
-            .ok_or_else(|| zero_core::ZeroError::Tool("Missing 'schema' parameter".to_string()))?;
+        let schema = args.get("schema").cloned().ok_or_else(|| {
+            agent_primitives::AgentError::Tool("Missing 'schema' parameter".to_string())
+        })?;
 
         let submit_button = args
             .get("submit_button")
@@ -145,14 +148,16 @@ impl Tool for ShowContentTool {
             .get("content_type")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                zero_core::ZeroError::Tool("Missing 'content_type' parameter".to_string())
+                agent_primitives::AgentError::Tool("Missing 'content_type' parameter".to_string())
             })?
             .to_string();
 
         let title = args
             .get("title")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("Missing 'title' parameter".to_string()))?
+            .ok_or_else(|| {
+                agent_primitives::AgentError::Tool("Missing 'title' parameter".to_string())
+            })?
             .to_string();
 
         let content = args

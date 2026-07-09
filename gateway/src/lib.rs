@@ -38,6 +38,9 @@ pub mod execution;
 pub mod hooks;
 pub mod http;
 pub mod memory_llm_factory;
+#[cfg(feature = "rig-parity-capture")]
+#[doc(hidden)]
+pub mod parity;
 pub mod server;
 pub mod services;
 pub mod state;

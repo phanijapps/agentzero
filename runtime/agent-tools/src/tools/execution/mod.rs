@@ -1,24 +1,20 @@
 // ============================================================================
 // EXECUTION TOOLS
-// Python, Shell, LoadSkill, TODO, UpdatePlan, WriteFile, EditFile tools
+// Python, Shell, LoadSkill, UpdatePlan, WriteFile, EditFile tools
 // ============================================================================
 
 pub mod ast_hook;
 pub mod edit_file;
 pub mod graph;
-pub mod session_title;
 pub mod shell;
 pub mod skills;
-pub mod todos;
 pub mod update_plan;
 pub mod ward_cwd;
 pub mod write_file;
 
 pub use edit_file::EditFileTool;
 pub use graph::ExecutionGraphTool;
-pub use session_title::SetSessionTitleTool;
 pub use shell::ShellTool;
-pub use todos::TodoTool;
 pub use update_plan::UpdatePlanTool;
 pub use write_file::WriteFileTool;
 
@@ -27,8 +23,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::FileSystemContext;
-use zero_core::{Result, Tool, ToolContext};
+use agent_primitives::FileSystemContext;
+use agent_primitives::{Result, Tool, ToolContext};
 
 // ============================================================================
 // PYTHON TOOL
@@ -72,13 +68,12 @@ impl Tool for PythonTool {
     }
 
     async fn execute(&self, _ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
-        let code = args
-            .get("code")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("Missing 'code' parameter".to_string()))?;
+        let code = args.get("code").and_then(|v| v.as_str()).ok_or_else(|| {
+            agent_primitives::AgentError::Tool("Missing 'code' parameter".to_string())
+        })?;
 
         let python = self.fs.python_executable().ok_or_else(|| {
-            zero_core::ZeroError::Tool("Python executable not configured".to_string())
+            agent_primitives::AgentError::Tool("Python executable not configured".to_string())
         })?;
 
         tracing::debug!("Executing Python code ({} bytes)", code.len());
@@ -87,8 +82,9 @@ impl Tool for PythonTool {
         let temp_dir = std::env::temp_dir();
         let script_path = temp_dir.join(format!("agent_{}.py", uuid::Uuid::new_v4()));
 
-        std::fs::write(&script_path, code)
-            .map_err(|e| zero_core::ZeroError::Tool(format!("Failed to write script: {}", e)))?;
+        std::fs::write(&script_path, code).map_err(|e| {
+            agent_primitives::AgentError::Tool(format!("Failed to write script: {}", e))
+        })?;
 
         // Execute Python
         let output = tokio::process::Command::new(&python)
@@ -96,14 +92,16 @@ impl Tool for PythonTool {
             .stdin(std::process::Stdio::null())
             .output()
             .await
-            .map_err(|e| zero_core::ZeroError::Tool(format!("Failed to execute Python: {}", e)))?;
+            .map_err(|e| {
+                agent_primitives::AgentError::Tool(format!("Failed to execute Python: {}", e))
+            })?;
 
         // Clean up temp file
         let _ = std::fs::remove_file(&script_path);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(zero_core::ZeroError::Tool(format!(
+            return Err(agent_primitives::AgentError::Tool(format!(
                 "Python error: {}",
                 stderr
             )));

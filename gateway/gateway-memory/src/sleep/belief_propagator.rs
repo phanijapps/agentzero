@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use zero_stores_traits::BeliefStore;
+use zbot_stores_traits::BeliefStore;
 
 /// Hop cap to prevent runaway propagation. In B-3 the schema only allows
 /// fact → belief edges (beliefs don't reference other beliefs as sources
@@ -188,7 +188,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use zero_stores_traits::Belief;
+    use zbot_stores_traits::Belief;
 
     /// In-memory `BeliefStore` for propagator-level tests. Tracks each
     /// mutating call so assertions can verify both the outcome and the
@@ -304,7 +304,7 @@ mod tests {
             _: &str,
             _: &[f32],
             _: usize,
-        ) -> Result<Vec<zero_stores_traits::ScoredBelief>, String> {
+        ) -> Result<Vec<zbot_stores_traits::ScoredBelief>, String> {
             Ok(vec![])
         }
     }

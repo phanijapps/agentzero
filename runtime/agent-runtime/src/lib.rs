@@ -51,6 +51,12 @@ pub mod middleware;
 /// Executor core
 pub mod executor;
 
+/// Gateway-facing execution facade
+pub mod engine;
+
+/// Rig adapter boundary
+pub mod rig_adapter;
+
 /// Progress tracking for loop detection
 pub(crate) mod progress;
 
@@ -59,6 +65,9 @@ pub(crate) mod tool_schema;
 
 /// Context management helpers (compaction, sanitization, truncation)
 pub(crate) mod context_management;
+
+/// Context capability catalog and packet contracts.
+pub mod context;
 
 /// Steering queue for mid-execution message injection
 pub mod steering;
@@ -89,7 +98,9 @@ pub use tools::{
     ToolRegistry,
 };
 
-pub use mcp::{McpClient, McpError, McpManager, McpServerConfig, McpTool};
+pub use mcp::{
+    McpAuthConfig, McpAuthType, McpClient, McpError, McpManager, McpServerConfig, McpTool,
+};
 
 pub use middleware::{
     ContextEditingConfig, ContextEditingMiddleware, EventMiddleware, KeepPolicy, MiddlewareConfig,
@@ -97,11 +108,21 @@ pub use middleware::{
     PreProcessMiddleware, SummarizationConfig, SummarizationMiddleware, TriggerCondition,
 };
 
+pub use context::{
+    ContextActorKind, ContextAtom, ContextBudget, ContextCapability, ContextCapabilityCatalog,
+    ContextCapabilityHealth, ContextCapabilityKind, ContextCostHint, ContextGraphEdge,
+    ContextGraphNode, ContextLatencyHint, ContextPacket, ContextPacketDelta, ContextRenderPolicy,
+    ContextResourceHandle, ContextRiskLevel, ContextSideEffects, ContextTrace,
+    DroppedContextCandidate,
+};
+pub use context_management::{prepare_tool_result_for_context, ToolResultContextConfig};
+pub use engine::{AgentEngine, BoxedAgentEngine, StreamEventSink};
 pub use executor::{
     create_executor, AfterToolCallHook, AgentExecutor, BeforeToolCallHook, ExecutorConfig,
     ExecutorError, RecallHook, RecallHookResult, ToolCallDecision, ToolExecutionMode,
     TransformContextHook,
 };
+pub use rig_adapter::{CompletionClient, RigAgentConfig, RigConfigError, RigModelConfig};
 
 pub use steering::{
     SteeringHandle, SteeringMessage, SteeringPriority, SteeringQueue, SteeringSource,

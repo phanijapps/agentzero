@@ -10,7 +10,6 @@ mod goal;
 mod graph_query;
 pub mod guards;
 mod ingest;
-mod introspection;
 mod memory;
 mod multimodal;
 mod search;
@@ -20,19 +19,17 @@ mod web;
 
 use std::sync::Arc;
 
+use agent_primitives::FileSystemContext;
+use agent_primitives::Tool;
 use serde::{Deserialize, Serialize};
-use zero_core::FileSystemContext;
-use zero_core::Tool;
-use zero_stores_traits::MemoryFactStore;
+use zbot_stores_traits::MemoryFactStore;
 
 pub use agent::{CreateAgentTool, ListAgentsTool};
-pub use connectors::QueryResourceTool;
+pub use connectors::{ConnectorInvokeTool, ConnectorResourceTool, QueryResourceTool};
 pub use execution::EditFileTool;
 pub use execution::ExecutionGraphTool;
 pub use execution::PythonTool;
-pub use execution::SetSessionTitleTool;
 pub use execution::ShellTool;
-pub use execution::TodoTool;
 pub use execution::UpdatePlanTool;
 pub use execution::WriteFileTool;
 pub use execution::skills::LoadSkillTool;
@@ -46,12 +43,12 @@ pub use goal::{GoalAccess, GoalSummary, GoalTool};
 // ingest types are public API for downstream crates (gateway wiring)
 #[allow(unused_imports)]
 pub use ingest::{
-    IngestTool, IngestionAccess, StructuredCounts, StructuredEntity, StructuredRelationship,
+    EvidenceRecord, IngestTool, IngestionAccess, StructuredCounts, StructuredEntity,
+    StructuredRelationship,
 };
-pub use introspection::{ListMcpsTool, ListSkillsTool, ListToolsTool};
-pub use memory::{MemoryEntry, MemoryStore, MemoryTool};
+pub use memory::{MemoryEntry, MemoryStore, MemoryTool, MemoryWriteTool};
 pub use multimodal::MultimodalAnalyzeTool;
-pub use search::{GlobTool, GrepTool};
+pub use search::GlobTool;
 pub use ui::{RequestInputTool, ShowContentTool};
 pub use ward::{WardTool, WardUsageAccess};
 pub use web::WebFetchTool;
@@ -66,13 +63,13 @@ pub use web::WebFetchTool;
 ///
 /// Core tools (always enabled):
 /// - shell: Primary execution — commands
+/// - read: Read files by path with optional line limits
 /// - write_file: Create new files
 /// - edit_file: Targeted find-and-replace edits on existing files
 /// - memory: Persist/recall information
 /// - ward: Project directory management
 /// - update_plan: Lightweight task checklist
-/// - list_skills, load_skill: Skill discovery
-/// - grep: Structured file content search
+/// - load_skill: Bounded skill packet loading by explicit skill name
 ///
 /// Note: respond, delegate_to_agent, and list_agents are registered separately
 /// in the runner as action tools.
@@ -96,22 +93,13 @@ pub struct ToolSettings {
     #[serde(default)]
     pub create_agent: bool,
 
-    /// Enable introspection tools (list_tools, list_mcps)
-    /// Note: list_skills is now a core tool
-    #[serde(default)]
-    pub introspection: bool,
-
-    /// Enable file tools (read, write, edit, glob) as separate tools.
-    /// When false (default), the model uses the core `write_file` / `edit_file`
-    /// tools instead. These optional tools layer on extra capabilities
-    /// (binary read, glob patterns).
+    /// Enable legacy file tools (write, edit, glob) as separate tools.
+    /// `read` is a core safe tool. When false (default), the model uses the
+    /// core `read` / `write_file` / `edit_file` tools instead. These optional
+    /// tools layer on extra capabilities (legacy write/edit names, glob
+    /// patterns).
     #[serde(default)]
     pub file_tools: bool,
-
-    /// Enable the heavyweight todos tool (SQLite-like task persistence).
-    /// When false (default), the lightweight update_plan tool is used instead.
-    #[serde(default)]
-    pub todos: bool,
 
     /// Offload large tool results to filesystem instead of keeping in context.
     /// When a tool result exceeds the token threshold, it's saved to a temp file
@@ -139,18 +127,18 @@ fn default_offload_enabled() -> bool {
 
 /// Get core tools — the minimal, high-signal set.
 ///
-/// Shell for commands; write_file / edit_file for file operations.
-/// Separate read/glob tools are optional (moved to optional_tools).
+/// Shell for commands; read / write_file / edit_file for file operations.
+/// Legacy file aliases and glob are optional.
 ///
 /// Core tools:
 /// - shell: Primary execution — commands
+/// - read: Read file contents with optional line limits
 /// - write_file: Create new files
 /// - edit_file: Find-and-replace edits on existing files
 /// - memory: Persistent KV store
 /// - ward: Project directory management
 /// - update_plan: Lightweight task checklist
-/// - list_skills, load_skill: Skill discovery
-/// - grep: Structured file content search
+/// - load_skill: Bounded skill packet loading by explicit skill name
 #[must_use]
 pub fn core_tools(
     fs: Arc<dyn FileSystemContext>,
@@ -160,6 +148,7 @@ pub fn core_tools(
     vec![
         // Primary execution tool
         Arc::new(ShellTool::new()),
+        Arc::new(ReadTool::new(fs.clone())),
         // File operations
         Arc::new(WriteFileTool::new(fs.clone())),
         Arc::new(EditFileTool::new(fs.clone())),
@@ -169,21 +158,16 @@ pub fn core_tools(
         Arc::new(WardTool::new(fs.clone(), fact_store, ward_usage)),
         // Lightweight plan tracking
         Arc::new(UpdatePlanTool::new()),
-        // Session title (human-readable label for the UI)
-        Arc::new(SetSessionTitleTool::new()),
         // DAG workflow engine for multi-step orchestration
         Arc::new(ExecutionGraphTool::new()),
-        // Skill discovery (high priority - encourages delegation)
-        Arc::new(ListSkillsTool::new(fs.clone())),
+        // Skill packet loading
         Arc::new(LoadSkillTool::new(fs.clone())),
-        // File search (structured output beats raw shell rg)
-        Arc::new(GrepTool),
     ]
 }
 
 /// Get optional tools based on settings.
 ///
-/// Includes file tools (read/write/edit/glob), todos, python, web_fetch, etc.
+/// Includes legacy file tools (write/edit/glob), python, web_fetch, etc.
 #[must_use]
 pub fn optional_tools(
     fs: Arc<dyn FileSystemContext>,
@@ -191,17 +175,12 @@ pub fn optional_tools(
 ) -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
 
-    // File tools — separate read/write/edit/glob (opt-in)
+    // File tools — separate legacy write/edit names and glob (opt-in).
+    // `read` is core.
     if settings.file_tools {
-        tools.push(Arc::new(ReadTool));
         tools.push(Arc::new(WriteTool::new(fs.clone())));
         tools.push(Arc::new(EditTool::new(fs.clone())));
         tools.push(Arc::new(GlobTool));
-    }
-
-    // Heavyweight todos (opt-in, replaced by update_plan in core)
-    if settings.todos {
-        tools.push(Arc::new(TodoTool::new()));
     }
 
     if settings.python {
@@ -219,11 +198,6 @@ pub fn optional_tools(
 
     if settings.create_agent {
         tools.push(Arc::new(CreateAgentTool::new(fs.clone())));
-    }
-
-    if settings.introspection {
-        tools.push(Arc::new(ListToolsTool::new()));
-        tools.push(Arc::new(ListMcpsTool::new(fs.clone())));
     }
 
     // Multimodal analysis — always available as a vision fallback
@@ -244,9 +218,7 @@ pub fn builtin_tools_with_fs(fs: Arc<dyn FileSystemContext>) -> Vec<Arc<dyn Tool
         web_fetch: true,
         ui_tools: true,
         create_agent: true,
-        introspection: true,
         file_tools: true,
-        todos: true,
         offload_large_results: false, // Not relevant for this legacy function
         offload_threshold_tokens: default_offload_threshold(),
     };

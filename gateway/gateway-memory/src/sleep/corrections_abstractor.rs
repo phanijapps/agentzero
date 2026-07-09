@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
 use serde::Deserialize;
-use zero_stores_traits::{CompactionStore, MemoryFactStore};
+use zbot_stores_traits::{CompactionStore, MemoryFactStore};
 
 use crate::util::parse_llm_json;
 use crate::{CachedLlmClient, LlmClientConfig, MemoryLlmFactory};
@@ -253,8 +253,8 @@ mod tests {
     use super::*;
     use gateway_services::VaultPaths;
     use std::sync::Mutex;
-    use zero_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
+    use zbot_stores_sqlite::{
         CompactionRepository, GatewayCompactionStore, GatewayMemoryFactStore, KnowledgeDatabase,
         MemoryRepository,
     };

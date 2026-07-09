@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use zero_core::{Result, Tool, ToolContext, ZeroError};
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 
 // ============================================================================
 // DATA MODEL
@@ -527,20 +527,20 @@ impl Tool for ExecutionGraphTool {
                 .get("__message__")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown error");
-            return Err(ZeroError::Tool(format!("{}: {}", error_type, message)));
+            return Err(AgentError::Tool(format!("{}: {}", error_type, message)));
         }
 
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'action' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'action' parameter".to_string()))?;
 
         match action {
             "create" => self.handle_create(ctx, &args).await,
             "execute_next" => self.handle_execute_next(ctx, &args).await,
             "status" => self.handle_status(ctx, &args).await,
             "add_node" => self.handle_add_node(ctx, &args).await,
-            _ => Err(ZeroError::Tool(format!(
+            _ => Err(AgentError::Tool(format!(
                 "Unknown action: '{}'. Valid: create, execute_next, status, add_node",
                 action
             ))),
@@ -555,7 +555,7 @@ impl Tool for ExecutionGraphTool {
 fn validate_node_input_refs(node: &GraphNode, node_ids: &HashSet<&str>) -> Result<()> {
     for (param, input_ref) in &node.inputs {
         if !node_ids.contains(input_ref.from.as_str()) {
-            return Err(ZeroError::Tool(format!(
+            return Err(AgentError::Tool(format!(
                 "Node '{}' input '{}' references unknown node '{}'",
                 node.id, param, input_ref.from
             )));
@@ -571,21 +571,24 @@ fn validate_node_input_refs(node: &GraphNode, node_ids: &HashSet<&str>) -> Resul
 impl ExecutionGraphTool {
     async fn handle_create(&self, ctx: Arc<dyn ToolContext>, args: &Value) -> Result<Value> {
         let nodes_val = args.get("nodes").ok_or_else(|| {
-            ZeroError::Tool("Missing 'nodes' array for create action".to_string())
+            AgentError::Tool("Missing 'nodes' array for create action".to_string())
         })?;
 
         let nodes: Vec<GraphNode> = serde_json::from_value(nodes_val.clone())
-            .map_err(|e| ZeroError::Tool(format!("Invalid node definitions: {}", e)))?;
+            .map_err(|e| AgentError::Tool(format!("Invalid node definitions: {}", e)))?;
 
         if nodes.is_empty() {
-            return Err(ZeroError::Tool("Nodes array cannot be empty".to_string()));
+            return Err(AgentError::Tool("Nodes array cannot be empty".to_string()));
         }
 
         // Validate: no duplicate IDs
         let mut seen = HashSet::new();
         for node in &nodes {
             if !seen.insert(&node.id) {
-                return Err(ZeroError::Tool(format!("Duplicate node ID: '{}'", node.id)));
+                return Err(AgentError::Tool(format!(
+                    "Duplicate node ID: '{}'",
+                    node.id
+                )));
             }
         }
 
@@ -594,7 +597,7 @@ impl ExecutionGraphTool {
         for node in &nodes {
             for dep in &node.depends_on {
                 if !node_ids.contains(dep.as_str()) {
-                    return Err(ZeroError::Tool(format!(
+                    return Err(AgentError::Tool(format!(
                         "Node '{}' depends on unknown node '{}'",
                         node.id, dep
                     )));
@@ -604,7 +607,7 @@ impl ExecutionGraphTool {
             if let Some(cond) = &node.when
                 && !node_ids.contains(cond.ref_node.as_str())
             {
-                return Err(ZeroError::Tool(format!(
+                return Err(AgentError::Tool(format!(
                     "Node '{}' condition references unknown node '{}'",
                     node.id, cond.ref_node
                 )));
@@ -640,7 +643,7 @@ impl ExecutionGraphTool {
         let graph_id = args
             .get("graph_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'graph_id' for execute_next".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'graph_id' for execute_next".to_string()))?;
 
         let mut graph = self.load_graph(&ctx, graph_id)?;
 
@@ -650,7 +653,7 @@ impl ExecutionGraphTool {
                 let id = entry
                     .get("id")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ZeroError::Tool("Completed entry missing 'id'".to_string()))?;
+                    .ok_or_else(|| AgentError::Tool("Completed entry missing 'id'".to_string()))?;
 
                 if let Some(error) = entry.get("error").and_then(|v| v.as_str()) {
                     graph.fail_node(id, error.to_string());
@@ -699,7 +702,7 @@ impl ExecutionGraphTool {
         let graph_id = args
             .get("graph_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'graph_id' for status".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'graph_id' for status".to_string()))?;
 
         let graph = self.load_graph(&ctx, graph_id)?;
 
@@ -735,20 +738,20 @@ impl ExecutionGraphTool {
         let graph_id = args
             .get("graph_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'graph_id' for add_node".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'graph_id' for add_node".to_string()))?;
 
         let node_val = args
             .get("node")
-            .ok_or_else(|| ZeroError::Tool("Missing 'node' for add_node action".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'node' for add_node action".to_string()))?;
 
         let node: GraphNode = serde_json::from_value(node_val.clone())
-            .map_err(|e| ZeroError::Tool(format!("Invalid node definition: {}", e)))?;
+            .map_err(|e| AgentError::Tool(format!("Invalid node definition: {}", e)))?;
 
         let mut graph = self.load_graph(&ctx, graph_id)?;
 
         let node_id = node.id.clone();
         if !graph.add_node(node) {
-            return Err(ZeroError::Tool(format!(
+            return Err(AgentError::Tool(format!(
                 "Node '{}' already exists in graph",
                 node_id
             )));
@@ -771,9 +774,9 @@ impl ExecutionGraphTool {
     fn load_graph(&self, ctx: &Arc<dyn ToolContext>, graph_id: &str) -> Result<ExecutionGraph> {
         let graph_val = ctx
             .get_state(&format!("app:graph:{}", graph_id))
-            .ok_or_else(|| ZeroError::Tool(format!("Graph '{}' not found", graph_id)))?;
+            .ok_or_else(|| AgentError::Tool(format!("Graph '{}' not found", graph_id)))?;
         serde_json::from_value(graph_val)
-            .map_err(|e| ZeroError::Tool(format!("Failed to deserialize graph: {}", e)))
+            .map_err(|e| AgentError::Tool(format!("Failed to deserialize graph: {}", e)))
     }
 
     fn save_graph(
@@ -783,7 +786,7 @@ impl ExecutionGraphTool {
         graph: &ExecutionGraph,
     ) -> Result<()> {
         let graph_json = serde_json::to_value(graph)
-            .map_err(|e| ZeroError::Tool(format!("Failed to serialize graph: {}", e)))?;
+            .map_err(|e| AgentError::Tool(format!("Failed to serialize graph: {}", e)))?;
         ctx.set_state(format!("app:graph:{}", graph_id), graph_json);
         Ok(())
     }

@@ -160,8 +160,8 @@ missing root/ward exposure.
 
 **Depends on:** T1, T2
 
-**Touches:** `memory-bank/components/agent-handoff-notes.md`,
-`memory-bank/components/index.md`, `docs/specs/README.md`
+**Touches:** `docs/architecture/components/agent-handoff-notes.md`,
+`docs/architecture/components/index.md`, `docs/specs/README.md`
 
 **Tests:**
 - Goal-based check for Acceptance Criteria 8 and 9: docs contain
@@ -173,7 +173,7 @@ missing root/ward exposure.
 **Approach:**
 - Add a concise component doc covering purpose, actors, data flow, tool
   surfaces, and boundaries.
-- Link the doc from `memory-bank/components/index.md`.
+- Link the doc from `docs/architecture/components/index.md`.
 - Add the spec to `docs/specs/README.md` with Draft status.
 - Point readers to the Pattern 4 future-state document for the parked
   northstar.
@@ -206,7 +206,7 @@ full peer-messaging design has shipped.
   ```bash
   rg "PeerMessageBus|ReplyStore|wait_for_reply|federation|reply channel" \
     gateway runtime services stores docs/specs/agent-handoff-notes \
-    memory-bank/components
+    docs/architecture/components
   ```
 - `git diff --check`
 

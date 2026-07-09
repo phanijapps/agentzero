@@ -24,11 +24,12 @@ uuid = { workspace = true }
 
 # Knowledge-graph store traits (used by Pruner, OrphanArchiver, DecayEngine,
 # and the recall adapters/MemoryRecall).
-zero-stores = { path = "../../stores/zero-stores" }
-zero-stores-traits = { path = "../../stores/zero-stores-traits" }
+zbot-stores = { path = "../../stores/zbot-stores" }
+zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
 # Domain types (MemoryFact, Procedure, ScoredFact, WikiArticle) used by recall.
-zero-stores-domain = { path = "../../stores/zero-stores-domain" }
+zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
+zbot-conversation = { path = "../../stores/zbot-conversation" }
 
 # Entity / EntityType types used by Compactor's PairwiseVerifier trait.
 knowledge-graph = { path = "../../services/knowledge-graph" }
@@ -36,6 +37,8 @@ knowledge-graph = { path = "../../services/knowledge-graph" }
 # LLM client trait (EmbeddingClient) used by Synthesizer + sleep components
 # + MemoryRecall (query embedding).
 agent-runtime = { path = "../../runtime/agent-runtime" }
+# JSON Schema derivation for the Rig extractor (synthesizer typed output).
+schemars = { workspace = true }
 
 # EventBus + GatewayEvent for emitting RecallTrace telemetry. Optional in
 # the recall pipeline — when the EventBus isn't wired (tests), recall
@@ -49,7 +52,7 @@ tempfile = "3"
 # (previous_episodes uses VaultPaths/KnowledgeDatabase/EpisodeRepository).
 gateway-services = { path = "../gateway-services" }
 rusqlite = { version = "0.32", features = ["bundled"] }
-zero-stores-sqlite = { path = "../../stores/zero-stores-sqlite" }
+zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
 
 [lints]
 workspace = true

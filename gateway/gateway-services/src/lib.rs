@@ -17,6 +17,7 @@ pub mod embedding_service;
 pub mod lang_config;
 pub mod logging;
 pub mod mcp;
+pub mod mcp_oauth;
 pub mod models;
 pub mod ollama_client;
 pub mod paths;
@@ -38,6 +39,7 @@ pub use embedding_service::{
 pub use lang_config::{load_all_lang_configs, load_lang_config, LangConfig};
 pub use logging::LogSettings;
 pub use mcp::McpService;
+pub use mcp_oauth::{McpOAuthService, McpOAuthStartResponse};
 pub use models::ModelRegistry;
 pub use ollama_client::OllamaClient;
 pub use paths::{SharedVaultPaths, VaultPaths};

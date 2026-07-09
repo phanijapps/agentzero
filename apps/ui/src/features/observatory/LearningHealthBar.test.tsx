@@ -71,6 +71,34 @@ describe("LearningHealthBar", () => {
     expect(screen.getByText("3")).toBeInTheDocument(); // episodes
   });
 
+  it("renders additive governance health when present", () => {
+    mockUseGraphStats.mockReturnValueOnce({
+      stats: {
+        facts: 12,
+        entities: 7,
+        relationships: 4,
+        episodes: 3,
+        governance: {
+          supported: true,
+          ontologyIds: ["zbot.base:v1"],
+          taxonomySchemeIds: ["zbot.general:v1"],
+          validationMode: "advisory",
+          allowUnclassified: "allow",
+          skosExpansion: { maxDepth: 2, maxFanOut: 4, maxCandidates: 10 },
+          findingCount: 2,
+          findingCodes: ["unknown_relationship_type"],
+        },
+      },
+      loading: false,
+      error: null,
+    });
+
+    render(<LearningHealthBar />);
+
+    expect(screen.getByText(/governance/i)).toBeInTheDocument();
+    expect(screen.getByText(/active .* 2 findings/i)).toBeInTheDocument();
+  });
+
   it("renders Failed and Skipped chips when those counts are > 0", () => {
     mockUseDistillationStatus.mockReturnValueOnce({
       status: {

@@ -945,10 +945,34 @@ impl<D: StateDbProvider> StateRepository<D> {
         tokens_out: u64,
     ) -> Result<(), String> {
         self.db.with_connection(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
                 "UPDATE agent_executions SET tokens_in = ?1, tokens_out = ?2 WHERE id = ?3",
                 params![tokens_in as i64, tokens_out as i64, id],
             )?;
+            tx.execute(
+                "UPDATE sessions
+                 SET
+                    total_tokens_in = (
+                        SELECT COALESCE(SUM(tokens_in), 0)
+                        FROM agent_executions
+                        WHERE session_id = (
+                            SELECT session_id FROM agent_executions WHERE id = ?1
+                        )
+                    ),
+                    total_tokens_out = (
+                        SELECT COALESCE(SUM(tokens_out), 0)
+                        FROM agent_executions
+                        WHERE session_id = (
+                            SELECT session_id FROM agent_executions WHERE id = ?1
+                        )
+                    )
+                 WHERE id = (
+                    SELECT session_id FROM agent_executions WHERE id = ?1
+                 )",
+                params![id],
+            )?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -1166,7 +1190,7 @@ impl<D: StateDbProvider> StateRepository<D> {
             // Base query joining messages with executions
             let mut sql = String::from(
                 "SELECT m.id, m.execution_id, e.agent_id, e.delegation_type,
-                        m.role, m.content, m.created_at, m.tool_calls, m.tool_results
+                        m.role, m.content, m.created_at, m.tool_calls, m.tool_call_id
                  FROM messages m
                  JOIN agent_executions e ON m.execution_id = e.id
                  WHERE e.session_id = ?1",
@@ -1376,7 +1400,7 @@ impl<D: StateDbProvider> StateRepository<D> {
         row: &rusqlite::Row,
     ) -> Result<crate::handlers::SessionMessage, rusqlite::Error> {
         let tool_calls_json: Option<String> = row.get(7)?;
-        let tool_results_json: Option<String> = row.get(8)?;
+        let tool_call_id: Option<String> = row.get(8)?;
 
         Ok(crate::handlers::SessionMessage {
             id: row.get(0)?,
@@ -1387,7 +1411,8 @@ impl<D: StateDbProvider> StateRepository<D> {
             content: row.get(5)?,
             created_at: row.get(6)?,
             tool_calls: tool_calls_json.and_then(|s| serde_json::from_str(&s).ok()),
-            tool_results: tool_results_json.and_then(|s| serde_json::from_str(&s).ok()),
+            tool_call_id,
+            tool_results: None,
         })
     }
 }
@@ -1769,7 +1794,7 @@ mod tests {
 
     /// In-memory DB provider with every table `delete_session_cascade` reads
     /// or asserts on. Deliberately mirrors the production column names from
-    /// `gateway/gateway-database/src/schema.rs` so the real cascade SQL runs.
+    /// the conversation schema so the real cascade SQL runs.
     struct CascadeDbProvider {
         conn: Mutex<Connection>,
     }
@@ -2680,6 +2705,42 @@ mod tests {
         let updated = repo.get_execution(&exec.id).unwrap().unwrap();
         assert_eq!(updated.tokens_in, 200);
         assert_eq!(updated.tokens_out, 100);
+    }
+
+    #[test]
+    fn update_execution_tokens_refreshes_session_totals() {
+        let repo = setup_repo();
+        let session = Session::new("agent");
+        repo.create_session(&session).unwrap();
+
+        let mut root = AgentExecution::new_root(&session.id, "agent");
+        root.id = "exec-root".to_string();
+        root.tokens_in = 10;
+        root.tokens_out = 5;
+        repo.create_execution(&root).unwrap();
+
+        let mut child = AgentExecution::new_delegated(
+            &session.id,
+            "research-agent",
+            &root.id,
+            DelegationType::Sequential,
+            "research",
+        );
+        child.id = "exec-child".to_string();
+        child.tokens_in = 20;
+        child.tokens_out = 7;
+        repo.create_execution(&child).unwrap();
+
+        repo.update_session_tokens(&session.id).unwrap();
+        let before = repo.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(before.total_tokens_in, 30);
+        assert_eq!(before.total_tokens_out, 12);
+
+        repo.update_execution_tokens(&root.id, 100, 50).unwrap();
+
+        let after = repo.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(after.total_tokens_in, 120);
+        assert_eq!(after.total_tokens_out, 57);
     }
 
     #[test]

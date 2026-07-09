@@ -606,16 +606,16 @@ The reference book gets smaller, sharper, and more consistent with each cycle. R
 | Auto-merge of `duplicate` belief pairs (B-2) | Detected but not yet merged. Future phase will canonicalise subject names. |
 | Belief-derived-from-belief | Schema allows cascade depth 3 but effective depth is 1 today; reserved for future synthesis topology. |
 | Cross-ward belief routing | Beliefs are partition-scoped. A user fact ("vegetarian") could plausibly be ward-global; needs design. |
-| Hierarchical KG (HiRAG / LeanRAG) | Planned. See `memory-bank/future-state/` once design lands. |
+| Hierarchical KG (HiRAG / LeanRAG) | Planned. See `docs/architecture/future-state/` once design lands. |
 | Validation corpus | 10-run validation corpus across 4 tiers exists (`docs/memory-validation.md`). Continuous expansion would let weights be tuned empirically rather than heuristically. |
 
 ### Where to look next
 
-- **Design doc** — `memory-bank/future-state/2026-05-15-belief-network-design.md` (Belief Network B-1 through B-6)
-- **Tracking doc** — `memory-bank/future-state/2026-05-13-memory-crate-extraction-tracking.md` (running log of memory-subsystem changes; paired with this file)
+- **Design doc** — `docs/architecture/future-state/2026-05-15-belief-network-design.md` (Belief Network B-1 through B-6)
+- **Tracking doc** — `docs/architecture/future-state/2026-05-13-memory-crate-extraction-tracking.md` (running log of memory-subsystem changes; paired with this file)
 - **Slide deck** — `docs/memory-slides.html` (the visual companion to this doc)
 - **Validation corpus** — `docs/memory-validation.md` (recall test scenarios across 4 tiers)
-- **Source** — `gateway/gateway-memory/src/` (memory subsystem), `stores/zero-stores-sqlite/src/knowledge_schema.rs` (schema), `gateway/src/http/beliefs.rs` (HTTP surface), `apps/ui/src/features/memory/` and `apps/ui/src/features/observatory/` (UI)
+- **Source** — `gateway/gateway-memory/src/` (memory subsystem), `stores/zbot-stores-sqlite/src/knowledge_schema.rs` (schema), `gateway/src/http/beliefs.rs` (HTTP surface), `apps/ui/src/features/memory/` and `apps/ui/src/features/observatory/` (UI)
 
 ### Recap
 

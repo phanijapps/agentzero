@@ -17,9 +17,9 @@ categories = ["development-tools"]
 
 [dependencies]
 # Internal crates
-zero-core = { path = "../../framework/zero-core" }
+agent-primitives = { path = "../agent-primitives" }
 agent-tools = { path = "../agent-tools" }
-zero-stores-traits = { path = "../../stores/zero-stores-traits" }
+zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
 # Async runtime
 tokio = { workspace = true }
@@ -31,6 +31,7 @@ tokio-stream = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+schemars = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
@@ -42,6 +43,10 @@ tracing-subscriber = { workspace = true }
 
 # HTTP client
 reqwest = { workspace = true }
+
+# Rig is pinned for the migration adapter boundary only. Keep default features
+# off until provider/tool/memory adapters deliberately opt in.
+rig = { git = "https://github.com/0xplaygrounds/rig", rev = "6b1991bfb246411dd75839c8611e801a2309d33c", version = "0.39.0", default-features = false }
 
 # Utilities
 uuid = { workspace = true }

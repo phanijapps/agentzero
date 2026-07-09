@@ -7,12 +7,13 @@ mod common;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use common::{setup, setup_with_state_service};
+use common::{now_iso, setup, setup_with_state_service};
 use execution_state::{DelegationType, StateService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::TempDir;
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_domain::MemoryFact;
+use zbot_stores_sqlite::DatabaseManager;
 
 // ============================================================================
 // Test Setup
@@ -318,6 +319,101 @@ async fn conversation_not_found_returns_404() {
 }
 
 // ============================================================================
+// Memory Endpoint Tests
+// ============================================================================
+
+#[tokio::test]
+async fn memory_create_rejects_internal_fact_categories() {
+    let (server, _dir) = setup_test_server().await;
+
+    for category in ["ctx", "instruction", "correction"] {
+        let response = server
+            .post("/api/memory/root")
+            .json(&json!({
+                "category": category,
+                "key": format!("{category}.public-bypass"),
+                "content": "must not be user-created through public memory API"
+            }))
+            .await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = response.json();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("internal-only"),
+            "unexpected body for {category}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn memory_get_and_delete_reject_internal_facts_even_by_id() {
+    let (server, _dir, state) = setup();
+
+    for category in ["ctx", "instruction", "correction"] {
+        let now = now_iso();
+        let fact_id = format!("fact-internal-{category}");
+        let fact = MemoryFact {
+            id: fact_id.clone(),
+            session_id: Some("sess-internal".to_string()),
+            agent_id: "root".to_string(),
+            scope: "session".to_string(),
+            category: category.to_string(),
+            key: format!("{category}.sess-internal.intent"),
+            content: "private policy/control fact".to_string(),
+            confidence: 1.0,
+            mention_count: 1,
+            source_summary: None,
+            embedding: None,
+            ward_id: "__global__".to_string(),
+            contradicted_by: None,
+            created_at: now.clone(),
+            updated_at: now,
+            expires_at: None,
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            pinned: true,
+            epistemic_class: Some("current".to_string()),
+            source_episode_id: None,
+            source_ref: None,
+        };
+        futures::executor::block_on(
+            state
+                .memory_store
+                .as_ref()
+                .expect("memory_store")
+                .upsert_typed_fact(serde_json::to_value(fact).expect("encode fact"), None),
+        )
+        .expect("seed internal fact");
+
+        let get_response = server
+            .get(&format!("/api/memory/root/facts/{fact_id}"))
+            .await;
+        get_response.assert_status(StatusCode::FORBIDDEN);
+
+        let delete_response = server
+            .delete(&format!("/api/memory/root/facts/{fact_id}"))
+            .await;
+        delete_response.assert_status(StatusCode::FORBIDDEN);
+
+        let still_exists = state
+            .memory_store
+            .as_ref()
+            .expect("memory_store")
+            .get_memory_fact_by_id(&fact_id)
+            .await
+            .expect("read fact");
+        assert!(
+            still_exists.is_some(),
+            "forbidden delete must not remove {category} fact"
+        );
+    }
+}
+
+// ============================================================================
 // Skills Endpoint Tests
 // ============================================================================
 
@@ -366,6 +462,170 @@ async fn mcps_list_returns_response() {
     assert!(body.get("servers").is_some());
 }
 
+#[tokio::test]
+async fn mcp_oauth_status_reports_not_connected_without_secrets() {
+    let (server, _dir) = setup_test_server().await;
+
+    let create = server
+        .post("/api/mcps")
+        .json(&json!({
+            "type": "streamable-http",
+            "id": "robinhood-trading",
+            "name": "Robinhood Trading",
+            "description": "Trading MCP",
+            "url": "https://agent.robinhood.com/mcp/trading",
+            "auth": { "type": "oauth2" },
+            "enabled": false
+        }))
+        .await;
+    create.assert_status_ok();
+
+    let response = server.get("/api/mcps/robinhood-trading/oauth/status").await;
+    response.assert_status_ok();
+
+    let body: Value = response.json();
+    assert_eq!(body["status"], "not_connected");
+    assert!(!body.to_string().contains("token"));
+}
+
+#[tokio::test]
+async fn mcp_oauth_create_rejects_persisted_authorization_header() {
+    let (server, _dir) = setup_test_server().await;
+
+    let response = server
+        .post("/api/mcps")
+        .json(&json!({
+            "type": "streamable-http",
+            "id": "oauth-with-header",
+            "name": "OAuth With Header",
+            "description": "bad",
+            "url": "https://example.com/mcp",
+            "headers": { "Authorization": "Bearer secret" },
+            "auth": { "type": "oauth2" },
+            "enabled": false
+        }))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: Value = response.json();
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Authorization"));
+}
+
+#[tokio::test]
+async fn mcp_oauth_create_rejects_nonlocal_browser_origin() {
+    let (server, _dir) = setup_test_server().await;
+
+    let response = server
+        .post("/api/mcps")
+        .add_header("origin", "https://evil.example")
+        .json(&json!({
+            "type": "streamable-http",
+            "id": "oauth-origin",
+            "name": "OAuth Origin",
+            "description": "oauth",
+            "url": "https://example.com/mcp",
+            "auth": { "type": "oauth2" },
+            "enabled": false
+        }))
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn mcp_oauth_disconnect_is_idempotent_and_returns_status() {
+    let (server, _dir) = setup_test_server().await;
+
+    server
+        .post("/api/mcps")
+        .json(&json!({
+            "type": "streamable-http",
+            "id": "oauth-server",
+            "name": "OAuth Server",
+            "description": "oauth",
+            "url": "https://example.com/mcp",
+            "auth": { "type": "oauth2" },
+            "enabled": false
+        }))
+        .await
+        .assert_status_ok();
+
+    let response = server.post("/api/mcps/oauth-server/oauth/disconnect").await;
+    response.assert_status_ok();
+
+    let body: Value = response.json();
+    assert_eq!(body["status"], "not_connected");
+}
+
+#[tokio::test]
+async fn mcp_oauth_start_rejects_external_redirect_uri() {
+    let (server, _dir) = setup_test_server().await;
+
+    server
+        .post("/api/mcps")
+        .json(&json!({
+            "type": "streamable-http",
+            "id": "oauth-start",
+            "name": "OAuth Start",
+            "description": "oauth",
+            "url": "https://example.com/mcp",
+            "auth": { "type": "oauth2" },
+            "enabled": false
+        }))
+        .await
+        .assert_status_ok();
+
+    let response = server
+        .post("/api/mcps/oauth-start/oauth/start")
+        .json(&json!({ "redirectUri": "https://evil.example/callback" }))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: Value = response.json();
+    assert!(body["error"].as_str().unwrap_or("").contains("redirectUri"));
+}
+
+#[tokio::test]
+async fn mcp_oauth_callback_rejects_missing_state() {
+    let (server, _dir) = setup_test_server().await;
+
+    let response = server.get("/api/mcps/oauth/callback?code=abc").await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert!(response.text().contains("missing state"));
+}
+
+#[tokio::test]
+async fn mcp_oauth_test_requires_connection_before_runtime_start() {
+    let (server, _dir) = setup_test_server().await;
+
+    server
+        .post("/api/mcps")
+        .json(&json!({
+            "type": "streamable-http",
+            "id": "oauth-test",
+            "name": "OAuth Test",
+            "description": "oauth",
+            "url": "https://example.com/mcp",
+            "auth": { "type": "oauth2" },
+            "enabled": true
+        }))
+        .await
+        .assert_status_ok();
+
+    let response = server.post("/api/mcps/oauth-test/test").await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: Value = response.json();
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("requires OAuth authentication"));
+}
+
 // ============================================================================
 // Settings Endpoint Tests
 // ============================================================================
@@ -395,7 +655,6 @@ async fn tool_settings_update() {
         "loadSkill": true,
         "uiTools": true,
         "createAgent": true,
-        "introspection": true,
         "offloadLargeResults": true,
         "offloadThresholdTokens": 5000
     });
@@ -404,6 +663,98 @@ async fn tool_settings_update() {
 
     // Should succeed
     response.assert_status_ok();
+}
+
+// ============================================================================
+// Tool Catalog Endpoint Tests
+// ============================================================================
+
+#[tokio::test]
+async fn tools_list_returns_root_context_catalog() {
+    let (server, dir) = setup_test_server().await;
+
+    let response = server
+        .get("/api/tools")
+        .add_query_param("sessionId", "sess-test")
+        .add_query_param("agentId", "root")
+        .await;
+
+    response.assert_status_ok();
+
+    let body: Value = response.json();
+    assert_eq!(body["actor_kind"], "root");
+    assert_eq!(body["session_id"], "sess-test");
+    assert_eq!(body["agent_id"], "root");
+
+    let capabilities = body["capabilities"].as_array().expect("capabilities array");
+    assert!(!capabilities.is_empty());
+    assert!(capabilities.iter().any(|capability| {
+        capability["id"] == "shell"
+            && capability["kind"] == "tool"
+            && capability["risk_level"] == "high"
+    }));
+    assert!(!body.to_string().contains(&dir.path().display().to_string()));
+}
+
+#[tokio::test]
+async fn tools_list_filters_delegated_reviewer_catalog() {
+    let (server, _dir) = setup_test_server().await;
+
+    let response = server
+        .get("/api/tools")
+        .add_query_param("actor", "delegated_reviewer")
+        .await;
+
+    response.assert_status_ok();
+
+    let body: Value = response.json();
+    assert_eq!(body["actor_kind"], "delegated_reviewer");
+
+    let ids: std::collections::BTreeSet<String> = body["capabilities"]
+        .as_array()
+        .expect("capabilities array")
+        .iter()
+        .filter_map(|capability| capability["id"].as_str().map(str::to_string))
+        .collect();
+
+    assert!(ids.contains("read"));
+    assert!(ids.contains("glob"));
+    assert!(ids.contains("respond"));
+    assert!(!ids.contains("shell"));
+    assert!(!ids.contains("grep"));
+    assert!(!ids.contains("memory"));
+    assert!(!ids.contains("delegate_to_agent"));
+}
+
+#[tokio::test]
+async fn tools_detail_returns_catalog_capability_or_404() {
+    let (server, _dir) = setup_test_server().await;
+
+    let response = server.get("/api/tools/shell").await;
+    response.assert_status_ok();
+    let shell: Value = response.json();
+    assert_eq!(shell["id"], "shell");
+    assert_eq!(shell["side_effects"], "execute");
+
+    let missing = server.get("/api/tools/not-a-real-tool").await;
+    missing.assert_status(StatusCode::NOT_FOUND);
+    let body: Value = missing.json();
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not-a-real-tool"));
+}
+
+#[tokio::test]
+async fn tools_list_rejects_unknown_actor_kind() {
+    let (server, _dir) = setup_test_server().await;
+
+    let response = server
+        .get("/api/tools")
+        .add_query_param("actor", "unknown")
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
 }
 
 // ============================================================================

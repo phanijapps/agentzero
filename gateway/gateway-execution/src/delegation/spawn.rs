@@ -5,7 +5,7 @@
 use super::callback::{handle_delegation_failure, handle_delegation_success};
 use super::context::{infer_delegation_mode, DelegationContext, DelegationRequest};
 use super::registry::DelegationRegistry;
-use agent_runtime::AgentExecutor;
+use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig};
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::{EventBus, GatewayEvent};
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock};
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::agent_pool::{AgentResultBus, AgentWaitError};
 
@@ -23,8 +23,8 @@ use agent_runtime::ChatMessage;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
     broadcast_event, collect_agents_summary, collect_skills_summary, detect_subagent_role,
-    process_stream_event, spawn_batch_writer_with_repo, subagent_rules, AgentLoader,
-    ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext,
+    process_stream_event, select_engine, spawn_batch_writer_with_traces, subagent_rules,
+    AgentLoader, ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext,
 };
 use crate::lifecycle::{
     complete_execution, crash_execution, emit_delegation_completed, emit_delegation_started,
@@ -53,14 +53,16 @@ pub async fn spawn_delegated_agent(
     mcp_service: Arc<McpService>,
     skill_service: Arc<SkillService>,
     paths: SharedVaultPaths,
-    conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     delegation_registry: Arc<DelegationRegistry>,
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     log_service: Arc<LogService<DatabaseManager>>,
     state_service: Arc<StateService<DatabaseManager>>,
     delegation_permit: Option<OwnedSemaphorePermit>,
-    memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     memory_recall: Option<Arc<MemoryRecall>>,
     rate_limiters: Arc<
@@ -68,7 +70,7 @@ pub async fn spawn_delegated_agent(
             std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
         >,
     >,
-    kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
+    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     steering_registry: Arc<agent_runtime::SteeringRegistry>,
@@ -221,6 +223,8 @@ pub async fn spawn_delegated_agent(
     // Get tool settings
     let settings_service = gateway_services::SettingsService::new(paths.clone());
     let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
+    let tool_result_context =
+        crate::runner::prompt_safe_tool_result_config(&tool_settings, paths.vault_dir());
 
     // Look up the parent session's ward, then resolve the ward this
     // delegation actually runs in: a `ward:<name>` target runs in its
@@ -279,14 +283,8 @@ pub async fn spawn_delegated_agent(
         );
     }
 
-    // Build model registry for capability lookups
-    let bundled_models = gateway_templates::Templates::get("models_registry.json")
-        .map(|f| f.data.to_vec())
-        .unwrap_or_default();
-    let model_registry = Arc::new(gateway_services::models::ModelRegistry::load(
-        &bundled_models,
-        paths.vault_dir(),
-    ));
+    // Build fallback-only model metadata registry.
+    let model_registry = Arc::new(gateway_services::models::ModelRegistry::load());
 
     // Get shared rate limiter for the child's provider
     let provider_id = provider.id.clone().unwrap_or_else(|| provider.name.clone());
@@ -325,7 +323,7 @@ pub async fn spawn_delegated_agent(
         .with_state_service(state_service.clone())
         .with_steering_registry(steering_registry.clone())
         .with_agent_result_bus(agent_result_bus.clone())
-        .with_conversation_repo(conversation_repo.clone());
+        .with_message_store(messages.clone());
 
     let mut executor = match builder
         .build(
@@ -363,7 +361,17 @@ pub async fn spawn_delegated_agent(
             .await
         {
             Ok(items) if !items.is_empty() => {
-                let formatted = crate::recall::format_scored_items(&items);
+                let formatted = crate::recall::format_scored_items_with_options(
+                    &items,
+                    crate::recall::ContextPacketBuildOptions::new(
+                        format!("{execution_id}:delegation-recall"),
+                        request.child_agent_id.clone(),
+                        context_actor_kind(actor_kind),
+                        1_200,
+                    )
+                    .with_conversation_id(Some(child_conversation_id.clone()))
+                    .with_ward_id(session_ward_id.clone()),
+                );
                 if formatted.is_empty() {
                     Vec::new()
                 } else {
@@ -411,7 +419,7 @@ pub async fn spawn_delegated_agent(
     // The post-execution state_handoff hook reuses the same trait store
     // the executor was wired with. Cloning is cheap (Arc) and lets the
     // handoff fire after the executor has consumed its own copy.
-    let fact_store_for_ctx: Option<Arc<dyn zero_stores::MemoryFactStore>> = memory_store.clone();
+    let fact_store_for_ctx: Option<Arc<dyn zbot_stores::MemoryFactStore>> = memory_store.clone();
 
     // Phase 7: pass the memory_store handle through so spawn_execution_task
     // can query ctx.state.* rows when building the ward_snapshot preamble.
@@ -419,7 +427,7 @@ pub async fn spawn_delegated_agent(
 
     // Spawn the execution task
     spawn_execution_task(SpawnContext {
-        executor,
+        executor: select_engine(executor),
         handle: handle_clone,
         request: request.clone(),
         execution_id: execution_id.clone(),
@@ -427,7 +435,9 @@ pub async fn spawn_delegated_agent(
         child_session_id,
         conv_id: child_conversation_id.clone(),
         event_bus,
-        conversation_repo,
+        messages,
+        session_meta,
+        checkpoints,
         delegation_registry,
         delegation_tx,
         log_service,
@@ -435,6 +445,7 @@ pub async fn spawn_delegated_agent(
         paths,
         delegation_permit,
         initial_history,
+        tool_result_context,
         fact_store_for_ctx,
         memory_store_for_snapshot,
         distiller,
@@ -501,7 +512,7 @@ fn reuse_check_block(agent_id: &str) -> Option<&'static str> {
 /// - Fields can be reordered freely without breaking call sites.
 struct SpawnContext {
     // --- Execution identity ---
-    executor: AgentExecutor,
+    executor: BoxedAgentEngine,
     handle: ExecutionHandle,
     request: DelegationRequest,
     execution_id: String,
@@ -510,13 +521,16 @@ struct SpawnContext {
     /// Child conversation id (what the downstream stream/log services key on).
     conv_id: String,
     initial_history: Vec<ChatMessage>,
+    tool_result_context: ToolResultContextConfig,
 
     // --- Resource control ---
     delegation_permit: Option<OwnedSemaphorePermit>,
 
     // --- Shared services ---
     event_bus: Arc<EventBus>,
-    conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     delegation_registry: Arc<DelegationRegistry>,
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     log_service: Arc<LogService<DatabaseManager>>,
@@ -524,8 +538,8 @@ struct SpawnContext {
     paths: SharedVaultPaths,
 
     // --- Optional memory wiring (Phase 4b + 7 ward_snapshot preamble) ---
-    fact_store_for_ctx: Option<Arc<dyn zero_stores::MemoryFactStore>>,
-    memory_store_for_snapshot: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    fact_store_for_ctx: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    memory_store_for_snapshot: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     /// Distiller for the subagent's child session — fired after
     /// `complete_session(child_session_id)`.
     distiller: Option<Arc<crate::distillation::SessionDistiller>>,
@@ -546,9 +560,12 @@ fn spawn_execution_task(ctx: SpawnContext) {
         child_session_id,
         conv_id,
         initial_history,
+        tool_result_context,
         delegation_permit,
         event_bus,
-        conversation_repo,
+        messages,
+        session_meta,
+        checkpoints,
         delegation_registry,
         delegation_tx,
         log_service,
@@ -574,12 +591,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
     // Inner layer (Phase 4b): <session_ctx ... /> tag with sid + tool
     // hint so the subagent can fetch more ctx fields on demand.
     //
-    // Ward lookup is cheap (single-row query via ConversationRepository)
-    // and falls back to "__global__" if the ward can't be resolved.
-    let ward_for_preamble = conversation_repo
-        .get_session_ward_id(&session_id)
-        .ok()
-        .flatten();
+    // Ward lookup is cheap and falls back to "__global__" if it can't be resolved.
+    let ward_for_preamble = session_meta.session_ward_id(&session_id).ok().flatten();
 
     // Step 1 of 2: session_ctx tag (always emitted, tiny)
     let with_ctx_tag = crate::session_ctx::preamble::prepend_to_task(
@@ -629,11 +642,12 @@ fn spawn_execution_task(ctx: SpawnContext) {
             with_snapshot
         };
 
-        // Create batch writer with conversation repo for session message streaming
-        let batch_writer = spawn_batch_writer_with_repo(
+        // Create batch writer for session message and trace streaming.
+        let batch_writer = spawn_batch_writer_with_traces(
             state_service.clone(),
             log_service.clone(),
-            Some(conversation_repo.clone()),
+            paths.traces_dir(),
+            messages.clone(),
         );
 
         // Create stream context for event processing
@@ -667,88 +681,93 @@ fn spawn_execution_task(ctx: SpawnContext) {
         let batch_writer_inner = batch_writer.clone();
         let mut turn_tool_calls: Vec<serde_json::Value> = Vec::new();
         let mut turn_text = String::new();
+        let mut current_tool_name = String::new();
 
         let stop_sig = Some(handle.stop_signal());
-        let result = executor
-            .execute_stream_with_stop_flag(&task_msg, &initial_history, stop_sig, |event| {
-                if handle.is_stop_requested() {
-                    return;
+        let mut on_event = |event| {
+            if handle.is_stop_requested() {
+                return;
+            }
+
+            handle.increment();
+
+            // Stream messages to child session
+            match &event {
+                agent_runtime::StreamEvent::ToolCallStart {
+                    tool_id,
+                    tool_name,
+                    args,
+                    ..
+                } => {
+                    current_tool_name = tool_name.clone();
+                    turn_tool_calls.push(serde_json::json!({
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "args": args,
+                    }));
                 }
-
-                handle.increment();
-
-                // Stream messages to child session
-                match &event {
-                    agent_runtime::StreamEvent::ToolCallStart {
-                        tool_id,
-                        tool_name,
-                        args,
-                        ..
-                    } => {
-                        turn_tool_calls.push(serde_json::json!({
-                            "tool_id": tool_id,
-                            "tool_name": tool_name,
-                            "args": args,
-                        }));
-                    }
-                    agent_runtime::StreamEvent::ToolResult {
-                        tool_id,
-                        result,
-                        error,
-                        ..
-                    } => {
-                        if !turn_tool_calls.is_empty() {
-                            let tc_json =
-                                serde_json::to_string(&turn_tool_calls).unwrap_or_default();
-                            let content = if turn_text.is_empty() {
-                                "[tool calls]".to_string()
-                            } else {
-                                std::mem::take(&mut turn_text)
-                            };
-                            batch_writer_inner.session_message(
-                                &child_session_id_inner,
-                                &execution_id_inner,
-                                "assistant",
-                                &content,
-                                Some(&tc_json),
-                                None,
-                            );
-                            turn_tool_calls.clear();
-                        }
-
-                        let tool_content = if let Some(err) = error {
-                            format!("Error: {}", err)
+                agent_runtime::StreamEvent::ToolResult {
+                    tool_id,
+                    result,
+                    context_result,
+                    error,
+                    ..
+                } => {
+                    if !turn_tool_calls.is_empty() {
+                        let tc_json = serde_json::to_string(&turn_tool_calls).unwrap_or_default();
+                        let content = if turn_text.is_empty() {
+                            "[tool calls]".to_string()
                         } else {
-                            result.clone()
+                            std::mem::take(&mut turn_text)
                         };
                         batch_writer_inner.session_message(
                             &child_session_id_inner,
                             &execution_id_inner,
-                            "tool",
-                            &tool_content,
+                            "assistant",
+                            &content,
+                            Some(&tc_json),
                             None,
-                            Some(tool_id),
                         );
+                        turn_tool_calls.clear();
                     }
-                    agent_runtime::StreamEvent::Token { content, .. } => {
-                        turn_text.push_str(content);
-                    }
-                    _ => {}
-                }
 
-                // Process the event (logging, delegation, token tracking)
-                let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
-
-                // Accumulate response content
-                if let Some(delta) = response_delta {
-                    response_acc.append(&delta);
+                    let tool_content = crate::runner::prompt_safe_tool_content(
+                        &current_tool_name,
+                        result,
+                        context_result.as_deref(),
+                        error.as_deref(),
+                        &tool_result_context,
+                    );
+                    batch_writer_inner.session_message(
+                        &child_session_id_inner,
+                        &execution_id_inner,
+                        "tool",
+                        &tool_content,
+                        None,
+                        Some(tool_id),
+                    );
                 }
-
-                // Broadcast the gateway event (if not an internal-only event)
-                if let Some(event) = gateway_event {
-                    broadcast_event(stream_ctx.event_bus.clone(), event);
+                agent_runtime::StreamEvent::Token { content, .. } => {
+                    turn_text.push_str(content);
                 }
-            })
+                _ => {}
+            }
+
+            // Process the event (logging, delegation, token tracking)
+            let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
+
+            // Accumulate response content
+            if let Some(delta) = response_delta {
+                response_acc.append(&delta);
+            }
+
+            // Broadcast the gateway event (if not an internal-only event)
+            if let Some(event) = gateway_event {
+                broadcast_event(stream_ctx.event_bus.clone(), event);
+            }
+        };
+        let result = executor
+            .execute_stream_with_stop_flag(&task_msg, &initial_history, stop_sig, &mut on_event)
             .await;
 
         let accumulated_response = response_acc.into_response();
@@ -765,13 +784,25 @@ fn spawn_execution_task(ctx: SpawnContext) {
             );
         }
 
+        // Turn-boundary checkpoint — write a versioned snapshot of the
+        // subagent's context state so session_state can read it in O(1).
+        crate::runner::core::write_turn_checkpoint(
+            &checkpoints,
+            &state_service,
+            &execution_id,
+            &child_session_id,
+            handle.current_iteration(),
+            &accumulated_response,
+        );
+
         match result {
             Ok(()) => {
                 // Unblock any wait_agent before firing callbacks.
                 agent_result_bus.resolve(&execution_id, &agent_id, &accumulated_response);
 
                 handle_execution_success(HandleExecutionSuccess {
-                    conversation_repo: &conversation_repo,
+                    messages: messages.as_ref(),
+                    session_meta: session_meta.as_ref(),
                     state_service: &state_service,
                     log_service: &log_service,
                     event_bus: &event_bus,
@@ -805,7 +836,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 let crash_report = build_crash_report(
                     &agent_id,
                     &e.to_string(),
-                    &conversation_repo,
+                    messages.as_ref(),
                     &child_session_id,
                     &state_service,
                     &session_id,
@@ -821,7 +852,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 );
 
                 handle_execution_failure(HandleExecutionFailure {
-                    conversation_repo: &conversation_repo,
+                    messages: messages.as_ref(),
                     state_service: &state_service,
                     log_service: &log_service,
                     event_bus: &event_bus,
@@ -871,7 +902,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
 /// Inputs for `handle_execution_success` — same pattern as `SpawnContext`
 /// but borrowed (these are called from inside the spawn-owned async closure).
 struct HandleExecutionSuccess<'a> {
-    conversation_repo: &'a ConversationRepository,
+    messages: &'a dyn zbot_conversation::MessageStore,
+    session_meta: &'a dyn zbot_conversation::SessionMetaStore,
     state_service: &'a StateService<DatabaseManager>,
     log_service: &'a LogService<DatabaseManager>,
     event_bus: &'a EventBus,
@@ -883,13 +915,14 @@ struct HandleExecutionSuccess<'a> {
     response: &'a str,
     parent_agent: &'a str,
     parent_execution_id: &'a str,
-    fact_store_for_ctx: Option<&'a Arc<dyn zero_stores::MemoryFactStore>>,
+    fact_store_for_ctx: Option<&'a Arc<dyn zbot_stores::MemoryFactStore>>,
 }
 
 /// Handle successful execution completion.
 async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     let HandleExecutionSuccess {
-        conversation_repo,
+        messages,
+        session_meta,
         state_service,
         log_service,
         event_bus,
@@ -943,6 +976,21 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     })
     .await;
 
+    // Persist the parent callback before marking delegation completion. The
+    // completion event wakes the continuation watcher; waking it first creates
+    // a race where the root can resume without the child result in context.
+    handle_delegation_success(
+        delegation_ctx.as_ref(),
+        messages,
+        event_bus,
+        session_id,
+        parent_execution_id,
+        agent_id,
+        conv_id,
+        response,
+    )
+    .await;
+
     // Check if this was the last delegation and continuation is needed
     match state_service.complete_delegation(session_id) {
         Ok(true) => {
@@ -966,27 +1014,14 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
         Err(e) => tracing::warn!("Failed to complete delegation tracking: {}", e),
     }
 
-    // Send callback message to parent if enabled
-    handle_delegation_success(
-        delegation_ctx.as_ref(),
-        conversation_repo,
-        event_bus,
-        session_id,
-        parent_execution_id,
-        agent_id,
-        conv_id,
-        response,
-    )
-    .await;
-
     // Phase 2b: write a state_handoff fact so the next subagent in this
     // session can fetch this one's summary by exact key. We look up the
     // session's ward so the ctx row is stored per-ward (matches plan +
     // intent snapshots). Fire-and-forget — a failed write logs a warning
     // but never disrupts delegation completion.
     if let Some(fs) = fact_store_for_ctx {
-        let ward_id = conversation_repo
-            .get_session_ward_id(session_id)
+        let ward_id = session_meta
+            .session_ward_id(session_id)
             .ok()
             .flatten()
             .unwrap_or_else(|| "__global__".to_string());
@@ -1039,7 +1074,7 @@ fn crash_spawn_failure(
 /// named fields prevent order-swap bugs between `session_id` and
 /// `parent_execution_id`.
 struct HandleExecutionFailure<'a> {
-    conversation_repo: &'a ConversationRepository,
+    messages: &'a dyn zbot_conversation::MessageStore,
     state_service: &'a StateService<DatabaseManager>,
     log_service: &'a LogService<DatabaseManager>,
     event_bus: &'a EventBus,
@@ -1055,7 +1090,7 @@ struct HandleExecutionFailure<'a> {
 /// Handle execution failure.
 async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
     let HandleExecutionFailure {
-        conversation_repo,
+        messages,
         state_service,
         log_service,
         event_bus,
@@ -1085,7 +1120,7 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
 
     // Send error callback to parent
     handle_delegation_failure(
-        conversation_repo,
+        messages,
         event_bus,
         session_id,
         parent_execution_id,
@@ -1128,7 +1163,7 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
 fn build_crash_report(
     agent_id: &str,
     error: &str,
-    conversation_repo: &ConversationRepository,
+    messages: &dyn zbot_conversation::MessageStore,
     child_session_id: &str,
     state_service: &StateService<DatabaseManager>,
     parent_session_id: &str,
@@ -1139,7 +1174,7 @@ fn build_crash_report(
     // Try to extract plan status from child session messages.
     // Plan updates appear as tool results containing JSON with `__plan_update: true`.
     let mut found_plan = false;
-    if let Ok(messages) = conversation_repo.get_session_conversation(child_session_id, 200) {
+    if let Ok(messages) = messages.replay(child_session_id, None, 200) {
         // Scan tool-result messages for plan updates (last one is most recent)
         let plan_messages: Vec<_> = messages
             .iter()
@@ -1248,6 +1283,15 @@ fn actor_kind_for_delegation(child_agent_id: &str, task: &str) -> RuntimeActorKi
         RuntimeActorKind::WardAgent
     } else {
         RuntimeActorKind::from(detect_subagent_role(child_agent_id, task))
+    }
+}
+
+fn context_actor_kind(actor_kind: RuntimeActorKind) -> ContextActorKind {
+    match actor_kind {
+        RuntimeActorKind::Root => ContextActorKind::Root,
+        RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
+        RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
+        RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
     }
 }
 

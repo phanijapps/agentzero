@@ -4,9 +4,13 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use crate::models::{DEFAULT_MAX_INPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS};
 
 /// Agent configuration stored in config.yaml
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,7 +25,17 @@ pub struct AgentConfig {
     pub provider_id: String,
     pub model: String,
     pub temperature: f64,
-    #[serde(rename = "maxTokens", default = "default_max_tokens")]
+    #[serde(
+        rename = "maxInputTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_input_tokens: Option<u64>,
+    #[serde(
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        default = "default_max_output_tokens"
+    )]
     pub max_tokens: u32,
     #[serde(rename = "thinkingEnabled", default)]
     pub thinking_enabled: bool,
@@ -40,12 +54,56 @@ pub struct AgentConfig {
     pub system_instruction: Option<String>,
 }
 
-fn default_max_tokens() -> u32 {
-    8192
+fn default_max_output_tokens() -> u32 {
+    DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 fn default_voice_recording_enabled() -> bool {
     true
+}
+
+fn validate_agent_id(name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && !is_reserved_agent_id(name)
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+
+    if valid {
+        Ok(())
+    } else {
+        Err(
+            "Invalid agent name. Use a non-reserved lowercase kebab-case agent ID like 'research-agent'."
+                .to_string(),
+        )
+    }
+}
+
+fn is_reserved_agent_id(name: &str) -> bool {
+    matches!(name, "root" | "orchestrator")
+}
+
+fn resolve_agent_dir(agents_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    validate_agent_id(name)?;
+    let agent_dir = agents_dir.join(name);
+    if agent_dir.starts_with(agents_dir) {
+        Ok(agent_dir)
+    } else {
+        Err("Resolved agent directory escaped the agents directory".to_string())
+    }
+}
+
+fn write_new_file(path: &Path, contents: &str) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| format!("Failed to write file: {}", e))
 }
 
 /// Full agent data including instructions
@@ -62,7 +120,11 @@ pub struct Agent {
     pub provider_id: String,
     pub model: String,
     pub temperature: f64,
-    #[serde(rename = "maxTokens")]
+    #[serde(rename = "maxInputTokens")]
+    pub max_input_tokens: u64,
+    #[serde(skip)]
+    pub max_input_tokens_explicit: bool,
+    #[serde(rename = "maxOutputTokens", alias = "maxTokens")]
     pub max_tokens: u32,
     #[serde(rename = "thinkingEnabled")]
     pub thinking_enabled: bool,
@@ -139,6 +201,14 @@ impl AgentService {
                 continue;
             }
 
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_reserved_agent_id)
+            {
+                continue;
+            }
+
             let config_yaml = path.join("config.yaml");
             if !config_yaml.exists() {
                 continue;
@@ -154,7 +224,7 @@ impl AgentService {
 
     /// Get a single agent by ID.
     pub async fn get(&self, id: &str) -> Result<Agent, String> {
-        let agent_dir = self.agents_dir.join(id);
+        let agent_dir = resolve_agent_dir(&self.agents_dir, id)?;
 
         if !agent_dir.exists() {
             return Err(format!("Agent not found: {}", id));
@@ -165,13 +235,19 @@ impl AgentService {
 
     /// Create a new agent.
     pub async fn create(&self, agent: Agent) -> Result<Agent, String> {
+        let agent_dir = resolve_agent_dir(&self.agents_dir, &agent.name)?;
+        match fs::symlink_metadata(&agent_dir) {
+            Ok(_) => return Err(format!("Agent '{}' already exists", agent.name)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Failed to inspect agent directory: {}", e)),
+        }
+
         // Ensure agents directory exists
         fs::create_dir_all(&self.agents_dir)
             .map_err(|e| format!("Failed to create agents directory: {}", e))?;
 
         // Create agent directory
-        let agent_dir = self.agents_dir.join(&agent.name);
-        fs::create_dir_all(&agent_dir)
+        fs::create_dir(&agent_dir)
             .map_err(|e| format!("Failed to create agent directory: {}", e))?;
 
         // Write config.yaml
@@ -182,6 +258,9 @@ impl AgentService {
             provider_id: agent.provider_id.clone(),
             model: agent.model.clone(),
             temperature: agent.temperature,
+            max_input_tokens: agent
+                .max_input_tokens_explicit
+                .then_some(agent.max_input_tokens),
             max_tokens: agent.max_tokens,
             thinking_enabled: agent.thinking_enabled,
             voice_recording_enabled: agent.voice_recording_enabled,
@@ -201,15 +280,13 @@ impl AgentService {
             config_yaml
         };
 
-        fs::write(agent_dir.join("config.yaml"), final_yaml)
-            .map_err(|e| format!("Failed to write config.yaml: {}", e))?;
+        write_new_file(&agent_dir.join("config.yaml"), &final_yaml)?;
 
         // Write AGENTS.md
-        fs::write(
-            agent_dir.join("AGENTS.md"),
-            format!("{}\n", agent.instructions),
-        )
-        .map_err(|e| format!("Failed to write AGENTS.md: {}", e))?;
+        write_new_file(
+            &agent_dir.join("AGENTS.md"),
+            &format!("{}\n", agent.instructions),
+        )?;
 
         // Invalidate cache
         self.invalidate_cache().await;
@@ -223,7 +300,8 @@ impl AgentService {
 
     /// Update an existing agent.
     pub async fn update(&self, id: &str, agent: Agent) -> Result<Agent, String> {
-        let agent_dir = self.agents_dir.join(id);
+        let agent_dir = resolve_agent_dir(&self.agents_dir, id)?;
+        let target_dir = resolve_agent_dir(&self.agents_dir, &agent.name)?;
 
         if !agent_dir.exists() {
             return Err(format!("Agent not found: {}", id));
@@ -231,13 +309,12 @@ impl AgentService {
 
         // If name changed, rename directory
         if agent.name != id {
-            let new_dir = self.agents_dir.join(&agent.name);
-            fs::rename(&agent_dir, &new_dir)
+            if fs::symlink_metadata(&target_dir).is_ok() {
+                return Err(format!("Agent '{}' already exists", agent.name));
+            }
+            fs::rename(&agent_dir, &target_dir)
                 .map_err(|e| format!("Failed to rename agent directory: {}", e))?;
         }
-
-        // Use the new directory name if changed
-        let target_dir = self.agents_dir.join(&agent.name);
 
         // Write config.yaml
         let config = AgentConfig {
@@ -247,6 +324,9 @@ impl AgentService {
             provider_id: agent.provider_id.clone(),
             model: agent.model.clone(),
             temperature: agent.temperature,
+            max_input_tokens: agent
+                .max_input_tokens_explicit
+                .then_some(agent.max_input_tokens),
             max_tokens: agent.max_tokens,
             thinking_enabled: agent.thinking_enabled,
             voice_recording_enabled: agent.voice_recording_enabled,
@@ -283,7 +363,7 @@ impl AgentService {
 
     /// Delete an agent.
     pub async fn delete(&self, id: &str) -> Result<(), String> {
-        let agent_path = self.agents_dir.join(id);
+        let agent_path = resolve_agent_dir(&self.agents_dir, id)?;
 
         if !agent_path.exists() {
             return Err(format!("Agent not found: {}", id));
@@ -343,6 +423,8 @@ impl AgentService {
             provider_id: config.provider_id,
             model: config.model,
             temperature: config.temperature,
+            max_input_tokens_explicit: config.max_input_tokens.is_some(),
+            max_input_tokens: config.max_input_tokens.unwrap_or(DEFAULT_MAX_INPUT_TOKENS),
             max_tokens: config.max_tokens,
             thinking_enabled: config.thinking_enabled,
             voice_recording_enabled: config.voice_recording_enabled,
@@ -421,7 +503,13 @@ impl AgentService {
             let description = entry["description"].as_str().unwrap_or("");
             let agent_type = entry["agentType"].as_str().unwrap_or("specialist");
             let temperature = entry["temperature"].as_f64().unwrap_or(0.7);
-            let max_tokens = entry["maxTokens"].as_u64().unwrap_or(8192) as u32;
+            let max_input_tokens = entry.get("maxInputTokens").and_then(|v| v.as_u64());
+            let max_input_tokens_explicit = max_input_tokens.is_some();
+            let max_input_tokens = max_input_tokens.unwrap_or(DEFAULT_MAX_INPUT_TOKENS);
+            let max_tokens = entry["maxOutputTokens"]
+                .as_u64()
+                .or_else(|| entry["maxTokens"].as_u64())
+                .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS as u64) as u32;
             let skills: Vec<String> = entry["skills"]
                 .as_array()
                 .map(|a| {
@@ -458,6 +546,8 @@ impl AgentService {
                 provider_id: default_provider_id.to_string(),
                 model: default_model.to_string(),
                 temperature,
+                max_input_tokens,
+                max_input_tokens_explicit,
                 max_tokens,
                 thinking_enabled: false,
                 voice_recording_enabled: false,
@@ -661,6 +751,163 @@ pub fn shared_agent_service(agents_dir: PathBuf) -> Arc<AgentService> {
 mod tests {
     use super::*;
 
+    fn sample_agent(name: &str) -> Agent {
+        Agent {
+            id: String::new(),
+            name: name.to_string(),
+            display_name: "Test Agent".to_string(),
+            description: "Test agent".to_string(),
+            agent_type: Some("llm".to_string()),
+            provider_id: "provider".to_string(),
+            model: "model".to_string(),
+            temperature: 0.7,
+            max_input_tokens: DEFAULT_MAX_INPUT_TOKENS,
+            max_input_tokens_explicit: false,
+            max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            thinking_enabled: false,
+            voice_recording_enabled: false,
+            system_instruction: None,
+            instructions: "Test instructions".to_string(),
+            mcps: vec![],
+            skills: vec![],
+            middleware: None,
+            created_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_rejects_invalid_agent_name_before_writing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = AgentService::new(dir.path().to_path_buf());
+
+        let err = service
+            .create(sample_agent("../escape"))
+            .await
+            .expect_err("invalid name should be rejected");
+
+        assert!(err.contains("Invalid agent name"));
+        assert!(!dir.path().join("escape").exists());
+    }
+
+    #[tokio::test]
+    async fn create_rejects_reserved_root_agent_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = AgentService::new(dir.path().to_path_buf());
+
+        let err = service
+            .create(sample_agent("root"))
+            .await
+            .expect_err("root should be rejected");
+
+        assert!(err.contains("Invalid agent name"));
+        assert!(!dir.path().join("root").exists());
+    }
+
+    #[tokio::test]
+    async fn get_update_delete_reject_path_like_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = AgentService::new(dir.path().to_path_buf());
+
+        let get_err = service.get("../escape").await.expect_err("get rejects");
+        let update_err = service
+            .update("../escape", sample_agent("safe-agent"))
+            .await
+            .expect_err("update rejects");
+        let delete_err = service
+            .delete("../escape")
+            .await
+            .expect_err("delete rejects");
+
+        assert!(get_err.contains("Invalid agent name"));
+        assert!(update_err.contains("Invalid agent name"));
+        assert!(delete_err.contains("Invalid agent name"));
+    }
+
+    #[tokio::test]
+    async fn list_filters_reserved_agent_folders() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = AgentService::new(dir.path().to_path_buf());
+        service
+            .create(sample_agent("normal-agent"))
+            .await
+            .expect("normal agent");
+        let root_dir = dir.path().join("root");
+        std::fs::create_dir_all(&root_dir).unwrap();
+        std::fs::write(
+            root_dir.join("config.yaml"),
+            "name: root\n\
+             displayName: Evil Root\n\
+             description: Root shadow\n\
+             providerId: provider\n\
+             model: model\n\
+             temperature: 0.7\n\
+             maxTokens: 8192\n\
+             thinkingEnabled: false\n\
+             voiceRecordingEnabled: false\n\
+             skills: []\n\
+             mcps: []\n",
+        )
+        .unwrap();
+        std::fs::write(root_dir.join("AGENTS.md"), "malicious root\n").unwrap();
+
+        let agents = service.list().await.expect("list");
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "normal-agent");
+    }
+
+    #[tokio::test]
+    async fn create_rejects_existing_agent_without_overwrite() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let existing_dir = dir.path().join("reviewer-agent");
+        std::fs::create_dir_all(&existing_dir).unwrap();
+        std::fs::write(existing_dir.join("config.yaml"), "existing: true\n").unwrap();
+        std::fs::write(existing_dir.join("AGENTS.md"), "existing instructions\n").unwrap();
+        let service = AgentService::new(dir.path().to_path_buf());
+
+        let err = service
+            .create(sample_agent("reviewer-agent"))
+            .await
+            .expect_err("existing agent should be rejected");
+
+        assert!(err.contains("already exists"));
+        assert_eq!(
+            std::fs::read_to_string(existing_dir.join("config.yaml")).unwrap(),
+            "existing: true\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(existing_dir.join("AGENTS.md")).unwrap(),
+            "existing instructions\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rejects_rename_to_existing_agent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = AgentService::new(dir.path().to_path_buf());
+        service
+            .create(sample_agent("source-agent"))
+            .await
+            .expect("source");
+        service
+            .create(sample_agent("target-agent"))
+            .await
+            .expect("target");
+        let mut updated = sample_agent("target-agent");
+        updated.display_name = "Replacement".to_string();
+
+        let err = service
+            .update("source-agent", updated)
+            .await
+            .expect_err("rename to existing should fail");
+
+        assert!(err.contains("already exists"));
+        let target_config =
+            std::fs::read_to_string(dir.path().join("target-agent").join("config.yaml")).unwrap();
+        assert!(target_config.contains("displayName: Test Agent"));
+        assert!(!target_config.contains("Replacement"));
+    }
+
     #[tokio::test]
     async fn seed_default_agents_creates_reviewer_agent_from_template() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -690,7 +937,112 @@ mod tests {
         let reviewer = service.get("reviewer-agent").await.expect("reviewer");
         assert_eq!(reviewer.name, "reviewer-agent");
         assert_eq!(reviewer.display_name, "Reviewer");
+        assert!(!reviewer.max_input_tokens_explicit);
         assert!(reviewer.instructions.contains("read-only reviewer"));
+    }
+
+    #[test]
+    fn agent_config_reads_legacy_max_tokens_as_output_tokens() {
+        let yaml = r#"
+name: test-agent
+displayName: Test
+description: Test agent
+providerId: provider
+model: model
+temperature: 0.7
+maxInputTokens: 123456
+maxTokens: 7777
+thinkingEnabled: false
+voiceRecordingEnabled: false
+skills: []
+mcps: []
+"#;
+
+        let config: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.max_input_tokens, Some(123456));
+        assert_eq!(config.max_tokens, 7777);
+    }
+
+    #[test]
+    fn agent_config_defaults_to_simplified_token_limits() {
+        let yaml = r#"
+name: test-agent
+displayName: Test
+description: Test agent
+providerId: provider
+model: model
+temperature: 0.7
+thinkingEnabled: false
+voiceRecordingEnabled: false
+skills: []
+mcps: []
+"#;
+
+        let config: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.max_input_tokens, None);
+        assert_eq!(config.max_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
+    }
+
+    #[tokio::test]
+    async fn loaded_agent_tracks_absent_max_input_tokens() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent_dir = dir.path().join("legacy-agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("config.yaml"),
+            "name: legacy-agent\n\
+             displayName: Legacy\n\
+             description: Legacy\n\
+             providerId: provider\n\
+             model: model\n\
+             temperature: 0.7\n\
+             maxTokens: 8192\n\
+             thinkingEnabled: false\n\
+             voiceRecordingEnabled: false\n\
+             skills: []\n\
+             mcps: []\n",
+        )
+        .unwrap();
+        std::fs::write(agent_dir.join("AGENTS.md"), "Legacy instructions\n").unwrap();
+
+        let service = AgentService::new(dir.path().to_path_buf());
+        let agent = service.get("legacy-agent").await.expect("agent");
+
+        assert_eq!(agent.max_input_tokens, DEFAULT_MAX_INPUT_TOKENS);
+        assert!(!agent.max_input_tokens_explicit);
+    }
+
+    #[tokio::test]
+    async fn loaded_agent_preserves_explicit_default_max_input_tokens() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent_dir = dir.path().join("explicit-agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("config.yaml"),
+            format!(
+                "name: explicit-agent\n\
+                 displayName: Explicit\n\
+                 description: Explicit\n\
+                 providerId: provider\n\
+                 model: model\n\
+                 temperature: 0.7\n\
+                 maxInputTokens: {}\n\
+                 maxTokens: 8192\n\
+                 thinkingEnabled: false\n\
+                 voiceRecordingEnabled: false\n\
+                 skills: []\n\
+                 mcps: []\n",
+                DEFAULT_MAX_INPUT_TOKENS
+            ),
+        )
+        .unwrap();
+        std::fs::write(agent_dir.join("AGENTS.md"), "Explicit instructions\n").unwrap();
+
+        let service = AgentService::new(dir.path().to_path_buf());
+        let agent = service.get("explicit-agent").await.expect("agent");
+
+        assert_eq!(agent.max_input_tokens, DEFAULT_MAX_INPUT_TOKENS);
+        assert!(agent.max_input_tokens_explicit);
     }
 
     #[tokio::test]

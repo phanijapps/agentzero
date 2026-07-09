@@ -1,6 +1,6 @@
 //! # ExecutionStream
 //!
-//! Per-execution event loop. Consumes an `AgentExecutor` stream,
+//! Per-execution event loop. Consumes an AgentZero engine stream,
 //! accumulates tool calls, drives lifecycle transitions, and fires
 //! post-execution background tasks (distillation, ward indexing).
 //!
@@ -9,13 +9,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_runtime::{AgentExecutor, ChatMessage};
+use agent_runtime::{BoxedAgentEngine, ChatMessage, ToolResultContextConfig};
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::EventBus;
 use gateway_services::SharedVaultPaths;
 use tokio::sync::{mpsc, RwLock};
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::delegation::extract_structured_result;
 use crate::delegation::{DelegationRegistry, DelegationRequest};
@@ -23,7 +23,7 @@ use crate::handle::ExecutionHandle;
 use crate::invoke::micro_recall::MicroRecallContext;
 use crate::invoke::working_memory_middleware;
 use crate::invoke::{
-    broadcast_event, process_stream_event, spawn_batch_writer_with_repo, BatchWriterHandle,
+    broadcast_event, process_stream_event, spawn_batch_writer_with_traces, BatchWriterHandle,
     ResponseAccumulator, StreamContext, ToolCallAccumulator, WorkingMemory,
 };
 use crate::lifecycle::{
@@ -44,15 +44,17 @@ pub struct ExecutionStream {
     pub event_bus: Arc<EventBus>,
     pub state_service: Arc<StateService<DatabaseManager>>,
     pub log_service: Arc<LogService<DatabaseManager>>,
-    pub conversation_repo: Arc<ConversationRepository>,
+    pub messages: Arc<dyn zbot_conversation::MessageStore>,
+    pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     pub delegation_registry: Arc<DelegationRegistry>,
     pub handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     pub distiller: Option<Arc<crate::distillation::SessionDistiller>>,
-    pub kg_episode_repo: Option<Arc<zero_stores_sqlite::KgEpisodeRepository>>,
+    pub kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
     pub paths: SharedVaultPaths,
-    pub kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
-    pub memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
+    pub memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     pub bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
     pub bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
@@ -99,8 +101,10 @@ struct EventHandlerDeps<'a> {
     execution_id: &'a str,
     agent_id: &'a str,
     handle: &'a ExecutionHandle,
-    kg_episode_repo: Option<&'a Arc<zero_stores_sqlite::KgEpisodeRepository>>,
-    kg_store: Option<&'a Arc<dyn zero_stores::KnowledgeGraphStore>>,
+    tool_result_context: &'a ToolResultContextConfig,
+    kg_episode_repo: Option<&'a Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
+    kg_store: Option<&'a Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    ingestion_adapter: Option<&'a Arc<dyn agent_tools::IngestionAccess>>,
 }
 
 /// Pull the `message` (or `text`) arg from a `respond` tool call in
@@ -160,6 +164,7 @@ fn handle_tool_result(
     deps: &EventHandlerDeps<'_>,
     tool_id: &str,
     result: &str,
+    context_result: Option<&str>,
     error: Option<&str>,
 ) {
     acc.tool_acc
@@ -197,10 +202,13 @@ fn handle_tool_result(
     }
 
     // Emit tool result message
-    let tool_content = match error {
-        Some(err) => format!("Error: {}", err),
-        None => result.to_string(),
-    };
+    let tool_content = super::prompt_safe_tool_content(
+        &acc.current_tool_name,
+        result,
+        context_result,
+        error,
+        deps.tool_result_context,
+    );
     deps.batch_writer.session_message(
         deps.session_id,
         deps.execution_id,
@@ -228,19 +236,23 @@ fn handle_tool_result(
         let result_cl = result.to_string();
         let session_id_cl = deps.session_id.to_string();
         let agent_id_cl = deps.agent_id.to_string();
-        let ep_store: Arc<dyn zero_stores_traits::KgEpisodeStore> = Arc::new(
-            zero_stores_sqlite::GatewayKgEpisodeStore::new(ep_repo.clone()),
+        let ep_store: Arc<dyn zbot_stores_traits::KgEpisodeStore> = Arc::new(
+            zbot_stores_sqlite::GatewayKgEpisodeStore::new(ep_repo.clone()),
         );
         let kg_cl = kg.clone();
+        let intake_cl = deps.ingestion_adapter.cloned();
         tokio::spawn(async move {
             crate::tool_result_extractor::extract_and_persist(
-                &tool_name_cl,
-                &tool_id_cl,
-                &result_cl,
-                &session_id_cl,
-                &agent_id_cl,
-                ep_store.as_ref(),
-                kg_cl.as_ref(),
+                crate::tool_result_extractor::ExtractAndPersistRequest {
+                    tool_name: &tool_name_cl,
+                    tool_call_id: &tool_id_cl,
+                    result_text: &result_cl,
+                    session_id: &session_id_cl,
+                    agent_id: &agent_id_cl,
+                    evidence_intake: intake_cl.as_deref(),
+                    episode_store: ep_store.as_ref(),
+                    kg: kg_cl.as_ref(),
+                },
             )
             .await;
         });
@@ -270,7 +282,11 @@ impl ExecutionStream {
     /// `tokio::spawn(async move { … })` block), with `self.<field>`
     /// replacing every captured-runner-field access and `ctx.<field>`
     /// replacing every `args.<field>` access.
-    pub async fn run(&self, ctx: ExecutionContext, executor: AgentExecutor) -> Result<(), String> {
+    pub async fn run(
+        &self,
+        ctx: ExecutionContext,
+        executor: BoxedAgentEngine,
+    ) -> Result<(), String> {
         let ExecutionContext {
             execution_id,
             session_id,
@@ -284,11 +300,12 @@ impl ExecutionStream {
             recommended_skills,
         } = ctx;
 
-        // Create batch writer for non-blocking DB writes (with conversation repo for session messages)
-        let batch_writer = spawn_batch_writer_with_repo(
+        // Create batch writer for non-blocking DB writes.
+        let batch_writer = spawn_batch_writer_with_traces(
             self.state_service.clone(),
             self.log_service.clone(),
-            Some(self.conversation_repo.clone()),
+            self.paths.traces_dir(),
+            self.messages.clone(),
         );
 
         // Create stream context for event processing
@@ -307,6 +324,10 @@ impl ExecutionStream {
         .with_recommended_skills(recommended_skills.clone());
 
         let mut response_acc = ResponseAccumulator::new();
+        let settings_service = gateway_services::SettingsService::new(self.paths.clone());
+        let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
+        let tool_result_context =
+            super::prompt_safe_tool_result_config(&tool_settings, self.paths.vault_dir());
 
         // Append user message to session stream BEFORE execution
         batch_writer.session_message(&session_id, &execution_id, "user", &message, None, None);
@@ -420,6 +441,7 @@ impl ExecutionStream {
         let batch_writer_inner = batch_writer.clone();
         let kg_episode_repo_inner = self.kg_episode_repo.clone();
         let kg_store_inner = self.kg_store.clone();
+        let ingestion_adapter_inner = self.ingestion_adapter.clone();
 
         // Execute with streaming — closure dispatches into free-fn
         // handlers defined at module scope (handle_tool_call_start,
@@ -431,57 +453,68 @@ impl ExecutionStream {
         // which we handle as a graceful exit below (stop_execution,
         // not crash_execution).
         let stop_sig = Some(handle.stop_signal());
+        let mut on_event = |event| {
+            if handle.is_stop_requested() {
+                return;
+            }
+
+            handle.increment();
+
+            let deps = EventHandlerDeps {
+                batch_writer: &batch_writer_inner,
+                session_id: &session_id_inner,
+                execution_id: &execution_id_inner,
+                agent_id: &agent_id_inner,
+                handle: &handle,
+                tool_result_context: &tool_result_context,
+                kg_episode_repo: kg_episode_repo_inner.as_ref(),
+                kg_store: kg_store_inner.as_ref(),
+                ingestion_adapter: ingestion_adapter_inner.as_ref(),
+            };
+
+            // Stream messages to session as they happen
+            match &event {
+                agent_runtime::StreamEvent::ToolCallStart {
+                    tool_id,
+                    tool_name,
+                    args,
+                    ..
+                } => handle_tool_call_start(&mut acc, tool_id, tool_name, args),
+                agent_runtime::StreamEvent::ToolResult {
+                    tool_id,
+                    result,
+                    context_result,
+                    error,
+                    ..
+                } => handle_tool_result(
+                    &mut acc,
+                    &deps,
+                    tool_id,
+                    result,
+                    context_result.as_deref(),
+                    error.as_deref(),
+                ),
+                agent_runtime::StreamEvent::Token { content, .. } => {
+                    acc.turn_text.push_str(content);
+                }
+                _ => {}
+            }
+
+            // Process the event (logging, delegation, token tracking)
+            let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
+
+            // Accumulate response content
+            if let Some(delta) = response_delta {
+                response_acc.append(&delta);
+            }
+
+            // Broadcast the gateway event (if not an internal-only event)
+            if let Some(event) = gateway_event {
+                broadcast_event(stream_ctx.event_bus.clone(), event);
+            }
+        };
         let result = executor
-            .execute_stream_with_stop_flag(&message, &history, stop_sig, |event| {
-                if handle.is_stop_requested() {
-                    return;
-                }
-
-                handle.increment();
-
-                let deps = EventHandlerDeps {
-                    batch_writer: &batch_writer_inner,
-                    session_id: &session_id_inner,
-                    execution_id: &execution_id_inner,
-                    agent_id: &agent_id_inner,
-                    handle: &handle,
-                    kg_episode_repo: kg_episode_repo_inner.as_ref(),
-                    kg_store: kg_store_inner.as_ref(),
-                };
-
-                // Stream messages to session as they happen
-                match &event {
-                    agent_runtime::StreamEvent::ToolCallStart {
-                        tool_id,
-                        tool_name,
-                        args,
-                        ..
-                    } => handle_tool_call_start(&mut acc, tool_id, tool_name, args),
-                    agent_runtime::StreamEvent::ToolResult {
-                        tool_id,
-                        result,
-                        error,
-                        ..
-                    } => handle_tool_result(&mut acc, &deps, tool_id, result, error.as_deref()),
-                    agent_runtime::StreamEvent::Token { content, .. } => {
-                        acc.turn_text.push_str(content);
-                    }
-                    _ => {}
-                }
-
-                // Process the event (logging, delegation, token tracking)
-                let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
-
-                // Accumulate response content
-                if let Some(delta) = response_delta {
-                    response_acc.append(&delta);
-                }
-
-                // Broadcast the gateway event (if not an internal-only event)
-                if let Some(event) = gateway_event {
-                    broadcast_event(stream_ctx.event_bus.clone(), event);
-                }
-            })
+            .execute_stream_with_stop_flag(&message, &history, stop_sig, &mut on_event)
             .await;
 
         // Execute micro-recall triggers collected during the stream
@@ -535,6 +568,18 @@ impl ExecutionStream {
             );
             batch_writer.log(response_log);
         }
+
+        // Turn-boundary checkpoint — write a versioned snapshot of the
+        // agent's context state so session_state can read it in O(1)
+        // (T12) instead of replaying execution_logs.
+        super::core::write_turn_checkpoint(
+            &self.checkpoints,
+            &self.state_service,
+            &execution_id,
+            &session_id,
+            handle.current_iteration(),
+            &accumulated_response,
+        );
 
         // Handle completion
         match result {
@@ -609,12 +654,12 @@ impl ExecutionStream {
                     // the concrete repo for backward compat. Same shape
                     // for kg_store: the SqliteKgStore wrap of graph_storage.
                     let kg_episode_store_for_indexer: Option<
-                        Arc<dyn zero_stores_traits::KgEpisodeStore>,
+                        Arc<dyn zbot_stores_traits::KgEpisodeStore>,
                     > = self.kg_episode_repo.as_ref().map(|r| {
-                        Arc::new(zero_stores_sqlite::GatewayKgEpisodeStore::new(r.clone()))
-                            as Arc<dyn zero_stores_traits::KgEpisodeStore>
+                        Arc::new(zbot_stores_sqlite::GatewayKgEpisodeStore::new(r.clone()))
+                            as Arc<dyn zbot_stores_traits::KgEpisodeStore>
                     });
-                    let kg_store_for_indexer: Option<Arc<dyn zero_stores::KnowledgeGraphStore>> =
+                    let kg_store_for_indexer: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
                         self.kg_store.clone();
                     let paths_for_indexer = self.paths.clone();
                     tokio::spawn(async move {
@@ -770,7 +815,7 @@ mod tests {
     use gateway_events::EventBus;
     use gateway_services::VaultPaths;
     use tokio::sync::{mpsc, RwLock};
-    use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+    use zbot_stores_sqlite::DatabaseManager;
 
     #[test]
     fn execution_stream_constructs_with_minimum_required_deps() {
@@ -784,7 +829,6 @@ mod tests {
         let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
         let state = Arc::new(StateService::new(db.clone()));
         let logs = Arc::new(LogService::new(db.clone()));
-        let convo = Arc::new(ConversationRepository::new(db));
         let bus = Arc::new(EventBus::new());
         let (tx, _rx) = mpsc::unbounded_channel();
         let registry = Arc::new(crate::delegation::DelegationRegistry::new());
@@ -794,7 +838,12 @@ mod tests {
             event_bus: bus,
             state_service: state,
             log_service: logs,
-            conversation_repo: convo,
+            messages: Arc::new(zbot_conversation::SqliteMessageStore::new(
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+            )),
+            checkpoints: Arc::new(zbot_conversation::SqliteCheckpointStore::new(
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+            )),
             delegation_tx: tx,
             delegation_registry: registry,
             handles,
@@ -802,6 +851,7 @@ mod tests {
             kg_episode_repo: None,
             paths,
             kg_store: None,
+            ingestion_adapter: None,
             memory_store: None,
             connector_registry: None,
             bridge_registry: None,

@@ -35,7 +35,7 @@ use gateway_events::EventBus;
 use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::JoinHandle;
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::agent_pool::AgentResultBus;
 use crate::delegation::{spawn_delegated_agent, DelegationRegistry, DelegationRequest};
@@ -239,13 +239,15 @@ pub(crate) struct RunnerDelegationInvoker {
     pub(crate) mcp_service: Arc<McpService>,
     pub(crate) skill_service: Arc<gateway_services::SkillService>,
     pub(crate) paths: SharedVaultPaths,
-    pub(crate) conversation_repo: Arc<ConversationRepository>,
+    pub(crate) messages: Arc<dyn zbot_conversation::MessageStore>,
+    pub(crate) session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    pub(crate) checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub(crate) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     pub(crate) delegation_registry: Arc<DelegationRegistry>,
     pub(crate) delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     pub(crate) log_service: Arc<LogService<DatabaseManager>>,
     pub(crate) state_service: Arc<StateService<DatabaseManager>>,
-    pub(crate) memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    pub(crate) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub(crate) distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     pub(crate) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub(crate) rate_limiters: Arc<
@@ -253,7 +255,7 @@ pub(crate) struct RunnerDelegationInvoker {
             std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
         >,
     >,
-    pub(crate) kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
+    pub(crate) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     pub(crate) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     pub(crate) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     pub(crate) steering_registry: Arc<agent_runtime::SteeringRegistry>,
@@ -299,7 +301,9 @@ impl DelegationSpawner for RunnerDelegationInvoker {
             self.mcp_service.clone(),
             self.skill_service.clone(),
             self.paths.clone(),
-            self.conversation_repo.clone(),
+            self.messages.clone(),
+            self.session_meta.clone(),
+            self.checkpoints.clone(),
             self.handles.clone(),
             self.delegation_registry.clone(),
             self.delegation_tx.clone(),

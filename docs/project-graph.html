@@ -15,7 +15,6 @@
       --accent: #276b5f;
       --accent-2: #b64926;
       --shadow: 0 12px 34px rgba(29, 35, 38, 0.12);
-      --framework: #2f6f9f;
       --runtime: #a84f29;
       --stores: #55752f;
       --services: #885a9a;
@@ -422,7 +421,6 @@
 
   <script>
     const groups = {
-      framework: { label: "Framework", color: "#2f6f9f" },
       runtime: { label: "Runtime", color: "#a84f29" },
       stores: { label: "Stores", color: "#55752f" },
       services: { label: "Services", color: "#885a9a" },
@@ -432,8 +430,8 @@
     };
 
     const nodes = [
-      { id: "zero-core", group: "framework", layer: 0, row: 0, kind: "lib", path: "framework/zero-core", description: "Base abstractions shared by framework crates.", deps: [] },
-      { id: "zero-stores-domain", group: "stores", layer: 0, row: 1, kind: "lib", path: "stores/zero-stores-domain", description: "Pure-data persistence domain types.", deps: [] },
+      { id: "agent-primitives", group: "runtime", layer: 0, row: 0, kind: "lib", path: "runtime/agent-primitives", description: "Shared agent data types, errors, and multimodal primitives.", deps: [] },
+      { id: "zbot-stores-domain", group: "stores", layer: 0, row: 1, kind: "lib", path: "stores/zbot-stores-domain", description: "Pure-data persistence domain types.", deps: [] },
       { id: "api-logs", group: "services", layer: 0, row: 2, kind: "lib", path: "services/api-logs", description: "Execution log service types.", deps: [] },
       { id: "execution-state", group: "services", layer: 0, row: 3, kind: "lib", path: "services/execution-state", description: "Session execution state tracking.", deps: [] },
       { id: "discovery", group: "discovery", layer: 0, row: 4, kind: "lib", path: "discovery", description: "LAN service advertisement.", deps: [] },
@@ -441,46 +439,38 @@
       { id: "daily-sessions", group: "services", layer: 0, row: 6, kind: "lib", path: "services/daily-sessions", description: "Daily session service.", deps: [] },
       { id: "gateway-ws-protocol", group: "gateway", layer: 0, row: 7, kind: "lib", path: "gateway/gateway-ws-protocol", description: "WebSocket protocol message types.", deps: [] },
 
-      { id: "zero-llm", group: "framework", layer: 1, row: 0, kind: "lib", path: "framework/zero-llm", description: "LLM client abstractions.", deps: ["zero-core"] },
-      { id: "zero-tool", group: "framework", layer: 1, row: 1, kind: "lib", path: "framework/zero-tool", description: "Tool abstractions.", deps: ["zero-core"] },
-      { id: "zero-session", group: "framework", layer: 1, row: 2, kind: "lib", path: "framework/zero-session", description: "Session abstractions.", deps: ["zero-core"] },
-      { id: "zero-mcp", group: "framework", layer: 1, row: 3, kind: "lib", path: "framework/zero-mcp", description: "MCP abstractions.", deps: ["zero-core"] },
-      { id: "zero-prompt", group: "framework", layer: 1, row: 4, kind: "lib", path: "framework/zero-prompt", description: "Prompt composition abstractions.", deps: ["zero-core"] },
-      { id: "zero-stores-traits", group: "stores", layer: 1, row: 5, kind: "lib", path: "stores/zero-stores-traits", description: "Backend-agnostic store traits.", deps: ["zero-stores-domain"] },
-      { id: "gateway-bus", group: "gateway", layer: 1, row: 6, kind: "lib", path: "gateway/gateway-bus", description: "GatewayBus trait and session types.", deps: ["execution-state"] },
+      { id: "zbot-stores-traits", group: "stores", layer: 1, row: 0, kind: "lib", path: "stores/zbot-stores-traits", description: "Backend-agnostic store traits.", deps: ["zbot-stores-domain"] },
+      { id: "gateway-bus", group: "gateway", layer: 1, row: 1, kind: "lib", path: "gateway/gateway-bus", description: "GatewayBus trait and session types.", deps: ["execution-state"] },
+      { id: "gateway-hooks", group: "gateway", layer: 1, row: 2, kind: "lib", path: "gateway/gateway-hooks", description: "Inbound trigger hook abstraction.", deps: ["gateway-events"] },
 
-      { id: "agent-tools", group: "runtime", layer: 2, row: 0, kind: "lib", path: "runtime/agent-tools", description: "Built-in tools for AgentZero.", deps: ["zero-core", "zero-stores-traits"] },
-      { id: "agent-runtime", group: "runtime", layer: 2, row: 1, kind: "lib", path: "runtime/agent-runtime", description: "Agent execution framework with MCP support.", deps: ["agent-tools", "zero-core", "zero-stores-traits"] },
-      { id: "zero-agent", group: "framework", layer: 2, row: 2, kind: "lib", path: "framework/zero-agent", description: "Agent orchestration facade.", deps: ["zero-core", "zero-llm", "zero-tool"] },
-      { id: "zero-stores", group: "stores", layer: 2, row: 3, kind: "lib", path: "stores/zero-stores", description: "Persistence layer facade.", deps: ["knowledge-graph", "zero-stores-domain", "zero-stores-traits"] },
-      { id: "knowledge-graph", group: "services", layer: 2, row: 4, kind: "lib", path: "services/knowledge-graph", description: "Knowledge graph service.", deps: ["zero-app"] },
-      { id: "gateway-services", group: "gateway", layer: 2, row: 5, kind: "lib", path: "gateway/gateway-services", description: "Config services for the gateway.", deps: ["agent-runtime", "agent-tools", "discovery", "gateway-memory", "zero-core"] },
+      { id: "knowledge-graph", group: "services", layer: 2, row: 0, kind: "lib", path: "services/knowledge-graph", description: "Knowledge graph service.", deps: [] },
+      { id: "agent-tools", group: "runtime", layer: 2, row: 1, kind: "lib", path: "runtime/agent-tools", description: "Built-in tools for AgentZero.", deps: ["agent-primitives", "zbot-stores-traits"] },
+      { id: "zbot-stores", group: "stores", layer: 2, row: 2, kind: "lib", path: "stores/zbot-stores", description: "Persistence layer facade.", deps: ["knowledge-graph", "zbot-stores-domain", "zbot-stores-traits"] },
 
-      { id: "zero-middleware", group: "framework", layer: 3, row: 0, kind: "lib", path: "framework/zero-middleware", description: "Re-export facade for agent_runtime::middleware.", deps: ["agent-runtime"] },
-      { id: "zero-app", group: "framework", layer: 3, row: 1, kind: "lib", path: "framework/zero-app", description: "Aggregator prelude for the framework crates.", deps: ["zero-agent", "zero-core", "zero-llm", "zero-mcp", "zero-middleware", "zero-prompt", "zero-session", "zero-tool"] },
-      { id: "zero-stores-sqlite", group: "stores", layer: 3, row: 2, kind: "lib", path: "stores/zero-stores-sqlite", description: "SQLite-backed store implementation.", deps: ["agent-runtime", "api-logs", "execution-state", "gateway-services", "knowledge-graph", "zero-core", "zero-stores", "zero-stores-domain", "zero-stores-traits"] },
-      { id: "zero-stores-conformance", group: "stores", layer: 3, row: 3, kind: "lib", path: "stores/zero-stores-conformance", description: "Persistence conformance test harness.", deps: ["knowledge-graph", "zero-stores", "zero-stores-traits"] },
-      { id: "gateway-memory", group: "gateway", layer: 3, row: 4, kind: "lib", path: "gateway/gateway-memory", description: "Memory subsystem config and shared types.", deps: ["agent-runtime", "gateway-events", "knowledge-graph", "zero-stores", "zero-stores-domain", "zero-stores-traits"] },
+      { id: "agent-runtime", group: "runtime", layer: 3, row: 0, kind: "lib", path: "runtime/agent-runtime", description: "Agent execution framework with Rig-backed orchestration and MCP support.", deps: ["agent-primitives", "agent-tools", "zbot-stores-traits"] },
+      { id: "gateway-memory", group: "gateway", layer: 3, row: 1, kind: "lib", path: "gateway/gateway-memory", description: "Memory subsystem config and shared types.", deps: ["agent-runtime", "gateway-events", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-traits"] },
+      { id: "zbot-stores-sqlite", group: "stores", layer: 3, row: 2, kind: "lib", path: "stores/zbot-stores-sqlite", description: "SQLite-backed store implementation.", deps: ["agent-primitives", "agent-runtime", "api-logs", "execution-state", "gateway-services", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-traits"] },
+      { id: "zbot-stores-conformance", group: "stores", layer: 3, row: 3, kind: "lib", path: "stores/zbot-stores-conformance", description: "Persistence conformance test harness.", deps: ["knowledge-graph", "zbot-stores", "zbot-stores-traits"] },
 
-      { id: "gateway-templates", group: "gateway", layer: 4, row: 0, kind: "lib", path: "gateway/gateway-templates", description: "Embedded templates and prompt assembly.", deps: ["gateway-services"] },
-      { id: "gateway-connectors", group: "gateway", layer: 4, row: 1, kind: "lib", path: "gateway/gateway-connectors", description: "External connector management.", deps: ["gateway-services", "zero-core"] },
-      { id: "gateway-bridge", group: "gateway", layer: 4, row: 2, kind: "lib", path: "gateway/gateway-bridge", description: "WebSocket bridge for worker connections.", deps: ["gateway-bus", "zero-core", "zero-stores-sqlite", "zero-stores-traits"] },
-      { id: "gateway-hooks", group: "gateway", layer: 4, row: 3, kind: "lib", path: "gateway/gateway-hooks", description: "Inbound trigger hook abstraction.", deps: ["gateway-events"] },
+      { id: "gateway-services", group: "gateway", layer: 4, row: 0, kind: "lib", path: "gateway/gateway-services", description: "Config services for the gateway.", deps: ["agent-primitives", "agent-runtime", "agent-tools", "discovery", "gateway-memory"] },
+      { id: "gateway-templates", group: "gateway", layer: 4, row: 1, kind: "lib", path: "gateway/gateway-templates", description: "Embedded templates and prompt assembly.", deps: ["gateway-services"] },
+      { id: "gateway-connectors", group: "gateway", layer: 4, row: 2, kind: "lib", path: "gateway/gateway-connectors", description: "External connector management.", deps: ["agent-primitives", "gateway-services"] },
+      { id: "gateway-bridge", group: "gateway", layer: 4, row: 3, kind: "lib", path: "gateway/gateway-bridge", description: "WebSocket bridge for worker connections.", deps: ["agent-primitives", "gateway-bus", "zbot-stores-sqlite", "zbot-stores-traits"] },
       { id: "gateway-cron", group: "gateway", layer: 4, row: 4, kind: "lib", path: "gateway/gateway-cron", description: "Cron job configuration and persistence.", deps: ["gateway-services"] },
 
-      { id: "gateway-execution", group: "gateway", layer: 5, row: 0, kind: "lib", path: "gateway/gateway-execution", description: "Agent execution engine for the gateway.", deps: ["agent-runtime", "agent-tools", "api-logs", "execution-state", "gateway-bridge", "gateway-connectors", "gateway-events", "gateway-memory", "gateway-services", "gateway-templates", "knowledge-graph", "zero-core", "zero-stores", "zero-stores-domain", "zero-stores-sqlite", "zero-stores-traits"] },
+      { id: "gateway-execution", group: "gateway", layer: 5, row: 0, kind: "lib", path: "gateway/gateway-execution", description: "Agent execution engine for the gateway.", deps: ["agent-primitives", "agent-runtime", "agent-tools", "api-logs", "execution-state", "gateway-bridge", "gateway-connectors", "gateway-events", "gateway-memory", "gateway-services", "gateway-templates", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-sqlite", "zbot-stores-traits"] },
 
-      { id: "gateway", group: "gateway", layer: 6, row: 0, kind: "lib", path: "gateway", description: "HTTP and WebSocket gateway shell.", deps: ["agent-runtime", "agent-tools", "api-logs", "discovery", "execution-state", "gateway-bridge", "gateway-bus", "gateway-connectors", "gateway-cron", "gateway-events", "gateway-execution", "gateway-hooks", "gateway-memory", "gateway-services", "gateway-templates", "gateway-ws-protocol", "knowledge-graph", "zero-app", "zero-core", "zero-stores", "zero-stores-domain", "zero-stores-sqlite", "zero-stores-traits"] },
+      { id: "gateway", group: "gateway", layer: 6, row: 0, kind: "lib", path: "gateway", description: "HTTP and WebSocket gateway shell.", deps: ["agent-primitives", "agent-runtime", "agent-tools", "api-logs", "discovery", "execution-state", "gateway-bridge", "gateway-bus", "gateway-connectors", "gateway-cron", "gateway-events", "gateway-execution", "gateway-hooks", "gateway-memory", "gateway-services", "gateway-templates", "gateway-ws-protocol", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-sqlite", "zbot-stores-traits"] },
 
-      { id: "daemon", group: "apps", layer: 7, row: 0, kind: "bin", path: "apps/daemon", description: "zbotd daemon binary.", deps: ["gateway", "gateway-services", "zero-app"] },
+      { id: "daemon", group: "apps", layer: 7, row: 0, kind: "bin", path: "apps/daemon", description: "zbotd daemon binary.", deps: ["gateway", "gateway-services"] },
       { id: "cli", group: "apps", layer: 7, row: 1, kind: "bin", path: "apps/cli", description: "zbot command-line client.", deps: ["gateway-ws-protocol"] }
     ];
 
     const layerLabels = [
       "Foundations",
-      "Traits and Primitives",
-      "Runtime and Stores",
-      "Facades and Persistence",
+      "Traits and Bus",
+      "Stores and Tools",
+      "Runtime and Persistence",
       "Gateway Components",
       "Execution",
       "Gateway Shell",

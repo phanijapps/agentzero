@@ -5,29 +5,31 @@ z-Bot is a multipurpose AI agent that lives on the desktop and connects to any O
 ## Workspace Layout
 
 ```
-framework/   — zero-* Rust library crates (publishable as zero-agent-framework)
-runtime/     — agent-runtime, agent-tools (execution engine + built-in tools)
+runtime/     — agent-primitives, agent-runtime, agent-tools (shared primitives + execution engine + built-in tools)
 services/    — api-logs, daily-sessions, execution-state, knowledge-graph
-stores/      — zero-stores* persistence layer (traits, domain types, SQLite impl)
+stores/      — zbot-stores* persistence layer (traits, domain types, SQLite impl)
 gateway/     — gateway-* sub-crates + gateway shell (HTTP/WS network layer)
 discovery/   — LAN mDNS advertisement
 apps/        — daemon (zbotd), cli (zbot), ui (React dashboard)
+docs/        — Architecture, specs, ADRs, and product documentation
+tools/       — Build, dev, and ops tooling
+docker/      — Container configurations
+e2e/         — End-to-end tests
 ```
 
 ## Dependency Order (bottom → top)
 
 ```
-zero-core
-  ├── zero-llm, zero-tool, zero-mcp, zero-session, zero-prompt
-  └── zero-middleware (re-exports agent-runtime::middleware)
-        └── zero-agent
-              └── zero-app (aggregator prelude)
+agent-primitives
+  ├── agent-tools
+  └── agent-runtime
+        └── gateway-execution
 
-zero-stores-domain (serde only)
-  └── zero-stores-traits
-        └── zero-stores
-              └── zero-stores-sqlite (SQLite + rusqlite + sqlite-vec)
-                    └── zero-stores-conformance (test harness)
+zbot-stores-domain (serde only)
+  └── zbot-stores-traits
+        └── zbot-stores
+              └── zbot-stores-sqlite (SQLite + rusqlite + sqlite-vec)
+                    └── zbot-stores-conformance (test harness)
 
 services/* (execution-state, api-logs, knowledge-graph, daily-sessions)
 runtime/* (agent-runtime, agent-tools)
@@ -59,11 +61,11 @@ npm run dev            # React UI on port 3000 (from apps/ui/)
 
 ## Data Directory
 
-All apps default to `~/Documents/agentzero/`:
+All apps default to `~/Documents/zbot/`:
 
 ```
-agentzero/
-├── conversations.db      # SQLite (gateway-database / zero-stores-sqlite)
+zbot/
+├── conversations.db      # SQLite (zbot-stores-sqlite)
 ├── config/               # SOUL.md, INSTRUCTIONS.md, OS.md, shards/
 ├── agents/{name}/        # Agent YAML configs
 ├── wards/                # Code project directories
@@ -73,5 +75,21 @@ agentzero/
 ├── connectors.json       # External connectors
 └── cron_jobs.json        # Scheduled tasks
 ```
+
+## Documentation
+
+Architecture, design, and product documentation lives in `docs/`:
+
+- `docs/architecture/` — Technical architecture, components, and future-state designs
+- `docs/adr/` — Architecture Decision Records (why X over Y)
+- `docs/specs/` — Feature specifications and implementation plans
+- `docs/product/` — Product roadmap, changelog, and context
+- `docs/publishing.md` — Release and build procedures
+
+See `docs/architecture/architecture.md` for the complete system overview.
+
+## Skills To use 
+- codegraph-* skills is used for indexing and retrieving code intelligence. Since the codebase is vast, these skills can help with finding deadcode, impact analysis and searching relationships and more. 
+- Before you use filesearch try codegraph* skills.
 
 Also see `CLAUDE.md` for behavioral guidelines and development patterns.

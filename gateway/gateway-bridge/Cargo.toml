@@ -13,10 +13,10 @@ description = "WebSocket bridge for AgentZero worker connections"
 
 [dependencies]
 # Internal crates
-zero-stores-sqlite = { path = "../../stores/zero-stores-sqlite" }
+zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
 gateway-bus = { path = "../gateway-bus" }
-zero-core = { path = "../../framework/zero-core" }
-zero-stores-traits = { path = "../../stores/zero-stores-traits" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
+zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
 # Web framework
 axum = { version = "0.7", features = ["ws"] }

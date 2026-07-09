@@ -264,7 +264,7 @@ pub enum GatewayEvent {
         conversation_id: Option<String>,
     },
 
-    /// Session title changed via set_session_title tool.
+    /// Session title changed by runtime title derivation or legacy log replay.
     SessionTitleChanged { session_id: String, title: String },
 
     /// Intent analysis started for a root session (pre-execution)
@@ -330,6 +330,17 @@ pub enum GatewayEvent {
         /// final recall output. Surfaces a "this recall was meaningful"
         /// signal — large = many results, zero = nothing recalled.
         surfaced_item_count: u32,
+        /// Non-secret source labels that contributed surfaced recall items.
+        match_sources: Vec<String>,
+        /// Non-secret ranking stages/reasons applied during recall.
+        ranking_reasons: Vec<String>,
+        /// Structured degraded-mode reason labels, if recall degraded.
+        degraded_reasons: Vec<String>,
+        /// Non-secret embedding provider/model/dimension identity used for
+        /// query vectors. Never includes vectors, query text, API keys, or URLs.
+        embedding_provider_identity: Option<serde_json::Value>,
+        /// Non-secret SKOS expansion cues used to widen the retrieval query.
+        taxonomy_expansion: Vec<serde_json::Value>,
     },
 }
 

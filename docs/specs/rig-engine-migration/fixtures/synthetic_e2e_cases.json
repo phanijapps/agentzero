@@ -1,0 +1,130 @@
+{
+  "artifact_schema": 1,
+  "cases": [
+    {
+      "expected_events": [
+        "AgentStarted",
+        "Token",
+        "TurnComplete",
+        "AgentCompleted"
+      ],
+      "messages": [
+        {
+          "content": "<redacted-user-message>",
+          "role": "user"
+        },
+        {
+          "content": "<redacted-assistant-response>",
+          "role": "assistant"
+        }
+      ],
+      "name": "simple_chat",
+      "source_pattern": {
+        "assistant_messages": "1025-8192",
+        "user_messages": "17-128"
+      }
+    },
+    {
+      "expected_events": [
+        "ToolCall",
+        "ToolResult",
+        "TurnComplete"
+      ],
+      "messages": [
+        {
+          "content": "<redacted-user-message>",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments_shape": {
+                "top": "object"
+              },
+              "name": "<redacted-observed-tool>"
+            }
+          ]
+        },
+        {
+          "content": "<redacted-tool-result>",
+          "role": "tool",
+          "tool_call_id": "synthetic-tool-call"
+        },
+        {
+          "content": "<redacted-assistant-response>",
+          "role": "assistant"
+        }
+      ],
+      "name": "tool_call_result",
+      "source_pattern": {
+        "tool_calls": "1025-8192",
+        "tool_results": "1025-8192"
+      }
+    },
+    {
+      "execution_states": [
+        {
+          "delegation_type": "root",
+          "status": "running"
+        },
+        {
+          "delegation_type": "delegated",
+          "parent": true,
+          "status": "completed"
+        },
+        {
+          "continuation": "SessionContinuationReady"
+        }
+      ],
+      "expected_events": [
+        "DelegationStarted",
+        "DelegationCompleted"
+      ],
+      "internal_transitions": [
+        "SessionContinuationReady"
+      ],
+      "name": "delegation_continuation",
+      "source_pattern": {
+        "delegation_completed": "17-128",
+        "delegation_started": "17-128"
+      }
+    },
+    {
+      "execution_states": [
+        {
+          "error": "<redacted-error>",
+          "status": "crashed"
+        }
+      ],
+      "expected_events": [
+        "Error"
+      ],
+      "name": "error",
+      "source_pattern": {
+        "crashed": "1-16",
+        "failed": "0"
+      }
+    },
+    {
+      "execution_states": [
+        {
+          "status": "cancelled"
+        }
+      ],
+      "expected_events": [
+        "AgentStopped",
+        "SessionCancelled"
+      ],
+      "name": "stop_cancel",
+      "source_pattern": {
+        "agent_stopped": "0",
+        "cancelled_sessions": "0",
+        "old_engine_direct_session_cancelled": true,
+        "old_engine_wire_agent_stopped": true
+      }
+    }
+  ],
+  "skipped_cases": [],
+  "source": "sanitized-db-derived-cases"
+}

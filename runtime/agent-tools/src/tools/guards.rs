@@ -3,7 +3,7 @@
 // Shared guard functions that redirect tools when preconditions aren't met.
 // ============================================================================
 
-use zero_core::ToolContext;
+use agent_primitives::ToolContext;
 
 /// Check if the given `specs/` directory holds any unfilled placeholder
 /// spec — a file containing the literal text `"Status: placeholder"`.
@@ -31,7 +31,7 @@ pub fn specs_dir_has_placeholders(specs_dir: &std::path::Path) -> bool {
 /// Returns `true` when the root agent (not a delegated subagent) has a ward
 /// whose `specs/` folder contains files with `Status: placeholder`. This
 /// signals that the planning pipeline hasn't been completed yet and shortcut
-/// tools (list_skills, load_skill, update_plan) should redirect.
+/// tools such as `load_skill` and `update_plan` should redirect.
 pub(crate) fn has_placeholder_specs(ctx: &dyn ToolContext) -> bool {
     // Only check for root agents (not delegated subagents)
     let is_delegated = ctx

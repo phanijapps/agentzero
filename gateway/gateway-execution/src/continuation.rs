@@ -7,7 +7,7 @@
 
 use execution_state::{AgentExecution, StateService};
 use gateway_events::{EventBus, GatewayEvent};
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_sqlite::DatabaseManager;
 
 /// Spawn a continuation turn for a session.
 ///

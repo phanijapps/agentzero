@@ -24,9 +24,9 @@
 
 use std::sync::Arc;
 
-use zero_stores::types::EntityId;
-use zero_stores::KnowledgeGraphStore;
-use zero_stores_traits::CompactionStore;
+use zbot_stores::types::EntityId;
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_traits::CompactionStore;
 
 /// Minimum age (in hours) an entity must have before it becomes a candidate
 /// for orphan archival. Matches the `-24 hours` threshold in the original SQL.
@@ -141,10 +141,10 @@ mod tests {
     use gateway_services::VaultPaths;
     use rusqlite::params;
     use tempfile::TempDir;
-    use zero_stores_sqlite::kg::storage::GraphStorage;
-    use zero_stores_sqlite::GatewayCompactionStore;
-    use zero_stores_sqlite::SqliteKgStore;
-    use zero_stores_sqlite::{CompactionRepository, KnowledgeDatabase};
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
+    use zbot_stores_sqlite::GatewayCompactionStore;
+    use zbot_stores_sqlite::SqliteKgStore;
+    use zbot_stores_sqlite::{CompactionRepository, KnowledgeDatabase};
 
     struct Harness {
         _tmp: TempDir,

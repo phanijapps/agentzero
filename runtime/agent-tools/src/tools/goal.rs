@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::{Result, Tool, ToolContext, ZeroError};
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 
 /// Lightweight snapshot of a goal — enough for tool return payloads.
 #[derive(Debug, Clone)]
@@ -115,7 +115,7 @@ impl Tool for GoalTool {
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'action'".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'action'".to_string()))?;
 
         match action {
             "create" => execute_create(&self.access, ctx, &args).await,
@@ -123,7 +123,7 @@ impl Tool for GoalTool {
             "update_slots" => execute_update_slots(&self.access, &args).await,
             "list_active" => execute_list_active(&self.access, ctx).await,
             "get" => execute_get(&self.access, &args).await,
-            other => Err(ZeroError::Tool(format!("Unknown action: {other}"))),
+            other => Err(AgentError::Tool(format!("Unknown action: {other}"))),
         }
     }
 }
@@ -136,14 +136,14 @@ async fn execute_create(
     let title = args
         .get("title")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ZeroError::Tool("Missing 'title'".to_string()))?;
+        .ok_or_else(|| AgentError::Tool("Missing 'title'".to_string()))?;
     let description = args.get("description").and_then(|v| v.as_str());
     let slots = args.get("slots").and_then(|v| v.as_str());
     let agent_id = ctx.agent_name().to_string();
     let summary = access
         .create(&agent_id, title, description, slots)
         .await
-        .map_err(ZeroError::Tool)?;
+        .map_err(AgentError::Tool)?;
     Ok(summary_to_value(&summary))
 }
 
@@ -151,15 +151,15 @@ async fn execute_update_state(access: &Arc<dyn GoalAccess>, args: &Value) -> Res
     let id = args
         .get("id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ZeroError::Tool("Missing 'id'".to_string()))?;
+        .ok_or_else(|| AgentError::Tool("Missing 'id'".to_string()))?;
     let state = args
         .get("state")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ZeroError::Tool("Missing 'state'".to_string()))?;
+        .ok_or_else(|| AgentError::Tool("Missing 'state'".to_string()))?;
     access
         .update_state(id, state)
         .await
-        .map_err(ZeroError::Tool)?;
+        .map_err(AgentError::Tool)?;
     Ok(json!({"id": id, "state": state, "status": "updated"}))
 }
 
@@ -167,15 +167,15 @@ async fn execute_update_slots(access: &Arc<dyn GoalAccess>, args: &Value) -> Res
     let id = args
         .get("id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ZeroError::Tool("Missing 'id'".to_string()))?;
+        .ok_or_else(|| AgentError::Tool("Missing 'id'".to_string()))?;
     let filled = args
         .get("filled_slots")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ZeroError::Tool("Missing 'filled_slots'".to_string()))?;
+        .ok_or_else(|| AgentError::Tool("Missing 'filled_slots'".to_string()))?;
     access
         .update_filled_slots(id, filled)
         .await
-        .map_err(ZeroError::Tool)?;
+        .map_err(AgentError::Tool)?;
     Ok(json!({"id": id, "filled_slots": filled, "status": "updated"}))
 }
 
@@ -187,7 +187,7 @@ async fn execute_list_active(
     let goals = access
         .list_active(&agent_id)
         .await
-        .map_err(ZeroError::Tool)?;
+        .map_err(AgentError::Tool)?;
     Ok(json!({
         "goals": goals.iter().map(summary_to_value).collect::<Vec<_>>()
     }))
@@ -197,8 +197,8 @@ async fn execute_get(access: &Arc<dyn GoalAccess>, args: &Value) -> Result<Value
     let id = args
         .get("id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ZeroError::Tool("Missing 'id'".to_string()))?;
-    match access.get(id).await.map_err(ZeroError::Tool)? {
+        .ok_or_else(|| AgentError::Tool("Missing 'id'".to_string()))?;
+    match access.get(id).await.map_err(AgentError::Tool)? {
         Some(g) => Ok(summary_to_value(&g)),
         None => Ok(json!({"id": id, "found": false})),
     }

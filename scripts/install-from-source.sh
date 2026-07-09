@@ -99,6 +99,43 @@ check_node() {
     return 1
 }
 
+check_python_venv() {
+    local py tmp output last_error=""
+
+    for py in python3 python; do
+        if ! command -v "$py" >/dev/null 2>&1; then
+            continue
+        fi
+
+        tmp="$(mktemp -d)"
+        if output="$("$py" -m venv "${tmp}/venv" 2>&1)"; then
+            rm -rf "$tmp"
+            ok "$py venv available"
+            return 0
+        fi
+        rm -rf "$tmp"
+        last_error="${py} -m venv failed: ${output}"
+    done
+
+    fail "python venv support not found"
+    MISSING_FIXES+=("Python 3 + venv support:
+    sudo apt update && sudo apt install -y python3 python3-venv
+    ${last_error:-No python3 or python executable found}")
+    return 1
+}
+
+check_uv() {
+    if command -v uvx >/dev/null 2>&1; then
+        ok "uvx $(uvx --version | awk '{print $2}')"
+        return 0
+    fi
+
+    note "  ! uvx not found (optional; needed for MCP servers that use uvx, such as Time)"
+    note "    Install uv with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    note "    Restart zbot after install so the service sees ~/.local/bin/uvx"
+    return 0
+}
+
 check_gcc() {
     if command -v gcc >/dev/null 2>&1; then
         ok "gcc $(gcc --version | head -1 | awk '{print $NF}')"
@@ -156,6 +193,8 @@ run_all_checks() {
     local failures=0
     check_rust          || failures=$((failures+1))
     check_node          || failures=$((failures+1))
+    check_python_venv   || failures=$((failures+1))
+    check_uv
     check_gcc           || failures=$((failures+1))
     check_systemd_user  || failures=$((failures+1))
     check_loginctl      || failures=$((failures+1))

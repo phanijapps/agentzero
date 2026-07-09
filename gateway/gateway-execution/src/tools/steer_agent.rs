@@ -2,11 +2,11 @@
 //!
 //! Sends mid-run instructions to a delegated subagent via its SteeringHandle.
 
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 use agent_runtime::{SteerResult, SteeringRegistry};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zero_core::{Result, Tool, ToolContext, ZeroError};
 
 pub struct SteerAgentTool {
     registry: Arc<SteeringRegistry>,
@@ -52,16 +52,16 @@ impl Tool for SteerAgentTool {
         let execution_id = args
             .get("execution_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("execution_id is required".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("execution_id is required".to_string()))?;
 
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("message is required".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("message is required".to_string()))?;
 
         const MAX_STEER_CHARS: usize = 1000;
         if message.len() > MAX_STEER_CHARS {
-            return Err(ZeroError::Tool(format!(
+            return Err(AgentError::Tool(format!(
                 "Steering message too large ({} chars). Maximum is {}. Be concise.",
                 message.len(),
                 MAX_STEER_CHARS
@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use agent_runtime::steering::SteeringQueue;
 
-    fn dummy_ctx() -> Arc<dyn zero_core::ToolContext> {
+    fn dummy_ctx() -> Arc<dyn agent_primitives::ToolContext> {
         Arc::new(agent_runtime::ToolContext::full_with_state(
             "test-agent".to_string(),
             None,

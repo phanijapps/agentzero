@@ -1,8 +1,8 @@
 // ============================================================================
 // FILE SYSTEM CONTEXT TRAIT
 // ============================================================================
-// This module defines only the FileSystemContext trait and related types.
-// Concrete tool implementations have been moved to the zerotools crate.
+// This module defines only the FileSystemContext trait and related runtime
+// context wrappers. Concrete tool implementations live in `agent-tools`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

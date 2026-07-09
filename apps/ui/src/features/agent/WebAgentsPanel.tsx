@@ -36,6 +36,9 @@ import { AgentEditPanel } from "./AgentEditPanel";
 // Constants
 // ============================================================================
 
+const DEFAULT_MAX_INPUT_TOKENS = 200000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 32000;
+
 // 6-field cron (sec min hour day month weekday) — the format
 // `tokio-cron-scheduler` requires. The backend also accepts 5-field
 // input and prepends `0 ` automatically, but we send canonical 6-field
@@ -117,7 +120,9 @@ export function WebAgentsPanel() {
     providerId: "",
     model: "",
     temperature: 0.7,
-    maxTokens: 4096,
+    maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
   });
 
   // ── Skills state ──
@@ -214,7 +219,8 @@ export function WebAgentsPanel() {
         providerId: newAgent.providerId || "openai",
         model: newAgent.model || "gpt-4o",
         temperature: newAgent.temperature,
-        maxTokens: newAgent.maxTokens,
+        maxInputTokens: newAgent.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS,
+        maxOutputTokens: newAgent.maxOutputTokens ?? newAgent.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       });
       if (result.success) {
         setIsCreatingAgent(false);
@@ -226,7 +232,9 @@ export function WebAgentsPanel() {
           providerId: defaultProvider?.id || "",
           model: defaultProvider ? getProviderDefaultModel(defaultProvider) : "",
           temperature: 0.7,
-          maxTokens: 4096,
+          maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
+          maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+          maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
         });
         reloadAgents();
       } else {

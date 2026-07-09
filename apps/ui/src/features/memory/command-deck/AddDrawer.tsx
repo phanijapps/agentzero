@@ -1,14 +1,10 @@
 import { useState } from "react";
-import type { MemoryCategory } from "@/services/transport/types";
+import type { CreatableMemoryCategory } from "@/services/transport/types";
 
-// Full MemoryCategory union for dropdown selection. MemoryCategory does not
-// include "policy" — the WriteRail "+ Policy" button maps to "instruction".
-const CATEGORIES: MemoryCategory[] = [
-  "instruction",
+const CATEGORIES: CreatableMemoryCategory[] = [
   "pattern",
   "preference",
   "decision",
-  "correction",
   "entity",
   "domain",
   "strategy",
@@ -19,15 +15,15 @@ const CATEGORIES: MemoryCategory[] = [
 ];
 
 interface Props {
-  initialCategory: MemoryCategory;
+  initialCategory: CreatableMemoryCategory;
   wardId: string;
-  onSave: (v: { category: MemoryCategory; content: string; ward_id: string }) => void;
+  onSave: (v: { category: CreatableMemoryCategory; content: string; ward_id: string }) => void;
   onClose: () => void;
 }
 
 export function AddDrawer({ initialCategory, wardId, onSave, onClose }: Props) {
   const [content, setContent] = useState("");
-  const [category, setCategory] = useState<MemoryCategory>(initialCategory);
+  const [category, setCategory] = useState<CreatableMemoryCategory>(initialCategory);
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Add memory" className="add-drawer">
@@ -36,7 +32,7 @@ export function AddDrawer({ initialCategory, wardId, onSave, onClose }: Props) {
         <select
           id="add-drawer-category"
           value={category}
-          onChange={(e) => setCategory(e.target.value as MemoryCategory)}
+          onChange={(e) => setCategory(e.target.value as CreatableMemoryCategory)}
           className="add-drawer__select"
         >
           {CATEGORIES.map((c) => (

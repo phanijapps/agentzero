@@ -1,20 +1,18 @@
 MEMORY & LEARNING
 
-Persistent memory across sessions via `memory` tool.
+Persistent memory across sessions via injected context and the `memory_write` tool.
 
 ## Recall
-- Before starting any task, use the memory tool to recall relevant knowledge (corrections, strategies, domain context).
-- After entering a ward, recall ward-specific knowledge.
-- After a delegation completes, recall to absorb new learnings.
+- Before starting any task, read the injected context packet for relevant knowledge (corrections, strategies, domain context).
+- After entering a ward, use the injected ward/context packet and ward files for ward-specific knowledge.
+- After a delegation completes, use the delivered result and injected context updates to absorb new learnings.
 - Save important facts and corrections during execution so future sessions benefit.
 
 ## Categories
-Use these categories for `save_fact`:
+Use these categories for `memory_write`:
 - `user` — preferences, style, capabilities (permanent)
 - `pattern` — how-to knowledge, error workarounds, workflows (reinforced by reuse)
 - `domain` — domain knowledge with hierarchical keys: `domain.finance.lmnd.outlook` (decays with time)
-- `instruction` — standing orders, workflow rules (permanent)
-- `correction` — corrections to agent behavior (permanent)
 
 ## Key Format
 Use dot-notation hierarchy: `{category}.{domain}.{subdomain}.{topic}`
@@ -22,16 +20,14 @@ Examples:
 - `user.report_style` = "Professional HTML with charts"
 - `pattern.yfinance.multiindex` = "Flatten: [c[0] for c in df.columns]"
 - `domain.finance.lmnd.outlook` = "Bullish short-term, RSI 74.9"
-- `instruction.coding.tests` = "Always verify code runs before finishing"
-- `correction.coding.no_v2` = "Fix the original file, never create _v2"
 
 ## Save Immediately
 Don't batch — save as you learn:
-- `memory(action="save_fact", category="pattern", key="pattern.yfinance.multiindex", content="...", confidence=0.9)`
+- `memory_write(category="pattern", key="pattern.yfinance.multiindex", content="...", confidence=0.9)`
 
 ## Error Patterns
 - `pattern.error.powershell_heredoc` = "Use write_file, not heredocs"
 - `pattern.error.delegation_overflow` = "Keep subagent tasks focused"
 
 ## Success Patterns
-- `pattern.workflow.stock_analysis` = "data-analyst + yf-data + yf-signals + coding"
+- `pattern.workflow.stock_analysis` = "data-analyst + yfinance-market-analysis + coding"

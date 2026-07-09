@@ -236,6 +236,7 @@ mod tests {
             timestamp: 0,
             tool_id: "t1".into(),
             result: "42".into(),
+            context_result: None,
             error: Some("soft fail".into()),
             duration_ms: Some(12),
         });

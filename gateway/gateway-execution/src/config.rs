@@ -2,11 +2,11 @@
 //!
 //! Configuration types for agent execution.
 
+use agent_primitives::FileSystemContext;
 use execution_state::TriggerSource;
 use gateway_events::HookContext;
 use serde_json::Value;
 use std::path::PathBuf;
-use zero_core::FileSystemContext;
 
 // ============================================================================
 // FILE SYSTEM CONTEXT

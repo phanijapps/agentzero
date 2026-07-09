@@ -137,15 +137,16 @@ Relationships carry `properties.evidence` pointing at the artifact or
 ## Retrieval
 
 Find prior snapshots of a subject:
-- `graph_query` on `research:<archetype>:<subject>:*` — returns every
-  dated snapshot's summary node with `vault_path` properties.
+- Use injected knowledge graph/context resources for
+  `research:<archetype>:<subject>:*` when present — they return dated
+  snapshot summary nodes with `vault_path` properties.
 - Or vault walk: `40_Research/<archetype>/<subject>/*/_index.md`.
 
 Find all archetype activity on a real entity (e.g. "every session that
 mentioned Tesla"):
-- `graph_query(action="neighbors", entity_name="Tesla Inc.")` — the
-  `organization-tesla-inc` node accumulates `about` / `mentions` edges
-  from every research session.
+- Use injected neighbor/entity context when present; otherwise search the
+  research vault indexes for the entity. The `organization-tesla-inc` node
+  accumulates `about` / `mentions` edges from every research session.
 
 ## Retention
 

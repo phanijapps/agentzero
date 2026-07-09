@@ -393,7 +393,7 @@ mod tests {
 
         // Create a mock database manager
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
-        let db = Arc::new(zero_stores_sqlite::DatabaseManager::new(paths).unwrap());
+        let db = Arc::new(zbot_stores_sqlite::DatabaseManager::new(paths).unwrap());
         let outbox = Arc::new(OutboxRepository::new(db));
 
         let manager = PluginManager::new(dir.path().join("plugins"), registry, outbox, None);
@@ -407,7 +407,7 @@ mod tests {
         let registry = Arc::new(BridgeRegistry::new());
 
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
-        let db = Arc::new(zero_stores_sqlite::DatabaseManager::new(paths).unwrap());
+        let db = Arc::new(zbot_stores_sqlite::DatabaseManager::new(paths).unwrap());
         let outbox = Arc::new(OutboxRepository::new(db));
 
         let manager = PluginManager::new(dir.path().join("plugins"), registry, outbox, None);
@@ -429,7 +429,7 @@ mod tests {
 
         let registry = Arc::new(BridgeRegistry::new());
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
-        let db = Arc::new(zero_stores_sqlite::DatabaseManager::new(paths).unwrap());
+        let db = Arc::new(zbot_stores_sqlite::DatabaseManager::new(paths).unwrap());
         let outbox = Arc::new(OutboxRepository::new(db));
 
         let manager = PluginManager::new(plugins_dir, registry, outbox, None);

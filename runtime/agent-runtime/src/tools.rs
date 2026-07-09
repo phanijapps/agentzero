@@ -35,5 +35,5 @@ pub use run_procedure::RunProcedureTool;
 // Re-export from types
 pub use crate::types::ToolCall;
 
-// Re-export zero_core::Tool as the standard tool trait
-pub use zero_core::Tool;
+// Re-export agent_primitives::Tool as the standard tool trait
+pub use agent_primitives::Tool;

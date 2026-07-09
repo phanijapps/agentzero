@@ -1,6 +1,6 @@
 # Spec: Builder Delegation Hygiene
 
-- **Status:** Implementing
+- **Status:** Done
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0005: Builder Delegation and Ward Context Hygiene
@@ -53,11 +53,15 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
 - Add a guarded live default-agent refresh path for existing installs. It may
   update `AGENTS.md` only when normalized current content matches a known old
   bundled template/signature, and it must write a backup first.
+- Treat 4000 characters as the preferred delegation task length rather than a
+  hard rejection. Longer task strings are allowed, but the tool should warn
+  agents to move long instructions into ward/spec files and reference paths.
 
 ### Ask first
 
 - Adding modes beyond the four named in this spec.
-- Changing the 4000-character delegation task limit.
+- Reintroducing a hard delegation task length rejection or changing the
+  preferred/recommended warning thresholds again.
 - Making `DirectArtifact` update full `AGENTS.md` or full `memory-bank/*`
   content for every standalone file task.
 - Overwriting any live agent file that does not match a known default-template
@@ -118,6 +122,9 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   them, and return/declare artifact paths without reading unrelated docs.
 - [x] `WardHygiene` rules tell builder to fill missing/empty ward doctrine and
   memory-bank files, preserve non-empty files, and report updated paths.
+- [x] `delegate_to_agent` allows long task strings but warns above the
+  preferred 4000-character range and recommends file/path references for
+  unwieldy instructions.
 - [x] `WardBackedBuild` rules tell builder to read supplied ward context before
   coding and update `memory-bank/core_docs.md` only for new reusable primitives
   or changed reusable structure.

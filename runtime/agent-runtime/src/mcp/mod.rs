@@ -32,7 +32,7 @@ mod tool;
 
 // Public exports
 pub use client::McpClient;
-pub use config::McpServerConfig;
+pub use config::{McpAuthConfig, McpAuthType, McpServerConfig};
 pub use error::McpError;
 pub use manager::McpManager;
 pub use tool::McpTool;

@@ -10,8 +10,8 @@
 
 use crate::recall::scored_item::{ItemKind, Provenance, ScoredItem};
 use std::sync::Arc;
-use zero_stores_domain::{RouteHint, RouteSourceKind};
-use zero_stores_traits::{EpisodeStore, SessionEpisode};
+use zbot_stores_domain::{RouteHint, RouteSourceKind};
+use zbot_stores_traits::{EpisodeStore, SessionEpisode};
 
 /// Adapter that projects a ward's recent successful/partial episodes into
 /// [`ScoredItem`]s suitable for [`rrf_merge`](crate::recall::rrf_merge).
@@ -78,7 +78,7 @@ mod tests {
     use super::*;
     use crate::recall::scored_item::ItemKind;
     use gateway_services::VaultPaths;
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::{
         EpisodeRepository, GatewayEpisodeStore, KnowledgeDatabase, SqliteVecIndex,
     };
 

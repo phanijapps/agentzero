@@ -12,7 +12,7 @@ use reqwest::{Client, Method};
 use serde_json::{Value, json};
 use url::Url;
 
-use zero_core::{Result, Tool, ToolContext, ToolPermissions, ZeroError};
+use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
 
 // ============================================================================
 // SECURITY CONFIGURATION
@@ -105,13 +105,13 @@ impl WebFetchTool {
     /// Validate the URL
     fn validate_url(url_str: &str) -> Result<Url> {
         let url =
-            Url::parse(url_str).map_err(|e| ZeroError::Tool(format!("Invalid URL: {}", e)))?;
+            Url::parse(url_str).map_err(|e| AgentError::Tool(format!("Invalid URL: {}", e)))?;
 
         // Only allow http and https
         match url.scheme() {
             "http" | "https" => {}
             scheme => {
-                return Err(ZeroError::Tool(format!(
+                return Err(AgentError::Tool(format!(
                     "Unsupported URL scheme: {}. Only http and https are allowed.",
                     scheme
                 )));
@@ -120,7 +120,7 @@ impl WebFetchTool {
 
         // Check blocked hosts
         if Self::is_blocked_url(&url) {
-            return Err(ZeroError::Tool(
+            return Err(AgentError::Tool(
                 "Access to internal/private networks is not allowed".to_string(),
             ));
         }
@@ -185,7 +185,7 @@ impl Tool for WebFetchTool {
         let url_str = args
             .get("url")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'url' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'url' parameter".to_string()))?;
 
         // Validate URL
         let url = Self::validate_url(url_str)?;
@@ -203,7 +203,7 @@ impl Tool for WebFetchTool {
             "PATCH" => Method::PATCH,
             "HEAD" => Method::HEAD,
             _ => {
-                return Err(ZeroError::Tool(format!(
+                return Err(AgentError::Tool(format!(
                     "Unsupported method: {}",
                     method_str
                 )));
@@ -243,7 +243,7 @@ impl Tool for WebFetchTool {
         let response = request
             .send()
             .await
-            .map_err(|e| ZeroError::Tool(format!("Request failed: {}", e)))?;
+            .map_err(|e| AgentError::Tool(format!("Request failed: {}", e)))?;
 
         // Get response info
         let status = response.status().as_u16();
@@ -261,7 +261,7 @@ impl Tool for WebFetchTool {
         if let Some(content_length) = response.content_length()
             && content_length as usize > MAX_RESPONSE_SIZE
         {
-            return Err(ZeroError::Tool(format!(
+            return Err(AgentError::Tool(format!(
                 "Response too large: {} bytes (max: {} bytes)",
                 content_length, MAX_RESPONSE_SIZE
             )));
@@ -271,10 +271,10 @@ impl Tool for WebFetchTool {
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| ZeroError::Tool(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| AgentError::Tool(format!("Failed to read response: {}", e)))?;
 
         if bytes.len() > MAX_RESPONSE_SIZE {
-            return Err(ZeroError::Tool(format!(
+            return Err(AgentError::Tool(format!(
                 "Response too large: {} bytes (max: {} bytes)",
                 bytes.len(),
                 MAX_RESPONSE_SIZE

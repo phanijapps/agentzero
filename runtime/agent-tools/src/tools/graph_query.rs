@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use zero_core::{Result, Tool, ToolContext, ZeroError};
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 
 // ============================================================================
 // DATA TYPES
@@ -192,7 +192,7 @@ impl Tool for GraphQueryTool {
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'action' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'action' parameter".to_string()))?;
 
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
@@ -200,7 +200,7 @@ impl Tool for GraphQueryTool {
             "search" => self.handle_search(&args, limit).await,
             "neighbors" => self.handle_neighbors(&args, limit).await,
             "context" => self.handle_context(&args, limit).await,
-            other => Err(ZeroError::Tool(format!(
+            other => Err(AgentError::Tool(format!(
                 "Unknown action '{}'. Use 'search', 'neighbors', or 'context'.",
                 other
             ))),
@@ -215,7 +215,7 @@ impl Tool for GraphQueryTool {
 impl GraphQueryTool {
     async fn handle_search(&self, args: &Value, limit: usize) -> Result<Value> {
         let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-            ZeroError::Tool("Missing 'query' parameter for search action".to_string())
+            AgentError::Tool("Missing 'query' parameter for search action".to_string())
         })?;
 
         let entity_type = args.get("entity_type").and_then(|v| v.as_str());
@@ -228,7 +228,7 @@ impl GraphQueryTool {
             .storage
             .search_entities_with_view(query, entity_type, view, limit)
             .await
-            .map_err(|e| ZeroError::Tool(format!("Graph search failed: {e}")))?;
+            .map_err(|e| AgentError::Tool(format!("Graph search failed: {e}")))?;
 
         if entities.is_empty() {
             return Ok(json!({
@@ -262,7 +262,7 @@ impl GraphQueryTool {
             .get("entity_name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                ZeroError::Tool("Missing 'entity_name' parameter for neighbors action".to_string())
+                AgentError::Tool("Missing 'entity_name' parameter for neighbors action".to_string())
             })?;
 
         let direction = args
@@ -281,7 +281,7 @@ impl GraphQueryTool {
             .storage
             .get_entity_by_name(entity_name)
             .await
-            .map_err(|e| ZeroError::Tool(format!("Graph lookup failed: {e}")))?;
+            .map_err(|e| AgentError::Tool(format!("Graph lookup failed: {e}")))?;
 
         let Some(entity) = entity else {
             return Ok(json!({
@@ -302,7 +302,7 @@ impl GraphQueryTool {
             .storage
             .get_entity_neighbors(entity_name, direction, limit)
             .await
-            .map_err(|e| ZeroError::Tool(format!("Graph neighbors failed: {e}")))?;
+            .map_err(|e| AgentError::Tool(format!("Graph neighbors failed: {e}")))?;
 
         if neighbors.is_empty() {
             let _ = writeln!(md, "No relationships found.");
@@ -368,7 +368,7 @@ impl GraphQueryTool {
                 .storage
                 .get_entity_neighbors(&n.entity.name, direction, limit.min(10))
                 .await
-                .map_err(|e| ZeroError::Tool(format!("Depth-2 expansion failed: {e}")))?;
+                .map_err(|e| AgentError::Tool(format!("Depth-2 expansion failed: {e}")))?;
             if !depth2.is_empty() {
                 let _ = writeln!(md, "#### From \"{}\"", n.entity.name);
                 Self::append_neighbors(md, &depth2, 2);
@@ -379,7 +379,7 @@ impl GraphQueryTool {
 
     async fn handle_context(&self, args: &Value, limit: usize) -> Result<Value> {
         let topic = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-            ZeroError::Tool("Missing 'query' parameter for context action".to_string())
+            AgentError::Tool("Missing 'query' parameter for context action".to_string())
         })?;
 
         let view = args
@@ -392,7 +392,7 @@ impl GraphQueryTool {
             .storage
             .search_entities_with_view(topic, None, view, limit)
             .await
-            .map_err(|e| ZeroError::Tool(format!("Context search failed: {e}")))?;
+            .map_err(|e| AgentError::Tool(format!("Context search failed: {e}")))?;
 
         if entities.is_empty() {
             return Ok(json!({
@@ -422,7 +422,7 @@ impl GraphQueryTool {
                 .storage
                 .get_entity_neighbors(&e.name, "both", 10)
                 .await
-                .map_err(|err| ZeroError::Tool(format!("Context neighbors failed: {err}")))?;
+                .map_err(|err| AgentError::Tool(format!("Context neighbors failed: {err}")))?;
             for n in &neighbors {
                 let arrow = if n.direction == "outgoing" {
                     "-->"
@@ -458,7 +458,7 @@ impl GraphQueryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zero_core::{CallbackContext, Content, EventActions, ReadonlyContext, ToolContext};
+    use agent_primitives::{CallbackContext, Content, EventActions, ReadonlyContext, ToolContext};
 
     // --- Mock graph storage ---
 

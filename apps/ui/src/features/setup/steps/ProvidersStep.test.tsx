@@ -200,6 +200,20 @@ describe('ProvidersStep', () => {
     });
   });
 
+  it('does not mark Ollama Local as added just because Ollama Cloud uses the same base URL', () => {
+    render(
+      <ProvidersStep
+        providers={[makeProvider('p-oll-cloud', 'Ollama Cloud', 'http://localhost:11434/v1')]}
+        defaultProviderId="p-oll-cloud"
+        onProvidersChanged={vi.fn()}
+      />
+    );
+
+    const localCard = screen.getByText('Ollama Local').closest('[role="button"]')!;
+    expect(localCard).not.toHaveClass('provider-add-card--added');
+    expect(localCard).toHaveTextContent('no key needed');
+  });
+
   it('shows "added" hint for already-added presets', () => {
     render(
       <ProvidersStep

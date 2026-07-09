@@ -39,7 +39,6 @@ templates/
 ├── chat_instructions.md         # Default chat-mode instructions
 ├── system_prompt.md             # Emergency fallback
 ├── os_linux.md / os_macos.md / os_windows.md
-├── models_registry.json         # Bundled model registry
 ├── distillation_prompt.md       # Session distillation prompt
 └── shards/
     ├── first_turn_protocol.md

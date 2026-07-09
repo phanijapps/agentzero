@@ -136,7 +136,7 @@ mod tests {
 
         let dir = tempfile::TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(dir.path().to_path_buf()));
-        let db = Arc::new(zero_stores_sqlite::DatabaseManager::new(paths).unwrap());
+        let db = Arc::new(zbot_stores_sqlite::DatabaseManager::new(paths).unwrap());
         let outbox = Arc::new(OutboxRepository::new(db));
         let registry = Arc::new(BridgeRegistry::new());
         (outbox, registry)

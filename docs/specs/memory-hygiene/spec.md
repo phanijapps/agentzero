@@ -1,6 +1,6 @@
 # Spec: Memory Hygiene
 
-- **Status:** Draft
+- **Status:** Closed
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0002: Memory Hygiene; RFC-0001: Unified Compaction and Memory Policy; [`runtime-context-control`](../runtime-context-control/spec.md)
@@ -19,6 +19,25 @@ write unless both endpoints resolve to persisted entities. The user-visible
 result is fewer silent memory losses: long sessions should end with usable
 handoffs, recall should still return results when embeddings fail, and KG writes
 should report partial success without SQLite foreign-key warnings.
+
+## Closure
+
+Closed as superseded. The original problem set was split and resolved by later
+work:
+
+- Recall query embedding safety and fail-closed behavior now live under
+  [`embedding-backed-memory-recall`](../embedding-backed-memory-recall/spec.md).
+- Durable memory/knowledge ownership moved to Engram under
+  [`engram-memory-engine-cutover`](../engram-memory-engine-cutover/spec.md).
+- Context packet observability, recall atoms, and tool/context boundaries live
+  under
+  [`context-capability-registry`](../context-capability-registry/spec.md).
+- Live compaction remains covered by
+  [`runtime-context-control`](../runtime-context-control/spec.md).
+
+Do not implement this draft as written; its `knowledge.db` and broad lexical
+fallback assumptions are stale after the Engram and embedding-backed recall
+cutovers.
 
 ## Boundaries
 
@@ -76,7 +95,7 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   log fields should exist for each hygiene outcome, and status plumbing should
   compile without broad UI changes.
 - Regression gates: **goal-based check**. Targeted `cargo test` commands for
-  `gateway-memory`, `gateway-execution`, and `zero-stores-sqlite` must pass.
+  `gateway-memory`, `gateway-execution`, and `zbot-stores-sqlite` must pass.
 
 ## Acceptance Criteria
 
@@ -109,8 +128,8 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
 - Technical: `MemoryFactStore` already exposes `save_ctx_fact`, and the SQLite
   implementation stores `ctx` facts as exact-key machine state without
   embedding generation (source:
-  `stores/zero-stores-traits/src/memory_facts.rs`;
-  `stores/zero-stores-sqlite/src/memory_fact_store.rs`).
+  `stores/zbot-stores-traits/src/memory_facts.rs`;
+  `stores/zbot-stores-sqlite/src/memory_fact_store.rs`).
 - Technical: `MemoryRecall::embed_query` currently sends the provided text
   directly to the embedding client and logs provider failures before returning
   `None` (source: `gateway/gateway-memory/src/recall/mod.rs`).

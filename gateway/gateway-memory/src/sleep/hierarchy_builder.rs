@@ -30,8 +30,8 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use agent_runtime::llm::EmbeddingClient;
-use zero_stores::types::EntityId;
-use zero_stores::KnowledgeGraphStore;
+use zbot_stores::types::EntityId;
+use zbot_stores::KnowledgeGraphStore;
 
 use crate::sleep::clustering::{
     cluster_sparsity, kmeans_cosine, should_stop_layering, DEFAULT_KMEANS_MAX_ITER,
@@ -583,9 +583,9 @@ mod tests {
     use gateway_services::VaultPaths;
     use std::sync::Mutex;
     use tempfile::TempDir;
-    use zero_stores_sqlite::kg::storage::GraphStorage;
-    use zero_stores_sqlite::KnowledgeDatabase;
-    use zero_stores_sqlite::SqliteKgStore;
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
+    use zbot_stores_sqlite::KnowledgeDatabase;
+    use zbot_stores_sqlite::SqliteKgStore;
 
     // ---- fakes ----
 

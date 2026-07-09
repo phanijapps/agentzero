@@ -5,10 +5,10 @@
 //! This tool routes messages to the correct channel (WebSocket, webhook, etc)
 //! based on the `HookContext` that was set when the agent was invoked.
 
+use agent_primitives::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zero_core::{Tool, ToolContext};
 
 /// Tool for sending responses back to the originating hook.
 ///
@@ -88,18 +88,22 @@ impl Tool for RespondTool {
         }))
     }
 
-    async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> zero_core::Result<Value> {
+    async fn execute(
+        &self,
+        ctx: Arc<dyn ToolContext>,
+        args: Value,
+    ) -> agent_primitives::Result<Value> {
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("message is required".to_string()))?;
+            .ok_or_else(|| agent_primitives::AgentError::Tool("message is required".to_string()))?;
 
         let format = args
             .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("text");
 
-        let artifacts: Vec<zero_core::event::ArtifactDeclaration> = args
+        let artifacts: Vec<agent_primitives::event::ArtifactDeclaration> = args
             .get("artifacts")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
@@ -129,7 +133,7 @@ impl Tool for RespondTool {
 
         // Set response in actions for the executor to pick up
         let mut actions = ctx.actions();
-        actions.respond = Some(zero_core::event::RespondAction {
+        actions.respond = Some(agent_primitives::event::RespondAction {
             message: message.to_string(),
             format: format.to_string(),
             conversation_id: conversation_id.clone(),
@@ -185,7 +189,7 @@ mod tests {
         let ctx: Arc<dyn ToolContext> = Arc::new(crate::tools::context::ToolContext::new());
         let result = tool.execute(ctx, json!({})).await;
         let err = result.expect_err("must error");
-        assert!(matches!(err, zero_core::ZeroError::Tool(_)));
+        assert!(matches!(err, agent_primitives::AgentError::Tool(_)));
         assert!(format!("{err}").contains("message is required"));
     }
 
@@ -207,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_writes_action_with_artifacts_and_hook_context() {
-        use zero_core::CallbackContext;
+        use agent_primitives::CallbackContext;
         let tool = RespondTool::new();
         let inner = crate::tools::context::ToolContext::full(
             "agent".to_string(),

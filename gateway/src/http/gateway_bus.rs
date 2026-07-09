@@ -37,10 +37,10 @@
 use crate::bus::{BusError, GatewayBus, HttpGatewayBus, SessionHandle, SessionRequest};
 use crate::state::AppState;
 use axum::{
-    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{get, post},
+    Json, Router,
 };
 use serde::Serialize;
 

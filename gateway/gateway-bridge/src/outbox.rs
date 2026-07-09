@@ -32,12 +32,12 @@ pub struct OutboxItem {
 ///
 /// Uses the same `DatabaseManager` pool as the rest of the gateway.
 pub struct OutboxRepository {
-    db: Arc<zero_stores_sqlite::DatabaseManager>,
+    db: Arc<zbot_stores_sqlite::DatabaseManager>,
 }
 
 impl OutboxRepository {
     /// Create a new outbox repository.
-    pub fn new(db: Arc<zero_stores_sqlite::DatabaseManager>) -> Self {
+    pub fn new(db: Arc<zbot_stores_sqlite::DatabaseManager>) -> Self {
         Self { db }
     }
 
@@ -278,13 +278,13 @@ impl OutboxRepository {
 // =====================================================================
 //
 // Forwards to the existing inherent methods. Errors are mapped to
-// `String` because `zero-stores-traits` can't depend on `BridgeError`
+// `String` because `zbot-stores-traits` can't depend on `BridgeError`
 // without a circular crate dependency. Consumers that need typed
 // errors continue to call `OutboxRepository` directly. No consumer is
 // expected to migrate to `Arc<dyn OutboxStore>` as part of this
 // scaffold; see `memory-bank/tech-debt.md` TD-022.
 
-impl zero_stores_traits::OutboxStore for OutboxRepository {
+impl zbot_stores_traits::OutboxStore for OutboxRepository {
     fn insert_item(
         &self,
         adapter_id: &str,
@@ -336,12 +336,12 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> OutboxItem {
 mod tests {
     use super::*;
 
-    fn setup_db() -> Arc<zero_stores_sqlite::DatabaseManager> {
+    fn setup_db() -> Arc<zbot_stores_sqlite::DatabaseManager> {
         use gateway_services::VaultPaths;
 
         let dir = tempfile::TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(dir.path().to_path_buf()));
-        Arc::new(zero_stores_sqlite::DatabaseManager::new(paths).unwrap())
+        Arc::new(zbot_stores_sqlite::DatabaseManager::new(paths).unwrap())
     }
 
     #[test]

@@ -1,12 +1,14 @@
 // ============================================================================
 // MODEL REGISTRY
-// Model capabilities and metadata registry for the gateway.
-// Three-layer resolution: local overrides > bundled registry > unknown fallback.
+// Compatibility model metadata registry for the gateway.
+// Provider config and agent/settings fields own token limits now.
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+
+pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 200_000;
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 32_000;
 
 // ============================================================================
 // Types
@@ -101,12 +103,7 @@ impl ModelCapabilities {
 // Registry
 // ============================================================================
 
-/// Model capabilities registry with three-layer resolution.
-///
-/// Resolution order:
-/// 1. Local overrides (config/models.json) — highest priority
-/// 2. Bundled registry (embedded models_registry.json)
-/// 3. Unknown model fallback — conservative defaults
+/// Model capabilities registry with fallback-only resolution.
 pub struct ModelRegistry {
     models: HashMap<String, ModelProfile>,
     /// Pre-built fallback returned for unknown model IDs.
@@ -114,11 +111,8 @@ pub struct ModelRegistry {
 }
 
 impl ModelRegistry {
-    /// Load registry from bundled JSON bytes + local override file.
-    ///
-    /// `bundled_json` comes from the caller (via rust-embed Templates::get())
-    /// to avoid circular dependency between gateway-services and gateway-templates.
-    pub fn load(bundled_json: &[u8], config_dir: &Path) -> Self {
+    /// Load an empty compatibility registry.
+    pub fn load() -> Self {
         let fallback = ModelProfile {
             name: "Unknown Model".to_string(),
             provider: "unknown".to_string(),
@@ -132,57 +126,15 @@ impl ModelRegistry {
                 video_generation: false,
             },
             context: ContextWindow {
-                input: 200_000,
-                output: Some(64_000),
+                input: DEFAULT_MAX_INPUT_TOKENS,
+                output: Some(DEFAULT_MAX_OUTPUT_TOKENS as u64),
             },
             embedding: None,
         };
 
-        // Layer 2: Bundled registry
-        let mut models: HashMap<String, ModelProfile> = if bundled_json.is_empty() {
-            tracing::warn!("Bundled models registry is empty — using fallback only");
-            HashMap::new()
-        } else {
-            match serde_json::from_slice(bundled_json) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::error!("Failed to parse bundled models registry: {}", e);
-                    HashMap::new()
-                }
-            }
-        };
+        let models = HashMap::new();
 
-        // Layer 1: Local overrides (merge on top)
-        let local_path = config_dir.join("config").join("models.json");
-        if local_path.exists() {
-            match std::fs::read_to_string(&local_path) {
-                Ok(content) => {
-                    match serde_json::from_str::<HashMap<String, ModelProfile>>(&content) {
-                        Ok(overrides) => {
-                            let count = overrides.len();
-                            models.extend(overrides);
-                            tracing::info!(
-                                "Loaded {} model override(s) from {}",
-                                count,
-                                local_path.display()
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Malformed models.json at {} — skipping local overrides: {}",
-                                local_path.display(),
-                                e
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Cannot read {}: {}", local_path.display(), e);
-                }
-            }
-        }
-
-        tracing::info!("Model registry loaded: {} models", models.len());
+        tracing::info!("Model registry disabled; using fallback profile for custom models");
 
         Self { models, fallback }
     }
@@ -222,73 +174,10 @@ impl ModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn sample_registry_json() -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({
-            "gpt-4o": {
-                "name": "GPT-4o",
-                "provider": "openai",
-                "capabilities": {
-                    "tools": true,
-                    "vision": true,
-                    "thinking": false,
-                    "embeddings": false,
-                    "voice": false,
-                    "imageGeneration": false,
-                    "videoGeneration": false
-                },
-                "context": {
-                    "input": 128000,
-                    "output": 16384
-                }
-            },
-            "text-embedding-3-large": {
-                "name": "Text Embedding 3 Large",
-                "provider": "openai",
-                "capabilities": {
-                    "tools": false,
-                    "vision": false,
-                    "thinking": false,
-                    "embeddings": true,
-                    "voice": false,
-                    "imageGeneration": false,
-                    "videoGeneration": false
-                },
-                "context": {
-                    "input": 8191,
-                    "output": null
-                },
-                "embedding": {
-                    "dimensions": 3072,
-                    "maxDimensions": 3072
-                }
-            }
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn test_load_bundled() {
-        let registry = ModelRegistry::load(&sample_registry_json(), &PathBuf::from("/nonexistent"));
-        assert_eq!(registry.list().len(), 2);
-    }
-
-    #[test]
-    fn test_get_known_model() {
-        let registry = ModelRegistry::load(&sample_registry_json(), &PathBuf::from("/nonexistent"));
-        let profile = registry.get("gpt-4o");
-        assert_eq!(profile.name, "GPT-4o");
-        assert!(profile.capabilities.tools);
-        assert!(profile.capabilities.vision);
-        assert!(!profile.capabilities.thinking);
-        assert_eq!(profile.context.input, 128000);
-        assert_eq!(profile.context.resolved_output(), 16384);
-    }
 
     #[test]
     fn test_get_unknown_model_returns_fallback() {
-        let registry = ModelRegistry::load(&sample_registry_json(), &PathBuf::from("/nonexistent"));
+        let registry = ModelRegistry::load();
         let profile = registry.get("nonexistent-model");
         assert_eq!(profile.provider, "unknown");
         assert!(profile.capabilities.tools);
@@ -297,11 +186,14 @@ mod tests {
     }
 
     #[test]
-    fn fallback_profile_uses_200k_in_64k_out_with_tools() {
-        let registry = ModelRegistry::load(&[], &PathBuf::from("/nonexistent"));
+    fn fallback_profile_uses_200k_in_32k_out_with_tools() {
+        let registry = ModelRegistry::load();
         let profile = registry.get("some-unknown-model-id");
-        assert_eq!(profile.context.input, 200_000);
-        assert_eq!(profile.context.output, Some(64_000));
+        assert_eq!(profile.context.input, DEFAULT_MAX_INPUT_TOKENS);
+        assert_eq!(
+            profile.context.output,
+            Some(DEFAULT_MAX_OUTPUT_TOKENS as u64)
+        );
         assert!(profile.capabilities.tools);
         assert!(!profile.capabilities.vision);
         assert!(!profile.capabilities.thinking);
@@ -310,46 +202,34 @@ mod tests {
 
     #[test]
     fn test_has_capability() {
-        let registry = ModelRegistry::load(&sample_registry_json(), &PathBuf::from("/nonexistent"));
-        assert!(registry.has_capability("gpt-4o", Capability::Tools));
-        assert!(registry.has_capability("gpt-4o", Capability::Vision));
-        assert!(!registry.has_capability("gpt-4o", Capability::Thinking));
-        assert!(registry.has_capability("text-embedding-3-large", Capability::Embeddings));
+        let registry = ModelRegistry::load();
+        assert!(registry.has_capability("custom-model", Capability::Tools));
+        assert!(!registry.has_capability("custom-model", Capability::Vision));
+        assert!(!registry.has_capability("custom-model", Capability::Thinking));
+        assert!(!registry.has_capability("custom-model", Capability::Embeddings));
     }
 
     #[test]
     fn test_context_window() {
-        let registry = ModelRegistry::load(&sample_registry_json(), &PathBuf::from("/nonexistent"));
-        let ctx = registry.context_window("gpt-4o");
-        assert_eq!(ctx.input, 128000);
-        assert_eq!(ctx.output, Some(16384));
-
-        // Embedding model: output is None, resolved_output returns input
-        let ctx = registry.context_window("text-embedding-3-large");
-        assert_eq!(ctx.input, 8191);
-        assert_eq!(ctx.output, None);
-        assert_eq!(ctx.resolved_output(), 8191);
+        let registry = ModelRegistry::load();
+        let ctx = registry.context_window("custom-model");
+        assert_eq!(ctx.input, DEFAULT_MAX_INPUT_TOKENS);
+        assert_eq!(ctx.output, Some(DEFAULT_MAX_OUTPUT_TOKENS as u64));
+        assert_eq!(ctx.resolved_output(), DEFAULT_MAX_OUTPUT_TOKENS as u64);
     }
 
     #[test]
     fn test_is_known() {
-        let registry = ModelRegistry::load(&sample_registry_json(), &PathBuf::from("/nonexistent"));
-        assert!(registry.is_known("gpt-4o"));
+        let registry = ModelRegistry::load();
+        assert!(!registry.is_known("gpt-4o"));
         assert!(!registry.is_known("nonexistent"));
     }
 
     #[test]
-    fn test_empty_bundled() {
-        let registry = ModelRegistry::load(&[], &PathBuf::from("/nonexistent"));
+    fn test_registry_lists_no_bundled_models() {
+        let registry = ModelRegistry::load();
         assert_eq!(registry.list().len(), 0);
-        // Still returns fallback for unknown
         let profile = registry.get("anything");
         assert_eq!(profile.provider, "unknown");
-    }
-
-    #[test]
-    fn test_malformed_bundled() {
-        let registry = ModelRegistry::load(b"not json", &PathBuf::from("/nonexistent"));
-        assert_eq!(registry.list().len(), 0);
     }
 }

@@ -9,10 +9,10 @@ use crate::connectors::{
 };
 use crate::state::AppState;
 use axum::{
-    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
+    Json,
 };
 use execution_state::TriggerSource;
 use serde::{Deserialize, Serialize};

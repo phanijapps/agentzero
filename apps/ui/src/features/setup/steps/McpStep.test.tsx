@@ -72,11 +72,17 @@ describe("McpStep", () => {
 
   it("loads defaults from transport when mcpConfigs is empty", async () => {
     const onChange = vi.fn();
-    const defaultServer = makeServer({ id: "default-1", name: "Default MCP" });
+    const defaultServer = makeServer({
+      id: "default-1",
+      name: "Default MCP",
+      enabled: false,
+    });
     getMcpDefaults.mockResolvedValue({ success: true, data: [defaultServer] });
     render(<McpStep mcpConfigs={[]} onChange={onChange} />);
     await waitFor(() => {
-      expect(onChange).toHaveBeenCalled();
+      expect(onChange).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "default-1", enabled: false }),
+      ]);
     });
   });
 

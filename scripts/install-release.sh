@@ -14,6 +14,12 @@ SHARE_DIR="${HOME}/.local/share/zbot"
 SERVICE=true
 DRY_RUN=false
 
+if [[ -d "${HOME}/Documents" ]]; then
+    VAULT_DIR="${HOME}/Documents/zbot"
+else
+    VAULT_DIR="${HOME}/zbot"
+fi
+
 usage() {
     cat <<'USAGE'
 Usage: install-release.sh [options]
@@ -152,18 +158,59 @@ download_release_assets() {
 
 install_binaries() {
     local tmp="$1" archive="$2" root="zbot-${VERSION}"
-    mkdir -p "${tmp}/extract" "$INSTALL_DIR" "${SHARE_DIR}/dist"
+    mkdir -p "${tmp}/extract" "$INSTALL_DIR" "${SHARE_DIR}/dist" "${VAULT_DIR}/logs"
     tar -xzf "${tmp}/${archive}" -C "${tmp}/extract"
     install -m 755 "${tmp}/extract/${root}/zbotd" "${INSTALL_DIR}/zbotd"
     install -m 755 "${tmp}/extract/${root}/zbot" "${INSTALL_DIR}/zbot"
     rm -rf "${SHARE_DIR}/dist/"*
     cp -R "${tmp}/extract/${root}/dist/." "${SHARE_DIR}/dist/"
+}
 
-    if [[ -d "${HOME}/Documents" ]]; then
-        mkdir -p "${HOME}/Documents/zbot"
-    else
-        mkdir -p "${HOME}/zbot"
+warn_python_venv() {
+    local py tmp output last_error=""
+
+    for py in python3 python; do
+        if ! command -v "$py" >/dev/null 2>&1; then
+            continue
+        fi
+
+        tmp="$(mktemp -d)"
+        if output="$("$py" -m venv "${tmp}/venv" 2>&1)"; then
+            rm -rf "$tmp"
+            return
+        fi
+        rm -rf "$tmp"
+        last_error="${py} -m venv failed: ${output}"
+    done
+
+    echo "warning: Python venv support was not found; zbot shell tools may not get ~/Documents/zbot/wards/.venv"
+    echo "         On Debian/Ubuntu/Pop!_OS install it with: sudo apt install -y python3 python3-venv"
+    if [[ -n "$last_error" ]]; then
+        echo "         ${last_error}"
     fi
+}
+
+warn_uv() {
+    if command -v uvx >/dev/null 2>&1; then
+        return
+    fi
+
+    echo "warning: uvx was not found; MCP servers that use uvx, such as the bundled Time MCP, will not run until uv is installed"
+    echo "         Install uv with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "         Then restart zbot so the service sees ~/.local/bin/uvx."
+}
+
+enable_linger() {
+    if [[ "$(uname -s)" != "Linux" || "$SERVICE" != "true" ]]; then
+        return
+    fi
+    if ! command -v loginctl >/dev/null 2>&1; then
+        echo "loginctl not found; user service may stop after logout"
+        return
+    fi
+
+    loginctl enable-linger "${USER}" || \
+        echo "warning: failed to enable linger; user service may stop after logout"
 }
 
 install_linux_service() {
@@ -195,9 +242,10 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/zbotd --log-no-stdout --log-rotation daily --log-max-files 4 --static-dir ${dist_dir}
-StandardOutput=null
-StandardError=null
+Environment=PATH=${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${INSTALL_DIR}/zbotd --log-dir ${VAULT_DIR}/logs --log-no-stdout --log-rotation daily --log-max-files 4 --static-dir ${dist_dir}
+StandardOutput=journal
+StandardError=journal
 Restart=on-failure
 RestartSec=5
 
@@ -234,6 +282,9 @@ main() {
     download_release_assets "$archive" "$tmp"
     verify_checksum "${tmp}/${archive}" "${tmp}/checksums.sha256"
     install_binaries "$tmp" "$archive"
+    warn_python_venv
+    warn_uv
+    enable_linger
     install_linux_service
 
     echo ""

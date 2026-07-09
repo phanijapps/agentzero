@@ -133,7 +133,7 @@ impl StdioMcpClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| McpError::ConnectionFailed(format!("Failed to spawn MCP process: {e}")))?;
+            .map_err(|e| spawn_mcp_error(&self.command, e))?;
 
         // Write all requests to stdin
         if let Some(mut stdin) = child.stdin.take() {
@@ -281,7 +281,7 @@ impl StdioMcpClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| McpError::ConnectionFailed(format!("Failed to spawn MCP process: {e}")))?;
+            .map_err(|e| spawn_mcp_error(&self.command, e))?;
 
         // Write all requests to stdin
         if let Some(mut stdin) = child.stdin.take() {
@@ -404,6 +404,12 @@ impl StdioMcpClient {
     }
 }
 
+fn spawn_mcp_error(command: &str, error: std::io::Error) -> McpError {
+    McpError::ConnectionFailed(format!(
+        "Failed to spawn MCP process '{command}'. Stdio MCP commands run on the daemon host and must be installed in the daemon PATH: {error}"
+    ))
+}
+
 #[async_trait]
 impl McpClient for StdioMcpClient {
     fn name(&self) -> &str {
@@ -435,5 +441,20 @@ impl McpClient for StdioMcpClient {
                 self.name,
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_error_mentions_daemon_host_and_command() {
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let message = spawn_mcp_error("npx", error).to_string();
+
+        assert!(message.contains("npx"));
+        assert!(message.contains("daemon host"));
+        assert!(message.contains("daemon PATH"));
     }
 }

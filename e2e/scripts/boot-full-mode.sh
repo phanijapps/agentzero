@@ -117,7 +117,7 @@ PY
 # Start mock-llm
 (
   cd "$REPO"
-  PYTHONPATH=. "$PY" -m e2e.mock_llm \
+  exec env PYTHONPATH=. "$PY" -m e2e.mock_llm \
     --fixture "$FIXTURE_DIR" \
     --port "$LLM_PORT" \
     > "$RUN_DIR/mock-llm.log" 2>&1
@@ -136,17 +136,27 @@ if ! curl -sf "http://127.0.0.1:$LLM_PORT/health" >/dev/null; then
 fi
 
 # Start zerod against the seeded data-dir + replay-backed tools.
+DAEMON_BIN="$REPO/target/debug/zerod"
+if [[ ! -x "$DAEMON_BIN" ]]; then
+  DAEMON_BIN="$REPO/target/debug/zbotd"
+fi
+if [[ ! -x "$DAEMON_BIN" ]]; then
+  echo "daemon binary missing: build apps/daemon first" >&2
+  bash "$(dirname "$0")/teardown.sh" "$RUN_DIR" || true
+  exit 74
+fi
 (
   cd "$REPO"
-  ZBOT_REPLAY_DIR="$FIXTURE_DIR" \
-  ZBOT_REPLAY_STRICT=0 \
-    ./target/debug/zerod \
+  exec env \
+    ZBOT_REPLAY_DIR="$FIXTURE_DIR" \
+    ZBOT_REPLAY_STRICT=0 \
+    "$DAEMON_BIN" \
       --data-dir "$DATA_DIR" \
       --host 127.0.0.1 \
       --http-port "$GATEWAY_HTTP_PORT" \
       --log-level info \
       --no-dashboard \
-    > "$RUN_DIR/zerod.log" 2>&1
+      > "$RUN_DIR/zerod.log" 2>&1
 ) &
 echo $! > "$RUN_DIR/zerod.pid"
 
@@ -161,7 +171,7 @@ if ! curl -sf "http://127.0.0.1:$GATEWAY_HTTP_PORT/api/health" >/dev/null; then
   exit 72
 fi
 
-if [[ ! -f "$REPO/apps/ui/dist/index.html" ]]; then
+if [[ ! -f "$REPO/dist/index.html" ]]; then
   (cd "$REPO/apps/ui" && npm run build > "$RUN_DIR/ui-build.log" 2>&1) || {
     echo "UI build failed; log tail:" >&2
     tail -30 "$RUN_DIR/ui-build.log" >&2
@@ -171,7 +181,7 @@ if [[ ! -f "$REPO/apps/ui/dist/index.html" ]]; then
 fi
 (
   cd "$REPO/apps/ui"
-  npx vite preview --port "$UI_PORT" --strictPort \
+  exec npx vite preview --port "$UI_PORT" --strictPort \
     > "$RUN_DIR/ui.log" 2>&1
 ) &
 echo $! > "$RUN_DIR/ui.pid"

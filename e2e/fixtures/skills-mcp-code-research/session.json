@@ -1,0 +1,14 @@
+{
+  "session_id": "sess-synthetic-skills-mcp-code-research-0000",
+  "title": "Skills MCP Code Research",
+  "executions": [
+    {
+      "execution_id": "exec-synthetic-skills-mcp-root-0000",
+      "agent_id": "root",
+      "parent_execution_id": null,
+      "started_at_offset_ms": 0,
+      "ended_at_offset_ms": 4200
+    }
+  ],
+  "artifacts": []
+}

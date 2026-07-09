@@ -87,6 +87,14 @@ impl Provider {
             .and_then(|c| c.max_output)
     }
 
+    /// Get effective max_input for a model from model_configs.
+    pub fn effective_max_input(&self, model_id: &str) -> Option<u64> {
+        self.model_configs
+            .as_ref()
+            .and_then(|configs| configs.get(model_id))
+            .and_then(|c| c.max_input)
+    }
+
     /// Get effective rate limits. Falls back to defaults if not set.
     pub fn effective_rate_limits(&self) -> RateLimits {
         self.rate_limits.clone().unwrap_or_default()

@@ -39,11 +39,11 @@ describe("getAvailablePresets", () => {
     expect(getAvailablePresets([])).toEqual(PROVIDER_PRESETS);
   });
 
-  it("filters out presets whose baseUrl is already used (ignoring trailing slashes)", () => {
+  it("does not filter out presets only because baseUrl is already used", () => {
     const result = getAvailablePresets([
       { baseUrl: "https://api.openai.com/v1/", name: "My OpenAI" },
     ]);
-    expect(result.find((p) => p.name === "OpenAI")).toBeUndefined();
+    expect(result.find((p) => p.name === "OpenAI")).toBeDefined();
     expect(result.find((p) => p.name === "Anthropic")).toBeDefined();
   });
 

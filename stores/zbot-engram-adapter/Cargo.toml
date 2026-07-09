@@ -1,0 +1,38 @@
+[package]
+name = "zbot-engram-adapter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AgentZero compatibility adapter scaffold for Engram-backed stores"
+
+[dependencies]
+agent-runtime = { path = "../../runtime/agent-runtime" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+engram-domain = { path = "../../../mem-alpha/core/domain" }
+engram-belief = { path = "../../../mem-alpha/core/belief" }
+engram-conformance = { path = "../../../mem-alpha/adapters/integration" }
+engram-memory = { path = "../../../mem-alpha/core/memory" }
+engram-integration = { path = "../../../mem-alpha/core/integration" }
+engram-hierarchy = { path = "../../../mem-alpha/core/hierarchy" }
+engram-knowledge = { path = "../../../mem-alpha/core/knowledge" }
+knowledge-graph = { path = "../../services/knowledge-graph" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+zbot-stores-domain = { path = "../zbot-stores-domain" }
+zbot-stores = { path = "../zbot-stores" }
+zbot-stores-traits = { path = "../zbot-stores-traits" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zbot-stores-conformance = { path = "../zbot-stores-conformance" }
+
+[lints]
+workspace = true

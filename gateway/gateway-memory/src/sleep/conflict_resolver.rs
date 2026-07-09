@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
 use serde::Deserialize;
-use zero_stores_traits::{CompactionStore, MemoryFact, MemoryFactStore};
+use zbot_stores_traits::{CompactionStore, MemoryFact, MemoryFactStore};
 
 use crate::sleep::belief_propagator::BeliefPropagator;
 use crate::util::parse_llm_json;
@@ -344,8 +344,8 @@ mod tests {
     use super::*;
     use gateway_services::VaultPaths;
     use std::sync::Mutex;
-    use zero_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
+    use zbot_stores_sqlite::{
         CompactionRepository, GatewayCompactionStore, GatewayMemoryFactStore, KnowledgeDatabase,
         MemoryRepository,
     };
@@ -600,9 +600,9 @@ mod tests {
     /// marked stale.
     #[tokio::test]
     async fn supersession_fires_belief_propagation() {
-        use zero_stores_sqlite::SqliteBeliefStore;
-        use zero_stores_traits::Belief;
-        use zero_stores_traits::BeliefStore;
+        use zbot_stores_sqlite::SqliteBeliefStore;
+        use zbot_stores_traits::Belief;
+        use zbot_stores_traits::BeliefStore;
 
         let h = setup();
         seed_two_schemas(

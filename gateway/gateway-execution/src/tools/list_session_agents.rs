@@ -1,9 +1,9 @@
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 use async_trait::async_trait;
 use execution_state::{DelegationType, ExecutionFilter, StateService};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zero_core::{Result, Tool, ToolContext, ZeroError};
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_sqlite::DatabaseManager;
 
 pub struct ListSessionAgentsTool {
     state_service: Arc<StateService<DatabaseManager>>,
@@ -43,7 +43,7 @@ impl Tool for ListSessionAgentsTool {
                 session_id: Some(session_id.clone()),
                 ..Default::default()
             })
-            .map_err(|e| ZeroError::Tool(format!("failed to list session agents: {e}")))?;
+            .map_err(|e| AgentError::Tool(format!("failed to list session agents: {e}")))?;
 
         let agents: Vec<Value> = executions
             .into_iter()
@@ -72,7 +72,7 @@ fn context_session_id(ctx: &dyn ToolContext) -> Result<String> {
     ctx.get_state("session_id")
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .filter(|session_id| !session_id.is_empty())
-        .ok_or_else(|| ZeroError::Tool("session_id is required in tool context".to_string()))
+        .ok_or_else(|| AgentError::Tool("session_id is required in tool context".to_string()))
 }
 
 #[cfg(test)]

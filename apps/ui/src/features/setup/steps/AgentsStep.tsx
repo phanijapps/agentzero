@@ -7,6 +7,9 @@ interface GlobalDefault {
   providerId: string;
   model: string;
   temperature: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
 }
 
@@ -14,6 +17,9 @@ interface AgentOverride {
   providerId?: string;
   model?: string;
   temperature?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens?: number;
 }
 
@@ -41,6 +47,8 @@ export function AgentsStep({
   const [isLoading, setIsLoading] = useState(true);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const initDone = useRef(false);
+  const defaultMaxInputTokens = 200000;
+  const defaultMaxOutputTokens = 32000;
 
   // The providers we actually use for rendering — loaded from API, fallback to props
   const allProviders = loadedProviders.length > 0 ? loadedProviders : providers;
@@ -89,7 +97,9 @@ export function AgentsStep({
         providerId: provider.id!,
         model: modelValid ? globalDefault.model : (provider.defaultModel || models[0] || ""),
         temperature: globalDefault.temperature || 0.7,
-        maxTokens: globalDefault.maxTokens || 4096,
+        maxInputTokens: globalDefault.maxInputTokens || defaultMaxInputTokens,
+        maxOutputTokens: globalDefault.maxOutputTokens || globalDefault.maxTokens || defaultMaxOutputTokens,
+        maxTokens: globalDefault.maxOutputTokens || globalDefault.maxTokens || defaultMaxOutputTokens,
       });
     }
   }, [isLoading, allProviders.length]);
@@ -121,7 +131,9 @@ export function AgentsStep({
       providerId: override.providerId || globalDefault.providerId,
       model: override.model || globalDefault.model,
       temperature: override.temperature ?? globalDefault.temperature,
-      maxTokens: override.maxTokens ?? globalDefault.maxTokens,
+      maxInputTokens: override.maxInputTokens ?? globalDefault.maxInputTokens,
+      maxOutputTokens: override.maxOutputTokens ?? override.maxTokens ?? globalDefault.maxOutputTokens ?? globalDefault.maxTokens,
+      maxTokens: override.maxOutputTokens ?? override.maxTokens ?? globalDefault.maxOutputTokens ?? globalDefault.maxTokens,
     };
   };
 
@@ -202,8 +214,22 @@ export function AgentsStep({
               id="agents-global-tokens"
               className="form-input"
               type="number"
-              value={globalDefault.maxTokens}
-              onChange={(e) => onGlobalChange({ ...globalDefault, maxTokens: Number.parseInt(e.target.value) || 4096 })}
+              value={globalDefault.maxOutputTokens ?? globalDefault.maxTokens}
+              onChange={(e) => {
+                const maxOutputTokens = Number.parseInt(e.target.value) || defaultMaxOutputTokens;
+                onGlobalChange({ ...globalDefault, maxOutputTokens, maxTokens: maxOutputTokens });
+              }}
+              min={256} step={1024}
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label" htmlFor="agents-global-input-tokens">Max Input Tokens</label>
+            <input
+              id="agents-global-input-tokens"
+              className="form-input"
+              type="number"
+              value={globalDefault.maxInputTokens}
+              onChange={(e) => onGlobalChange({ ...globalDefault, maxInputTokens: Number.parseInt(e.target.value) || defaultMaxInputTokens })}
               min={256} step={1024}
             />
           </div>
@@ -233,7 +259,7 @@ export function AgentsStep({
                 {!isExpanded ? (
                   <div className="flex items-center gap-2">
                     <span className="agent-row__config">
-                      {getProviderName(effective.providerId)} &middot; {effective.model} &middot; {effective.temperature} &middot; {effective.maxTokens}
+                      {getProviderName(effective.providerId)} &middot; {effective.model} &middot; {effective.temperature} &middot; {effective.maxInputTokens}/{effective.maxOutputTokens}
                     </span>
                     <button className="btn btn--outline btn--sm" onClick={() => setExpandedAgent(agent.id)}>
                       Customize
@@ -282,12 +308,29 @@ export function AgentsStep({
                     />
                   </div>
                   <div>
-                    <div className="agent-row__field-label">Tokens</div>
+                    <div className="agent-row__field-label">Input Tokens</div>
                     <input
                       className="form-input"
                       type="number"
-                      value={agentOverrides[agent.id]?.maxTokens ?? globalDefault.maxTokens}
-                      onChange={(e) => handleOverride(agent.id, "maxTokens", Number.parseInt(e.target.value) || 4096)}
+                      value={agentOverrides[agent.id]?.maxInputTokens ?? globalDefault.maxInputTokens}
+                      onChange={(e) => handleOverride(agent.id, "maxInputTokens", Number.parseInt(e.target.value) || defaultMaxInputTokens)}
+                      min={256} step={1024}
+                    />
+                  </div>
+                  <div>
+                    <div className="agent-row__field-label">Output Tokens</div>
+                    <input
+                      className="form-input"
+                      type="number"
+                      value={agentOverrides[agent.id]?.maxOutputTokens ?? agentOverrides[agent.id]?.maxTokens ?? globalDefault.maxOutputTokens ?? globalDefault.maxTokens}
+                      onChange={(e) => {
+                        const maxOutputTokens = Number.parseInt(e.target.value) || defaultMaxOutputTokens;
+                        const current = agentOverrides[agent.id] || {};
+                        onOverrideChange({
+                          ...agentOverrides,
+                          [agent.id]: { ...current, maxOutputTokens, maxTokens: maxOutputTokens },
+                        });
+                      }}
                       min={256} step={1024}
                     />
                   </div>

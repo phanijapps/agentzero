@@ -15,7 +15,7 @@ use crate::services::{AgentService, McpService, ProviderService, SharedVaultPath
 use api_logs::LogService;
 use execution_state::StateService;
 use std::sync::Arc;
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 /// Execution state for a conversation.
 #[derive(Debug, Clone)]
@@ -57,7 +57,9 @@ impl RuntimeService {
         agent_service: Arc<AgentService>,
         provider_service: Arc<ProviderService>,
         paths: SharedVaultPaths,
-        conversation_repo: Arc<ConversationRepository>,
+        messages: Arc<dyn zbot_conversation::MessageStore>,
+        session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+        checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
         mcp_service: Arc<McpService>,
         skill_service: Arc<SkillService>,
         log_service: Arc<LogService<DatabaseManager>>,
@@ -71,7 +73,9 @@ impl RuntimeService {
             agent_service,
             provider_service,
             paths,
-            conversation_repo,
+            messages,
+            session_meta,
+            checkpoints,
             mcp_service,
             skill_service,
             log_service,
@@ -101,24 +105,26 @@ impl RuntimeService {
         agent_service: Arc<AgentService>,
         provider_service: Arc<ProviderService>,
         paths: SharedVaultPaths,
-        conversation_repo: Arc<ConversationRepository>,
+        messages: Arc<dyn zbot_conversation::MessageStore>,
+        session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+        checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
         mcp_service: Arc<McpService>,
         skill_service: Arc<SkillService>,
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
         connector_registry: Option<Arc<ConnectorRegistry>>,
-        memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+        memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
         distiller: Option<Arc<SessionDistiller>>,
         memory_recall: Option<Arc<MemoryRecall>>,
         bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
         bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
         embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
         max_parallel_agents: u32,
-        kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
-        kg_episode_repo: Option<Arc<zero_stores_sqlite::KgEpisodeRepository>>,
+        kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+        kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
         ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
         goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
-        procedure_store: Option<Arc<dyn zero_stores_traits::ProcedureStore>>,
+        procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
         procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig,
         memory_llm_factory: Arc<dyn gateway_memory::MemoryLlmFactory>,
     ) -> Self {
@@ -126,12 +132,10 @@ impl RuntimeService {
             let llm = Arc::new(gateway_execution::sleep::LlmHandoffWriter::new(
                 memory_llm_factory.clone(),
             ));
-            let conversation_store: Arc<dyn zero_stores_traits::ConversationStore> =
-                conversation_repo.clone();
             Arc::new(gateway_execution::sleep::HandoffWriter::new(
                 llm,
                 fs.clone(),
-                conversation_store,
+                messages.clone(),
             ))
         });
 
@@ -140,7 +144,9 @@ impl RuntimeService {
             agent_service,
             provider_service,
             paths: paths.clone(),
-            conversation_repo,
+            messages,
+            session_meta,
+            checkpoints,
             mcp_service,
             skill_service,
             log_service,
@@ -159,14 +165,8 @@ impl RuntimeService {
             ward_usage: Arc::new(gateway_services::WardUsage::new(paths.wards_dir())),
         });
 
-        // Initialize model registry from bundled + local overrides
-        let bundled_models = gateway_templates::Templates::get("models_registry.json")
-            .map(|f| f.data.to_vec())
-            .unwrap_or_default();
-        runner.set_model_registry(Arc::new(gateway_services::models::ModelRegistry::load(
-            &bundled_models,
-            paths.vault_dir(),
-        )));
+        // Initialize fallback-only model metadata registry.
+        runner.set_model_registry(Arc::new(gateway_services::models::ModelRegistry::load()));
 
         if let Some(ks) = kg_store {
             runner.set_kg_store(ks);
@@ -467,7 +467,9 @@ pub fn shared_runtime_service_with_runner(
     agent_service: Arc<AgentService>,
     provider_service: Arc<ProviderService>,
     paths: SharedVaultPaths,
-    conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     mcp_service: Arc<McpService>,
     skill_service: Arc<SkillService>,
     log_service: Arc<LogService<DatabaseManager>>,
@@ -478,7 +480,9 @@ pub fn shared_runtime_service_with_runner(
         agent_service,
         provider_service,
         paths,
-        conversation_repo,
+        messages,
+        session_meta,
+        checkpoints,
         mcp_service,
         skill_service,
         log_service,

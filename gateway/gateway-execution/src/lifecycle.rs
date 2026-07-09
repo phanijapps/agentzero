@@ -11,7 +11,7 @@ use gateway_bridge::{BridgeRegistry, OutboxRepository as BridgeOutbox};
 use gateway_connectors::{ConnectorRegistry, DispatchContext};
 use gateway_events::{EventBus, GatewayEvent};
 use std::sync::Arc;
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_sqlite::DatabaseManager;
 
 // ============================================================================
 // SESSION CREATION

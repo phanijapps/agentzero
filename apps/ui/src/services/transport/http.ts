@@ -27,6 +27,9 @@ import type {
   McpServerConfig,
   CreateMcpRequest,
   McpTestResult,
+  McpOAuthStatusResponse,
+  McpOAuthStartRequest,
+  McpOAuthStartResponse,
   MessageResponse,
   ChatSessionInit,
   SessionMessage,
@@ -72,6 +75,7 @@ import type {
   UpdateCronJobRequest,
   CronTriggerResult,
   // Memory types
+  CreatableMemoryCategory,
   MemoryFact,
   MemoryFilter,
   MemoryListResponse,
@@ -296,6 +300,27 @@ export class HttpTransport implements Transport {
 
   async testMcp(id: string): Promise<TransportResult<McpTestResult>> {
     return this.post<McpTestResult>(`/api/mcps/${encodeURIComponent(id)}/test`, {});
+  }
+
+  async getMcpOAuthStatus(id: string): Promise<TransportResult<McpOAuthStatusResponse>> {
+    return this.get<McpOAuthStatusResponse>(`/api/mcps/${encodeURIComponent(id)}/oauth/status`);
+  }
+
+  async startMcpOAuth(
+    id: string,
+    request: McpOAuthStartRequest = {},
+  ): Promise<TransportResult<McpOAuthStartResponse>> {
+    return this.post<McpOAuthStartResponse>(
+      `/api/mcps/${encodeURIComponent(id)}/oauth/start`,
+      request,
+    );
+  }
+
+  async disconnectMcpOAuth(id: string): Promise<TransportResult<McpOAuthStatusResponse>> {
+    return this.post<McpOAuthStatusResponse>(
+      `/api/mcps/${encodeURIComponent(id)}/oauth/disconnect`,
+      {},
+    );
   }
 
   // =========================================================================
@@ -1568,7 +1593,7 @@ export class HttpTransport implements Transport {
   }
 
   async createMemory(agentId: string, fact: {
-    category: string;
+    category: CreatableMemoryCategory;
     key: string;
     content: string;
     confidence?: number;

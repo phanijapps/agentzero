@@ -6,8 +6,8 @@ HTTP and WebSocket gateway for the AgentZero daemon.
 
 The gateway provides network interfaces for clients to interact with the agent runtime:
 
-- **WebSocket API** (port 18790) - Real-time streaming for agent conversations
-- **HTTP API** (port 18791) - RESTful endpoints for agents, conversations, tools
+- **HTTP API** (port 18791) - REST endpoints plus the primary `/ws` WebSocket upgrade route.
+- **Legacy WebSocket port** (18790) - Off by default; only bound when legacy standalone WebSocket support is explicitly enabled.
 
 ## Architecture
 
@@ -15,7 +15,8 @@ The gateway provides network interfaces for clients to interact with the agent r
 ┌─────────────────────────────────────────┐
 │              Gateway                     │
 ├─────────────────────────────────────────┤
-│  WebSocket :18790  │  HTTP :18791       │
+│  HTTP :18791 REST + /ws                 │
+│  Legacy WS :18790 only when enabled     │
 ├─────────────────────────────────────────┤
 │           Event Bus (broadcast)         │
 └─────────────────────────────────────────┘
@@ -61,7 +62,7 @@ The gateway provides network interfaces for clients to interact with the agent r
 
 ## WebSocket API
 
-Connect to `ws://localhost:18790/ws?agent_id={agent_id}`
+Connect to `ws://localhost:18791/ws?agent_id={agent_id}`. The standalone `18790` WebSocket listener is legacy and disabled unless explicitly enabled in gateway settings.
 
 ### Client Messages
 

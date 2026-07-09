@@ -1,6 +1,6 @@
 # Spec: Agent Handoff Notes
 
-- **Status:** Implementing
+- **Status:** Done
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`subagent-role-gating`](../subagent-role-gating/spec.md);
@@ -56,7 +56,7 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
 - Update runtime prompt/tool guidance so root can use the sequence:
   `delegate_to_agent` -> `list_session_agents` when needed ->
   `handoff_to_agent` for cross-shard notes -> `wait_agent` for final results.
-- Document this as "Agent Handoff Notes" in `memory-bank/components/` so it is
+- Document this as "Agent Handoff Notes" in `docs/architecture/components/` so it is
   not confused with the full Pattern 4 peer messaging northstar.
 
 ### Ask first
@@ -129,7 +129,7 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   unchanged and covered by existing tests.
 - [x] Runtime guidance presents the feature as one-way handoff notes and keeps
   `wait_agent` as the way to retrieve completed results.
-- [x] `memory-bank/components/` documents where the feature sits relative to
+- [x] `docs/architecture/components/` documents where the feature sits relative to
   delegation, steering, wait/kill, ward agents, and the parked Pattern 4
   northstar.
 - [x] No database schema, new persistence layer, `PeerMessageBus`,
@@ -142,7 +142,7 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   `child_session_id`. (source:
   `services/execution-state/src/types.rs`;
   `services/execution-state/src/repository.rs`;
-  `stores/zero-stores-sqlite/src/schema.rs`)
+  `stores/zbot-stores-sqlite/src/schema.rs`)
 - Technical: `delegate_to_agent` already returns an `execution_id` that can be
   used by `wait_agent`, `steer_agent`, or `kill_agent`. (source:
   `runtime/agent-runtime/src/tools/delegate.rs`)
@@ -161,11 +161,11 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
 - Technical: the Pattern 4 design is explicitly a northstar and includes
   `PeerMessageBus`, reply storage, federation, and request/reply behavior that
   this spec excludes. (source:
-  `memory-bank/future-state/2026-05-11-pattern4-peer-messaging-design.md`)
+  `docs/architecture/future-state/2026-05-11-pattern4-peer-messaging-design.md`)
 - Product: the desired slice is an ease-of-life fragment of Pattern 4, not the
   full Pattern 4 implementation. (source: user confirmation 2026-06-04)
 - Process: active feature specs live under `docs/specs/<feature>/` with
   `spec.md`, `plan.md`, and an entry in `docs/specs/README.md`. (source:
   `docs/specs/README.md`; `docs/specs/subagent-role-gating/spec.md`)
 
-[pattern4]: ../../../memory-bank/future-state/2026-05-11-pattern4-peer-messaging-design.md
+[pattern4]: ../../../docs/architecture/future-state/2026-05-11-pattern4-peer-messaging-design.md

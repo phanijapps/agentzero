@@ -436,8 +436,8 @@ When the user asks about a previously read work, answer from the vault:
 - Chapter content — read `books/<slug>/chunks/ch-NN.md`.
 - Character / theme / event — read
   `books/<slug>/entities/<type>-<slug>.md`.
-- Cross-book entities — `graph_query` against the main KG (returns
-  `vault_path` properties pointing into each book's vault).
+- Cross-book entities — use injected knowledge graph context when present, or
+  search the book/entity vault indexes for `vault_path` references.
 
 Don't re-ingest. Don't re-chunk.
 

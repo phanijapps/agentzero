@@ -12,9 +12,9 @@
 //! "curator" would otherwise be unreachable through the latter).
 
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
+    Json,
 };
 use gateway_services::{WardRecord, WardUsage, WardUsageMap};
 use serde::Deserialize;

@@ -9,11 +9,11 @@
 //! Task 7 lands the surface (struct, schema, validation, 404 path).
 //! Task 8 lands the dispatch loop. Task 9 lands argument interpolation.
 
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zero_core::{Result, Tool, ToolContext, ZeroError};
-use zero_stores_traits::{PatternStep, ProcedureStore};
+use zbot_stores_traits::{PatternStep, ProcedureStore};
 
 use crate::tools::registry::ToolRegistry;
 
@@ -199,7 +199,7 @@ impl Tool for RunProcedureTool {
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("name is required".into()))?;
+            .ok_or_else(|| AgentError::Tool("name is required".into()))?;
 
         let agent_id = ctx
             .get_state("agent_id")
@@ -210,11 +210,11 @@ impl Tool for RunProcedureTool {
             .procedure_store
             .get_procedure_by_name(&agent_id, name)
             .await
-            .map_err(|e| ZeroError::Tool(format!("procedure lookup failed: {e}")))?
-            .ok_or_else(|| ZeroError::Tool(format!("procedure '{name}' not found")))?;
+            .map_err(|e| AgentError::Tool(format!("procedure lookup failed: {e}")))?
+            .ok_or_else(|| AgentError::Tool(format!("procedure '{name}' not found")))?;
 
         let steps: Vec<PatternStep> = serde_json::from_str(&proc.steps)
-            .map_err(|e| ZeroError::Tool(format!("procedure steps unparseable: {e}")))?;
+            .map_err(|e| AgentError::Tool(format!("procedure steps unparseable: {e}")))?;
 
         let mut step_results: Vec<Value> = Vec::with_capacity(steps.len());
         let started = std::time::Instant::now();
@@ -233,7 +233,7 @@ impl Tool for RunProcedureTool {
                     if let Err(ee) = self.procedure_store.increment_failure(&proc.id).await {
                         tracing::warn!(error = %ee, "increment_failure failed");
                     }
-                    return Err(ZeroError::Tool(format!(
+                    return Err(AgentError::Tool(format!(
                         "run_procedure '{}' step {} action '{}' is not a registered tool",
                         proc.name, i, step.action
                     )));
@@ -249,7 +249,7 @@ impl Tool for RunProcedureTool {
                     if let Err(ee) = self.procedure_store.increment_failure(&proc.id).await {
                         tracing::warn!(error = %ee, "increment_failure failed");
                     }
-                    return Err(ZeroError::Tool(format!(
+                    return Err(AgentError::Tool(format!(
                         "run_procedure '{}' step {} ({}) failed: {}",
                         proc.name, i, step.action, e
                     )));
@@ -283,7 +283,7 @@ mod tests {
     use super::*;
     use crate::tools::context::ToolContext as ConcreteCtx;
     use tokio::sync::Mutex as TokioMutex;
-    use zero_stores_traits::Procedure;
+    use zbot_stores_traits::Procedure;
 
     struct NoOpProcedureStore;
     #[async_trait]
@@ -483,7 +483,7 @@ mod tests {
                 "fails"
             }
             async fn execute(&self, _ctx: Arc<dyn ToolContext>, _args: Value) -> Result<Value> {
-                Err(ZeroError::Tool("nope".into()))
+                Err(AgentError::Tool("nope".into()))
             }
         }
 

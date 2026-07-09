@@ -6,12 +6,12 @@
 //!   - The final result contains the upper-cased greeting
 //!   - Interpolation properly threads step_0.echoed → step_1.in
 
+use agent_primitives::{Result, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
-use zero_core::{Result, Tool, ToolContext};
-use zero_stores_traits::{Procedure, ProcedureStore};
+use zbot_stores_traits::{Procedure, ProcedureStore};
 
 use agent_runtime::tools::context::ToolContext as ConcreteCtx;
 use agent_runtime::tools::registry::ToolRegistry;

@@ -27,7 +27,9 @@ function makeAgent(id: string, name: string) {
     providerId: "anthropic",
     model: "claude-3-sonnet",
     temperature: 0.7,
-    maxTokens: 4096,
+    maxInputTokens: 200000,
+    maxOutputTokens: 32000,
+    maxTokens: 32000,
     thinkingEnabled: false,
     voiceRecordingEnabled: false,
     instructions: "",
@@ -40,7 +42,9 @@ const globalDefault = {
   providerId: "anthropic",
   model: "claude-3-sonnet",
   temperature: 0.7,
-  maxTokens: 4096,
+  maxInputTokens: 200000,
+  maxOutputTokens: 32000,
+  maxTokens: 32000,
 };
 
 const defaultProps = {
@@ -99,10 +103,11 @@ describe("AgentsStep", () => {
     });
   });
 
-  it("renders temperature and max tokens inputs", async () => {
+  it("renders temperature and token limit inputs", async () => {
     render(<AgentsStep {...defaultProps} />);
     await waitFor(() => {
       expect(screen.getByLabelText("Temperature")).toBeInTheDocument();
+      expect(screen.getByLabelText("Max Input Tokens")).toBeInTheDocument();
       expect(screen.getByLabelText("Max Output Tokens")).toBeInTheDocument();
     });
   });
@@ -147,7 +152,7 @@ describe("AgentsStep", () => {
     expect(onGlobalChange).toHaveBeenCalled();
   });
 
-  it("calls onGlobalChange when maxTokens changes", async () => {
+  it("calls onGlobalChange when maxOutputTokens changes", async () => {
     const onGlobalChange = vi.fn();
     render(<AgentsStep {...defaultProps} onGlobalChange={onGlobalChange} />);
     await waitFor(() => screen.getByLabelText("Max Output Tokens"));

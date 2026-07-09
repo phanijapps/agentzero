@@ -151,18 +151,6 @@ fn assemble_prompt(config_dir: &Path, vault_dir: &Path) -> String {
         parts.push(os_md);
     }
 
-    // Create config/models.json from bundled registry if it doesn't exist
-    let models_path = config_dir.join("models.json");
-    if !models_path.exists() {
-        if let Some(bundled) = Templates::get("models_registry.json") {
-            if let Err(e) = std::fs::write(&models_path, &bundled.data) {
-                tracing::warn!("Failed to create models.json: {}", e);
-            } else {
-                tracing::info!("Created config/models.json from bundled registry");
-            }
-        }
-    }
-
     // 4. Shards — config/shards/ overrides embedded, plus extra user shards
     let shards = load_shards(config_dir);
     if !shards.is_empty() {

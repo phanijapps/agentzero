@@ -170,82 +170,86 @@ impl<'a> AgentLoader<'a> {
         &self,
         agent_id: &str,
     ) -> Result<(gateway_services::agents::Agent, Provider), String> {
-        match self.agent_service.get(agent_id).await {
-            Ok(agent) => {
-                let provider = self.provider_resolver.get_or_default(&agent.provider_id)?;
-                Ok((agent, provider))
-            }
-            Err(_) if agent_id == "root" => {
-                // Read orchestrator config from settings.json
-                let orch = self
-                    .settings
-                    .and_then(|s| s.get_execution_settings().ok())
-                    .map(|s| s.orchestrator)
-                    .unwrap_or_default();
-
-                // Resolve provider: orchestrator config → default provider
-                let provider = match &orch.provider_id {
-                    Some(id) if !id.is_empty() => self.provider_resolver.get_or_default(id)?,
-                    _ => self.provider_resolver.get_default()?,
-                };
-
-                // Resolve model: orchestrator config → provider default
-                let model = orch
-                    .model
-                    .filter(|m| !m.is_empty())
-                    .unwrap_or_else(|| provider.default_model().to_string());
-
-                // Both modes respect orchestrator thinking config — chat UI toggles visibility
-                let thinking_enabled = orch.thinking_enabled;
-
-                tracing::info!(
-                    provider = %provider.name,
-                    model = %model,
-                    temperature = orch.temperature,
-                    max_tokens = orch.max_tokens,
-                    thinking = thinking_enabled,
-                    chat_mode = self.chat_mode,
-                    "Creating root agent from orchestrator config"
-                );
-
-                // Chat mode uses a lean prompt; research mode uses the full system prompt
-                let instructions = if self.chat_mode {
-                    gateway_templates::load_chat_prompt_from_paths(&self.paths)
-                } else {
-                    gateway_templates::load_system_prompt_from_paths(&self.paths)
-                };
-
-                // Chat mode: higher temperature for creative, personality-forward responses
-                let temperature = if self.chat_mode {
-                    1.0
-                } else {
-                    orch.temperature
-                };
-
-                let agent = gateway_services::agents::Agent {
-                    id: "root".to_string(),
-                    name: "root".to_string(),
-                    display_name: "Root Agent".to_string(),
-                    description: "System root agent that handles all conversations".to_string(),
-                    agent_type: Some("orchestrator".to_string()),
-                    provider_id: provider.id.clone().unwrap_or_default(),
-                    model,
-                    temperature,
-                    max_tokens: orch.max_tokens,
-                    thinking_enabled,
-                    voice_recording_enabled: false,
-                    system_instruction: None,
-                    instructions,
-                    mcps: vec![],
-                    skills: vec![],
-                    middleware: None,
-                    created_at: None,
-                };
-
-                Ok((agent, provider))
-            }
-            Err(e) => Err(e),
+        if agent_id != "root" {
+            let agent = self.agent_service.get(agent_id).await?;
+            let provider = self.provider_resolver.get_or_default(&agent.provider_id)?;
+            return Ok((agent, provider));
         }
+
+        // Root is a system agent. Always synthesize it from orchestrator
+        // settings; never let an on-disk agents/root shadow the root prompt.
+        let orch = self
+            .settings
+            .and_then(|s| s.get_execution_settings().ok())
+            .map(|s| s.orchestrator)
+            .unwrap_or_default();
+        let max_input_tokens = orch.effective_max_input_tokens();
+        let max_input_tokens_explicit = orch.max_input_tokens_explicit();
+
+        // Resolve provider: orchestrator config → default provider
+        let provider = match &orch.provider_id {
+            Some(id) if !id.is_empty() => self.provider_resolver.get_or_default(id)?,
+            _ => self.provider_resolver.get_default()?,
+        };
+
+        // Resolve model: orchestrator config → provider default
+        let model = orch
+            .model
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| provider.default_model().to_string());
+
+        // Quick Chat should answer immediately. Research mode respects the
+        // orchestrator thinking toggle; chat mode keeps reasoning off even
+        // when the root agent uses a reasoning-capable model.
+        let thinking_enabled = !self.chat_mode && orch.thinking_enabled;
+
+        tracing::info!(
+            provider = %provider.name,
+            model = %model,
+            temperature = orch.temperature,
+            max_tokens = orch.max_tokens,
+            thinking = thinking_enabled,
+            chat_mode = self.chat_mode,
+            "Creating root agent from orchestrator config"
+        );
+
+        // Chat mode uses a lean prompt; research mode uses the full system prompt
+        let instructions = if self.chat_mode {
+            gateway_templates::load_chat_prompt_from_paths(&self.paths)
+        } else {
+            gateway_templates::load_system_prompt_from_paths(&self.paths)
+        };
+
+        // Chat mode: higher temperature for creative, personality-forward responses
+        let temperature = if self.chat_mode {
+            1.0
+        } else {
+            orch.temperature
+        };
+
+        let agent = gateway_services::agents::Agent {
+            id: "root".to_string(),
+            name: "root".to_string(),
+            display_name: "Root Agent".to_string(),
+            description: "System root agent that handles all conversations".to_string(),
+            agent_type: Some("orchestrator".to_string()),
+            provider_id: provider.id.clone().unwrap_or_default(),
+            model,
+            temperature,
+            max_input_tokens,
+            max_input_tokens_explicit,
+            max_tokens: orch.max_tokens,
+            thinking_enabled,
+            voice_recording_enabled: false,
+            system_instruction: None,
+            instructions,
+            mcps: vec![],
+            skills: vec![],
+            middleware: None,
+            created_at: None,
+        };
+
+        Ok((agent, provider))
     }
 
     /// Load an agent by ID. If not found, auto-create a specialist agent
@@ -254,6 +258,12 @@ impl<'a> AgentLoader<'a> {
         &self,
         agent_id: &str,
     ) -> Result<(gateway_services::agents::Agent, Provider), String> {
+        if matches!(agent_id, "root" | "orchestrator") {
+            return Err(format!(
+                "Reserved system agent id cannot be delegated: {agent_id}"
+            ));
+        }
+
         // Ward-as-agent: a `ward:<name>` id synthesizes the agent from the
         // ward directory instead of loading `agents/<id>/`. The ward IS the
         // agent — no on-disk agent folder.
@@ -292,7 +302,9 @@ impl<'a> AgentLoader<'a> {
                     provider_id: provider.id.clone().unwrap_or_default(),
                     model,
                     temperature: 0.7,
-                    max_tokens: 8192,
+                    max_input_tokens: gateway_services::models::DEFAULT_MAX_INPUT_TOKENS,
+                    max_input_tokens_explicit: false,
+                    max_tokens: gateway_services::models::DEFAULT_MAX_OUTPUT_TOKENS,
                     thinking_enabled: false,
                     voice_recording_enabled: false,
                     system_instruction: None,
@@ -372,6 +384,8 @@ impl<'a> AgentLoader<'a> {
             .and_then(|s| s.get_execution_settings().ok())
             .map(|s| s.orchestrator)
             .unwrap_or_default();
+        let max_input_tokens = orch.effective_max_input_tokens();
+        let max_input_tokens_explicit = orch.max_input_tokens_explicit();
         let ward_cfg = load_or_seed_ward_config(&ward_dir);
         let provider_id = ward_cfg
             .provider
@@ -396,6 +410,8 @@ impl<'a> AgentLoader<'a> {
             provider_id: provider.id.clone().unwrap_or_default(),
             model,
             temperature: orch.temperature,
+            max_input_tokens,
+            max_input_tokens_explicit,
             max_tokens: orch.max_tokens,
             thinking_enabled: orch.thinking_enabled,
             voice_recording_enabled: false,

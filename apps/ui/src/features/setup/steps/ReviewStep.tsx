@@ -7,6 +7,9 @@ interface GlobalDefault {
   providerId: string;
   model: string;
   temperature: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
 }
 
@@ -14,6 +17,9 @@ interface AgentOverride {
   providerId?: string;
   model?: string;
   temperature?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens?: number;
 }
 
@@ -69,7 +75,8 @@ export function ReviewStep({
       original.providerId !== desired.providerId
       || original.model !== desired.model
       || original.temperature !== desired.temperature
-      || original.maxTokens !== desired.maxTokens
+      || original.maxInputTokens !== desired.maxInputTokens
+      || original.maxOutputTokens !== desired.maxOutputTokens
     );
   };
 
@@ -109,7 +116,9 @@ export function ReviewStep({
               providerId: override.providerId || globalDefault.providerId,
               model: override.model || globalDefault.model,
               temperature: override.temperature ?? globalDefault.temperature,
-              maxTokens: override.maxTokens ?? globalDefault.maxTokens,
+              maxInputTokens: override.maxInputTokens ?? globalDefault.maxInputTokens,
+              maxOutputTokens: override.maxOutputTokens ?? override.maxTokens ?? globalDefault.maxOutputTokens ?? globalDefault.maxTokens,
+              maxTokens: override.maxOutputTokens ?? override.maxTokens ?? globalDefault.maxOutputTokens ?? globalDefault.maxTokens,
             }
           : globalDefault;
 
@@ -119,7 +128,8 @@ export function ReviewStep({
             providerId: desired.providerId,
             model: desired.model,
             temperature: desired.temperature,
-            maxTokens: desired.maxTokens,
+            maxInputTokens: desired.maxInputTokens,
+            maxOutputTokens: desired.maxOutputTokens,
           });
         }
       }
@@ -225,7 +235,7 @@ export function ReviewStep({
         <div className="review-item">
           <span className="review-item__label">Default</span>
           <span className="review-item__value">
-            {getProviderName(globalDefault.providerId)} / {globalDefault.model} / {globalDefault.temperature} / {globalDefault.maxTokens}
+            {getProviderName(globalDefault.providerId)} / {globalDefault.model} / {globalDefault.temperature} / {globalDefault.maxInputTokens} in / {globalDefault.maxOutputTokens} out
           </span>
         </div>
         {Object.entries(agentOverrides).map(([agentId, override]) => (

@@ -6,7 +6,7 @@
 use execution_state::{Artifact, StateService};
 use std::path::Path;
 use std::sync::Arc;
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_sqlite::DatabaseManager;
 
 /// Process artifact declarations from a respond action.
 ///
@@ -18,7 +18,7 @@ use zero_stores_sqlite::DatabaseManager;
 ///
 /// Returns the list of successfully persisted artifacts.
 pub fn process_artifact_declarations(
-    declarations: &[zero_core::event::ArtifactDeclaration],
+    declarations: &[agent_primitives::event::ArtifactDeclaration],
     session_id: &str,
     execution_id: &str,
     agent_id: &str,
@@ -87,9 +87,9 @@ pub fn process_artifact_declarations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::event::ArtifactDeclaration;
     use gateway_services::VaultPaths;
     use tempfile::TempDir;
-    use zero_core::event::ArtifactDeclaration;
 
     /// Fully-wired harness: temp vault, real DatabaseManager, StateService,
     /// and a seeded parent session so the artifacts FK is satisfied.

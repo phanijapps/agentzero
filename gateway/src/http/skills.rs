@@ -5,9 +5,9 @@
 use crate::services::skills::Skill;
 use crate::state::AppState;
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
+    Json,
 };
 use serde::{Deserialize, Serialize};
 

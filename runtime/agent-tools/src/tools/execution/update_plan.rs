@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::{Result, Tool, ToolContext, ZeroError};
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 
 use crate::tools::guards::has_placeholder_specs;
 
@@ -90,16 +90,16 @@ impl Tool for UpdatePlanTool {
                 .get("__message__")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown error");
-            return Err(ZeroError::Tool(format!("{}: {}", error_type, message)));
+            return Err(AgentError::Tool(format!("{}: {}", error_type, message)));
         }
 
         let plan = args
             .get("plan")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| ZeroError::Tool("Missing 'plan' array parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'plan' array parameter".to_string()))?;
 
         if plan.is_empty() {
-            return Err(ZeroError::Tool("Plan cannot be empty".to_string()));
+            return Err(AgentError::Tool("Plan cannot be empty".to_string()));
         }
 
         // Part B: Check for plan replacement (existing plan with progress being fully reset)

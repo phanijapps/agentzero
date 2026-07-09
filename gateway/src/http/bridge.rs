@@ -2,10 +2,10 @@
 //!
 //! Axum WebSocket upgrade handler for bridge worker connections.
 
-use axum::Json;
-use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::State;
 use axum::response::IntoResponse;
+use axum::Json;
 use gateway_bridge::WorkerSummary;
 
 use crate::state::AppState;

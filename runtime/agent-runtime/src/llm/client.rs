@@ -67,6 +67,21 @@ pub trait LlmClient: Send + Sync {
         tools: Option<Value>,
     ) -> Result<ChatResponse, LlmError>;
 
+    /// Send a chat completion request with an optional provider-native JSON
+    /// Schema output constraint.
+    ///
+    /// The default preserves existing providers/tests by ignoring the schema.
+    /// Wrappers and providers that can carry the constraint should override this.
+    async fn chat_with_schema(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Value>,
+        output_schema: Option<Value>,
+    ) -> Result<ChatResponse, LlmError> {
+        let _ = output_schema;
+        self.chat(messages, tools).await
+    }
+
     /// Send a chat completion request with streaming
     ///
     /// The callback receives events as they are generated.

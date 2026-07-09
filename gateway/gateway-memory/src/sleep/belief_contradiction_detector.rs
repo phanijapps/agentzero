@@ -28,8 +28,8 @@ use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
-use zero_stores_domain::{Belief, BeliefContradiction, ContradictionType};
-use zero_stores_traits::{BeliefContradictionStore, BeliefStore};
+use zbot_stores_domain::{Belief, BeliefContradiction, ContradictionType};
+use zbot_stores_traits::{BeliefContradictionStore, BeliefStore};
 
 use crate::util::parse_llm_json;
 use crate::{CachedLlmClient, LlmClientConfig, MemoryLlmFactory};
@@ -492,7 +492,7 @@ mod tests {
     use super::*;
     use gateway_services::VaultPaths;
     use std::sync::Mutex as StdMutex;
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::{
         KnowledgeDatabase, SqliteBeliefContradictionStore, SqliteBeliefStore,
     };
 

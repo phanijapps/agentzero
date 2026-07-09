@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use zero_stores_traits::KgEpisodeStore;
+use zbot_stores_traits::KgEpisodeStore;
 
 #[derive(Debug, Clone)]
 pub struct BackpressureConfig {
@@ -70,7 +70,7 @@ impl Backpressure {
 mod tests {
     use super::*;
     use gateway_services::VaultPaths;
-    use zero_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
+    use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
 
     fn setup() -> (
         tempfile::TempDir,

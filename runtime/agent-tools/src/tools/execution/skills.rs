@@ -9,10 +9,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use zero_core::FileSystemContext;
-use zero_core::{Result, Tool, ToolContext};
+use agent_primitives::FileSystemContext;
+use agent_primitives::{Result, Tool, ToolContext};
 
 use crate::tools::guards::has_placeholder_specs;
+
+const MAX_SKILL_SUMMARY_CHARS: usize = 720;
+const MAX_SKILL_SECTION_CHARS: usize = 520;
+const MAX_SKILL_SECTIONS: usize = 6;
 
 // ============================================================================
 // SKILL STATE TYPES
@@ -222,7 +226,7 @@ impl Tool for LoadSkillTool {
             // Load specific file from skill directory
             self.load_skill_file(ctx, args).await
         } else {
-            Err(zero_core::ZeroError::Tool(
+            Err(agent_primitives::AgentError::Tool(
                 "Either 'skill' or 'file' parameter must be provided".to_string(),
             ))
         }
@@ -247,7 +251,7 @@ impl LoadSkillTool {
                 " Legacy planner skill alias: use load_skill(skill=\"plan-composer\") or install the alias."
             }
             _ => {
-                " Call list_skills to inspect available skills, then retry with an installed skill name."
+                " Retry with an installed skill name or an explicit @skill:<name>/SKILL.md file handle."
             }
         }
     }
@@ -260,7 +264,7 @@ impl LoadSkillTool {
         let roots = self.fs.skills_dirs();
         let canonical_skill_name = Self::canonical_skill_name(skill_name);
         if roots.is_empty() {
-            return Err(zero_core::ZeroError::Tool(
+            return Err(agent_primitives::AgentError::Tool(
                 "Skills directory not configured".to_string(),
             ));
         }
@@ -274,7 +278,7 @@ impl LoadSkillTool {
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        Err(zero_core::ZeroError::Tool(format!(
+        Err(agent_primitives::AgentError::Tool(format!(
             "Skill '{}' not found in any configured skills root (searched: {}).{}",
             skill_name,
             searched.join(", "),
@@ -284,24 +288,24 @@ impl LoadSkillTool {
 
     /// Load the main SKILL.md file for a skill
     async fn load_main_skill(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
-        let skill_name = args
-            .get("skill")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("Missing 'skill' parameter".to_string()))?;
+        let skill_name = args.get("skill").and_then(|v| v.as_str()).ok_or_else(|| {
+            agent_primitives::AgentError::Tool("Missing 'skill' parameter".to_string())
+        })?;
         let canonical_skill_name = Self::canonical_skill_name(skill_name);
 
         let skill_dir = self.resolve_skill_dir(skill_name)?;
         let skill_file = skill_dir.join("SKILL.md");
 
         if !skill_file.exists() {
-            return Err(zero_core::ZeroError::Tool(format!(
+            return Err(agent_primitives::AgentError::Tool(format!(
                 "Skill file not found: {}",
                 skill_file.to_string_lossy()
             )));
         }
 
-        let content = std::fs::read_to_string(&skill_file)
-            .map_err(|e| zero_core::ZeroError::Tool(format!("Failed to read skill file: {}", e)))?;
+        let content = std::fs::read_to_string(&skill_file).map_err(|e| {
+            agent_primitives::AgentError::Tool(format!("Failed to read skill file: {}", e))
+        })?;
 
         // Parse YAML frontmatter
         let (metadata, instructions) = self.parse_skill_frontmatter(&content)?;
@@ -319,20 +323,19 @@ impl LoadSkillTool {
         // List available resource files in the skill directory
         let resources = list_skill_resources(&skill_dir, skill_name);
 
-        Ok(json!({
-            "name": skill_name,
-            "metadata": metadata,
-            "instructions": instructions,
-            "resources": resources,
-        }))
+        Ok(build_skill_packet(
+            skill_name,
+            &metadata,
+            &instructions,
+            resources,
+        ))
     }
 
     /// Load a specific file from a skill's directory
     async fn load_skill_file(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
-        let file_path = args
-            .get("file")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("Missing 'file' parameter".to_string()))?;
+        let file_path = args.get("file").and_then(|v| v.as_str()).ok_or_else(|| {
+            agent_primitives::AgentError::Tool("Missing 'file' parameter".to_string())
+        })?;
 
         // Parse path and get skill name
         let (skill_name_from_path, relative_path, is_explicit) = self.parse_skill_path(file_path);
@@ -342,11 +345,11 @@ impl LoadSkillTool {
             skill_name_from_path
         } else {
             ctx.get_state("skill:current_skill")
-                .ok_or_else(|| zero_core::ZeroError::Tool(
+                .ok_or_else(|| agent_primitives::AgentError::Tool(
                     "No skill context. Either use @skill:skill-name/path format or load a skill first using the 'skill' parameter.".to_string()
                 ))?
                 .as_str()
-                .ok_or_else(|| zero_core::ZeroError::Tool("Invalid skill state".to_string()))?
+                .ok_or_else(|| agent_primitives::AgentError::Tool("Invalid skill state".to_string()))?
                 .to_string()
         };
 
@@ -357,13 +360,13 @@ impl LoadSkillTool {
 
         // Security: Ensure path doesn't escape skill directory
         if !full_path.starts_with(&skill_dir) {
-            return Err(zero_core::ZeroError::Tool(
+            return Err(agent_primitives::AgentError::Tool(
                 "Invalid path: cannot access files outside skill directory".to_string(),
             ));
         }
 
         if !full_path.exists() {
-            return Err(zero_core::ZeroError::Tool(format!(
+            return Err(agent_primitives::AgentError::Tool(format!(
                 "Skill file not found: {} (searched in skill: {})",
                 relative_path, skill_name
             )));
@@ -381,8 +384,9 @@ impl LoadSkillTool {
         }
 
         // Read file content
-        let content = std::fs::read_to_string(&full_path)
-            .map_err(|e| zero_core::ZeroError::Tool(format!("Failed to read skill file: {}", e)))?;
+        let content = std::fs::read_to_string(&full_path).map_err(|e| {
+            agent_primitives::AgentError::Tool(format!("Failed to read skill file: {}", e))
+        })?;
 
         // Get the tool call ID for tracking
         let tool_call_id = ctx.function_call_id();
@@ -414,7 +418,7 @@ impl LoadSkillTool {
             let instructions = parts[2].trim().to_string();
 
             let metadata: Value = serde_yaml::from_str(yaml_content).map_err(|e| {
-                zero_core::ZeroError::Tool(format!("Failed to parse skill YAML: {}", e))
+                agent_primitives::AgentError::Tool(format!("Failed to parse skill YAML: {}", e))
             })?;
 
             Ok((metadata, instructions))
@@ -424,6 +428,149 @@ impl LoadSkillTool {
         }
     }
 }
+
+fn build_skill_packet(
+    skill_name: &str,
+    metadata: &Value,
+    instructions: &str,
+    resources: Vec<Value>,
+) -> Value {
+    let sections = summarize_sections(skill_name, instructions);
+    let summary = metadata
+        .get("description")
+        .and_then(Value::as_str)
+        .map(|description| truncate_text(description, MAX_SKILL_SUMMARY_CHARS))
+        .unwrap_or_else(|| summarize_instructions(instructions));
+    let token_estimate = estimate_tokens(&summary)
+        + sections
+            .iter()
+            .map(|section| {
+                section
+                    .get("token_estimate")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
+            .sum::<u64>() as usize;
+
+    json!({
+        "name": skill_name,
+        "metadata": metadata,
+        "packet": {
+            "summary": summary,
+            "sections": sections,
+            "resource_uri": format!("zbot://skills/{skill_name}/SKILL.md"),
+            "full_body_resource_uri": format!("zbot://skills/{skill_name}/sections/full"),
+            "token_estimate": token_estimate,
+            "render_policy": "summary",
+            "full_body_read": "Use load_skill(file=\"@skill:<skill>/SKILL.md\") only when the full body is explicitly needed."
+        },
+        "resources": resources,
+    })
+}
+
+fn summarize_sections(skill_name: &str, instructions: &str) -> Vec<Value> {
+    let mut sections = Vec::new();
+    let mut current_title = "overview".to_string();
+    let mut current_body = String::new();
+
+    for line in instructions.lines() {
+        if let Some(title) = markdown_heading(line) {
+            push_section(skill_name, &mut sections, &current_title, &current_body);
+            if sections.len() >= MAX_SKILL_SECTIONS {
+                return sections;
+            }
+            current_title = title.to_string();
+            current_body.clear();
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+    push_section(skill_name, &mut sections, &current_title, &current_body);
+    sections
+}
+
+fn push_section(skill_name: &str, sections: &mut Vec<Value>, title: &str, body: &str) {
+    let summary = summarize_instructions(body);
+    if summary.trim().is_empty() {
+        return;
+    }
+    let slug = slugify(title);
+    sections.push(json!({
+        "title": title,
+        "summary": truncate_text(&summary, MAX_SKILL_SECTION_CHARS),
+        "resource_uri": format!("zbot://skills/{skill_name}/sections/{slug}"),
+        "token_estimate": estimate_tokens(&summary),
+    }));
+}
+
+fn markdown_heading(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let title = trimmed
+        .strip_prefix("### ")
+        .or_else(|| trimmed.strip_prefix("## "))
+        .or_else(|| trimmed.strip_prefix("# "))?;
+    let title = title.trim();
+    (!title.is_empty()).then_some(title)
+}
+
+fn summarize_instructions(instructions: &str) -> String {
+    instructions
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with("---"))
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .pipe(|summary| truncate_text(&summary, MAX_SKILL_SUMMARY_CHARS))
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4).max(1)
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated = text
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn slugify(value: &str) -> String {
+    let slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "section".to_string()
+    } else {
+        slug
+    }
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
+    }
+}
+
+impl<T> Pipe for T {}
 
 /// List resource files in a skill directory (excluding SKILL.md).
 ///
@@ -491,9 +638,9 @@ fn is_binary_file(filename: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::FileSystemContext;
     use std::path::PathBuf;
     use tempfile::TempDir;
-    use zero_core::FileSystemContext;
 
     /// Test FileSystemContext that returns a configurable list of skills
     /// roots. Mirrors what `GatewayFileSystem` does in production but
@@ -642,5 +789,51 @@ mod tests {
         let tool = make_tool(vec![]);
         let err = tool.resolve_skill_dir("alpha").expect_err("must error");
         assert!(format!("{err}").contains("not configured"), "got: {err}");
+    }
+
+    #[test]
+    fn skill_packet_is_bounded_and_handle_based() {
+        let instructions = r#"
+# Overview
+Use this skill for focused Rust work.
+
+## Build
+Run cargo check before tests.
+
+## Review
+Look for ownership and lifetime issues.
+"#;
+        let packet = build_skill_packet(
+            "rust",
+            &json!({"description": "Rust development workflow"}),
+            instructions,
+            vec![json!({"file": "REFERENCE.md", "load_with": "load_skill(file=\"REFERENCE.md\")"})],
+        );
+
+        assert_eq!(packet["name"], "rust");
+        assert!(packet.get("instructions").is_none());
+        assert_eq!(packet["packet"]["summary"], "Rust development workflow");
+        assert_eq!(
+            packet["packet"]["resource_uri"],
+            "zbot://skills/rust/SKILL.md"
+        );
+        assert!(packet["packet"]["token_estimate"].as_u64().unwrap() > 0);
+        let sections = packet["packet"]["sections"].as_array().unwrap();
+        assert!(
+            sections
+                .iter()
+                .any(|section| section["resource_uri"] == "zbot://skills/rust/sections/build")
+        );
+    }
+
+    #[test]
+    fn skill_packet_truncates_large_sections() {
+        let body = format!("# Big\n{}", "a".repeat(MAX_SKILL_SECTION_CHARS + 200));
+        let packet = build_skill_packet("big", &json!({}), &body, vec![]);
+        let summary = packet["packet"]["sections"][0]["summary"].as_str().unwrap();
+
+        assert!(summary.len() <= MAX_SKILL_SECTION_CHARS + 3);
+        assert!(summary.ends_with("..."));
+        assert!(packet.get("instructions").is_none());
     }
 }

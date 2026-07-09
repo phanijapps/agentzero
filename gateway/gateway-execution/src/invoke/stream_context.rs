@@ -8,7 +8,7 @@ use gateway_events::EventBus;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_sqlite::DatabaseManager;
 
 use super::super::delegation::DelegationRequest;
 use super::batch_writer::BatchWriterHandle;

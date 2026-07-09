@@ -1,7 +1,7 @@
 # Plan: Release On Main
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Done for now
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as you learn. When it changes substantially
@@ -20,9 +20,9 @@ and explicit branch-protection failure notes.
 
 ## Constraints
 
-- Follow `memory-bank/future-state/2026-05-03-release-on-main-workflow-design.md`.
+- Follow `docs/architecture/future-state/2026-05-03-release-on-main-workflow-design.md`.
 - Inherit `vYYYY.M.D` from
-  `memory-bank/future-state/2026-05-03-versioning-and-rename-plan.md`.
+  `docs/architecture/future-state/2026-05-03-versioning-and-rename-plan.md`.
 - Do not replace or weaken `scripts/release.sh`.
 - Do not replace or weaken `.github/workflows/release.yml`.
 - Use `GITHUB_TOKEN` by default; use `workflow_dispatch` to trigger
@@ -131,7 +131,7 @@ still responds to pushed `v*` tags.
 **Depends on:** T1-T3
 
 **Touches:** `docs/specs/release-on-main/plan.md`,
-`docs/specs/release-on-main/spec.md`, optionally `memory-bank/PUBLISHING.md`
+`docs/specs/release-on-main/spec.md`, optionally `docs/publishing.md`
 
 **Tests:**
 - Plan documents what happens when `GITHUB_TOKEN` cannot push to protected

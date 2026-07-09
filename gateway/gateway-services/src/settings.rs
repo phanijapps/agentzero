@@ -10,6 +10,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+use crate::models::{DEFAULT_MAX_INPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS};
+
 // Re-export so `gateway_services::settings::MemorySettings` keeps working;
 // `lib.rs` continues to surface it as `gateway_services::MemorySettings`.
 pub use gateway_memory::MemorySettings;
@@ -104,8 +106,15 @@ pub struct OrchestratorConfig {
     /// Temperature (0.0 - 2.0). Default: 0.7.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
-    /// Maximum output tokens. Default: 16384 (higher to accommodate thinking).
-    #[serde(default = "default_orchestrator_max_tokens")]
+    /// Maximum input tokens. None = inherit from provider/model limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u64>,
+    /// Maximum output tokens. Default: 32000.
+    #[serde(
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        default = "default_max_output_tokens"
+    )]
     pub max_tokens: u32,
     /// Enable extended thinking/reasoning. Default: true.
     /// Orchestrator reasons before delegating — improves planning quality.
@@ -122,8 +131,11 @@ fn default_true() -> bool {
 fn default_temperature() -> f64 {
     0.7
 }
-fn default_orchestrator_max_tokens() -> u32 {
-    16384
+fn default_max_input_tokens() -> u64 {
+    DEFAULT_MAX_INPUT_TOKENS
+}
+fn default_max_output_tokens() -> u32 {
+    DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 impl Default for OrchestratorConfig {
@@ -132,9 +144,20 @@ impl Default for OrchestratorConfig {
             provider_id: None,
             model: None,
             temperature: default_temperature(),
-            max_tokens: default_orchestrator_max_tokens(),
+            max_input_tokens: None,
+            max_tokens: default_max_output_tokens(),
             thinking_enabled: true,
         }
+    }
+}
+
+impl OrchestratorConfig {
+    pub fn effective_max_input_tokens(&self) -> u64 {
+        self.max_input_tokens.unwrap_or(DEFAULT_MAX_INPUT_TOKENS)
+    }
+
+    pub fn max_input_tokens_explicit(&self) -> bool {
+        self.max_input_tokens.is_some()
     }
 }
 
@@ -151,6 +174,21 @@ pub struct DistillationConfig {
     /// Model override. None = inherit from orchestrator config.
     #[serde(default)]
     pub model: Option<String>,
+    /// Max input tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxInputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_input_tokens: Option<u64>,
+    /// Max output tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_tokens: Option<u32>,
 }
 
 /// Ward-curator LLM configuration (provider/model override).
@@ -166,6 +204,21 @@ pub struct CuratorConfig {
     /// Model override. None = inherit from orchestrator config.
     #[serde(default)]
     pub model: Option<String>,
+    /// Max input tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxInputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_input_tokens: Option<u64>,
+    /// Max output tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_tokens: Option<u32>,
 }
 
 /// Intent-analysis LLM configuration (provider/model override).
@@ -183,6 +236,21 @@ pub struct IntentAnalysisConfig {
     /// Model override. None = inherit from orchestrator config.
     #[serde(default)]
     pub model: Option<String>,
+    /// Max input tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxInputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_input_tokens: Option<u64>,
+    /// Max output tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_tokens: Option<u32>,
 }
 
 /// Default multimodal model configuration.
@@ -194,24 +262,27 @@ pub struct MultimodalConfig {
     pub model: Option<String>,
     #[serde(default = "default_multimodal_temperature")]
     pub temperature: f64,
-    #[serde(default = "default_multimodal_max_tokens")]
+    #[serde(default = "default_max_input_tokens")]
+    pub max_input_tokens: u64,
+    #[serde(
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        default = "default_max_output_tokens"
+    )]
     pub max_tokens: u32,
 }
 
 fn default_multimodal_temperature() -> f64 {
     0.3
 }
-fn default_multimodal_max_tokens() -> u32 {
-    4096
-}
-
 impl Default for MultimodalConfig {
     fn default() -> Self {
         Self {
             provider_id: None,
             model: None,
             temperature: default_multimodal_temperature(),
-            max_tokens: default_multimodal_max_tokens(),
+            max_input_tokens: default_max_input_tokens(),
+            max_tokens: default_max_output_tokens(),
         }
     }
 }
@@ -563,6 +634,7 @@ mod tests {
         settings.execution.distillation = DistillationConfig {
             provider_id: Some("ollama".to_string()),
             model: Some("llama3".to_string()),
+            ..Default::default()
         };
         service.save(&settings).unwrap();
 
@@ -570,6 +642,35 @@ mod tests {
         let loaded = service.get_execution_settings().unwrap();
         assert_eq!(loaded.distillation.provider_id.as_deref(), Some("ollama"));
         assert_eq!(loaded.distillation.model.as_deref(), Some("llama3"));
+    }
+
+    #[test]
+    fn orchestrator_reads_legacy_max_tokens_as_output_tokens() {
+        let json = r#"{
+            "providerId": "p",
+            "model": "m",
+            "temperature": 0.7,
+            "maxInputTokens": 123456,
+            "maxTokens": 7777,
+            "thinkingEnabled": true
+        }"#;
+
+        let config: OrchestratorConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.max_input_tokens, Some(123456));
+        assert!(config.max_input_tokens_explicit());
+        assert_eq!(config.max_tokens, 7777);
+    }
+
+    #[test]
+    fn orchestrator_defaults_to_simplified_token_limits() {
+        let config = OrchestratorConfig::default();
+        assert_eq!(config.max_input_tokens, None);
+        assert_eq!(
+            config.effective_max_input_tokens(),
+            DEFAULT_MAX_INPUT_TOKENS
+        );
+        assert!(!config.max_input_tokens_explicit());
+        assert_eq!(config.max_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
     }
 
     #[test]

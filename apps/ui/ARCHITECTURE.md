@@ -273,7 +273,7 @@ Three-column layout under `apps/ui/src/features/memory/command-deck/`:
 - `GET /api/wards` → ward id + fact-count list for the rail
 - Existing `createMemory` transport → write-rail saves
 
-**Recency decay** uses `gateway-database::age_bucket` (server-side classifier). The UI maps buckets to CSS classes `.memory-item.decay-1` (last_7_days), `.memory-item.decay-2` (historical); "today" gets full opacity. The opacity curve lives entirely in CSS — no JS tick.
+**Recency decay** uses the server-stamped `age_bucket` classifier. The UI maps buckets to CSS classes `.memory-item.decay-1` (last_7_days), `.memory-item.decay-2` (historical); "today" gets full opacity. The opacity curve lives entirely in CSS — no JS tick.
 
 **Search mode semantics:**
 - `hybrid` (default) — FTS5 + sqlite-vec with reciprocal-rank fusion, degrades to FTS-only when embedding backend unavailable

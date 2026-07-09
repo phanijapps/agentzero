@@ -214,6 +214,7 @@ describe("useResearchSession — subscription ordering (R14a)", () => {
     });
     const convId = lastSubscribedConvId();
     expect(convId).toMatch(/^research-/);
+    expect(executeAgent.mock.calls[0][4]).toBe("deep");
   });
 
   it("second sendMessage on same session does NOT re-subscribe", async () => {
@@ -355,6 +356,7 @@ describe("useResearchSession — subscription ordering (R14a)", () => {
     const invokeArgs = executeAgent.mock.calls[0];
     expect(invokeArgs[1]).toBe(convId);
     expect(invokeArgs[3]).toBe(EXISTING_SESSION);
+    expect(invokeArgs[4]).toBe("deep");
   });
 
   it("error path: failed invoke dispatches ERROR but keeps the subscription", async () => {

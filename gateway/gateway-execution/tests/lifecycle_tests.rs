@@ -21,7 +21,7 @@ use gateway_execution::lifecycle::{
 use gateway_services::VaultPaths;
 #[allow(deprecated)]
 use tempfile::tempdir;
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_sqlite::DatabaseManager;
 
 // ============================================================================
 // HELPERS

@@ -22,6 +22,28 @@ export interface GraphStats {
   relationships: number;
   facts: number;
   episodes: number;
+  governance?: {
+    supported: boolean;
+    ontologyIds: string[];
+    taxonomySchemeIds: string[];
+    validationMode: string;
+    allowUnclassified: string;
+    skosExpansion: {
+      maxDepth: number;
+      maxFanOut: number;
+      maxCandidates: number;
+    };
+    bootstrap?: {
+      ontologyId: string;
+      taxonomySchemeId: string;
+      classCount: number;
+      propertyCount: number;
+      conceptCount: number;
+      relationCount: number;
+    };
+    findingCount: number;
+    findingCodes: string[];
+  } | null;
   distillation: {
     success_count: number;
     failed_count: number;

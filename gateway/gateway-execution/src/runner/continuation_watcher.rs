@@ -29,7 +29,7 @@ use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPat
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_stores_sqlite::DatabaseManager;
 
 use crate::delegation::{DelegationRegistry, DelegationRequest};
 use crate::handle::ExecutionHandle;
@@ -58,12 +58,13 @@ pub(crate) struct RunnerContinuationInvoker {
     pub(crate) skill_service: Arc<gateway_services::SkillService>,
     pub(crate) paths: SharedVaultPaths,
     pub(crate) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    pub(crate) conversation_repo: Arc<ConversationRepository>,
+    pub(crate) messages: Arc<dyn zbot_conversation::MessageStore>,
+    pub(crate) checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub(crate) delegation_registry: Arc<DelegationRegistry>,
     pub(crate) delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     pub(crate) log_service: Arc<LogService<DatabaseManager>>,
     pub(crate) state_service: Arc<StateService<DatabaseManager>>,
-    pub(crate) memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    pub(crate) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub(crate) embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
     pub(crate) distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     pub(crate) handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
@@ -72,11 +73,11 @@ pub(crate) struct RunnerContinuationInvoker {
     /// the live value at fire time via `.load_full()`.
     pub(crate) model_registry:
         Arc<arc_swap::ArcSwapOption<gateway_services::models::ModelRegistry>>,
-    pub(crate) kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
-    pub(crate) kg_episode_repo: Option<Arc<zero_stores_sqlite::KgEpisodeRepository>>,
+    pub(crate) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    pub(crate) kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
     pub(crate) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     pub(crate) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
-    pub(crate) procedure_store: Option<Arc<dyn zero_stores_traits::ProcedureStore>>,
+    pub(crate) procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     /// Per-ward usage telemetry — passed through to `invoke_continuation`
     /// so the ward tool's create action can mark new wards as agent-authored.
     pub(crate) ward_usage: Arc<gateway_services::WardUsage>,
@@ -103,7 +104,8 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             mcp_service: self.mcp_service.clone(),
             skill_service: self.skill_service.clone(),
             paths: self.paths.clone(),
-            conversation_repo: self.conversation_repo.clone(),
+            messages: self.messages.clone(),
+            checkpoints: self.checkpoints.clone(),
             handles: self.handles.clone(),
             delegation_registry: self.delegation_registry.clone(),
             delegation_tx: self.delegation_tx.clone(),

@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
-use zero_stores::types::EntityId;
-use zero_stores::KnowledgeGraphStore;
-use zero_stores_traits::CompactionStore;
+use zbot_stores::types::EntityId;
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_traits::CompactionStore;
 
 use crate::sleep::decay::PruneCandidate;
 
@@ -77,8 +77,8 @@ mod tests {
     use gateway_services::VaultPaths;
     use knowledge_graph::{Entity, EntityType, ExtractedKnowledge};
     use std::sync::Arc;
-    use zero_stores_sqlite::kg::storage::GraphStorage;
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
+    use zbot_stores_sqlite::{
         CompactionRepository, GatewayCompactionStore, KnowledgeDatabase, SqliteKgStore,
     };
 

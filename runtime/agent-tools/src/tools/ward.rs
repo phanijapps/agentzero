@@ -8,8 +8,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::{FileSystemContext, Result, Tool, ToolContext, ToolPermissions, ZeroError};
-use zero_stores_traits::MemoryFactStore;
+use agent_primitives::{AgentError, FileSystemContext, Result, Tool, ToolContext, ToolPermissions};
+use zbot_stores_traits::MemoryFactStore;
 
 /// AGENTS.md file name - living readme for agent executions
 const WARD_AGENTS_MD: &str = "AGENTS.md";
@@ -257,11 +257,11 @@ impl Tool for WardTool {
                 .get("__message__")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown error");
-            return Err(ZeroError::Tool(format!("{}: {}", error_type, message)));
+            return Err(AgentError::Tool(format!("{}: {}", error_type, message)));
         }
 
         let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| {
-            ZeroError::Tool(
+            AgentError::Tool(
                 "ward: missing 'action' parameter (one of: use, create, list, info)".to_string(),
             )
         })?;
@@ -269,12 +269,12 @@ impl Tool for WardTool {
         let wards_root = self
             .fs
             .wards_root_dir()
-            .ok_or_else(|| ZeroError::Tool("Wards directory not configured".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Wards directory not configured".to_string()))?;
 
         match action {
             "use" | "create" => {
                 let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ZeroError::Tool("Missing 'name' parameter for use/create".to_string())
+                    AgentError::Tool("Missing 'name' parameter for use/create".to_string())
                 })?;
 
                 // Validate ward name: alphanumeric, hyphens, underscores only
@@ -282,14 +282,14 @@ impl Tool for WardTool {
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
                 {
-                    return Err(ZeroError::Tool(
+                    return Err(AgentError::Tool(
                         "Ward name must contain only letters, numbers, hyphens, and underscores"
                             .to_string(),
                     ));
                 }
 
                 if name.is_empty() || name.len() > 64 {
-                    return Err(ZeroError::Tool(
+                    return Err(AgentError::Tool(
                         "Ward name must be 1-64 characters".to_string(),
                     ));
                 }
@@ -303,7 +303,7 @@ impl Tool for WardTool {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if created && is_delegated {
-                    return Err(ZeroError::Tool(format!(
+                    return Err(AgentError::Tool(format!(
                         "Subagents cannot create wards. Use the ward specified in your task: '{}' does not exist. \
                          Ask the root agent to create it first.",
                         name
@@ -313,7 +313,7 @@ impl Tool for WardTool {
                 // Create ward directory if needed
                 if created {
                     std::fs::create_dir_all(&ward_dir).map_err(|e| {
-                        ZeroError::Tool(format!("Failed to create ward directory: {}", e))
+                        AgentError::Tool(format!("Failed to create ward directory: {}", e))
                     })?;
                 }
 
@@ -410,7 +410,7 @@ impl Tool for WardTool {
 
             "info" => {
                 let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ZeroError::Tool("Missing 'name' parameter for info".to_string())
+                    AgentError::Tool("Missing 'name' parameter for info".to_string())
                 })?;
 
                 let ward_dir = wards_root.join(name);
@@ -434,7 +434,7 @@ impl Tool for WardTool {
                 }))
             }
 
-            _ => Err(ZeroError::Tool(format!("Unknown ward action: {}", action))),
+            _ => Err(AgentError::Tool(format!("Unknown ward action: {}", action))),
         }
     }
 }

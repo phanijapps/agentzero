@@ -19,7 +19,7 @@ export function McpStep({ mcpConfigs, onChange }: McpStepProps) {
         if (result.success && result.data && mcpConfigs.length === 0) {
           const configs = result.data.map((c: McpServerConfig) => ({
             ...c,
-            enabled: !hasEnvKeys(c),
+            enabled: Boolean(c.enabled) && !hasEnvKeys(c),
           }));
           onChange(configs);
         }

@@ -2,15 +2,15 @@
 //! GET  /api/graph/ingest/:source_id/progress — poll status.
 
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
+    Json,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::state::AppState;
-use gateway_execution::ingest::chunker::{ChunkOptions, chunk_text};
+use gateway_execution::ingest::chunker::{chunk_text, ChunkOptions};
 
 #[derive(Debug, Deserialize)]
 pub struct IngestRequest {

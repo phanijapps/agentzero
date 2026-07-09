@@ -25,7 +25,7 @@ PLATFORM: Windows
 - `ls -la` → use `Get-ChildItem` or `dir`
 - `cat file | grep` → use `Select-String`
 - `&&` chaining → use `;` or separate commands
-- Heredocs (`<< 'EOF'`) → use the `write_file` tool for file creation, `edit_file` for edits
+- Heredocs (`<< 'EOF'`) → use `write_file` for file creation / `edit_file` for edits if they're in your tool set; otherwise delegate to the appropriate agent
 - `python3` → use `python`
 
 ## File Paths
@@ -39,6 +39,6 @@ PLATFORM: Windows
 
 - For simple checks: `python3 -c "print('hello')"`
 - For multi-line code: write a .py file first, then run it:
-  1. Use the `write_file` tool to create the script
+  1. Use `write_file` to create the script (if it's in your tool set; otherwise delegate to the appropriate agent)
   2. `python3 path/to/script.py` to run it
-- Prefer `write_file` tool + run for scripts longer than ~10 lines
+- Prefer `write_file` + run (or delegate to the appropriate agent) for scripts longer than ~10 lines

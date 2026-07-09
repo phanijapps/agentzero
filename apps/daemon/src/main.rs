@@ -6,25 +6,25 @@
 //!
 //! ```bash
 //! # Start with defaults
-//! zerod
+//! zbotd
 //!
 //! # Start with custom ports
-//! zerod --ws-port 19000 --http-port 19001
+//! zbotd --ws-port 19000 --http-port 19001
 //!
 //! # Start with custom data directory
-//! zerod --data-dir /path/to/zbot
+//! zbotd --data-dir /path/to/zbot
 //!
 //! # Start with config file
-//! zerod --config /path/to/daemon.yaml
+//! zbotd --config /path/to/daemon.yaml
 //!
 //! # Enable file logging via CLI
-//! zerod --log-dir /var/log/zbot --log-max-files 14
+//! zbotd --log-dir /var/log/zbot --log-max-files 14
 //!
 //! # Serve web dashboard from static files
-//! zerod --static-dir /path/to/dashboard/dist
+//! zbotd --static-dir /path/to/dashboard/dist
 //!
 //! # Disable web dashboard
-//! zerod --no-dashboard
+//! zbotd --no-dashboard
 //! ```
 //!
 //! ## Logging Configuration
@@ -65,7 +65,7 @@ use tracing_subscriber::{
 
 /// z-Bot Daemon - AI agent runtime server
 #[derive(Parser, Debug)]
-#[command(name = "zerod")]
+#[command(name = "zbotd")]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Legacy standalone WebSocket port.
@@ -298,14 +298,14 @@ fn setup_logging(
         let file_appender = if config.max_files > 0 {
             RollingFileAppender::builder()
                 .rotation(rotation)
-                .filename_prefix("zerod")
+                .filename_prefix("zbotd")
                 .filename_suffix("log")
                 .max_log_files(config.max_files)
                 .build(&log_dir)?
         } else {
             RollingFileAppender::builder()
                 .rotation(rotation)
-                .filename_prefix("zerod")
+                .filename_prefix("zbotd")
                 .filename_suffix("log")
                 .build(&log_dir)?
         };

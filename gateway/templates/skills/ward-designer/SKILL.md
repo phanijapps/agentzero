@@ -1,21 +1,23 @@
 ---
 name: ward-designer
-description: Run by builder-agent at the ward-setup step of a `build` plan. Two phases. Phase 1 scaffolds the ward only when missing (if AGENTS.md + memory-bank already exist, they are left untouched). Phase 2 is the load-bearing work — walks every later step file and writes a Paths table that assigns the exact ward-relative path for each output the step will produce. Subsequent subagents cannot improvise placements; the Paths table binds. Reusability is a path decision made here at planning time, not improvised at execution time.
-metadata:
-  version: "3.0.0"
+description: Set up or review a build ward at the ward-setup step. Use when a builder-agent must create missing ward doctrine, bootstrap ward directories, and add exact ward-relative Paths tables to later steps so subagents cannot improvise artifact locations.
 ---
-
 # ward-designer
-
-**Reusability fails when subagents choose paths at execution time.** A subagent writing Python naturally drops the file next to the script it's working on — which is `<sub-domain>/code/`, not `<module_root>/`. The AGENTS.md text saying "reusable primitives live in `core/`" gets read and ignored. The only way to bind placement is to **pre-assign the path in the step file**. That is this skill's core mission.
-
-Runs in two phases inside a single invocation. Both mandatory.
-
-## Phase 1 — scaffold (cheap, idempotent, preserves existing doctrine)
-
-Read `wards/<ward>/specs/<sub_domain>/spec.md`. Derive `module_root` from the spec's language:
-
-| language | module_root |
+Run once at the `build` ward-setup step.
+Do exactly two jobs:
+1. Seed missing ward doctrine files.
+2. Add exact `## Paths` tables to later step files.
+Do not write source code. Do not answer the user. Emit FILE/SHELL blocks for the orchestrator to apply under `wards/<ward>/`.
+## Inputs
+- `wards/<ward>/specs/<sub_domain>/spec.md`
+- `wards/<ward>/specs/<sub_domain>/step_*.md`
+- Existing `AGENTS.md` and `memory-bank/{ward.md,structure.md,core_docs.md}`
+## Halt
+Emit `=== FILE: halt.md ===` with one-line reason when classification is not `build`/build-`delta`, or `spec.md` is missing.
+If only the ward-setup step exists, emit `=== FILE: memory-bank/phase2-skipped.md ===`.
+## Module Root
+Derive `module_root` from the spec language:
+| Language | module_root |
 |---|---|
 | python | `core/` |
 | nodejs | `src/lib/` |
@@ -23,201 +25,116 @@ Read `wards/<ward>/specs/<sub_domain>/spec.md`. Derive `module_root` from the sp
 | r | `R/` |
 | perl | `lib/` |
 | rust | `src/` |
-
-Check for pre-existing ward doctrine:
-
-- `wards/<ward>/AGENTS.md`
-- `wards/<ward>/memory-bank/ward.md`
-- `wards/<ward>/memory-bank/structure.md`
-- `wards/<ward>/memory-bank/core_docs.md`
-
-**If the file exists and has non-trivial content, REUSE it. Do not rewrite. Do not augment. The executing-ward's own AGENTS.md is authoritative.** Only emit a replacement if the file is missing or empty.
-
-When emitting replacements, use the minimal seeds below. They are deliberately terse — a ward grows its doctrine through use, not through template bloat.
-
-### Seed — `AGENTS.md`
-
-This is the ward's doctrine — the system prompt of the ward-agent that
-later runs this ward. Keep it generic and small: domain scope + role +
-high-level conventions. Operational specifics (formulas, data sources,
-thresholds) are NOT doctrine — they accumulate in `memory-bank/` and
-procedures, recalled on demand.
-
-````markdown
+## Phase 1: Doctrine
+Check `AGENTS.md`, `memory-bank/ward.md`, `memory-bank/structure.md`, and `memory-bank/core_docs.md`.
+If a file exists and has non-trivial content, do not rewrite or augment it. Existing ward doctrine is authoritative.
+Emit only missing or empty files.
+### AGENTS.md seed
+```markdown
 # <ward-name>
-
 ## Purpose / Scope
-IN  — <the reusable domain this ward owns, inferred from the spec intent —
-      a domain category, NOT one task. e.g. "equity & options valuation",
-      not "value one stock">.
-OUT — <adjacent domains this ward does not handle>.
-      If a task falls outside IN, return out_of_scope.
-
-## Folder map
-- specs/<sub-domain>/   per-task spec + step files
-- <sub-domain>/         outputs: code/ · data/ · reports/ · summary.md · manifest.json
-- <module_root>/        reusable primitives — check here before writing code
-- data/                 shared reference data
-- memory-bank/          ward.md · structure.md · core_docs.md
-Read on demand — recall first, open a file only when recall points at it.
-
+IN — <reusable domain this ward owns, not a single task>.
+OUT — <adjacent domains this ward does not handle>. Return out_of_scope.
+## Folder Map
+- specs/<sub-domain>/  spec and step files
+- <sub-domain>/        code/ data/ reports/ summary.md manifest.json
+- <module_root>/       reusable primitives
+- data/                shared reference data
+- memory-bank/         ward.md structure.md core_docs.md
 ## Standards
-- Reusable primitives live in `<module_root>/`, one public function per file,
-  taking keys/values as arguments (never hardcoded); import as
-  `<example, e.g. from core.<module> import <symbol>>`. Register each new
-  primitive in `memory-bank/core_docs.md`.
-- Fix the original file — never create `_v2` variants.
-
-## Tools & delegation
-- Recall the ward's procedures before planning from scratch; reuse
-  `<module_root>/` before writing new code.
-- Delegate net-new code modules to `builder`.
-
-## Failure modes & hard don'ts
-- Don't fabricate data — if a source is unavailable, say so.
-- Don't expand beyond IN scope; surface it as out_of_scope.
-
+- Reusable primitives live in <module_root>/, take arguments, and avoid hardcoded task values.
+- Register reusable primitives in memory-bank/core_docs.md.
+- Fix original files; do not create _v2 variants.
+- Do not fabricate data or expand beyond IN scope.
 ## Handoff
 Return: { status, summary, artifacts:[paths] }
-````
-
-### Seed — `memory-bank/ward.md`
-
-````markdown
+```
+### memory-bank/ward.md seed
+```markdown
 # Ward: <name>
-
 <one-paragraph purpose>
-
 ## Sub-domains
 | Slug | Description | Status |
 |---|---|---|
-| `<current>` | <current deliverable> | in progress |
-| `<plausible-future-1>` | <future ask> | proposed |
-| `<plausible-future-2>` | <future ask> | proposed |
-
-## Key concepts
+| <current> | <current deliverable> | in progress |
+## Key Concepts
 - <term> — <one-line definition>
-````
-
-### Seed — `memory-bank/structure.md`
-
-````markdown
-# Structure — <ward name>
-
 ```
+### memory-bank/structure.md seed
+```markdown
+# Structure — <ward name>
 <ward>/
 ├── AGENTS.md
-├── memory-bank/{ward.md, structure.md, core_docs.md}
-├── <module_root>/              # reusable code primitives
-├── templates/                  # reusable templates
-├── snippets/                   # reusable code snippets
-├── shared-docs/                # reusable markdown fragments
-├── data/                       # shared / reference data
-├── <sub-domain>/
-│   ├── code/                   # sub-domain scripts (thin wrappers)
-│   ├── data/                   # sub-domain computed data
-│   ├── reports/                # sub-domain deliverables
-│   ├── summary.md
-│   └── manifest.json
+├── memory-bank/{ward.md,structure.md,core_docs.md}
+├── <module_root>/      reusable code primitives
+├── templates/ snippets/ shared-docs/ data/
+├── <sub-domain>/{code,data,reports,summary.md,manifest.json}
 └── specs/<sub-domain>/
 ```
-
-Status markers: `(exists)` / `(planned)` / `(proposed)`.
-````
-
-### Seed — `memory-bank/core_docs.md`
-
-````markdown
+### memory-bank/core_docs.md seed
+```markdown
 # Core docs — <ward name>
-
-Reusable-asset registry. Append a row whenever a new reusable primitive is created.
-
 | Symbol | Module | Signature | Purpose | Added by |
 |---|---|---|---|---|
 | _(none yet)_ | | | | |
-
-Templates / snippets / shared-docs get their own tables when first added.
-````
-
-### Directory bootstrap
-
-Emit a shell block the orchestrator executes to create empty directories and artifact stubs:
-
-````
+```
+## Directory Bootstrap
+Always emit:
+```text
 === SHELL: directory-bootstrap ===
-mkdir -p wards/<ward>/<module_root> wards/<ward>/templates wards/<ward>/snippets wards/<ward>/shared-docs wards/<ward>/data
-mkdir -p wards/<ward>/<sub_domain>/{code,data,reports}
-test -f wards/<ward>/<sub_domain>/summary.md || echo "# <sub_domain>" > wards/<ward>/<sub_domain>/summary.md
-test -f wards/<ward>/<sub_domain>/manifest.json || echo '{"sub_domain":"<sub_domain>","produced_at":"<YYYY-MM-DD>","files":[]}' > wards/<ward>/<sub_domain>/manifest.json
-````
-
-## Phase 2 — step path assignment (the load-bearing work)
-
-List `specs/<sub_domain>/step_*.md`. Identify the current ward-setup step (the one whose `## Suggested skill` is `ward-designer`). Skip it.
-
-For every other step, REWRITE the step file to include a `## Paths` table. Preserve everything plan-composer already wrote (Goal, Inputs, Outputs, Acceptance, Depends on, etc.) — the Paths table is an ADDITION, not a replacement.
-
-Emit each rewritten step as `=== FILE: specs/<sub_domain>/step_<N>.md ===`.
-
-### The Paths table — the only section that binds execution
-
-````markdown
+mkdir -p <module_root> templates snippets shared-docs data
+mkdir -p <sub_domain>/{code,data,reports}
+test -f <sub_domain>/summary.md || echo "# <sub_domain>" > <sub_domain>/summary.md
+test -f <sub_domain>/manifest.json || echo '{"sub_domain":"<sub_domain>","produced_at":"<YYYY-MM-DD>","files":[]}' > <sub_domain>/manifest.json
+```
+## Phase 2: Paths
+List `specs/<sub_domain>/step_*.md`. Skip the ward-setup step whose `Skills` or `Suggested skill` is `ward-designer`.
+For every later step, preserve existing content and add:
+```markdown
 ## Paths (assigned by ward-designer — do not deviate)
-
 | Artifact | Bucket | Exact ward-relative path | Register in core_docs.md? |
 |---|---|---|---|
-| `<filename>` | reusable | `<module_root>/<subpath>` | yes |
-| `<filename>` | reusable | `templates/<name>.<ext>` | yes |
-| `<filename>` | domain | `<sub_domain>/code/<subpath>` | no |
-| `<filename>` | domain | `<sub_domain>/data/<subpath>` | no |
-| `<filename>` | domain | `<sub_domain>/reports/<subpath>` | no |
-
-The executing subagent MUST write each artifact at the listed path. No alternative locations, no "I'll just put it here instead." Every row marked "Register: yes" adds one line to `memory-bank/core_docs.md` during step execution.
-````
-
-### Placement rules — the decision ward-designer makes
-
-Walk each output in the step's `Outputs` section. For each:
-
-- Function / class / constant / module potentially usable by another sub-domain → **reusable**, at `<module_root>/`.
-- Template / schema / reusable snippet / shared markdown fragment → **reusable**, at `templates/` | `snippets/` | `shared-docs/`.
-- Shared reference dataset (used across sub-domains) → **reusable**, at `data/` at ward root.
-- Script that hardcodes this sub-domain's inputs → **domain**, at `<sub_domain>/code/`.
-- Computed data for this sub-domain only → **domain**, at `<sub_domain>/data/`.
-- Report / plot / table for this sub-domain only → **domain**, at `<sub_domain>/reports/`.
-
-**Default when ambiguous: reusable.** A ward that hoards assets per sub-domain is not reusable by definition.
-
-## What to return
-
-Emit all blocks in one response. The orchestrator prepends `wards/<ward>/` to all FILE paths and executes the SHELL block.
-
-````
-=== FILE: AGENTS.md ===              (only if currently missing/empty)
-=== FILE: memory-bank/ward.md ===    (only if missing/empty)
-=== FILE: memory-bank/structure.md ===   (only if missing/empty)
-=== FILE: memory-bank/core_docs.md ===   (only if missing/empty)
+| <filename> | reusable | <module_root>/<subpath> | yes |
+| <filename> | reusable | templates/<name>.<ext> | yes |
+| <filename> | reusable | snippets/<name>.<ext> | yes |
+| <filename> | reusable | shared-docs/<name>.md | yes |
+| <filename> | reusable | data/<name>.<ext> | yes |
+| <filename> | domain | <sub_domain>/code/<subpath> | no |
+| <filename> | domain | <sub_domain>/data/<subpath> | no |
+| <filename> | domain | <sub_domain>/reports/<subpath> | no |
+```
+Placement rule: reusable when another sub-domain could use it; domain when it hardcodes this sub-domain's inputs or produces this sub-domain's deliverable.
+Default ambiguous artifacts to reusable.
+Every `yes` row must map to a step output and must be registered in `memory-bank/core_docs.md` by the executing subagent.
+## Path Buckets
+Use these buckets when translating step outputs:
+- reusable code: functions, classes, constants, importable modules
+- reusable templates: durable output formats or report shells
+- reusable snippets: small copyable code fragments
+- reusable shared-docs: markdown fragments reused across reports
+- reusable data: shared reference datasets
+- domain code: thin scripts hardcoding this sub-domain's inputs
+- domain data: computed data for this sub-domain only
+- domain reports: plots, tables, and narratives for this deliverable
+## Delta Mode
+For build-delta, keep existing paths for unchanged steps.
+Reassign only new or changed step outputs.
+Do not renumber step files.
+## Return Order
+Emit all applicable blocks in one response:
+```text
+=== FILE: AGENTS.md ===
+=== FILE: memory-bank/ward.md ===
+=== FILE: memory-bank/structure.md ===
+=== FILE: memory-bank/core_docs.md ===
 === SHELL: directory-bootstrap ===
-=== FILE: specs/<sub_domain>/step_2.md ===   (Paths table added)
-=== FILE: specs/<sub_domain>/step_3.md ===   (Paths table added)
-=== FILE: specs/<sub_domain>/step_N.md ===   (Paths table added)
-````
-
-This skill does not write files directly, does not create directories directly, does not respond to the user.
-
-## Halt clauses
-
-- Classification is not `build` (and not `delta` of a prior `build`) → emit `=== FILE: halt.md ===` with one-line reason.
-- `spec.md` missing → halt.
-- Only the ward-setup step exists in the plan → emit `=== FILE: memory-bank/phase2-skipped.md ===` noting single-step plan.
-
-## Self-critique gate
-
-Before returning, verify:
-
-- Existing AGENTS.md / memory-bank files were NOT rewritten. Only missing files got seeded.
-- Every non-ward-setup step has a `## Paths` table.
-- Every Paths-table row has an explicit ward-relative path — no placeholders, no `<fill-in>`, no "TBD."
-- Ambiguous artifacts defaulted to the reusable bucket.
-- No source code files (`.py`, `.js`, `.go`, `.ts`, `.rs`, etc.) were emitted by this skill itself. Directories are empty.
-- Every row with "Register: yes" can be found in the step's Outputs — no invented artifacts.
+=== FILE: specs/<sub_domain>/step_2.md ===
+=== FILE: specs/<sub_domain>/step_N.md ===
+```
+## Self-Check
+- Existing doctrine files were not rewritten.
+- Every non-setup step has a Paths table.
+- Every path is explicit: no placeholders, TBD, or alternative locations.
+- Ambiguous outputs default to reusable.
+- No source files were emitted by this skill.
+- Every `Register: yes` row maps to an output in the same step.

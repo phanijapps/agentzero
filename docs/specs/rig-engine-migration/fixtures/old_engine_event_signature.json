@@ -1,0 +1,561 @@
+{
+  "artifact_schema": 1,
+  "direct_server_messages": [
+    {
+      "shape": {
+        "object": {
+          "session_id": "string",
+          "type": "string"
+        }
+      },
+      "variant": "session_cancelled"
+    },
+    {
+      "shape": {
+        "object": {
+          "session_id": "string",
+          "type": "string"
+        }
+      },
+      "variant": "session_paused"
+    },
+    {
+      "shape": {
+        "object": {
+          "session_id": "string",
+          "type": "string"
+        }
+      },
+      "variant": "session_resumed"
+    },
+    {
+      "shape": {
+        "object": {
+          "session_id": "string",
+          "type": "string"
+        }
+      },
+      "variant": "session_ended"
+    }
+  ],
+  "gateway_scenarios": [
+    {
+      "name": "lifecycle",
+      "records": [
+        {
+          "gateway_event": "agent_completed",
+          "server_message": {
+            "shape": {
+              "object": {
+                "agent_id": "string",
+                "conversation_id": "string",
+                "execution_id": "string",
+                "result": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "agent_completed"
+          }
+        },
+        {
+          "gateway_event": "agent_stopped",
+          "server_message": {
+            "shape": {
+              "object": {
+                "agent_id": "string",
+                "conversation_id": "string",
+                "execution_id": "string",
+                "iteration": "number",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "agent_stopped"
+          }
+        },
+        {
+          "gateway_event": "iteration_update",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "current": "number",
+                "execution_id": "string",
+                "max": "number",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "iteration"
+          }
+        },
+        {
+          "gateway_event": "continuation_prompt",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "iteration": "number",
+                "message": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "continuation_prompt"
+          }
+        }
+      ],
+      "sequence_hash": "36c444b08eda4c43f03747f6"
+    },
+    {
+      "name": "delegation",
+      "records": [
+        {
+          "gateway_event": "delegation_started",
+          "server_message": {
+            "shape": {
+              "object": {
+                "child_agent_id": "string",
+                "child_conversation_id": "string",
+                "child_execution_id": "string",
+                "parent_agent_id": "string",
+                "parent_conversation_id": "string",
+                "parent_execution_id": "string",
+                "session_id": "string",
+                "task": "string",
+                "type": "string"
+              }
+            },
+            "variant": "delegation_started"
+          }
+        },
+        {
+          "gateway_event": "delegation_completed",
+          "server_message": {
+            "shape": {
+              "object": {
+                "child_agent_id": "string",
+                "child_conversation_id": "string",
+                "child_execution_id": "string",
+                "parent_agent_id": "string",
+                "parent_conversation_id": "string",
+                "parent_execution_id": "string",
+                "result": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "delegation_completed"
+          }
+        },
+        {
+          "gateway_event": "session_continuation_ready",
+          "server_message": null
+        }
+      ],
+      "sequence_hash": "a3ddbc50027698e612054388"
+    },
+    {
+      "name": "gateway_owned_updates",
+      "records": [
+        {
+          "gateway_event": "message_added",
+          "server_message": {
+            "shape": {
+              "object": {
+                "content": "string",
+                "conversation_id": "string",
+                "execution_id": "string",
+                "role": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "message_added"
+          }
+        },
+        {
+          "gateway_event": "token_usage",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "session_id": "string",
+                "tokens_in": "number",
+                "tokens_out": "number",
+                "type": "string"
+              }
+            },
+            "variant": "token_usage"
+          }
+        },
+        {
+          "gateway_event": "intent_analysis_started",
+          "server_message": {
+            "shape": {
+              "object": {
+                "execution_id": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "intent_analysis_started"
+          }
+        },
+        {
+          "gateway_event": "intent_analysis_complete",
+          "server_message": {
+            "shape": {
+              "object": {
+                "execution_id": "string",
+                "execution_strategy": {
+                  "object": {
+                    "approach": "string"
+                  }
+                },
+                "hidden_intents": {
+                  "array_len": "1-4",
+                  "item_shapes": [
+                    "\"string\""
+                  ]
+                },
+                "primary_intent": "string",
+                "recommended_agents": {
+                  "array_len": "1-4",
+                  "item_shapes": [
+                    "\"string\""
+                  ]
+                },
+                "recommended_skills": {
+                  "array_len": "1-4",
+                  "item_shapes": [
+                    "\"string\""
+                  ]
+                },
+                "session_id": "string",
+                "type": "string",
+                "ward_recommendation": {
+                  "object": {
+                    "action": "string"
+                  }
+                }
+              }
+            },
+            "variant": "intent_analysis_complete"
+          }
+        },
+        {
+          "gateway_event": "intent_analysis_skipped",
+          "server_message": {
+            "shape": {
+              "object": {
+                "execution_id": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "intent_analysis_skipped"
+          }
+        },
+        {
+          "gateway_event": "recall_trace",
+          "server_message": {
+            "shape": {
+              "object": {
+                "agent_id": "string",
+                "conversation_id": "string",
+                "lca_aggregate_id": "string",
+                "seed_aggregate_ids": {
+                  "array_len": "1-4",
+                  "item_shapes": [
+                    "\"string\""
+                  ]
+                },
+                "seed_entity_ids": {
+                  "array_len": "1-4",
+                  "item_shapes": [
+                    "\"string\""
+                  ]
+                },
+                "surfaced_item_count": "number",
+                "type": "string"
+              }
+            },
+            "variant": "recall_trace"
+          }
+        }
+      ],
+      "sequence_hash": "9a19c12e8e0b92ea34deda02"
+    }
+  ],
+  "source": {
+    "capture_method": "gateway_execution::convert_stream_event + gateway websocket conversion",
+    "input": "deterministic sanitized scenarios",
+    "label": "old-engine-event-path"
+  },
+  "stream_scenarios": [
+    {
+      "name": "simple_stream",
+      "records": [
+        {
+          "gateway_event": "agent_started",
+          "server_message": {
+            "shape": {
+              "object": {
+                "agent_id": "string",
+                "conversation_id": "string",
+                "execution_id": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "agent_started"
+          },
+          "stream_event": "metadata"
+        },
+        {
+          "gateway_event": "token",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "delta": "string",
+                "execution_id": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "token"
+          },
+          "stream_event": "token"
+        },
+        {
+          "gateway_event": "turn_complete",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "final_message": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "turn_complete"
+          },
+          "stream_event": "done"
+        }
+      ],
+      "sequence_hash": "3e88c1a3615df767115f2d7b"
+    },
+    {
+      "name": "thinking_tool_result",
+      "records": [
+        {
+          "gateway_event": "thinking",
+          "server_message": {
+            "shape": {
+              "object": {
+                "content": "string",
+                "conversation_id": "string",
+                "execution_id": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "thinking"
+          },
+          "stream_event": "reasoning"
+        },
+        {
+          "gateway_event": "tool_call",
+          "server_message": {
+            "shape": {
+              "object": {
+                "args": {
+                  "object": {
+                    "limit": "number",
+                    "path": "string"
+                  }
+                },
+                "conversation_id": "string",
+                "execution_id": "string",
+                "session_id": "string",
+                "tool": "string",
+                "tool_call_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "tool_call"
+          },
+          "stream_event": "tool_call_start"
+        },
+        {
+          "gateway_event": "tool_result",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "result": "string",
+                "session_id": "string",
+                "tool_call_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "tool_result"
+          },
+          "stream_event": "tool_result"
+        },
+        {
+          "gateway_event": null,
+          "server_message": null,
+          "stream_event": "tool_call_end"
+        }
+      ],
+      "sequence_hash": "e74f5bec69abd169d02dcfc6"
+    },
+    {
+      "name": "action_events",
+      "records": [
+        {
+          "gateway_event": "respond",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "final_message": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "turn_complete"
+          },
+          "stream_event": "action_respond"
+        },
+        {
+          "gateway_event": "plan_update",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "explanation": "string",
+                "plan": {
+                  "array_len": "1-4",
+                  "item_shapes": [
+                    "{\"object\":{\"status\":\"string\",\"step\":\"string\"}}"
+                  ]
+                },
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "plan_update"
+          },
+          "stream_event": "action_plan_update"
+        },
+        {
+          "gateway_event": null,
+          "server_message": null,
+          "stream_event": "action_delegate"
+        }
+      ],
+      "sequence_hash": "332ecce1dc2790ab4b0a3b80"
+    },
+    {
+      "name": "state_and_control",
+      "records": [
+        {
+          "gateway_event": "heartbeat",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "heartbeat"
+          },
+          "stream_event": "heartbeat"
+        },
+        {
+          "gateway_event": null,
+          "server_message": null,
+          "stream_event": "context_state"
+        },
+        {
+          "gateway_event": "ward_changed",
+          "server_message": {
+            "shape": {
+              "object": {
+                "execution_id": "string",
+                "session_id": "string",
+                "type": "string",
+                "ward_id": "string"
+              }
+            },
+            "variant": "ward_changed"
+          },
+          "stream_event": "ward_changed"
+        },
+        {
+          "gateway_event": "iterations_extended",
+          "server_message": {
+            "shape": {
+              "object": {
+                "conversation_id": "string",
+                "execution_id": "string",
+                "iterations_added": "number",
+                "iterations_used": "number",
+                "reason": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "iterations_extended"
+          },
+          "stream_event": "iterations_extended"
+        },
+        {
+          "gateway_event": "session_title_changed",
+          "server_message": {
+            "shape": {
+              "object": {
+                "session_id": "string",
+                "title": "string",
+                "type": "string"
+              }
+            },
+            "variant": "session_title_changed"
+          },
+          "stream_event": "session_title_changed"
+        },
+        {
+          "gateway_event": "error",
+          "server_message": {
+            "shape": {
+              "object": {
+                "code": "string",
+                "conversation_id": "string",
+                "execution_id": "string",
+                "message": "string",
+                "session_id": "string",
+                "type": "string"
+              }
+            },
+            "variant": "error"
+          },
+          "stream_event": "error"
+        }
+      ],
+      "sequence_hash": "f018f19fc93d46d8d779e956"
+    }
+  ]
+}

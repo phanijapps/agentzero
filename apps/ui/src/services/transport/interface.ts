@@ -24,6 +24,9 @@ import type {
   McpServerConfig,
   CreateMcpRequest,
   McpTestResult,
+  McpOAuthStatusResponse,
+  McpOAuthStartRequest,
+  McpOAuthStartResponse,
   ModelRegistryResponse,
   MessageResponse,
   ChatSessionInit,
@@ -62,6 +65,7 @@ import type {
   UpdateCronJobRequest,
   CronTriggerResult,
   // Memory types
+  CreatableMemoryCategory,
   MemoryFact,
   MemoryFilter,
   MemoryListResponse,
@@ -202,6 +206,15 @@ export interface Transport {
   /** Test an MCP server connection */
   testMcp(id: string): Promise<TransportResult<McpTestResult>>;
 
+  /** Get OAuth status for an MCP server */
+  getMcpOAuthStatus(id: string): Promise<TransportResult<McpOAuthStatusResponse>>;
+
+  /** Start OAuth authorization for an MCP server */
+  startMcpOAuth(id: string, request?: McpOAuthStartRequest): Promise<TransportResult<McpOAuthStartResponse>>;
+
+  /** Disconnect OAuth authorization for an MCP server */
+  disconnectMcpOAuth(id: string): Promise<TransportResult<McpOAuthStatusResponse>>;
+
   // =========================================================================
   // Conversation Operations
   // =========================================================================
@@ -310,9 +323,8 @@ export interface Transport {
   /**
    * Hard-delete a session and its per-session data (messages, executions,
    * execution logs, artifact pointers, distillation run, bridge outbox
-   * rows, and recall log). Memory facts, vec0 embeddings, and the
-   * knowledge graph are preserved. Files on disk in ward directories
-   * are not touched.
+   * rows, and recall log). Semantic memory and knowledge are preserved.
+   * Files on disk in ward directories are not touched.
    */
   deleteSession(sessionId: string): Promise<TransportResult<void>>;
 
@@ -499,9 +511,9 @@ export interface Transport {
   /** Delete a memory fact */
   deleteMemory(agentId: string, factId: string): Promise<TransportResult<void>>;
 
-  /** Create a memory fact (policy, instruction, or about-me) */
+  /** Create a public user-authored memory fact. */
   createMemory(agentId: string, fact: {
-    category: string;
+    category: CreatableMemoryCategory;
     key: string;
     content: string;
     confidence?: number;

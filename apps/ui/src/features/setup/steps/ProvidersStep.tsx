@@ -7,6 +7,9 @@ import { PROVIDER_PRESETS, type ProviderPreset } from "@/features/settings/provi
 /** Remove trailing slashes from a URL without using a regex */
 const trimSlashes = (s: string): string => { let r = s; while (r.endsWith("/")) r = r.slice(0, -1); return r; };
 
+const providerPresetKey = (name: string, baseUrl: string): string =>
+  `${name.toLowerCase()}|${trimSlashes(baseUrl)}`;
+
 interface ProvidersStepProps {
   providers: ProviderResponse[];
   defaultProviderId: string;
@@ -19,7 +22,7 @@ export function ProvidersStep({ providers, defaultProviderId, onProvidersChanged
   const [isTesting, setIsTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const addedBaseUrls = new Set(providers.map((p) => trimSlashes(p.baseUrl)));
+  const addedPresetKeys = new Set(providers.map((p) => providerPresetKey(p.name, p.baseUrl)));
 
   const handleAddProvider = async (preset: ProviderPreset) => {
     if (preset.noApiKey) {
@@ -124,7 +127,7 @@ export function ProvidersStep({ providers, defaultProviderId, onProvidersChanged
       <div className="settings-field-label">Add a provider</div>
       <div className="provider-add-grid">
         {PROVIDER_PRESETS.map((preset) => {
-          const isAdded = addedBaseUrls.has(trimSlashes(preset.baseUrl));
+          const isAdded = addedPresetKeys.has(providerPresetKey(preset.name, preset.baseUrl));
           return (
             <div
               key={preset.name}

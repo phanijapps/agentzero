@@ -5,11 +5,11 @@
 
 use crate::state::AppState;
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
+    Json,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// GET /api/models — List all known models with their capabilities.
 pub async fn list_models(State(state): State<AppState>) -> Json<Value> {

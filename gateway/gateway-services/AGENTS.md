@@ -19,7 +19,7 @@ cargo test -p gateway-services    # 5 tests
 | `SettingsService` | App settings (`AppSettings`, `ChatConfig`, `ExecutionSettings`, `OrchestratorConfig`, `MultimodalConfig`, `DistillationConfig`) |
 | `AgentRegistry` | Agent delegation permission registry |
 | `EmbeddingService` | Embedding backend (Ollama / local) with curated model list |
-| `ModelRegistry` | Model metadata registry loaded from `models.json` |
+| `ModelRegistry` | Fallback-only model metadata registry |
 | `OllamaClient` | HTTP client for Ollama API |
 | `PluginService` | Plugin config CRUD |
 | `VaultPaths` / `SharedVaultPaths` | Path resolution for vault directory |

@@ -26,6 +26,7 @@ pub mod artifacts;
 pub mod composite_provider;
 pub mod config;
 pub mod continuation;
+pub mod conversation_history;
 pub mod curator;
 pub mod delegation;
 pub mod distillation;
@@ -41,6 +42,7 @@ pub mod resource_provider;
 pub mod runner;
 pub mod session_ctx;
 pub mod session_state;
+pub mod session_title;
 pub mod sleep;
 pub mod tool_result_extractor;
 pub mod tools;
@@ -63,7 +65,11 @@ pub use lifecycle::{
     complete_execution, crash_execution, emit_agent_started, emit_delegation_completed,
     emit_delegation_started, get_or_create_session, start_execution, stop_execution, SessionSetup,
 };
-pub use recall::{format_scored_items, MemoryRecall};
+pub use recall::{
+    build_context_packet, build_context_packet_from_atoms, format_scored_items,
+    format_scored_items_with_options, render_context_packet, ContextPacketBuildOptions,
+    MemoryRecall,
+};
 pub use resource_provider::GatewayResourceProvider;
 pub use runner::{ExecutionRunner, ExecutionRunnerConfig, OnSessionReady};
 pub use session_state::{SessionState, SessionStateBuilder};

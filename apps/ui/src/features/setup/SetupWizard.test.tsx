@@ -135,7 +135,7 @@ describe('SetupWizard', () => {
   it('hydrates agent name from execution settings', async () => {
     getExecutionSettings.mockResolvedValue({
       success: true,
-      data: { agentName: 'Custom Agent', model: 'claude', thinkingEnabled: false, temperature: 0.7, maxTokens: 4096 },
+      data: { agentName: 'Custom Agent', model: 'claude', thinkingEnabled: false, temperature: 0.7, maxInputTokens: 200000, maxOutputTokens: 32000, maxTokens: 32000 },
     });
     render(<SetupWizard />);
     await waitFor(() => screen.getByText('NameStep'));
@@ -208,7 +208,9 @@ describe('SetupWizard', () => {
         providerId: 'anthropic',
         model: 'claude',
         temperature: 0.7,
-        maxTokens: 4096,
+        maxInputTokens: 200000,
+        maxOutputTokens: 32000,
+        maxTokens: 32000,
         thinkingEnabled: false,
         voiceRecordingEnabled: false,
         instructions: '',

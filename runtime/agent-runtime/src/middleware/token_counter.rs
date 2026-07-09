@@ -187,8 +187,8 @@ pub fn get_model_context_window(model: &str) -> usize {
 mod tests {
     use super::*;
     use crate::types::ToolCall;
+    use agent_primitives::types::Part;
     use serde_json::json;
-    use zero_core::types::Part;
 
     // ------------------------------------------------------------------
     // 1. Exact reference match: our estimate == tiktoken's own count.

@@ -24,19 +24,22 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::context_management::{sanitize_messages, truncate_tool_result};
+use crate::context_management::{
+    prepare_tool_result_for_context, sanitize_messages, ToolResultContextConfig,
+};
 use crate::llm::client::StreamChunk;
 use crate::llm::LlmClient;
 use crate::mcp::McpManager;
 use crate::middleware::token_counter::estimate_total_tokens;
 use crate::middleware::traits::MiddlewareContext;
 use crate::middleware::MiddlewarePipeline;
+use crate::rig_adapter::RigAgentConfig;
 use crate::tools::context::ToolContext;
 use crate::tools::ToolRegistry;
 use crate::types::{ChatMessage, StreamEvent, ToolCall};
-use zero_core::event::EventActions;
-use zero_core::types::Part;
-use zero_core::ToolContext as ZeroToolContext;
+use agent_primitives::event::EventActions;
+use agent_primitives::types::Part;
+use agent_primitives::ToolContext as ZeroToolContext;
 
 // ============================================================================
 // MID-SESSION RECALL HOOK
@@ -106,6 +109,10 @@ pub struct ExecutorConfig {
 
     /// Enable tools
     pub tools_enabled: bool,
+
+    /// Registered tools that remain executable internally but are not offered
+    /// in the model-visible tool schema.
+    pub model_hidden_tools: HashSet<String>,
 
     /// MCP servers to use
     pub mcps: Vec<String>,
@@ -187,6 +194,9 @@ pub struct ExecutorConfig {
     /// Extra tool calls are dropped with a log message.
     /// Default: false. Set true for orchestrator agents (root).
     pub single_action_mode: bool,
+
+    /// Rig-facing config resolved from current AgentZero settings.
+    pub rig_agent_config: Option<RigAgentConfig>,
 }
 
 impl ExecutorConfig {
@@ -202,6 +212,7 @@ impl ExecutorConfig {
             thinking_enabled: false,
             system_instruction: None,
             tools_enabled: true,
+            model_hidden_tools: HashSet::new(),
             mcps: Vec::new(),
             skills: Vec::new(),
             conversation_id: None,
@@ -223,6 +234,7 @@ impl ExecutorConfig {
             transform_context: None,
             complexity: None,
             single_action_mode: false,
+            rig_agent_config: None,
         }
     }
 
@@ -230,6 +242,18 @@ impl ExecutorConfig {
     #[must_use]
     pub fn with_initial_state(mut self, key: impl Into<String>, value: Value) -> Self {
         self.initial_state.insert(key.into(), value);
+        self
+    }
+
+    /// Hide registered tools from model-visible schemas while preserving
+    /// executor-internal dispatch for procedures, hooks, and compatibility.
+    #[must_use]
+    pub fn with_model_hidden_tools<I, S>(mut self, tool_names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.model_hidden_tools = tool_names.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -245,6 +269,7 @@ impl fmt::Debug for ExecutorConfig {
             .field("thinking_enabled", &self.thinking_enabled)
             .field("system_instruction", &self.system_instruction)
             .field("tools_enabled", &self.tools_enabled)
+            .field("model_hidden_tools", &self.model_hidden_tools)
             .field("mcps", &self.mcps)
             .field("skills", &self.skills)
             .field("conversation_id", &self.conversation_id)
@@ -275,6 +300,7 @@ impl fmt::Debug for ExecutorConfig {
             )
             .field("complexity", &self.complexity)
             .field("single_action_mode", &self.single_action_mode)
+            .field("rig_agent_config", &self.rig_agent_config)
             .finish()
     }
 }
@@ -409,6 +435,31 @@ impl AgentExecutor {
     #[must_use]
     pub fn config(&self) -> &ExecutorConfig {
         &self.config
+    }
+
+    /// Clone of the LLM client (for the Rig cutover to wrap the same client).
+    #[must_use]
+    pub fn llm_client(&self) -> Arc<dyn LlmClient> {
+        self.llm_client.clone()
+    }
+
+    /// Borrow the tool registry (for the Rig cutover to bridge the same,
+    /// already actor-filtered tool inventory).
+    #[must_use]
+    pub fn tool_registry(&self) -> &Arc<ToolRegistry> {
+        &self.tool_registry
+    }
+
+    /// Registered tools that should be offered to the model. Hidden tools stay
+    /// in `tool_registry` so internal dispatch can still execute them.
+    #[must_use]
+    pub fn model_visible_tools(&self) -> Vec<Arc<dyn agent_primitives::Tool>> {
+        self.tool_registry
+            .get_all()
+            .iter()
+            .filter(|tool| !self.config.model_hidden_tools.contains(tool.name()))
+            .cloned()
+            .collect()
     }
 
     /// Execute the agent with streaming
@@ -581,7 +632,7 @@ impl AgentExecutor {
             // This allows root to delegate again after a previous delegation completes.
             // try_claim checks for Bool(true); setting to Bool(false) releases the claim.
             {
-                use zero_core::CallbackContext;
+                use agent_primitives::CallbackContext;
                 shared_tool_context
                     .set_state("app:delegation_active".to_string(), Value::Bool(false));
             }
@@ -1064,12 +1115,13 @@ impl AgentExecutor {
                     // Blocked by beforeToolCall hook
                     current_messages.push(ChatMessage::tool_result(
                         tool_call.id.clone(),
-                        blocked_result,
+                        blocked_result.clone(),
                     ));
                     on_event(StreamEvent::ToolResult {
                         timestamp: chrono::Utc::now().timestamp_millis() as u64,
                         tool_id: tool_call.id.clone(),
                         result: "[blocked by hook]".to_string(),
+                        context_result: Some(blocked_result.clone()),
                         error: Some("blocked_by_hook".to_string()),
                         duration_ms: Some(0),
                     });
@@ -1285,22 +1337,10 @@ impl AgentExecutor {
                                 }
                             }
 
-                            on_event(StreamEvent::ToolResult {
-                                timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                                tool_id: tool_call.id.clone(),
-                                result: output.clone(),
-                                error: None,
-                                duration_ms: Some(duration_ms),
-                            });
-
-                            // Process tool result (potentially offload large results to filesystem)
-                            let processed_output = self.process_tool_result(tool_name, output);
-
-                            // Truncate if still over budget (safety net when offload is disabled)
-                            let processed_output = truncate_tool_result(
-                                processed_output,
-                                self.config.max_tool_result_chars,
-                            );
+                            // Process tool result for model context. Large raw outputs are
+                            // offloaded when configured, then truncated as a safety net.
+                            let processed_output =
+                                self.prepare_tool_result_for_context(tool_name, output.clone());
 
                             // afterToolCall hook — can transform the result
                             let final_output = if let Some(ref hook) = self.config.after_tool_call {
@@ -1312,6 +1352,15 @@ impl AgentExecutor {
                             } else {
                                 processed_output
                             };
+
+                            on_event(StreamEvent::ToolResult {
+                                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                                tool_id: tool_call.id.clone(),
+                                result: output,
+                                context_result: Some(final_output.clone()),
+                                error: None,
+                                duration_ms: Some(duration_ms),
+                            });
 
                             // Add tool result message
                             current_messages
@@ -1328,14 +1377,6 @@ impl AgentExecutor {
                             );
                             progress_tracker.record_error(&e);
 
-                            on_event(StreamEvent::ToolResult {
-                                timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                                tool_id: tool_call.id.clone(),
-                                result: String::new(),
-                                error: Some(e.clone()),
-                                duration_ms: Some(duration_ms),
-                            });
-
                             // afterToolCall hook — can transform error results too
                             let error_message = json!({"error": e}).to_string();
                             let final_error = if let Some(ref hook) = self.config.after_tool_call {
@@ -1346,6 +1387,15 @@ impl AgentExecutor {
                             } else {
                                 error_message
                             };
+
+                            on_event(StreamEvent::ToolResult {
+                                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                                tool_id: tool_call.id.clone(),
+                                result: String::new(),
+                                context_result: Some(final_error.clone()),
+                                error: Some(e.clone()),
+                                duration_ms: Some(duration_ms),
+                            });
 
                             // Add error result message
                             current_messages
@@ -1420,7 +1470,7 @@ impl AgentExecutor {
         // lenient mode falls through to real execution.
         if let Some(store) = agent_tools::replay::global_store() {
             let exec_id =
-                zero_core::ReadonlyContext::invocation_id(shared_ctx.as_ref()).to_string();
+                agent_primitives::ReadonlyContext::invocation_id(shared_ctx.as_ref()).to_string();
             if let Ok(mut guard) = store.lock() {
                 match guard.lookup(&exec_id, tool_name) {
                     agent_tools::replay::LookupOutcome::Hit(result) => {
@@ -1554,7 +1604,7 @@ impl AgentExecutor {
     async fn build_tools_schema(&self) -> Result<Value, ExecutorError> {
         let mut tools = Vec::new();
 
-        for tool in self.tool_registry.get_all() {
+        for tool in self.model_visible_tools() {
             let tool_name = tool.name();
             let tool_desc = tool.description();
             let schema = tool.parameters_schema().map_or_else(|| json!({"type": "object", "properties": {}, "additionalProperties": false, "required": []}), Self::harden_tool_schema);
@@ -1644,74 +1694,26 @@ impl AgentExecutor {
     ///
     /// If offload is enabled and the result exceeds the threshold, saves to a temp file
     /// and returns instructions for the agent to read it with a CLI tool.
+    #[cfg(test)]
     fn process_tool_result(&self, tool_name: &str, result: String) -> String {
-        // Check if offload is enabled and result exceeds threshold
-        if !self.config.offload_large_results {
-            return result;
-        }
-
-        if result.len() <= self.config.offload_threshold_chars {
-            return result;
-        }
-
-        // Get offload directory
-        let offload_dir = match &self.config.offload_dir {
-            Some(dir) => dir.clone(),
-            None => {
-                // Default to ~/Documents/zbot/temp
-                if let Some(home) = dirs::home_dir() {
-                    home.join("Documents").join("zbot").join("temp")
-                } else {
-                    tracing::warn!("Could not determine home directory for offload");
-                    return result;
-                }
-            }
-        };
-
-        // Create directory if it doesn't exist
-        if let Err(e) = std::fs::create_dir_all(&offload_dir) {
-            tracing::warn!("Failed to create offload directory: {}", e);
-            return result;
-        }
-
-        // Generate unique filename
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let sanitized_tool = tool_name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-        let filename = format!("{sanitized_tool}_{timestamp}.txt");
-        let file_path = offload_dir.join(&filename);
-
-        // Write result to file
-        if let Err(e) = std::fs::write(&file_path, &result) {
-            tracing::warn!("Failed to write offloaded result: {}", e);
-            return result;
-        }
-
-        let result_size = result.len();
-        let result_tokens = result_size / 4; // rough estimate
-
-        tracing::info!(
-            "Offloaded large tool result ({} chars, ~{} tokens) to: {}",
-            result_size,
-            result_tokens,
-            file_path.display()
-        );
-
-        // Return instructions for the agent
-        format!(
-            "Tool result was too large for context ({} chars, ~{} tokens).\n\
-            Result saved to: {}\n\n\
-            To access the full result, use the `read` tool:\n\
-            ```json\n\
-            {{\"path\": \"{}\"}}\n\
-            ```\n\n\
-            Or use shell: `head -100 \"{}\"` to preview, `grep \"pattern\" \"{}\"` to search.",
-            result_size,
-            result_tokens,
-            file_path.display(),
-            file_path.display(),
-            file_path.display(),
-            file_path.display()
+        crate::context_management::offload_tool_result_for_context(
+            tool_name,
+            result,
+            &self.tool_result_context_config(),
         )
+    }
+
+    fn prepare_tool_result_for_context(&self, tool_name: &str, result: String) -> String {
+        prepare_tool_result_for_context(tool_name, result, &self.tool_result_context_config())
+    }
+
+    fn tool_result_context_config(&self) -> ToolResultContextConfig {
+        ToolResultContextConfig {
+            max_tool_result_chars: self.config.max_tool_result_chars,
+            offload_large_results: self.config.offload_large_results,
+            offload_threshold_chars: self.config.offload_threshold_chars,
+            offload_dir: self.config.offload_dir.clone(),
+        }
     }
 }
 
@@ -1917,8 +1919,36 @@ mod token_cache_tests {
 mod executor_helper_coverage_tests {
     use super::*;
     use crate::llm::client::{ChatResponse, LlmError, StreamCallback};
+    use agent_primitives::Tool;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct NamedTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &'static str {
+            "test tool"
+        }
+
+        fn parameters_schema(&self) -> Option<Value> {
+            Some(json!({"type": "object", "properties": {}}))
+        }
+
+        async fn execute(
+            &self,
+            _ctx: Arc<dyn ZeroToolContext>,
+            _args: Value,
+        ) -> agent_primitives::Result<Value> {
+            Ok(json!({"ok": true}))
+        }
+    }
 
     // ------------- normalize_tool_name -------------
     #[test]
@@ -2171,6 +2201,40 @@ mod executor_helper_coverage_tests {
         assert_eq!(name, "respond");
     }
 
+    #[tokio::test]
+    async fn build_tools_schema_omits_model_hidden_registered_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(NamedTool { name: "respond" }));
+        registry.register(Arc::new(NamedTool { name: "memory" }));
+        let cfg = ExecutorConfig::new("a".into(), "p".into(), "m".into())
+            .with_model_hidden_tools(["memory"]);
+        let exec = AgentExecutor::new(
+            cfg,
+            Arc::new(InertLlm),
+            Arc::new(registry),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+
+        assert!(exec.tool_registry().contains("memory"));
+        let visible_names = exec
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(visible_names, vec!["respond"]);
+
+        let schema = exec.build_tools_schema().await.unwrap();
+        let names = schema
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["respond"]);
+    }
+
     #[test]
     fn process_tool_result_disabled_passes_through() {
         let exec = make_inert_executor();
@@ -2307,6 +2371,31 @@ mod executor_helper_coverage_tests {
         exec.execute_stream("hi", &[], |e| events.push(e))
             .await
             .unwrap();
+        assert!(matches!(events[0], StreamEvent::Metadata { .. }));
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
+    }
+
+    #[tokio::test]
+    async fn agent_engine_facade_streams_agentzero_events() {
+        let llm = Arc::new(OneShotLlm {
+            called: Arc::new(AtomicBool::new(false)),
+        });
+        let mut cfg = ExecutorConfig::new("agent".into(), "p".into(), "m".into());
+        cfg.tools_enabled = false;
+        let exec = AgentExecutor::new(
+            cfg,
+            llm,
+            Arc::new(ToolRegistry::new()),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+
+        let engine: &dyn crate::engine::AgentEngine = &exec;
+        let mut events = Vec::new();
+        let mut sink = |event| events.push(event);
+        engine.execute_stream("hi", &[], &mut sink).await.unwrap();
+
         assert!(matches!(events[0], StreamEvent::Metadata { .. }));
         assert!(events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
     }

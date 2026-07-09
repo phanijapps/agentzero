@@ -36,6 +36,9 @@ export interface AgentResponse {
   providerId: string;
   model: string;
   temperature: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
   thinkingEnabled: boolean;
   voiceRecordingEnabled: boolean;
@@ -53,6 +56,9 @@ export interface CreateAgentRequest {
   providerId: string;
   model: string;
   temperature?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens?: number;
   instructions?: string;
   mcps?: string[];
@@ -66,6 +72,9 @@ export interface UpdateAgentRequest {
   providerId?: string;
   model?: string;
   temperature?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens?: number;
   thinkingEnabled?: boolean;
   voiceRecordingEnabled?: boolean;
@@ -109,6 +118,7 @@ export interface SessionMessage {
   content: string;
   created_at: string;
   tool_calls?: unknown;
+  tool_call_id?: string | null;
   tool_results?: unknown;
 }
 
@@ -307,6 +317,7 @@ export interface McpServerSummary {
   description: string;
   type: string;
   enabled: boolean;
+  authStatus?: "not_configured" | "not_connected" | "connected" | "reauth_required";
 }
 
 export interface McpListResponse {
@@ -325,6 +336,7 @@ export interface CreateMcpRequest {
   // http/sse/streamable-http fields
   url?: string;
   headers?: Record<string, string>;
+  auth?: McpAuthConfig;
   enabled?: boolean;
 }
 
@@ -338,14 +350,34 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  auth?: McpAuthConfig;
   enabled: boolean;
   validated?: boolean;
+}
+
+export interface McpAuthConfig {
+  type: "oauth2";
+  clientId?: string;
+  scopes?: string[];
 }
 
 export interface McpTestResult {
   success: boolean;
   message: string;
   tools?: string[];
+}
+
+export interface McpOAuthStatusResponse {
+  status: "not_configured" | "not_connected" | "connected" | "reauth_required";
+}
+
+export interface McpOAuthStartRequest {
+  redirectUri?: string;
+}
+
+export interface McpOAuthStartResponse {
+  authUrl: string;
+  state: string;
 }
 
 // ============================================================================
@@ -361,12 +393,8 @@ export interface ToolSettings {
   uiTools: boolean;
   /** Enable create_agent tool */
   createAgent: boolean;
-  /** Enable introspection tools (list_tools, list_mcps) */
-  introspection: boolean;
   /** Enable file tools (read, write, edit, glob) as separate tools */
   fileTools: boolean;
-  /** Enable heavyweight todos tool (SQLite-like task persistence) */
-  todos: boolean;
   /** Offload large tool results to filesystem instead of keeping in context */
   offloadLargeResults: boolean;
   /** Token threshold for offloading (default: 5000 tokens ≈ 20000 chars) */
@@ -420,7 +448,11 @@ export interface OrchestratorConfig {
   model?: string | null;
   /** Temperature (0-2). Default: 0.7 */
   temperature: number;
-  /** Max output tokens. Default: 16384 */
+  /** Max input tokens. Default: 200000 */
+  maxInputTokens?: number;
+  /** Max output tokens. Default: 32000 */
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
   /** Enable extended thinking/reasoning. Default: true */
   thinkingEnabled: boolean;
@@ -432,6 +464,12 @@ export interface DistillationConfig {
   providerId?: string | null;
   /** Model override. null = inherit from orchestrator */
   model?: string | null;
+  /** Max input tokens override. null/undefined = inherit from orchestrator */
+  maxInputTokens?: number | null;
+  /** Max output tokens override. null/undefined = inherit from orchestrator */
+  maxOutputTokens?: number | null;
+  /** Legacy alias for maxOutputTokens. */
+  maxTokens?: number | null;
 }
 
 /** Ward-curator model configuration (Phase C consolidation LLM call) */
@@ -440,6 +478,12 @@ export interface CuratorConfig {
   providerId?: string | null;
   /** Model override. null = inherit from orchestrator */
   model?: string | null;
+  /** Max input tokens override. null/undefined = inherit from orchestrator */
+  maxInputTokens?: number | null;
+  /** Max output tokens override. null/undefined = inherit from orchestrator */
+  maxOutputTokens?: number | null;
+  /** Legacy alias for maxOutputTokens. */
+  maxTokens?: number | null;
 }
 
 /** Intent-analysis model configuration (every root prompt) */
@@ -448,6 +492,12 @@ export interface IntentAnalysisConfig {
   providerId?: string | null;
   /** Model override. null = inherit from orchestrator */
   model?: string | null;
+  /** Max input tokens override. null/undefined = inherit from orchestrator */
+  maxInputTokens?: number | null;
+  /** Max output tokens override. null/undefined = inherit from orchestrator */
+  maxOutputTokens?: number | null;
+  /** Legacy alias for maxOutputTokens. */
+  maxTokens?: number | null;
 }
 
 // ============================================================================
@@ -502,7 +552,11 @@ export interface MultimodalConfig {
   model?: string | null;
   /** Temperature for analysis calls (default: 0.3) */
   temperature: number;
-  /** Max output tokens (default: 4096) */
+  /** Max input tokens (default: 200000) */
+  maxInputTokens?: number;
+  /** Max output tokens (default: 32000) */
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
 }
 
@@ -1064,6 +1118,12 @@ export type MemoryCategory =
   | "agent"
   | "ward";
 
+/** Public memory categories users can create from the UI/API. */
+export type CreatableMemoryCategory = Exclude<
+  MemoryCategory,
+  "instruction" | "correction"
+>;
+
 /** A memory fact stored in the agent's memory system */
 export interface MemoryFact {
   id: string;
@@ -1280,7 +1340,7 @@ export interface Procedure {
   updated_at: string;
 }
 
-/** Session episode fields from the backend (matches `zero_stores_domain::SessionEpisode`). */
+/** Session episode fields from the backend (matches `zbot_stores_domain::SessionEpisode`). */
 export interface SessionEpisode {
   id: string;
   session_id: string;

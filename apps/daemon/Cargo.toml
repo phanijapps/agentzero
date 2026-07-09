@@ -18,7 +18,6 @@ categories = ["command-line-utilities"]
 # Internal crates
 gateway = { path = "../../gateway" }
 gateway-services = { path = "../../gateway/gateway-services" }
-zero-app = { path = "../../framework/zero-app" }
 
 # Async runtime
 tokio = { workspace = true }

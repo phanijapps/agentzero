@@ -3,7 +3,7 @@
 //! Persistent record of how each ward is used, written to
 //! `<vault>/wards/.usage.json`. Feeds the ward curator (heuristic cleanup
 //! and LLM consolidation) defined in
-//! `memory-bank/future-state/2026-05-23-ward-curator-spec.md`.
+//! `docs/architecture/future-state/2026-05-23-ward-curator-spec.md`.
 //!
 //! Operations are serialised through an internal `std::sync::Mutex` so
 //! concurrent bumps from within the same daemon never lose updates. Writes

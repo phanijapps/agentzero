@@ -54,6 +54,8 @@ pub enum StreamEvent {
         timestamp: u64,
         tool_id: String,
         result: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_result: Option<String>,
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<i64>,
@@ -117,7 +119,7 @@ pub enum StreamEvent {
         session_id: Option<String>,
         /// Artifacts declared by the agent in its response.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        artifacts: Vec<zero_core::event::ArtifactDeclaration>,
+        artifacts: Vec<agent_primitives::event::ArtifactDeclaration>,
     },
 
     /// Delegate action from the delegate tool.
@@ -208,7 +210,7 @@ pub enum StreamEvent {
     // ========================================================================
     // SESSION EVENTS
     // ========================================================================
-    /// Session title changed via `set_session_title` tool.
+    /// Session title changed by runtime title derivation or legacy log replay.
     #[serde(rename = "session_title_changed")]
     SessionTitleChanged {
         timestamp: u64,
@@ -332,6 +334,7 @@ mod tests {
                 timestamp: 6,
                 tool_id: "id".into(),
                 result: "r".into(),
+                context_result: Some("context r".into()),
                 error: None,
                 duration_ms: Some(10),
             },

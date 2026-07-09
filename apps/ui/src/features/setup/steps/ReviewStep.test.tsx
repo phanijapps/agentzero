@@ -48,7 +48,9 @@ const defaultProps = {
     providerId: "anthropic",
     model: "claude-3-sonnet",
     temperature: 0.7,
-    maxTokens: 4096,
+    maxInputTokens: 200000,
+    maxOutputTokens: 32000,
+    maxTokens: 32000,
   },
   agentOverrides: {},
   originalAgentName: "z-Bot",
@@ -131,7 +133,7 @@ describe("ReviewStep", () => {
     const onLaunchComplete = vi.fn();
     listAgents.mockResolvedValue({
       success: true,
-      data: [{ id: "root", name: "root", displayName: "z-Bot", providerId: "anthropic", model: "claude-3-sonnet", temperature: 0.7, maxTokens: 4096, thinkingEnabled: false, voiceRecordingEnabled: false, instructions: "", mcps: [], skills: [] }],
+      data: [{ id: "root", name: "root", displayName: "z-Bot", providerId: "anthropic", model: "claude-3-sonnet", temperature: 0.7, maxInputTokens: 200000, maxOutputTokens: 32000, maxTokens: 32000, thinkingEnabled: false, voiceRecordingEnabled: false, instructions: "", mcps: [], skills: [] }],
     });
     setDefaultProvider.mockResolvedValue({ success: true, data: {} as never });
     updateAgent.mockResolvedValue({ success: true, data: {} as never });

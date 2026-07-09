@@ -10,8 +10,8 @@ use agent_runtime::llm::client::LlmClient;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use agent_runtime::types::ChatMessage;
 use serde::Deserialize;
-use zero_stores_traits::wiki::WikiArticle;
-use zero_stores_traits::WikiStore;
+use zbot_stores_traits::wiki::WikiArticle;
+use zbot_stores_traits::WikiStore;
 
 /// Summary of a fact for the compilation prompt.
 #[derive(Debug, Clone)]
@@ -402,8 +402,8 @@ mod tests {
     use async_trait::async_trait;
     use gateway_services::VaultPaths;
     use std::sync::{Arc, Mutex};
-    use zero_stores_sqlite::vector_index::VectorIndex;
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::vector_index::VectorIndex;
+    use zbot_stores_sqlite::{
         GatewayWikiStore, KnowledgeDatabase, SqliteVecIndex, WardWikiRepository,
     };
 

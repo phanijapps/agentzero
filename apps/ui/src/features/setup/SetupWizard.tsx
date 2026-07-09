@@ -18,6 +18,9 @@ interface AgentConfig {
   providerId: string;
   model: string;
   temperature: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
 }
 
@@ -65,6 +68,8 @@ function reducer(state: WizardState, action: WizardAction): WizardState {
 }
 
 const LEGACY_DEFAULT_USER_PROFILE = "I am a private person, just call me Mr Z.";
+const DEFAULT_MAX_INPUT_TOKENS = 200000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 32000;
 
 const initialState: WizardState = {
   currentStep: 1,
@@ -75,7 +80,14 @@ const initialState: WizardState = {
   defaultProviderId: "",
   enabledSkillIds: [],
   mcpConfigs: [],
-  globalDefault: { providerId: "", model: "", temperature: 0.7, maxTokens: 4096 },
+  globalDefault: {
+    providerId: "",
+    model: "",
+    temperature: 0.7,
+    maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+  },
   agentOverrides: {},
   originalAgentName: "",
   originalAgentConfigs: {},
@@ -159,7 +171,9 @@ export function SetupWizard() {
               providerId: agent.providerId || "",
               model: agent.model || "",
               temperature: agent.temperature ?? 0.7,
-              maxTokens: agent.maxTokens ?? 4096,
+              maxInputTokens: agent.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS,
+              maxOutputTokens: agent.maxOutputTokens ?? agent.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+              maxTokens: agent.maxOutputTokens ?? agent.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
             };
           }
           hydrated.originalAgentConfigs = originalConfigs;
@@ -170,7 +184,9 @@ export function SetupWizard() {
             providerId: baseAgent.providerId || hydrated.defaultProviderId || "",
             model: baseAgent.model || "",
             temperature: baseAgent.temperature ?? 0.7,
-            maxTokens: baseAgent.maxTokens ?? 4096,
+            maxInputTokens: baseAgent.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS,
+            maxOutputTokens: baseAgent.maxOutputTokens ?? baseAgent.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+            maxTokens: baseAgent.maxOutputTokens ?? baseAgent.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
           };
           hydrated.globalDefault = globalDefault;
 
@@ -183,13 +199,18 @@ export function SetupWizard() {
               config.providerId !== globalDefault.providerId ||
               config.model !== globalDefault.model ||
               config.temperature !== globalDefault.temperature ||
-              config.maxTokens !== globalDefault.maxTokens
+              config.maxInputTokens !== globalDefault.maxInputTokens ||
+              config.maxOutputTokens !== globalDefault.maxOutputTokens
             ) {
               overrides[agent.id] = {
                 ...(config.providerId !== globalDefault.providerId && { providerId: config.providerId }),
                 ...(config.model !== globalDefault.model && { model: config.model }),
                 ...(config.temperature !== globalDefault.temperature && { temperature: config.temperature }),
-                ...(config.maxTokens !== globalDefault.maxTokens && { maxTokens: config.maxTokens }),
+                ...(config.maxInputTokens !== globalDefault.maxInputTokens && { maxInputTokens: config.maxInputTokens }),
+                ...(config.maxOutputTokens !== globalDefault.maxOutputTokens && {
+                  maxOutputTokens: config.maxOutputTokens,
+                  maxTokens: config.maxOutputTokens,
+                }),
               };
             }
           }
@@ -204,7 +225,9 @@ export function SetupWizard() {
               providerId: defaultProvider.id!,
               model: defaultProvider.defaultModel || defaultProvider.models[0] || "",
               temperature: 0.7,
-              maxTokens: 4096,
+              maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
+              maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+              maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
             };
           }
         }

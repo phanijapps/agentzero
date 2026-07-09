@@ -9,6 +9,30 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Non-secret authentication metadata for an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpAuthConfig {
+    /// Authentication type.
+    #[serde(rename = "type")]
+    pub auth_type: McpAuthType,
+    /// Optional public OAuth client ID for servers that do not support dynamic
+    /// client registration. Secrets are stored outside MCP config.
+    #[serde(default, rename = "clientId", skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// Optional scopes requested during OAuth authorization.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
+/// Supported MCP authentication types.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum McpAuthType {
+    /// OAuth 2.x Authorization Code + PKCE.
+    #[serde(rename = "oauth2")]
+    OAuth2,
+}
+
 /// Configuration for an MCP server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -52,6 +76,9 @@ pub enum McpServerConfig {
         /// HTTP headers
         #[serde(skip_serializing_if = "Option::is_none")]
         headers: Option<HashMap<String, String>>,
+        /// Optional non-secret auth metadata
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<McpAuthConfig>,
         /// Whether the server is enabled
         #[serde(default)]
         enabled: bool,
@@ -74,6 +101,9 @@ pub enum McpServerConfig {
         /// HTTP headers
         #[serde(skip_serializing_if = "Option::is_none")]
         headers: Option<HashMap<String, String>>,
+        /// Optional non-secret auth metadata
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<McpAuthConfig>,
         /// Whether the server is enabled
         #[serde(default)]
         enabled: bool,
@@ -96,6 +126,9 @@ pub enum McpServerConfig {
         /// HTTP headers
         #[serde(skip_serializing_if = "Option::is_none")]
         headers: Option<HashMap<String, String>>,
+        /// Optional non-secret auth metadata
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<McpAuthConfig>,
         /// Whether the server is enabled
         #[serde(default)]
         enabled: bool,
@@ -126,6 +159,37 @@ impl McpServerConfig {
             Self::Sse { name, .. } => name,
             Self::StreamableHttp { name, .. } => name,
         }
+    }
+
+    /// Get non-secret auth metadata when configured.
+    #[must_use]
+    pub fn auth(&self) -> Option<&McpAuthConfig> {
+        match self {
+            Self::Stdio { .. } => None,
+            Self::Http { auth, .. }
+            | Self::Sse { auth, .. }
+            | Self::StreamableHttp { auth, .. } => auth.as_ref(),
+        }
+    }
+
+    /// Check if the server uses OAuth.
+    #[must_use]
+    pub fn is_oauth(&self) -> bool {
+        matches!(self.auth().map(|a| &a.auth_type), Some(McpAuthType::OAuth2))
+    }
+
+    /// Return true if config headers contain an Authorization field.
+    #[must_use]
+    pub fn has_authorization_header(&self) -> bool {
+        let headers = match self {
+            Self::Stdio { .. } => return false,
+            Self::Http { headers, .. }
+            | Self::Sse { headers, .. }
+            | Self::StreamableHttp { headers, .. } => headers,
+        };
+        headers
+            .as_ref()
+            .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("authorization")))
     }
 
     /// Check if the server is enabled
@@ -181,6 +245,7 @@ mod tests {
             description: String::new(),
             url: "https://example.com".to_string(),
             headers: None,
+            auth: None,
             enabled: true,
             validated: None,
         };
@@ -194,6 +259,7 @@ mod tests {
             description: String::new(),
             url: "https://example.com".to_string(),
             headers: None,
+            auth: None,
             enabled: false,
             validated: None,
         };
@@ -209,6 +275,7 @@ mod tests {
             description: String::new(),
             url: "https://example.com/sse".to_string(),
             headers: None,
+            auth: None,
             enabled: true,
             validated: None,
         };
@@ -225,6 +292,7 @@ mod tests {
             description: "d".to_string(),
             url: "https://x".to_string(),
             headers: None,
+            auth: None,
             enabled: false,
             validated: Some(true),
         };
@@ -274,6 +342,58 @@ enabled: true
         assert!(matches!(c, McpServerConfig::Http { .. }));
         assert!(!c.enabled());
         assert_eq!(c.id(), "h");
+    }
+
+    #[test]
+    fn deserialize_streamable_http_with_oauth_metadata() {
+        let json = r#"{
+          "type": "streamable-http",
+          "id": "robinhood-trading",
+          "name": "Robinhood Trading",
+          "description": "Trading MCP",
+          "url": "https://agent.robinhood.com/mcp/trading",
+          "auth": {
+            "type": "oauth2",
+            "clientId": "public-client",
+            "scopes": ["mcp:tools"]
+          },
+          "enabled": false
+        }"#;
+
+        let c: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert!(c.is_oauth());
+        let auth = c.auth().expect("auth");
+        assert_eq!(auth.auth_type, McpAuthType::OAuth2);
+        assert_eq!(auth.client_id.as_deref(), Some("public-client"));
+        assert_eq!(auth.scopes, vec!["mcp:tools"]);
+
+        let serialized = serde_json::to_string(&c).unwrap();
+        assert!(serialized.contains("\"auth\""));
+        assert!(!serialized.contains("access_token"));
+        assert!(!serialized.contains("refresh_token"));
+    }
+
+    #[test]
+    fn detects_authorization_header_case_insensitively() {
+        let c = McpServerConfig::Http {
+            id: Some("h1".to_string()),
+            name: "http-srv".to_string(),
+            description: String::new(),
+            url: "https://example.com".to_string(),
+            headers: Some(HashMap::from([(
+                "authorization".to_string(),
+                "Bearer secret".to_string(),
+            )])),
+            auth: Some(McpAuthConfig {
+                auth_type: McpAuthType::OAuth2,
+                client_id: None,
+                scopes: vec![],
+            }),
+            enabled: true,
+            validated: None,
+        };
+
+        assert!(c.has_authorization_header());
     }
 
     #[test]

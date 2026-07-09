@@ -4,9 +4,9 @@
 
 use crate::state::AppState;
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
+    Json,
 };
 use gateway_bridge::PluginSummary;
 use gateway_services::PluginService;

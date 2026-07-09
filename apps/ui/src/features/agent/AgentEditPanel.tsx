@@ -47,6 +47,9 @@ interface AgentEditPanelProps {
 // Component
 // ============================================================================
 
+const DEFAULT_MAX_INPUT_TOKENS = 200000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 32000;
+
 export function AgentEditPanel({ agent, providers, modelRegistry, onClose, onSave }: AgentEditPanelProps) {
   // Form state
   const [formData, setFormData] = useState<UpdateAgentRequest>({
@@ -55,7 +58,9 @@ export function AgentEditPanel({ agent, providers, modelRegistry, onClose, onSav
     providerId: agent.providerId,
     model: agent.model,
     temperature: agent.temperature,
-    maxTokens: agent.maxTokens,
+    maxInputTokens: agent.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS,
+    maxOutputTokens: agent.maxOutputTokens ?? agent.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    maxTokens: agent.maxOutputTokens ?? agent.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     thinkingEnabled: agent.thinkingEnabled,
     instructions: agent.instructions,
     mcps: agent.mcps || [],
@@ -96,7 +101,8 @@ export function AgentEditPanel({ agent, providers, modelRegistry, onClose, onSav
     setError(null);
     try {
       const transport = await getTransport();
-      const result = await transport.updateAgent(agent.id, formData);
+      const { maxTokens: _legacyMaxTokens, ...payload } = formData;
+      const result = await transport.updateAgent(agent.id, payload);
       if (result.success) {
         onSave();
         onClose();
@@ -244,7 +250,7 @@ export function AgentEditPanel({ agent, providers, modelRegistry, onClose, onSav
             )}
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--spacing-3)", marginTop: "var(--spacing-3)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "var(--spacing-3)", marginTop: "var(--spacing-3)" }}>
           <div className="form-group">
             <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "var(--spacing-1)" }}>
               <Thermometer style={{ width: 14, height: 14 }} />
@@ -268,15 +274,32 @@ export function AgentEditPanel({ agent, providers, modelRegistry, onClose, onSav
           <div className="form-group">
             <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "var(--spacing-1)" }}>
               <Hash style={{ width: 14, height: 14 }} />
-              Max Tokens
+              Max Input Tokens
             </label>
             <input
               className="form-input"
               type="number"
-              value={formData.maxTokens || 4096}
-              onChange={(e) => setFormData({ ...formData, maxTokens: Number.parseInt(e.target.value) || 4096 })}
+              value={formData.maxInputTokens || DEFAULT_MAX_INPUT_TOKENS}
+              onChange={(e) => setFormData({ ...formData, maxInputTokens: Number.parseInt(e.target.value) || DEFAULT_MAX_INPUT_TOKENS })}
               min="1"
-              max="128000"
+              step="1000"
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "var(--spacing-1)" }}>
+              <Hash style={{ width: 14, height: 14 }} />
+              Max Output Tokens
+            </label>
+            <input
+              className="form-input"
+              type="number"
+              value={formData.maxOutputTokens ?? formData.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS}
+              onChange={(e) => {
+                const maxOutputTokens = Number.parseInt(e.target.value) || DEFAULT_MAX_OUTPUT_TOKENS;
+                setFormData({ ...formData, maxOutputTokens, maxTokens: maxOutputTokens });
+              }}
+              min="1"
+              step="1000"
             />
           </div>
         </div>

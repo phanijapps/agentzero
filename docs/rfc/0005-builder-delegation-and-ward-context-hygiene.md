@@ -5,7 +5,7 @@
 - **Approver:** phanijapps
 - **Date opened:** 2026-06-02
 - **Date closed:** 2026-06-02
-- **Related:** `docs/specs/builder-delegation-hygiene/`; `docs/specs/subagent-role-gating/`; `memory-bank/components/subagent-capability-policy/`; `memory-bank/components/execution-loop/data-flow.md`; `gateway/templates/agents/builder-agent.md`; `gateway/templates/agents/planner-agent.md`
+- **Related:** `docs/specs/builder-delegation-hygiene/`; `docs/specs/subagent-role-gating/`; `docs/architecture/components/subagent-capability-policy/`; `docs/architecture/components/execution-loop/data-flow.md`; `gateway/templates/agents/builder-agent.md`; `gateway/templates/agents/planner-agent.md`
 
 ## The Ask
 
@@ -156,5 +156,5 @@ shows a need.
 ## Follow-On Artifacts
 
 - Spec: `docs/specs/builder-delegation-hygiene/`
-- Component docs: `memory-bank/components/subagent-capability-policy/overview.md`
-- Component docs: `memory-bank/components/execution-loop/data-flow.md`
+- Component docs: `docs/architecture/components/subagent-capability-policy/overview.md`
+- Component docs: `docs/architecture/components/execution-loop/data-flow.md`

@@ -7,7 +7,7 @@
 //! Built-in tool implementations for the z-Bot application.
 //!
 //! This crate provides concrete tool implementations that use
-//! the abstractions defined in zero-core.
+//! the abstractions defined in agent-primitives.
 
 pub mod replay;
 mod tools;
@@ -17,9 +17,13 @@ mod tools;
 pub use tools::guards;
 
 pub use tools::{
+    ConnectorInvokeTool,
+    ConnectorResourceTool,
     EditFileTool,
     // Knowledge graph query types
     EntityInfo,
+    // Ingestion tool (enqueue text for background extraction + bulk structured)
+    EvidenceRecord,
     GlobTool,
     // Goal tool (agent intent lifecycle)
     GoalAccess,
@@ -27,24 +31,19 @@ pub use tools::{
     GoalTool,
     GraphQueryTool,
     GraphStorageAccess,
-    GrepTool,
-    // Ingestion tool (enqueue text for background extraction + bulk structured)
     IngestTool,
     IngestionAccess,
-    // Composite re-exports
     ListAgentsTool,
-    ListMcpsTool,
-    ListSkillsTool,
     LoadSkillTool,
     MemoryEntry,
     MemoryStore,
     MemoryTool,
+    MemoryWriteTool,
     // Multimodal vision fallback
     MultimodalAnalyzeTool,
     NeighborInfo,
     QueryResourceTool,
     ReadTool,
-    SetSessionTitleTool,
     // Individual tools for lean subagent registries
     ShellTool,
     StructuredCounts,
@@ -62,5 +61,5 @@ pub use tools::{
     optional_tools,
 };
 
-// Re-export from zero-core
-pub use zero_core::{FileSystemContext, Tool};
+// Re-export from agent-primitives
+pub use agent_primitives::{FileSystemContext, Tool};

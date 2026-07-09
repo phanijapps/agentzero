@@ -70,6 +70,29 @@ impl LlmClient for ThrottledLlmClient {
         self.inner.chat(messages, tools).await
     }
 
+    async fn chat_with_schema(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Value>,
+        output_schema: Option<Value>,
+    ) -> Result<ChatResponse, LlmError> {
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| LlmError::ApiError("Throttle semaphore closed".to_string()))?;
+
+        tracing::debug!(
+            provider = self.inner.provider(),
+            available = self.semaphore.available_permits(),
+            "Acquired throttle permit for chat_with_schema()"
+        );
+
+        self.inner
+            .chat_with_schema(messages, tools, output_schema)
+            .await
+    }
+
     async fn chat_stream(
         &self,
         messages: Vec<ChatMessage>,

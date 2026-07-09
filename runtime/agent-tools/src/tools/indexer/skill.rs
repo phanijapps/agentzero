@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use zero_core::{Result, ZeroError};
+use agent_primitives::{Result, AgentError};
 
 /// Parsed metadata from a skill's SKILL.md file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ struct SkillFrontmatter {
 /// * `Vec<SkillMetadata>` - List of all discovered skills with their metadata
 ///
 /// # Errors
-/// * `ZeroError::Tool` - If directory does not exist or cannot be read
+/// * `AgentError::Tool` - If directory does not exist or cannot be read
 pub fn scan_skills_dir(skills_dir: &PathBuf) -> Result<Vec<SkillMetadata>> {
     // Check if directory exists
     if !skills_dir.exists() {
@@ -81,7 +81,7 @@ pub fn scan_skills_dir(skills_dir: &PathBuf) -> Result<Vec<SkillMetadata>> {
     }
 
     if !skills_dir.is_dir() {
-        return Err(ZeroError::Tool(format!(
+        return Err(AgentError::Tool(format!(
             "Skills path is not a directory: {:?}",
             skills_dir
         )));
@@ -91,7 +91,7 @@ pub fn scan_skills_dir(skills_dir: &PathBuf) -> Result<Vec<SkillMetadata>> {
 
     // Iterate subdirectories
     let entries = std::fs::read_dir(skills_dir).map_err(|e| {
-        ZeroError::Tool(format!(
+        AgentError::Tool(format!(
             "Failed to read skills directory {:?}: {}",
             skills_dir, e
         ))
@@ -153,18 +153,18 @@ pub fn scan_skills_dir(skills_dir: &PathBuf) -> Result<Vec<SkillMetadata>> {
 /// * `Option<SkillMetadata>` - Parsed metadata, or None if parsing fails
 ///
 /// # Errors
-/// * `ZeroError::Io` - If file cannot be read
+/// * `AgentError::Io` - If file cannot be read
 pub fn parse_skill_md(skill_path: &PathBuf) -> Result<Option<SkillMetadata>> {
     // Get file metadata for mtime
     let metadata = std::fs::metadata(skill_path).map_err(|e| {
-        ZeroError::Tool(format!(
+        AgentError::Tool(format!(
             "Failed to get metadata for {:?}: {}",
             skill_path, e
         ))
     })?;
 
     let mtime = metadata.modified().map_err(|e| {
-        ZeroError::Tool(format!(
+        AgentError::Tool(format!(
             "Failed to get modification time for {:?}: {}",
             skill_path, e
         ))
@@ -172,7 +172,7 @@ pub fn parse_skill_md(skill_path: &PathBuf) -> Result<Option<SkillMetadata>> {
 
     // Read file content
     let content = std::fs::read_to_string(skill_path).map_err(|e| {
-        ZeroError::Tool(format!("Failed to read {:?}: {}", skill_path, e))
+        AgentError::Tool(format!("Failed to read {:?}: {}", skill_path, e))
     })?;
 
     // Extract directory name as skill name

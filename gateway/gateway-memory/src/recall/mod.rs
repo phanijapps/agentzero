@@ -18,10 +18,15 @@
 //! 6. Format as a "Recalled Memory" system message
 
 pub mod adapters;
+pub mod context_atoms;
 pub mod mmr;
 pub mod previous_episodes;
 pub mod query_gate;
 pub mod scored_item;
+pub use context_atoms::{
+    dropped_candidate_for_superseded_fact, scored_fact_to_context_atom,
+    scored_item_to_context_atom, scored_items_to_context_atoms,
+};
 pub use mmr::{mmr_select, MmrInput};
 pub use query_gate::{GateResponse, LlmQueryGate, QueryGate, QueryGateLlm, RetrievalDecision};
 pub use scored_item::{intent_boost, rrf_merge, GoalLite, ItemKind, Provenance, ScoredItem};
@@ -30,10 +35,31 @@ use std::sync::Arc;
 
 use crate::{MmrConfig, RecallConfig};
 use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
-use zero_stores_domain::{MemoryFact, Procedure, ScoredFact};
+use zbot_stores_domain::{MemoryFact, Procedure, ScoredFact};
+use zbot_stores_traits::{
+    EmbeddingQueryIdentity, RecallTaxonomyExpander, RecallTaxonomyExpansionCandidate,
+    RecallTaxonomyExpansionRequest,
+};
 
 const MAX_RECALL_EMBED_QUERY_CHARS: usize = 500;
 const RETRY_RECALL_EMBED_QUERY_CHARS: usize = 384;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecallSkosExpansionLimits {
+    pub max_depth: u8,
+    pub max_fan_out: u16,
+    pub max_candidates: u16,
+}
+
+impl Default for RecallSkosExpansionLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 1,
+            max_fan_out: 8,
+            max_candidates: 16,
+        }
+    }
+}
 
 /// Retrieves relevant memory facts for injection at session start.
 ///
@@ -44,28 +70,36 @@ const RETRY_RECALL_EMBED_QUERY_CHARS: usize = 384;
 /// this struct's signatures.
 pub struct MemoryRecall {
     embedding_client: Option<Arc<dyn EmbeddingClient>>,
-    memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
-    kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
-    episode_store: Option<Arc<dyn zero_stores_traits::EpisodeStore>>,
-    wiki_store: Option<Arc<dyn zero_stores_traits::WikiStore>>,
-    procedure_store: Option<Arc<dyn zero_stores_traits::ProcedureStore>>,
+    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>>,
+    wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>>,
+    procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     /// Belief store for Phase B-4 recall integration. Wired only when
     /// the Belief Network is enabled — when `None`, `recall_unified`
     /// stays byte-for-byte identical to pre-B-4 behavior (no extra
     /// fetch, no extra log).
-    belief_store: Option<Arc<dyn zero_stores_traits::BeliefStore>>,
+    belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
     /// Self-RAG retrieval gate. When `None`, recall behaves identically to
     /// pre-gate behavior (raw user message → hybrid search).
     query_gate: Option<Arc<QueryGate>>,
     /// MMR diversity reranking. When `None` or `enabled = false`,
     /// `recall_unified` is byte-for-byte identical to pre-MMR behavior.
     mmr_config: Option<MmrConfig>,
+    taxonomy_expander: Option<Arc<dyn RecallTaxonomyExpander>>,
+    taxonomy_limits: RecallSkosExpansionLimits,
     /// Observatory v2 (Phase 3) — optional EventBus for emitting
     /// `RecallTrace` telemetry. When `None` (tests, headless invocations),
     /// recall stays silent. Production wiring attaches this in
     /// `MemoryServices::new()`.
     event_bus: Option<Arc<gateway_events::EventBus>>,
     config: Arc<RecallConfig>,
+}
+
+struct HybridSearchOutcome {
+    facts: Vec<ScoredFact>,
+    embedding_attempted: bool,
+    embedding_available: bool,
 }
 
 impl MemoryRecall {
@@ -86,6 +120,8 @@ impl MemoryRecall {
             belief_store: None,
             query_gate: None,
             mmr_config: None,
+            taxonomy_expander: None,
+            taxonomy_limits: RecallSkosExpansionLimits::default(),
             event_bus: None,
             config,
         }
@@ -102,7 +138,7 @@ impl MemoryRecall {
     /// alongside facts (Phase B-4). Caller is expected to attach this
     /// only when `beliefNetwork.enabled = true`; when unset, beliefs
     /// stay out of the recall pool entirely.
-    pub fn set_belief_store(&mut self, store: Arc<dyn zero_stores_traits::BeliefStore>) {
+    pub fn set_belief_store(&mut self, store: Arc<dyn zbot_stores_traits::BeliefStore>) {
         self.belief_store = Some(store);
     }
 
@@ -122,33 +158,41 @@ impl MemoryRecall {
         self.mmr_config = Some(cfg);
     }
 
+    pub fn set_taxonomy_expander(&mut self, expander: Arc<dyn RecallTaxonomyExpander>) {
+        self.taxonomy_expander = Some(expander);
+    }
+
+    pub fn set_taxonomy_expansion_limits(&mut self, limits: RecallSkosExpansionLimits) {
+        self.taxonomy_limits = limits;
+    }
+
     /// Access the recall configuration.
     pub fn config(&self) -> &RecallConfig {
         &self.config
     }
 
     /// Wire the memory-fact store (hybrid FTS + vector recall path).
-    pub fn set_memory_store(&mut self, store: Arc<dyn zero_stores::MemoryFactStore>) {
+    pub fn set_memory_store(&mut self, store: Arc<dyn zbot_stores::MemoryFactStore>) {
         self.memory_store = Some(store);
     }
 
     /// Wire the KG store (graph ANN recall path).
-    pub fn set_kg_store(&mut self, store: Arc<dyn zero_stores::KnowledgeGraphStore>) {
+    pub fn set_kg_store(&mut self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) {
         self.kg_store = Some(store);
     }
 
     /// Wire the episode store (previous-episode chain recall path).
-    pub fn set_episode_store(&mut self, store: Arc<dyn zero_stores_traits::EpisodeStore>) {
+    pub fn set_episode_store(&mut self, store: Arc<dyn zbot_stores_traits::EpisodeStore>) {
         self.episode_store = Some(store);
     }
 
     /// Wire the wiki store (ward-scoped wiki recall path).
-    pub fn set_wiki_store(&mut self, store: Arc<dyn zero_stores_traits::WikiStore>) {
+    pub fn set_wiki_store(&mut self, store: Arc<dyn zbot_stores_traits::WikiStore>) {
         self.wiki_store = Some(store);
     }
 
     /// Wire the procedure store (procedure recall path).
-    pub fn set_procedure_store(&mut self, store: Arc<dyn zero_stores_traits::ProcedureStore>) {
+    pub fn set_procedure_store(&mut self, store: Arc<dyn zbot_stores_traits::ProcedureStore>) {
         self.procedure_store = Some(store);
     }
 
@@ -167,13 +211,20 @@ impl MemoryRecall {
             Some(emb) => emb,
             None => return Ok(Vec::new()),
         };
+        let query_identity = self.embedding_query_identity();
 
         let store = match self.procedure_store.as_ref() {
             Some(s) => s,
             None => return Ok(Vec::new()),
         };
         store
-            .search_procedures_by_similarity_typed(&embedding, agent_id, ward_id, limit)
+            .search_procedures_by_similarity_typed_with_identity(
+                &embedding,
+                query_identity.as_ref(),
+                agent_id,
+                ward_id,
+                limit,
+            )
             .await
     }
 
@@ -199,20 +250,30 @@ impl MemoryRecall {
         };
 
         // 2. Run hybrid search according to the gate decision.
-        let hybrid_results = self.hybrid_for_decision(agent_id, &decision, limit).await?;
+        let hybrid_outcome = self
+            .hybrid_for_decision(agent_id, &decision, limit, ward_id)
+            .await?;
+        let allow_broad_high_confidence =
+            !hybrid_outcome.embedding_attempted || hybrid_outcome.embedding_available;
+        let hybrid_results = hybrid_outcome.facts;
 
         // 3. Also fetch high-confidence facts (always relevant).
-        let high_conf_facts: Vec<MemoryFact> = match self.memory_store.as_ref() {
-            Some(store) => store
-                .get_high_confidence_facts(
-                    Some(agent_id),
-                    self.config.high_confidence_threshold,
-                    limit,
-                )
-                .await
-                .unwrap_or_default(),
-            None => Vec::new(),
-        };
+        let high_conf_facts: Vec<MemoryFact> =
+            match (allow_broad_high_confidence, self.memory_store.as_ref()) {
+                (false, _) => Vec::new(),
+                (true, Some(store)) => store
+                    .get_high_confidence_facts(
+                        Some(agent_id),
+                        self.config.high_confidence_threshold,
+                        limit,
+                    )
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|fact| recall_fact_matches_query(fact, user_message))
+                    .collect(),
+                (true, None) => Vec::new(),
+            };
 
         // 3b. Include relevant corrections — corrections get a 1.5x category boost
         //     but must still have minimum relevance to the query. This prevents
@@ -225,9 +286,11 @@ impl MemoryRecall {
             None => Vec::new(),
         };
 
-        // Corrections: include all, capped at a reasonable limit.
-        // Phase 1c will restore threshold-based filtering via unified scored recall.
-        let corrections: Vec<_> = all_corrections.into_iter().take(5).collect();
+        let corrections: Vec<_> = all_corrections
+            .into_iter()
+            .filter(|fact| recall_fact_matches_query(fact, user_message))
+            .take(5)
+            .collect();
 
         // 4. Merge, dedup by key, take top-K
         let mut seen_keys = std::collections::HashSet::new();
@@ -352,30 +415,45 @@ impl MemoryRecall {
         active_goals: &[GoalLite],
         budget: usize,
     ) -> Result<Vec<ScoredItem>, String> {
-        let query_emb = self.embed_query(query).await;
+        let taxonomy_expansion = self.expand_query_with_taxonomy(query, ward_id).await;
+        let retrieval_query = taxonomy_expansion
+            .as_ref()
+            .map(|expansion| expansion.expanded_query.as_str())
+            .unwrap_or(query);
+        let taxonomy_candidates = taxonomy_expansion
+            .as_ref()
+            .map(|expansion| expansion.candidates.clone())
+            .unwrap_or_default();
+        let query_emb = self.embed_query(retrieval_query).await;
+        let query_identity = query_emb
+            .as_ref()
+            .and_then(|_| self.embedding_query_identity());
 
         // 1. Facts via hybrid search. Phase E8: prefer the trait
         // `memory_store` (wired by AppState), fall back to the
         // SQLite repo. On Surreal, scores aren't yet preserved by the
         // trait surface — we synthesize 0.5 so facts still rank into
         // the fused pool but don't dominate it.
-        let fact_items: Vec<ScoredItem> = if let Some(store) = self.memory_store.as_ref() {
+        let fact_items: Vec<ScoredItem> = if let (Some(store), Some(query_emb)) =
+            (self.memory_store.as_ref(), query_emb.as_ref())
+        {
             store
-                .search_memory_facts_hybrid(
+                .search_memory_facts_hybrid_with_identity(
                     Some(agent_id),
-                    query,
+                    retrieval_query,
                     "hybrid",
                     10,
                     ward_id,
-                    query_emb.as_deref(),
+                    Some(query_emb.as_slice()),
+                    query_identity.as_ref(),
                     None, // as_of — default "now" recall
                 )
                 .await
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|v| {
-                    let score = v.get("score").and_then(|s| s.as_f64()).unwrap_or(0.5);
-                    // See note on `zero_stores_sqlite::MemoryFact` above — we
+                    let score = normalized_trait_fact_score(&v);
+                    // See note on `zbot_stores_sqlite::MemoryFact` above — we
                     // decode into the domain type to avoid a dep cycle.
                     serde_json::from_value::<MemoryFact>(v)
                         .ok()
@@ -392,7 +470,12 @@ impl MemoryRecall {
         let wiki_items: Vec<ScoredItem> =
             match (self.wiki_store.as_ref(), query_emb.as_ref(), ward_id) {
                 (Some(store), Some(emb), Some(wid)) => store
-                    .search_wiki_by_similarity_typed(wid, emb, 5)
+                    .search_wiki_by_similarity_typed_with_identity(
+                        wid,
+                        emb,
+                        query_identity.as_ref(),
+                        5,
+                    )
                     .await
                     .unwrap_or_default()
                     .into_iter()
@@ -405,7 +488,13 @@ impl MemoryRecall {
         let procedure_items: Vec<ScoredItem> =
             match (self.procedure_store.as_ref(), query_emb.as_ref()) {
                 (Some(store), Some(emb)) => store
-                    .search_procedures_by_similarity_typed(emb, agent_id, ward_id, 5)
+                    .search_procedures_by_similarity_typed_with_identity(
+                        emb,
+                        query_identity.as_ref(),
+                        agent_id,
+                        ward_id,
+                        5,
+                    )
                     .await
                     .unwrap_or_default()
                     .into_iter()
@@ -427,10 +516,15 @@ impl MemoryRecall {
         // to seed_ids too, so the hierarchy LCA surface (step 5c) is
         // consistent with what recall actually shows.
         let min_kg_conf = self.config.graph_traversal.min_kg_confidence;
-        let (graph_items, graph_seed_ids): (Vec<ScoredItem>, Vec<zero_stores::types::EntityId>) =
+        let (graph_items, graph_seed_ids): (Vec<ScoredItem>, Vec<zbot_stores::types::EntityId>) =
             match (self.kg_store.as_ref(), query_emb.as_ref()) {
                 (Some(store), Some(emb)) => match store
-                    .search_entities_by_name_embedding(agent_id, emb, 10)
+                    .search_entities_by_name_embedding_with_identity(
+                        agent_id,
+                        emb,
+                        query_identity.as_ref(),
+                        10,
+                    )
                     .await
                 {
                     Ok(raw_hits) => {
@@ -438,10 +532,10 @@ impl MemoryRecall {
                             .into_iter()
                             .filter(|h| h.confidence >= min_kg_conf)
                             .collect();
-                        let seed_ids: Vec<zero_stores::types::EntityId> = hits
+                        let seed_ids: Vec<zbot_stores::types::EntityId> = hits
                             .iter()
                             .filter(|h| !h.id.is_empty())
-                            .map(|h| zero_stores::types::EntityId(h.id.clone()))
+                            .map(|h| zbot_stores::types::EntityId(h.id.clone()))
                             .collect();
                         let items: Vec<ScoredItem> = hits
                             .into_iter()
@@ -589,9 +683,9 @@ impl MemoryRecall {
                     ward_id: ward_id.map(String::from),
                 },
                 route_hint: ward_id.map(|ward| {
-                    zero_stores_domain::RouteHint::new(
+                    zbot_stores_domain::RouteHint::new(
                         ward.to_string(),
-                        zero_stores_domain::RouteSourceKind::Goal,
+                        zbot_stores_domain::RouteSourceKind::Goal,
                     )
                     .with_memory_id(g.id.clone())
                 }),
@@ -608,7 +702,7 @@ impl MemoryRecall {
         // partition per agent).
         let belief_items: Vec<ScoredItem> = match (self.belief_store.as_ref(), query_emb.as_ref()) {
             (Some(store), Some(emb)) => store
-                .search_beliefs(agent_id, emb, 10)
+                .search_beliefs_with_identity(agent_id, emb, query_identity.as_ref(), 10)
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -729,6 +823,45 @@ impl MemoryRecall {
                 + belief_items.len()
                 + hier_items.len()
                 + hier_relation_items.len()) as u32;
+            let mut match_sources = Vec::new();
+            for (source, count) in [
+                ("memory_facts", fact_items.len()),
+                ("wiki", wiki_items.len()),
+                ("procedures", procedure_items.len()),
+                ("graph", graph_items.len() + traversal_items.len()),
+                ("beliefs", belief_items.len()),
+                ("hierarchy", hier_items.len() + hier_relation_items.len()),
+                ("taxonomy", taxonomy_candidates.len()),
+            ] {
+                if count > 0 {
+                    match_sources.push(source.to_string());
+                }
+            }
+            let mut ranking_reasons = vec![
+                "source_relevance".to_string(),
+                "reciprocal_rank_fusion".to_string(),
+                "intent_boost".to_string(),
+            ];
+            if self.mmr_config.as_ref().is_some_and(|cfg| cfg.enabled) {
+                ranking_reasons.push("mmr_diversity".to_string());
+            }
+            if !taxonomy_candidates.is_empty() {
+                ranking_reasons.push("skos_taxonomy_expansion".to_string());
+            }
+            let degraded_reasons = if query_emb.is_none() {
+                vec!["query_embedding_unavailable".to_string()]
+            } else {
+                Vec::new()
+            };
+            let embedding_provider_identity = query_identity.as_ref().map(|identity| {
+                serde_json::json!({
+                    "providerType": identity.provider_type.clone(),
+                    "model": identity.model.clone(),
+                    "dimensions": identity.dimensions,
+                    "promptProfile": identity.prompt_profile.clone(),
+                    "normalization": identity.normalization.clone(),
+                })
+            });
             bus.publish_sync(gateway_events::GatewayEvent::RecallTrace {
                 agent_id: agent_id.to_string(),
                 conversation_id: None,
@@ -736,6 +869,11 @@ impl MemoryRecall {
                 seed_aggregate_ids,
                 lca_aggregate_id,
                 surfaced_item_count,
+                match_sources,
+                ranking_reasons,
+                degraded_reasons,
+                embedding_provider_identity,
+                taxonomy_expansion: taxonomy_trace(&taxonomy_candidates),
             });
         }
 
@@ -774,6 +912,47 @@ impl MemoryRecall {
         let lambda = self.mmr_config.as_ref().map(|c| c.lambda).unwrap_or(0.6);
         let reranked = self.mmr_rerank(fused, lambda, budget).await;
         Ok(reranked)
+    }
+
+    async fn expand_query_with_taxonomy(
+        &self,
+        query: &str,
+        ward_id: Option<&str>,
+    ) -> Option<zbot_stores_traits::RecallTaxonomyExpansion> {
+        let expander = self.taxonomy_expander.as_ref()?;
+        let limits = self.taxonomy_limits;
+        if limits.max_candidates == 0 {
+            return None;
+        }
+        expander
+            .expand_recall_query(RecallTaxonomyExpansionRequest {
+                query: query.to_string(),
+                ward_id: ward_id.map(ToOwned::to_owned),
+                max_depth: limits.max_depth,
+                max_fan_out: limits.max_fan_out,
+                max_candidates: limits.max_candidates,
+            })
+            .await
+            .ok()
+            .filter(|expansion| !expansion.candidates.is_empty())
+    }
+
+    /// Emit typed context atoms from the existing unified recall path.
+    ///
+    /// This does not change ranking or prompt rendering; it gives later packet
+    /// assembly a structured read model over the same scored recall output.
+    pub async fn recall_context_atoms(
+        &self,
+        agent_id: &str,
+        query: &str,
+        ward_id: Option<&str>,
+        active_goals: &[GoalLite],
+        budget: usize,
+    ) -> Result<Vec<agent_runtime::ContextAtom>, String> {
+        let items = self
+            .recall_unified(agent_id, query, ward_id, active_goals, budget)
+            .await?;
+        Ok(context_atoms::scored_items_to_context_atoms(&items))
     }
 
     /// Resolve a per-item embedding for MMR. Returns `None` when the
@@ -884,7 +1063,7 @@ impl MemoryRecall {
                     tracing::warn!(
                         recall_embed_failed = true,
                         error = %e,
-                        "Failed to embed query for recall; continuing with lexical recall"
+                        "Failed to embed query for recall; skipping fuzzy hybrid recall"
                     );
                     return None;
                 }
@@ -894,6 +1073,17 @@ impl MemoryRecall {
         None
     }
 
+    fn embedding_query_identity(&self) -> Option<EmbeddingQueryIdentity> {
+        let client = self.embedding_client.as_ref()?;
+        Some(EmbeddingQueryIdentity {
+            provider_type: client.provider_type(),
+            model: client.model_name(),
+            dimensions: client.dimensions() as u32,
+            prompt_profile: client.prompt_profile(),
+            normalization: client.normalization(),
+        })
+    }
+
     /// Run one hybrid search call against the trait-routed memory store.
     /// Returns an empty vector when no memory store is wired (defensive).
     async fn run_hybrid_search(
@@ -901,31 +1091,54 @@ impl MemoryRecall {
         agent_id: &str,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<ScoredFact>, String> {
+        ward_id: Option<&str>,
+    ) -> Result<HybridSearchOutcome, String> {
         let store = match &self.memory_store {
             Some(s) => s,
-            None => return Ok(Vec::new()),
+            None => {
+                return Ok(HybridSearchOutcome {
+                    facts: Vec::new(),
+                    embedding_attempted: false,
+                    embedding_available: false,
+                })
+            }
         };
         let query_embedding = self.embed_query(query).await;
+        let embedding_available = query_embedding.is_some();
+        let query_identity = query_embedding
+            .as_ref()
+            .and_then(|_| self.embedding_query_identity());
         let raw = store
-            .search_memory_facts_hybrid(
+            .search_memory_facts_hybrid_with_identity(
                 Some(agent_id),
                 query,
                 "hybrid",
                 limit * 2,
-                None,
+                ward_id,
                 query_embedding.as_deref(),
+                query_identity.as_ref(),
                 None, // as_of — default "now" recall; point-in-time is opt-in
             )
             .await?;
-        Ok(raw
+        let facts = raw
             .into_iter()
+            .filter(|v| {
+                embedding_available
+                    || v.get("match_source").and_then(serde_json::Value::as_str)
+                        == Some("exact_degraded")
+            })
             .filter_map(|v| {
+                let score = normalized_trait_fact_score(&v);
                 serde_json::from_value::<MemoryFact>(v)
                     .ok()
-                    .map(|fact| ScoredFact { fact, score: 0.0 })
+                    .map(|fact| ScoredFact { fact, score })
             })
-            .collect())
+            .collect();
+        Ok(HybridSearchOutcome {
+            facts,
+            embedding_attempted: true,
+            embedding_available,
+        })
     }
 
     /// Apply the gate decision: run zero, one, or several hybrid searches and
@@ -936,16 +1149,27 @@ impl MemoryRecall {
         agent_id: &str,
         decision: &RetrievalDecision,
         limit: usize,
-    ) -> Result<Vec<ScoredFact>, String> {
+        ward_id: Option<&str>,
+    ) -> Result<HybridSearchOutcome, String> {
         match decision {
-            RetrievalDecision::Skip => Ok(Vec::new()),
-            RetrievalDecision::Direct(q) => self.run_hybrid_search(agent_id, q, limit).await,
+            RetrievalDecision::Skip => Ok(HybridSearchOutcome {
+                facts: Vec::new(),
+                embedding_attempted: false,
+                embedding_available: false,
+            }),
+            RetrievalDecision::Direct(q) => {
+                self.run_hybrid_search(agent_id, q, limit, ward_id).await
+            }
             RetrievalDecision::Split(subqueries) => {
                 let mut merged: Vec<ScoredFact> = Vec::new();
                 let mut seen = std::collections::HashSet::new();
+                let mut embedding_attempted = false;
+                let mut embedding_available = false;
                 for sq in subqueries {
-                    let sub = self.run_hybrid_search(agent_id, sq, limit).await?;
-                    for sf in sub {
+                    let sub = self.run_hybrid_search(agent_id, sq, limit, ward_id).await?;
+                    embedding_attempted |= sub.embedding_attempted;
+                    embedding_available |= sub.embedding_available;
+                    for sf in sub.facts {
                         // Dedup by fact id (more reliable than `key`, which can
                         // collide across scopes); preserve first occurrence.
                         if seen.insert(sf.fact.id.clone()) {
@@ -953,7 +1177,11 @@ impl MemoryRecall {
                         }
                     }
                 }
-                Ok(merged)
+                Ok(HybridSearchOutcome {
+                    facts: merged,
+                    embedding_attempted,
+                    embedding_available,
+                })
             }
         }
     }
@@ -981,12 +1209,101 @@ fn compact_recall_embedding_query(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn taxonomy_trace(candidates: &[RecallTaxonomyExpansionCandidate]) -> Vec<serde_json::Value> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "schemeId": candidate.scheme_id,
+                "conceptId": candidate.concept_id,
+                "label": candidate.label,
+                "matchedLabel": candidate.matched_label,
+                "relation": candidate.relation,
+                "depth": candidate.depth,
+            })
+        })
+        .collect()
+}
+
 fn is_embedding_context_length_error(error: &EmbeddingError) -> bool {
     let msg = error.to_string().to_ascii_lowercase();
     (msg.contains("input length") && msg.contains("context length"))
         || msg.contains("maximum context")
         || msg.contains("too many tokens")
         || msg.contains("context window")
+}
+
+fn normalized_trait_fact_score(value: &serde_json::Value) -> f64 {
+    let raw = value
+        .get("score")
+        .and_then(|score| score.as_f64())
+        .unwrap_or(0.5);
+    let match_source = value
+        .get("match_source")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if raw > 0.0 && raw < 0.3 && matches!(match_source, "hybrid" | "vec" | "fts") {
+        (raw * 60.0).min(1.0)
+    } else {
+        raw
+    }
+}
+
+fn recall_fact_matches_query(fact: &MemoryFact, query: &str) -> bool {
+    let haystack = format!("{} {} {}", fact.category, fact.key, fact.content).to_lowercase();
+    recall_relevance_tokens(query)
+        .into_iter()
+        .any(|token| token_is_high_specificity(fact, &token) && haystack.contains(&token))
+}
+
+fn recall_relevance_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '.' && ch != '_' && ch != '-')
+        .map(|token| token.trim_matches(['.', '_', '-']).to_lowercase())
+        .filter(|token| token.len() >= 3 && !is_recall_generic_token(token))
+        .collect()
+}
+
+fn is_recall_generic_token(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "and"
+            | "for"
+            | "with"
+            | "from"
+            | "this"
+            | "that"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "about"
+            | "academic"
+            | "critical"
+            | "domain"
+            | "evaluation"
+            | "pattern"
+            | "memory"
+            | "fact"
+            | "analysis"
+            | "methodology"
+            | "paper"
+            | "research"
+            | "review"
+    )
+}
+
+fn token_is_high_specificity(fact: &MemoryFact, token: &str) -> bool {
+    token.chars().any(|ch| ch.is_ascii_digit())
+        || token.contains('.')
+        || token.contains('_')
+        || token.contains('-')
+        || fact
+            .key
+            .split(['.', '_', '-', ':', '/'])
+            .any(|segment| segment.eq_ignore_ascii_case(token))
+        || token.len() >= 12
 }
 
 /// Apply class-aware penalty to a scored fact based on its epistemic class
@@ -1089,6 +1406,34 @@ mod tests {
             },
             score,
         }
+    }
+
+    #[tokio::test]
+    async fn recall_context_atoms_projects_unified_recall_items() {
+        let recall = MemoryRecall::new(None, relaxed_recall_config());
+        let goals = vec![GoalLite {
+            id: "goal-1".to_string(),
+            title: "Analyze AAPL".to_string(),
+            unfilled_slot_names: Vec::new(),
+        }];
+
+        let atoms = recall
+            .recall_context_atoms("agent", "valuation", Some("finance"), &goals, 10)
+            .await
+            .expect("context atoms");
+
+        assert_eq!(atoms.len(), 1);
+        let atom = &atoms[0];
+        assert_eq!(atom.id, "goal-1");
+        assert_eq!(atom.kind, "goal");
+        assert_eq!(atom.source, "kg_goals");
+        assert!((atom.score - (1.0 / 61.0)).abs() < f64::EPSILON);
+        assert!((atom.confidence - atom.score).abs() < f64::EPSILON);
+        assert_eq!(atom.route_hint.as_ref().unwrap()["source_kind"], "goal");
+        assert!(serde_json::to_string(atom)
+            .expect("atom serializes")
+            .find("embedding")
+            .is_none());
     }
 
     #[test]
@@ -1223,7 +1568,7 @@ mod tests {
         // Sanity test: retain logic drops items whose underlying fact has
         // superseded_by set. Verifies the filter intent directly without the
         // full recall pipeline.
-        use zero_stores_sqlite::MemoryFact;
+        use zbot_stores_sqlite::MemoryFact;
 
         let mk_fact = |id: &str, superseded: Option<&str>| MemoryFact {
             id: id.to_string(),
@@ -1276,8 +1621,8 @@ mod tests {
     use async_trait::async_trait;
     use gateway_services::VaultPaths;
     use std::sync::Mutex;
-    use zero_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zero_stores_sqlite::{GatewayMemoryFactStore, KnowledgeDatabase, MemoryRepository};
+    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
+    use zbot_stores_sqlite::{GatewayMemoryFactStore, KnowledgeDatabase, MemoryRepository};
 
     struct FixedDecisionLlm {
         decision: Mutex<&'static str>,
@@ -1319,7 +1664,7 @@ mod tests {
                 .expect("vec index init"),
         );
         let memory_repo = Arc::new(MemoryRepository::new(db, vec_index));
-        let memory_store: Arc<dyn zero_stores::MemoryFactStore> =
+        let memory_store: Arc<dyn zbot_stores::MemoryFactStore> =
             Arc::new(GatewayMemoryFactStore::new(memory_repo, None));
 
         let agent_id = "agent-test-h";
@@ -1362,14 +1707,14 @@ mod tests {
         // search anyway — the gate's Skip means we don't even try.
         let results = recall.recall(agent_id, "thanks!", 10, None).await.unwrap();
 
-        // The correction must be present even under Skip — it comes from the
-        // in-recall corrections path (step 3b), not from hybrid search.
+        // Corrections no longer bypass relevance. Even under Skip, unrelated
+        // corrections must stay out of the recall packet.
         let correction_present = results
             .iter()
             .any(|sf| sf.fact.key == "corr.hard_rule" && sf.fact.category == "correction");
         assert!(
-            correction_present,
-            "in-recall corrections must survive gate Skip — got keys: {:?}",
+            !correction_present,
+            "unrelated corrections must not bypass relevance gate — got keys: {:?}",
             results.iter().map(|sf| &sf.fact.key).collect::<Vec<_>>()
         );
 
@@ -1393,8 +1738,8 @@ mod tests {
     // ========================================================================
 
     use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
-    use zero_stores_domain::{Belief, ScoredBelief};
-    use zero_stores_traits::BeliefStore;
+    use zbot_stores_domain::{Belief, ScoredBelief};
+    use zbot_stores_traits::BeliefStore;
 
     /// Test embedder that returns a fixed vector — only used for B-4
     /// recall tests where the magnitudes don't matter, only presence.
@@ -1509,7 +1854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_unified_keeps_fts_results_when_embedding_fails() {
+    async fn recall_unified_skips_fuzzy_results_when_embedding_fails() {
         let tmp = tempfile::tempdir().unwrap();
         let store = make_memory_store_with_embedder(&tmp, Arc::new(DirectionalEmbed)).await;
         store
@@ -1534,9 +1879,9 @@ mod tests {
             .unwrap();
 
         assert!(
-            out.iter().any(|item| item.id == "fact:memory.hygiene"
-                || item.content.contains("memory hygiene guard")),
-            "FTS result should survive embedding failure: {out:?}"
+            out.iter().all(|item| item.id != "fact:memory.hygiene"
+                && !item.content.contains("memory hygiene guard")),
+            "fuzzy lexical results must not survive embedding failure: {out:?}"
         );
     }
 
@@ -1771,7 +2116,7 @@ mod tests {
     async fn make_memory_store_with_embedder(
         tmp: &tempfile::TempDir,
         embed: Arc<dyn EmbeddingClient>,
-    ) -> Arc<dyn zero_stores::MemoryFactStore> {
+    ) -> Arc<dyn zbot_stores::MemoryFactStore> {
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = Arc::new(KnowledgeDatabase::new(paths).expect("db"));
@@ -1780,7 +2125,93 @@ mod tests {
                 .expect("vec index init"),
         );
         let memory_repo = Arc::new(MemoryRepository::new(db, vec_index));
-        Arc::new(GatewayMemoryFactStore::new(memory_repo, Some(embed)))
+        Arc::new(IdentityAwareFixtureStore {
+            inner: Arc::new(GatewayMemoryFactStore::new(memory_repo, Some(embed))),
+        })
+    }
+
+    struct IdentityAwareFixtureStore {
+        inner: Arc<dyn zbot_stores::MemoryFactStore>,
+    }
+
+    #[async_trait]
+    impl zbot_stores::MemoryFactStore for IdentityAwareFixtureStore {
+        async fn save_fact(
+            &self,
+            agent_id: &str,
+            category: &str,
+            key: &str,
+            content: &str,
+            confidence: f64,
+            session_id: Option<&str>,
+            valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<serde_json::Value, String> {
+            self.inner
+                .save_fact(
+                    agent_id, category, key, content, confidence, session_id, valid_from,
+                )
+                .await
+        }
+
+        async fn recall_facts(
+            &self,
+            agent_id: &str,
+            query: &str,
+            limit: usize,
+        ) -> Result<serde_json::Value, String> {
+            self.inner.recall_facts(agent_id, query, limit).await
+        }
+
+        async fn search_memory_facts_hybrid(
+            &self,
+            agent_id: Option<&str>,
+            query: &str,
+            mode: &str,
+            limit: usize,
+            ward_id: Option<&str>,
+            query_embedding: Option<&[f32]>,
+            as_of: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<Vec<serde_json::Value>, String> {
+            self.inner
+                .search_memory_facts_hybrid(
+                    agent_id,
+                    query,
+                    mode,
+                    limit,
+                    ward_id,
+                    query_embedding,
+                    as_of,
+                )
+                .await
+        }
+
+        async fn search_memory_facts_hybrid_with_identity(
+            &self,
+            agent_id: Option<&str>,
+            query: &str,
+            mode: &str,
+            limit: usize,
+            ward_id: Option<&str>,
+            query_embedding: Option<&[f32]>,
+            _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+            as_of: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<Vec<serde_json::Value>, String> {
+            self.inner
+                .search_memory_facts_hybrid(
+                    agent_id,
+                    query,
+                    mode,
+                    limit,
+                    ward_id,
+                    query_embedding,
+                    as_of,
+                )
+                .await
+        }
+
+        async fn get_fact_embedding(&self, fact_id: &str) -> Result<Option<Vec<f32>>, String> {
+            self.inner.get_fact_embedding(fact_id).await
+        }
     }
 
     /// RecallConfig with min_score relaxed to 0 — the hybrid scorer
@@ -2133,7 +2564,7 @@ mod tests {
     // The KnowledgeGraphStore trait has 25+ required methods so a
     // crate-local stub becomes 200+ lines of `Ok(Default::default())`.
     // We rely instead on the focused tests below + the unit tests
-    // sitting next to the SQLite impl (zero-stores-sqlite::kg::storage
+    // sitting next to the SQLite impl (zbot-stores-sqlite::kg::storage
     // `lca_*` family) for end-to-end coverage. The recall pipeline's
     // H-4 branch is also exercised indirectly by the existing
     // recall_unified_* tests above (which all pass after H-4 lands).
@@ -2153,5 +2584,460 @@ mod tests {
             !out.iter().any(|i| matches!(i.kind, ItemKind::HierEntity)),
             "no kg_store wired ⇒ no HierEntity items"
         );
+    }
+
+    #[tokio::test]
+    async fn run_hybrid_search_embeds_query_before_store_search() {
+        struct RecordingSearchStore {
+            saw_query_embedding: Arc<Mutex<bool>>,
+        }
+
+        #[async_trait]
+        impl zbot_stores::MemoryFactStore for RecordingSearchStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!([]))
+            }
+
+            async fn search_memory_facts_hybrid(
+                &self,
+                _agent_id: Option<&str>,
+                _query: &str,
+                _mode: &str,
+                _limit: usize,
+                _ward_id: Option<&str>,
+                query_embedding: Option<&[f32]>,
+                _as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                *self.saw_query_embedding.lock().unwrap() = query_embedding.is_some();
+                Ok(Vec::new())
+            }
+
+            async fn search_memory_facts_hybrid_with_identity(
+                &self,
+                agent_id: Option<&str>,
+                query: &str,
+                mode: &str,
+                limit: usize,
+                ward_id: Option<&str>,
+                query_embedding: Option<&[f32]>,
+                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                self.search_memory_facts_hybrid(
+                    agent_id,
+                    query,
+                    mode,
+                    limit,
+                    ward_id,
+                    query_embedding,
+                    as_of,
+                )
+                .await
+            }
+        }
+
+        let saw_query_embedding = Arc::new(Mutex::new(false));
+        let store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(RecordingSearchStore {
+            saw_query_embedding: saw_query_embedding.clone(),
+        });
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(TestEmbed);
+        let mut recall = MemoryRecall::new(Some(embed), Arc::new(RecallConfig::default()));
+        recall.set_memory_store(store);
+
+        let _ = recall
+            .run_hybrid_search("agent-a", "paper review", 5, None)
+            .await
+            .expect("hybrid search");
+
+        assert!(
+            *saw_query_embedding.lock().unwrap(),
+            "run_hybrid_search must embed the query before invoking hybrid store search"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_unified_uses_taxonomy_expanded_query_for_retrieval() {
+        struct RecordingExpandedQueryStore {
+            saw_query: Arc<Mutex<Option<String>>>,
+        }
+
+        #[async_trait]
+        impl zbot_stores::MemoryFactStore for RecordingExpandedQueryStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!([]))
+            }
+
+            async fn search_memory_facts_hybrid_with_identity(
+                &self,
+                _agent_id: Option<&str>,
+                query: &str,
+                _mode: &str,
+                _limit: usize,
+                _ward_id: Option<&str>,
+                _query_embedding: Option<&[f32]>,
+                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                _as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                *self.saw_query.lock().unwrap() = Some(query.to_string());
+                Ok(Vec::new())
+            }
+        }
+
+        struct StaticTaxonomyExpander;
+
+        #[async_trait]
+        impl zbot_stores_traits::RecallTaxonomyExpander for StaticTaxonomyExpander {
+            async fn expand_recall_query(
+                &self,
+                request: zbot_stores_traits::RecallTaxonomyExpansionRequest,
+            ) -> Result<zbot_stores_traits::RecallTaxonomyExpansion, String> {
+                assert_eq!(request.max_depth, 1);
+                assert_eq!(request.max_fan_out, 8);
+                assert_eq!(request.max_candidates, 16);
+                Ok(zbot_stores_traits::RecallTaxonomyExpansion {
+                    expanded_query: format!("{} Knowledge Graph", request.query),
+                    candidates: vec![zbot_stores_traits::RecallTaxonomyExpansionCandidate {
+                        scheme_id: "zbot.general:v1".to_string(),
+                        concept_id: "zbot.general:v1:concept:knowledge_graph".to_string(),
+                        label: "Knowledge Graph".to_string(),
+                        matched_label: "kg".to_string(),
+                        relation: None,
+                        depth: 0,
+                    }],
+                })
+            }
+        }
+
+        let saw_query = Arc::new(Mutex::new(None));
+        let store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(RecordingExpandedQueryStore {
+            saw_query: saw_query.clone(),
+        });
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(TestEmbed);
+        let mut recall = MemoryRecall::new(Some(embed), Arc::new(RecallConfig::default()));
+        recall.set_memory_store(store);
+        recall.set_taxonomy_expander(Arc::new(StaticTaxonomyExpander));
+
+        let _ = recall
+            .recall_unified("agent-a", "kg recall", None, &[], 5)
+            .await
+            .expect("unified recall");
+
+        assert_eq!(
+            saw_query.lock().unwrap().as_deref(),
+            Some("kg recall Knowledge Graph")
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_unified_keeps_rrf_scaled_engram_fact_with_default_min_score() {
+        struct RrfScaleStore;
+
+        #[async_trait]
+        impl zbot_stores::MemoryFactStore for RrfScaleStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!([]))
+            }
+
+            async fn search_memory_facts_hybrid(
+                &self,
+                _agent_id: Option<&str>,
+                _query: &str,
+                _mode: &str,
+                _limit: usize,
+                _ward_id: Option<&str>,
+                _query_embedding: Option<&[f32]>,
+                _as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                let fact = make_scored_fact(Some("current"), None, 1.0).fact;
+                let mut value = serde_json::to_value(fact).expect("fact json");
+                let object = value.as_object_mut().expect("fact object");
+                object.insert("id".to_string(), serde_json::json!("fact-arxiv"));
+                object.insert(
+                    "key".to_string(),
+                    serde_json::json!("arxiv.2602.03315.paper_under_review"),
+                );
+                object.insert(
+                    "content".to_string(),
+                    serde_json::json!("arXiv 2602.03315 academic paper critical review"),
+                );
+                object.insert("score".to_string(), serde_json::json!(1.0 / 61.0));
+                object.insert("match_source".to_string(), serde_json::json!("hybrid"));
+                Ok(vec![value])
+            }
+
+            async fn search_memory_facts_hybrid_with_identity(
+                &self,
+                agent_id: Option<&str>,
+                query: &str,
+                mode: &str,
+                limit: usize,
+                ward_id: Option<&str>,
+                query_embedding: Option<&[f32]>,
+                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                self.search_memory_facts_hybrid(
+                    agent_id,
+                    query,
+                    mode,
+                    limit,
+                    ward_id,
+                    query_embedding,
+                    as_of,
+                )
+                .await
+            }
+        }
+
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(TestEmbed);
+        let mut recall = MemoryRecall::new(Some(embed), Arc::new(RecallConfig::default()));
+        recall.set_memory_store(Arc::new(RrfScaleStore));
+
+        let out = recall
+            .recall_unified(
+                "agent",
+                "arXiv 2602.03315 academic paper critical review",
+                None,
+                &[],
+                5,
+            )
+            .await
+            .expect("unified recall");
+
+        assert!(
+            out.iter().any(|item| item.id == "fact-arxiv"),
+            "RRF-scale Engram fact score must be normalized before default min_score filtering: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_keeps_rrf_scaled_engram_fact_with_default_min_score() {
+        struct RrfScaleStore;
+
+        #[async_trait]
+        impl zbot_stores::MemoryFactStore for RrfScaleStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!([]))
+            }
+
+            async fn search_memory_facts_hybrid(
+                &self,
+                _agent_id: Option<&str>,
+                _query: &str,
+                _mode: &str,
+                _limit: usize,
+                _ward_id: Option<&str>,
+                _query_embedding: Option<&[f32]>,
+                _as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                let fact = make_scored_fact(Some("current"), None, 1.0).fact;
+                let mut value = serde_json::to_value(fact).expect("fact json");
+                let object = value.as_object_mut().expect("fact object");
+                object.insert("id".to_string(), serde_json::json!("fact-arxiv"));
+                object.insert(
+                    "key".to_string(),
+                    serde_json::json!("arxiv.2602.03315.paper_under_review"),
+                );
+                object.insert(
+                    "content".to_string(),
+                    serde_json::json!("arXiv 2602.03315 academic paper critical review"),
+                );
+                object.insert("score".to_string(), serde_json::json!(1.0 / 61.0));
+                object.insert("match_source".to_string(), serde_json::json!("hybrid"));
+                Ok(vec![value])
+            }
+
+            async fn search_memory_facts_hybrid_with_identity(
+                &self,
+                agent_id: Option<&str>,
+                query: &str,
+                mode: &str,
+                limit: usize,
+                ward_id: Option<&str>,
+                query_embedding: Option<&[f32]>,
+                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                self.search_memory_facts_hybrid(
+                    agent_id,
+                    query,
+                    mode,
+                    limit,
+                    ward_id,
+                    query_embedding,
+                    as_of,
+                )
+                .await
+            }
+        }
+
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(TestEmbed);
+        let mut recall = MemoryRecall::new(Some(embed), Arc::new(RecallConfig::default()));
+        recall.set_memory_store(Arc::new(RrfScaleStore));
+
+        let out = recall
+            .recall(
+                "agent",
+                "arXiv 2602.03315 academic paper critical review",
+                5,
+                None,
+            )
+            .await
+            .expect("recall");
+
+        assert!(
+            out.iter().any(|item| item.fact.id == "fact-arxiv"),
+            "mid-session recall must normalize RRF-scale Engram fact scores before min_score filtering: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unified_recall_keeps_graph_evidence_above_memory_store() {
+        let item = ScoredItem {
+            kind: ItemKind::GraphNode,
+            id: "graph:arxiv".to_string(),
+            content: "arxiv 2602.03315".to_string(),
+            score: 0.91,
+            provenance: Provenance {
+                source: "knowledge_graph".to_string(),
+                source_id: "entity:arxiv".to_string(),
+                session_id: Some("sess-1".to_string()),
+                ward_id: Some("academic-research".to_string()),
+            },
+            route_hint: None,
+        };
+
+        let atom = crate::recall::scored_item_to_context_atom(&item);
+        assert_eq!(atom.kind, "graph_node");
+        assert_eq!(atom.source, "knowledge_graph");
+        assert!(
+            atom.provenance
+                .iter()
+                .any(|handle| handle == "knowledge_graph:entity:arxiv"),
+            "graph provenance must stay graph-labeled rather than pretending to be memory_facts"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_trace_redacts_embedding_and_db_internals() {
+        let item = ScoredItem {
+            kind: ItemKind::Fact,
+            id: "fact:safe".to_string(),
+            content: "safe recall content".to_string(),
+            score: 0.77,
+            provenance: Provenance {
+                source: "memory_facts".to_string(),
+                source_id: "fact-safe".to_string(),
+                session_id: Some("sess-1".to_string()),
+                ward_id: Some("ward-1".to_string()),
+            },
+            route_hint: None,
+        };
+        let atom = crate::recall::scored_item_to_context_atom(&item);
+        let serialized = serde_json::to_string(&atom).expect("serialize atom");
+        assert!(!serialized.contains("embedding_json"));
+        assert!(!serialized.contains("/home/"));
+        assert!(!serialized.contains("SELECT "));
+
+        let trace = gateway_events::GatewayEvent::RecallTrace {
+            agent_id: "agent".to_string(),
+            conversation_id: Some("conv".to_string()),
+            seed_entity_ids: vec!["entity:arxiv".to_string()],
+            seed_aggregate_ids: vec!["cluster:papers".to_string()],
+            lca_aggregate_id: Some("cluster:papers".to_string()),
+            surfaced_item_count: 1,
+            match_sources: vec!["memory_facts".to_string()],
+            ranking_reasons: vec!["reciprocal_rank_fusion".to_string()],
+            degraded_reasons: vec!["embedding_identity_mismatch".to_string()],
+            embedding_provider_identity: Some(serde_json::json!({
+                "providerType": "fastembed",
+                "model": "test",
+                "dimensions": 3,
+                "promptProfile": "query",
+                "normalization": null
+            })),
+            taxonomy_expansion: Vec::new(),
+        };
+        let trace_json = serde_json::to_string(&trace).expect("serialize recall trace");
+        assert!(trace_json.contains("match_sources"));
+        assert!(trace_json.contains("ranking_reasons"));
+        assert!(trace_json.contains("degraded_reasons"));
+        assert!(trace_json.contains("embedding_provider_identity"));
+        assert!(!trace_json.contains("embedding_json"));
+        assert!(!trace_json.contains("safe recall content"));
+        assert!(!trace_json.contains("/home/"));
+        assert!(!trace_json.contains("SELECT "));
     }
 }

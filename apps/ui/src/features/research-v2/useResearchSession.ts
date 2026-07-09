@@ -530,8 +530,7 @@ export function useResearchSession() {
           convId,
           promptText,
           state.sessionId ?? undefined,
-          // mode undefined → executor defaults to SessionMode::Research
-          undefined,
+          "deep",
         );
         console.debug("[research-v2] sendMessage: executeAgent result", result.success, result.data, result.error);
         if (!result.success) {

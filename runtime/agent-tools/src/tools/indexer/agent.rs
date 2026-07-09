@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use zero_core::{Result, ZeroError};
+use agent_primitives::{Result, AgentError};
 
 /// Parsed metadata from an agent's config.yaml
 #[derive(Debug, Clone)]
@@ -67,8 +67,8 @@ struct AgentConfigYaml {
 /// * `Vec<AgentMetadata>` - List of all discovered agents with their metadata
 ///
 /// # Errors
-/// * `ZeroError::Io` - If directory cannot be read
-/// * `ZeroError::Tool` - If directory does not exist
+/// * `AgentError::Io` - If directory cannot be read
+/// * `AgentError::Tool` - If directory does not exist
 pub fn scan_agents_dir(agents_dir: &PathBuf) -> Result<Vec<AgentMetadata>> {
     // Check if directory exists
     if !agents_dir.exists() {
@@ -77,7 +77,7 @@ pub fn scan_agents_dir(agents_dir: &PathBuf) -> Result<Vec<AgentMetadata>> {
     }
 
     if !agents_dir.is_dir() {
-        return Err(ZeroError::Tool(format!(
+        return Err(AgentError::Tool(format!(
             "Agents path is not a directory: {:?}",
             agents_dir
         )));
@@ -87,7 +87,7 @@ pub fn scan_agents_dir(agents_dir: &PathBuf) -> Result<Vec<AgentMetadata>> {
 
     // Iterate subdirectories
     let entries = std::fs::read_dir(agents_dir).map_err(|e| {
-        ZeroError::Tool(format!(
+        AgentError::Tool(format!(
             "Failed to read agents directory {:?}: {}",
             agents_dir, e
         ))
@@ -159,19 +159,19 @@ pub fn scan_agents_dir(agents_dir: &PathBuf) -> Result<Vec<AgentMetadata>> {
 /// * `Option<AgentMetadata>` - Parsed metadata, or None if parsing fails
 ///
 /// # Errors
-/// * `ZeroError::Io` - If file cannot be read
-/// * `ZeroError::Tool` - If YAML parsing fails
+/// * `AgentError::Io` - If file cannot be read
+/// * `AgentError::Tool` - If YAML parsing fails
 pub fn parse_agent_config(config_path: &PathBuf) -> Result<Option<AgentMetadata>> {
     // Get file metadata for mtime
     let metadata = std::fs::metadata(config_path).map_err(|e| {
-        ZeroError::Tool(format!(
+        AgentError::Tool(format!(
             "Failed to get metadata for {:?}: {}",
             config_path, e
         ))
     })?;
 
     let mtime = metadata.modified().map_err(|e| {
-        ZeroError::Tool(format!(
+        AgentError::Tool(format!(
             "Failed to get modification time for {:?}: {}",
             config_path, e
         ))
@@ -179,7 +179,7 @@ pub fn parse_agent_config(config_path: &PathBuf) -> Result<Option<AgentMetadata>
 
     // Read file content
     let content = std::fs::read_to_string(config_path).map_err(|e| {
-        ZeroError::Tool(format!("Failed to read {:?}: {}", config_path, e))
+        AgentError::Tool(format!("Failed to read {:?}: {}", config_path, e))
     })?;
 
     // Parse YAML

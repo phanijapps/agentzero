@@ -23,7 +23,7 @@
 //!     anti-pattern the flag was introduced for.
 //!
 //! Research context: the "Layer 1 pinned scratchpad" from
-//! `memory-bank/future-state/compaction-strategy.md` §4 and from the
+//! `docs/architecture/future-state/compaction-strategy.md` §4 and from the
 //! Manus `todo.md` / Claude Code `claude-progress.txt` / Devin
 //! progress-file pattern. This is the minimum useful version —
 //! no subagent rewrite, no post-turn executor hook, just take what
@@ -31,9 +31,9 @@
 
 use super::traits::{MiddlewareContext, MiddlewareEffect, PreProcessMiddleware};
 use crate::types::ChatMessage;
+use agent_primitives::types::Part;
 use async_trait::async_trait;
 use serde_json::Value;
-use zero_core::types::Part;
 
 /// Scan a conversation tape backwards for the most recent `update_plan`
 /// tool call and return its arguments as the plan state. This mirrors

@@ -1,9 +1,9 @@
 # Spec: Release On Main
 
-- **Status:** Implementing
+- **Status:** Done for now
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
-- **Constrained by:** `memory-bank/future-state/2026-05-03-release-on-main-workflow-design.md`; `memory-bank/future-state/2026-05-03-versioning-and-rename-plan.md`; existing `.github/workflows/release.yml`; existing `scripts/release.sh`
+- **Constrained by:** `docs/architecture/future-state/2026-05-03-release-on-main-workflow-design.md`; `docs/architecture/future-state/2026-05-03-versioning-and-rename-plan.md`; existing `.github/workflows/release.yml`; existing `scripts/release.sh`
 
 > **Spec contract:** this document defines what "done" means. The implementing
 > PR must match this spec, or update it. Verification must be derivable from it.
@@ -115,7 +115,7 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   behavior; implementation deliberately differs from its `[skip ci]`
   recommendation because GitHub skip tokens affect push workflows
   (source:
-  `memory-bank/future-state/2026-05-03-release-on-main-workflow-design.md`;
+  `docs/architecture/future-state/2026-05-03-release-on-main-workflow-design.md`;
   GitHub Docs, "Skipping workflow runs").
 - Technical: `GITHUB_TOKEN`-authored pushes do not create new workflow runs,
   except for `workflow_dispatch` and `repository_dispatch`; this workflow must
@@ -123,8 +123,8 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
   (source: GitHub Docs, "Triggering a workflow").
 - Product: versioning remains the existing `vYYYY.M.D` CalVer scheme rather
   than a new versioning project (source:
-  `memory-bank/future-state/2026-05-03-versioning-and-rename-plan.md`).
+  `docs/architecture/future-state/2026-05-03-versioning-and-rename-plan.md`).
 - Process: branch protection on `main` may prevent `GITHUB_TOKEN` from pushing;
   the first implementation must make that failure visible and document either
   bot bypass or PAT as the remediation (source:
-  `memory-bank/future-state/2026-05-03-release-on-main-workflow-design.md`).
+  `docs/architecture/future-state/2026-05-03-release-on-main-workflow-design.md`).

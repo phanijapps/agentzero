@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use zero_core::{Result, Tool, ToolContext, ToolPermissions, ZeroError};
+use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
 
 // ============================================================================
 // SECURITY CONFIGURATION
@@ -216,7 +216,7 @@ impl ShellTool {
         // Checked before the allowlist so that e.g. `cat > file` is caught
         // even though `cat ` would normally bypass validation.
         if is_file_writing_command(&command_normalized) {
-            return Err(ZeroError::Tool(
+            return Err(AgentError::Tool(
                 "Use the write_file tool to create files and edit_file for targeted \
                  edits. Do not write files through the shell."
                     .to_string(),
@@ -229,7 +229,7 @@ impl ShellTool {
         // interactive password prompt the agent cannot answer, so we
         // reject loudly with a recovery hint instead of stalling.
         if let Some(token) = finds_privilege_escalation(&command_normalized) {
-            return Err(ZeroError::Tool(privilege_escalation_message(token)));
+            return Err(AgentError::Tool(privilege_escalation_message(token)));
         }
 
         // Allowlist: commands that bypass validation to avoid false positives
@@ -242,7 +242,7 @@ impl ShellTool {
         // Check against blocked commands
         for blocked in BLOCKED_COMMANDS {
             if command_normalized.contains(&blocked.to_lowercase()) {
-                return Err(ZeroError::Tool(format!(
+                return Err(AgentError::Tool(format!(
                     "Command blocked for security: contains forbidden pattern '{}'",
                     blocked
                 )));
@@ -263,7 +263,7 @@ impl ShellTool {
         // Additional validation
         // Block commands that try to escape quotes or inject
         if command.contains("$(") && command.contains("rm ") {
-            return Err(ZeroError::Tool(
+            return Err(AgentError::Tool(
                 "Command blocked: potential command injection with rm".to_string(),
             ));
         }
@@ -272,7 +272,7 @@ impl ShellTool {
         if command.contains('`')
             && (command.contains("rm ") || command.contains("dd if=") || command.contains("dd of="))
         {
-            return Err(ZeroError::Tool(
+            return Err(AgentError::Tool(
                 "Command blocked: potential command injection".to_string(),
             ));
         }
@@ -407,7 +407,7 @@ impl Tool for ShellTool {
 
         // Check if tool is disabled due to elevated privileges
         if self.disabled {
-            return Err(ZeroError::Tool(
+            return Err(AgentError::Tool(
                 self.disabled_reason
                     .clone()
                     .unwrap_or_else(|| "Shell tool is disabled".to_string()),
@@ -419,7 +419,7 @@ impl Tool for ShellTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                ZeroError::Tool(
+                AgentError::Tool(
                     "Missing 'command' parameter. Expected shape: {\"command\":\"pwd && ls -la\", \"timeout_seconds\":10}".to_string(),
                 )
             })?;
@@ -524,7 +524,7 @@ impl Tool for ShellTool {
         if let Some(dir) = cwd {
             // Validate cwd doesn't contain path traversal
             if dir.contains("..") {
-                return Err(ZeroError::Tool(
+                return Err(AgentError::Tool(
                     "Working directory cannot contain '..' for security".to_string(),
                 ));
             }
@@ -584,8 +584,11 @@ impl Tool for ShellTool {
                     "shell": shell,
                 }))
             }
-            Ok(Err(e)) => Err(ZeroError::Tool(format!("Failed to execute command: {}", e))),
-            Err(_) => Err(ZeroError::Tool(format!(
+            Ok(Err(e)) => Err(AgentError::Tool(format!(
+                "Failed to execute command: {}",
+                e
+            ))),
+            Err(_) => Err(AgentError::Tool(format!(
                 "Command timed out after {} seconds",
                 timeout_seconds
             ))),

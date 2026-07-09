@@ -4,9 +4,9 @@
 
 use crate::state::AppState;
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
+    Json,
 };
 use gateway_execution::{SessionState, SessionStateBuilder};
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,11 @@ pub async fn get_session_state(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionState>, (StatusCode, Json<SessionErrorResponse>)> {
-    let builder = SessionStateBuilder::new(state.log_service.clone(), state.conversations.clone());
+    let builder = SessionStateBuilder::new(
+        state.log_service.clone(),
+        state.messages.clone(),
+        state.state_service.clone(),
+    );
 
     match builder.build(&session_id) {
         Ok(Some(session_state)) => Ok(Json(session_state)),
@@ -166,9 +170,9 @@ pub async fn get_session_state(
 /// Walks `sessions.parent_session_id` recursively, then cascades to
 /// `messages`, `agent_executions`, `execution_logs`, `artifacts`
 /// (DB rows only — files on disk stay), `distillation_runs`, `bridge_outbox`,
-/// and `recall_log` for every session in the subtree. Preserves
-/// `memory_facts`, `memory_facts_index` (vec0), and the knowledge graph so
-/// cross-session memory survives the cleanup.
+/// and `recall_log` for every session in the subtree. Semantic memory and
+/// knowledge live outside the conversation DB, so cross-session memory survives
+/// the cleanup.
 ///
 /// Idempotent — also cleans orphan rows that exist only in
 /// `execution_logs.conversation_id` with no matching `sessions` row, so

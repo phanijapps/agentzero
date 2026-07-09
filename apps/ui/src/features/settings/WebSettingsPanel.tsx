@@ -35,6 +35,35 @@ import { ModelTextInput } from "../shared/modelTextInput";
 // Component
 // ============================================================================
 
+const DEFAULT_MAX_INPUT_TOKENS = 200000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 32000;
+const DEFAULT_ORCHESTRATOR_CONFIG = {
+  temperature: 0.7,
+  maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
+  maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+  maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+  thinkingEnabled: true,
+};
+const DEFAULT_MULTIMODAL_CONFIG = {
+  temperature: 0.3,
+  maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
+  maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+  maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+};
+
+function stripLegacyMaxTokens<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripLegacyMaxTokens(item)) as T;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).filter(([key]) => key !== "maxTokens");
+    return Object.fromEntries(
+      entries.map(([key, entryValue]) => [key, stripLegacyMaxTokens(entryValue)]),
+    ) as T;
+  }
+  return value;
+}
+
 export function WebSettingsPanel() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = searchParams.get("tab") || "providers";
@@ -247,11 +276,12 @@ export function WebSettingsPanel() {
     // Strip restartRequired before sending
     const { restartRequired: _, ...clean } = newSettings as ExecutionSettings & { restartRequired?: boolean };
     setExecSettings(clean);
+    const payload = stripLegacyMaxTokens(clean);
     setIsSavingExec(true);
     setExecSaveMessage(null);
     try {
       const transport = await getTransport();
-      const result = await transport.updateExecutionSettings(clean);
+      const result = await transport.updateExecutionSettings(payload);
       if (result.success) {
         setExecSaveMessage("Saved");
         setExecRestartRequired(result.data?.restartRequired ?? false);
@@ -615,7 +645,7 @@ export function WebSettingsPanel() {
                         value={execSettings.orchestrator?.providerId || ""}
                         onChange={(e) => handleExecChange({
                           orchestrator: {
-                            ...execSettings.orchestrator || { temperature: 0.7, maxTokens: 16384, thinkingEnabled: true },
+                            ...execSettings.orchestrator || DEFAULT_ORCHESTRATOR_CONFIG,
                             providerId: e.target.value || null,
                             model: null,
                           },
@@ -634,7 +664,7 @@ export function WebSettingsPanel() {
                         value={execSettings.orchestrator?.model || ""}
                         onChange={(next) => handleExecChange({
                           orchestrator: {
-                            ...execSettings.orchestrator || { temperature: 0.7, maxTokens: 16384, thinkingEnabled: true },
+                            ...execSettings.orchestrator || DEFAULT_ORCHESTRATOR_CONFIG,
                             model: next || null,
                           },
                         })}
@@ -652,8 +682,24 @@ export function WebSettingsPanel() {
                         value={execSettings.orchestrator?.temperature ?? 0.7}
                         onChange={(e) => handleExecChange({
                           orchestrator: {
-                            ...execSettings.orchestrator || { temperature: 0.7, maxTokens: 16384, thinkingEnabled: true },
+                            ...execSettings.orchestrator || DEFAULT_ORCHESTRATOR_CONFIG,
                             temperature: Number.parseFloat(e.target.value) || 0.7,
+                          },
+                        })}
+                      />
+                    </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="orch-input-tokens">Max Input Tokens</label>
+                      <input
+                        id="orch-input-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.orchestrator?.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS}
+                        onChange={(e) => handleExecChange({
+                          orchestrator: {
+                            ...execSettings.orchestrator || DEFAULT_ORCHESTRATOR_CONFIG,
+                            maxInputTokens: Number.parseInt(e.target.value) || DEFAULT_MAX_INPUT_TOKENS,
                           },
                         })}
                       />
@@ -665,13 +711,17 @@ export function WebSettingsPanel() {
                         className="form-input"
                         type="number"
                         min={1024} step={1024}
-                        value={execSettings.orchestrator?.maxTokens ?? 16384}
-                        onChange={(e) => handleExecChange({
-                          orchestrator: {
-                            ...execSettings.orchestrator || { temperature: 0.7, maxTokens: 16384, thinkingEnabled: true },
-                            maxTokens: Number.parseInt(e.target.value) || 16384,
-                          },
-                        })}
+                        value={execSettings.orchestrator?.maxOutputTokens ?? execSettings.orchestrator?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS}
+                        onChange={(e) => {
+                          const maxOutputTokens = Number.parseInt(e.target.value) || DEFAULT_MAX_OUTPUT_TOKENS;
+                          handleExecChange({
+                            orchestrator: {
+                              ...execSettings.orchestrator || DEFAULT_ORCHESTRATOR_CONFIG,
+                              maxOutputTokens,
+                              maxTokens: maxOutputTokens,
+                            },
+                          });
+                        }}
                       />
                     </div>
                   </div>
@@ -682,7 +732,7 @@ export function WebSettingsPanel() {
                       checked={execSettings.orchestrator?.thinkingEnabled !== false}
                       onChange={() => handleExecChange({
                         orchestrator: {
-                          ...execSettings.orchestrator || { temperature: 0.7, maxTokens: 16384, thinkingEnabled: true },
+                          ...execSettings.orchestrator || DEFAULT_ORCHESTRATOR_CONFIG,
                           thinkingEnabled: execSettings.orchestrator?.thinkingEnabled === false,
                         },
                       })}
@@ -748,6 +798,42 @@ export function WebSettingsPanel() {
                         placeholder="provider default"
                       />
                     </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="dist-input-tokens">Max Input Tokens</label>
+                      <input
+                        id="dist-input-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.distillation?.maxInputTokens ?? execSettings.orchestrator?.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS}
+                        onChange={(e) => handleExecChange({
+                          distillation: {
+                            ...execSettings.distillation,
+                            maxInputTokens: Number.parseInt(e.target.value) || DEFAULT_MAX_INPUT_TOKENS,
+                          },
+                        })}
+                      />
+                    </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="dist-output-tokens">Max Output Tokens</label>
+                      <input
+                        id="dist-output-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.distillation?.maxOutputTokens ?? execSettings.distillation?.maxTokens ?? execSettings.orchestrator?.maxOutputTokens ?? execSettings.orchestrator?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS}
+                        onChange={(e) => {
+                          const maxOutputTokens = Number.parseInt(e.target.value) || DEFAULT_MAX_OUTPUT_TOKENS;
+                          handleExecChange({
+                            distillation: {
+                              ...execSettings.distillation,
+                              maxOutputTokens,
+                              maxTokens: maxOutputTokens,
+                            },
+                          });
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -802,6 +888,42 @@ export function WebSettingsPanel() {
                           return providers.find((p) => p.id === curProviderId)?.models || [];
                         })()}
                         placeholder="provider default"
+                      />
+                    </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="cur-input-tokens">Max Input Tokens</label>
+                      <input
+                        id="cur-input-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.curator?.maxInputTokens ?? execSettings.orchestrator?.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS}
+                        onChange={(e) => handleExecChange({
+                          curator: {
+                            ...execSettings.curator,
+                            maxInputTokens: Number.parseInt(e.target.value) || DEFAULT_MAX_INPUT_TOKENS,
+                          },
+                        })}
+                      />
+                    </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="cur-output-tokens">Max Output Tokens</label>
+                      <input
+                        id="cur-output-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.curator?.maxOutputTokens ?? execSettings.curator?.maxTokens ?? execSettings.orchestrator?.maxOutputTokens ?? execSettings.orchestrator?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS}
+                        onChange={(e) => {
+                          const maxOutputTokens = Number.parseInt(e.target.value) || DEFAULT_MAX_OUTPUT_TOKENS;
+                          handleExecChange({
+                            curator: {
+                              ...execSettings.curator,
+                              maxOutputTokens,
+                              maxTokens: maxOutputTokens,
+                            },
+                          });
+                        }}
                       />
                     </div>
                   </div>
@@ -860,6 +982,42 @@ export function WebSettingsPanel() {
                         placeholder="provider default"
                       />
                     </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="intent-input-tokens">Max Input Tokens</label>
+                      <input
+                        id="intent-input-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.intentAnalysis?.maxInputTokens ?? execSettings.orchestrator?.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS}
+                        onChange={(e) => handleExecChange({
+                          intentAnalysis: {
+                            ...execSettings.intentAnalysis,
+                            maxInputTokens: Number.parseInt(e.target.value) || DEFAULT_MAX_INPUT_TOKENS,
+                          },
+                        })}
+                      />
+                    </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="intent-output-tokens">Max Output Tokens</label>
+                      <input
+                        id="intent-output-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.intentAnalysis?.maxOutputTokens ?? execSettings.intentAnalysis?.maxTokens ?? execSettings.orchestrator?.maxOutputTokens ?? execSettings.orchestrator?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS}
+                        onChange={(e) => {
+                          const maxOutputTokens = Number.parseInt(e.target.value) || DEFAULT_MAX_OUTPUT_TOKENS;
+                          handleExecChange({
+                            intentAnalysis: {
+                              ...execSettings.intentAnalysis,
+                              maxOutputTokens,
+                              maxTokens: maxOutputTokens,
+                            },
+                          });
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -884,7 +1042,7 @@ export function WebSettingsPanel() {
                         value={execSettings.multimodal?.providerId || ""}
                         onChange={(e) => handleExecChange({
                           multimodal: {
-                            ...execSettings.multimodal || { temperature: 0.3, maxTokens: 4096 },
+                            ...execSettings.multimodal || DEFAULT_MULTIMODAL_CONFIG,
                             providerId: e.target.value || null,
                             model: null,
                           },
@@ -903,7 +1061,7 @@ export function WebSettingsPanel() {
                         value={execSettings.multimodal?.model || ""}
                         onChange={(next) => handleExecChange({
                           multimodal: {
-                            ...execSettings.multimodal || { temperature: 0.3, maxTokens: 4096 },
+                            ...execSettings.multimodal || DEFAULT_MULTIMODAL_CONFIG,
                             model: next || null,
                           },
                         })}
@@ -924,8 +1082,24 @@ export function WebSettingsPanel() {
                         value={execSettings.multimodal?.temperature ?? 0.3}
                         onChange={(e) => handleExecChange({
                           multimodal: {
-                            ...execSettings.multimodal || { temperature: 0.3, maxTokens: 4096 },
+                            ...execSettings.multimodal || DEFAULT_MULTIMODAL_CONFIG,
                             temperature: Number.parseFloat(e.target.value) || 0.3,
+                          },
+                        })}
+                      />
+                    </div>
+                    <div>
+                      <label className="settings-field-label" htmlFor="mm-input-tokens">Max Input Tokens</label>
+                      <input
+                        id="mm-input-tokens"
+                        className="form-input"
+                        type="number"
+                        min={1024} step={1024}
+                        value={execSettings.multimodal?.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS}
+                        onChange={(e) => handleExecChange({
+                          multimodal: {
+                            ...execSettings.multimodal || DEFAULT_MULTIMODAL_CONFIG,
+                            maxInputTokens: Number.parseInt(e.target.value) || DEFAULT_MAX_INPUT_TOKENS,
                           },
                         })}
                       />
@@ -936,14 +1110,18 @@ export function WebSettingsPanel() {
                         id="mm-tokens"
                         className="form-input"
                         type="number"
-                        min={256} step={256}
-                        value={execSettings.multimodal?.maxTokens ?? 4096}
-                        onChange={(e) => handleExecChange({
-                          multimodal: {
-                            ...execSettings.multimodal || { temperature: 0.3, maxTokens: 4096 },
-                            maxTokens: Number.parseInt(e.target.value) || 4096,
-                          },
-                        })}
+                        min={256} step={1024}
+                        value={execSettings.multimodal?.maxOutputTokens ?? execSettings.multimodal?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS}
+                        onChange={(e) => {
+                          const maxOutputTokens = Number.parseInt(e.target.value) || DEFAULT_MAX_OUTPUT_TOKENS;
+                          handleExecChange({
+                            multimodal: {
+                              ...execSettings.multimodal || DEFAULT_MULTIMODAL_CONFIG,
+                              maxOutputTokens,
+                              maxTokens: maxOutputTokens,
+                            },
+                          });
+                        }}
                       />
                     </div>
                   </div>

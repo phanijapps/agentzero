@@ -1,25 +1,34 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@/test/utils";
 import { SessionDetailPane } from "./SessionDetailPane";
-import type { ExecutionLog, LogSession, SessionDetail } from "@/services/transport/types";
+import type {
+  ExecutionLog,
+  LogSession,
+  SessionDetail,
+} from "@/services/transport/types";
 
 const mockGetLogSession = vi.fn();
+const mockGetSessionMessages = vi.fn();
 const mockGetMissionControlSessionTokens = vi.fn();
 const mockUseTraceSubscription = vi.fn();
 
 vi.mock("@/services/transport", async () => {
-  const actual = await vi.importActual<Record<string, unknown>>("@/services/transport");
+  const actual = await vi.importActual<Record<string, unknown>>(
+    "@/services/transport",
+  );
   return {
     ...actual,
     getTransport: async () => ({
       getLogSession: mockGetLogSession,
+      getSessionMessages: mockGetSessionMessages,
       getMissionControlSessionTokens: mockGetMissionControlSessionTokens,
     }),
   };
 });
 
 vi.mock("../logs/useTraceSubscription", () => ({
-  useTraceSubscription: (...args: unknown[]) => mockUseTraceSubscription(...args),
+  useTraceSubscription: (...args: unknown[]) =>
+    mockUseTraceSubscription(...args),
 }));
 
 function makeSession(overrides: Partial<LogSession> = {}): LogSession {
@@ -39,7 +48,10 @@ function makeSession(overrides: Partial<LogSession> = {}): LogSession {
   };
 }
 
-function makeLog(category: ExecutionLog["category"], overrides: Partial<ExecutionLog> = {}): ExecutionLog {
+function makeLog(
+  category: ExecutionLog["category"],
+  overrides: Partial<ExecutionLog> = {},
+): ExecutionLog {
   return {
     id: "log-1",
     session_id: "exec-root-1",
@@ -57,16 +69,19 @@ function makeDetail(): SessionDetail {
   return {
     session: makeSession(),
     logs: [
-      makeLog("response", { id: "response-1", message: "Loaded from shared detail." }),
+      makeLog("response", {
+        id: "response-1",
+        message: "Loaded from shared detail.",
+      }),
       makeLog("tool_call", {
         id: "tool-1",
         message: "shell",
-        metadata: { tool_id: "tc-1", tool_name: "shell", args: "{\"cmd\":\"date\"}" },
+        metadata: { tool_id: "tc-1", tool_name: "shell" },
       }),
       makeLog("tool_result", {
         id: "tool-result-1",
         message: "ok",
-        metadata: { tool_id: "tc-1", result: "Tue Jun 9" },
+        metadata: { tool_id: "tc-1" },
       }),
     ],
   };
@@ -74,6 +89,8 @@ function makeDetail(): SessionDetail {
 
 beforeEach(() => {
   mockGetLogSession.mockReset();
+  mockGetSessionMessages.mockReset();
+  mockGetSessionMessages.mockResolvedValue({ success: true, data: [] });
   mockGetMissionControlSessionTokens.mockReset();
   mockUseTraceSubscription.mockReset();
 });

@@ -70,6 +70,7 @@ impl McpManager {
                 name,
                 url,
                 headers,
+                auth: _,
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
@@ -87,6 +88,7 @@ impl McpManager {
                 name,
                 url,
                 headers,
+                auth: _,
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
@@ -104,6 +106,7 @@ impl McpManager {
                 name,
                 url,
                 headers,
+                auth: _,
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());

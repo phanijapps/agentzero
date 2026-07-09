@@ -7,12 +7,12 @@ use tempfile::tempdir;
 
 use gateway_execution::sleep::{Compactor, DecayConfig, DecayEngine, Pruner, SleepTimeWorker};
 use gateway_services::VaultPaths;
-use zero_stores::KnowledgeGraphStore;
-use zero_stores_sqlite::kg::storage::GraphStorage;
-use zero_stores_sqlite::{
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_sqlite::kg::storage::GraphStorage;
+use zbot_stores_sqlite::{
     CompactionRepository, GatewayCompactionStore, KnowledgeDatabase, SqliteKgStore,
 };
-use zero_stores_traits::CompactionStore;
+use zbot_stores_traits::CompactionStore;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trigger_causes_immediate_cycle() {

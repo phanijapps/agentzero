@@ -9,8 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::{FileSystemContext, Result, Tool, ToolContext, ZeroError};
-use zero_stores_traits::MemoryFactStore;
+use agent_primitives::{AgentError, FileSystemContext, Result, Tool, ToolContext};
+use zbot_stores_traits::MemoryFactStore;
 
 use super::ast_hook;
 use super::ward_cwd::resolve_ward_cwd;
@@ -70,15 +70,15 @@ impl Tool for WriteFileTool {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'path' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'path' parameter".to_string()))?;
 
         let content = args
             .get("content")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'content' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'content' parameter".to_string()))?;
 
         if path.is_empty() {
-            return Err(ZeroError::Tool("Path cannot be empty".to_string()));
+            return Err(AgentError::Tool("Path cannot be empty".to_string()));
         }
 
         // Sanitize path — reject absolute paths and home-relative paths
@@ -90,7 +90,7 @@ impl Tool for WriteFileTool {
 
         // Reject paths that try to escape the ward
         if path.contains("..") {
-            return Err(ZeroError::Tool(
+            return Err(AgentError::Tool(
                 "Path cannot contain '..' — all paths must be relative to the ward".to_string(),
             ));
         }
@@ -113,14 +113,14 @@ impl Tool for WriteFileTool {
         // Create parent directories
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                ZeroError::Tool(format!("Failed to create directories for {}: {}", path, e))
+                AgentError::Tool(format!("Failed to create directories for {}: {}", path, e))
             })?;
         }
 
         // Write the file
         let is_new = !full_path.exists();
         std::fs::write(&full_path, content)
-            .map_err(|e| ZeroError::Tool(format!("Failed to write {}: {}", path, e)))?;
+            .map_err(|e| AgentError::Tool(format!("Failed to write {}: {}", path, e)))?;
 
         let action = if is_new { "created" } else { "overwritten" };
         tracing::debug!("write_file: {} {} ({} bytes)", action, path, content.len());
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn test_write_file_schema() {
-        let tool = WriteFileTool::new(Arc::new(zero_core::NoFileSystemContext));
+        let tool = WriteFileTool::new(Arc::new(agent_primitives::NoFileSystemContext));
         assert_eq!(tool.name(), "write_file");
         let schema = tool.parameters_schema().unwrap();
         assert!(schema["properties"]["path"].is_object());

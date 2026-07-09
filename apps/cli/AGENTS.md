@@ -41,7 +41,7 @@ zbot
 
 ## Intra-Repo Dependencies
 
-- `zero-core` — shared types only (no runtime dependency)
+- `agent-primitives` — shared types only (no runtime dependency)
 
 ## Notes
 

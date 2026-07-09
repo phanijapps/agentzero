@@ -34,6 +34,7 @@ mod settings;
 mod setup;
 mod skills;
 mod tools;
+mod traces;
 mod upload;
 mod vault;
 mod ward_actions;
@@ -44,11 +45,11 @@ mod webhooks;
 
 use crate::config::GatewayConfig;
 use crate::state::AppState;
-use crate::websocket::{WebSocketHandler, axum_ws_upgrade_handler};
+use crate::websocket::{axum_ws_upgrade_handler, WebSocketHandler};
 use axum::{
-    Extension, Router,
     extract::DefaultBodyLimit,
     routing::{delete, get, post, put},
+    Extension, Router,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -137,6 +138,13 @@ pub fn create_http_router(
         .route("/api/mcps/:id", put(mcps::update_mcp))
         .route("/api/mcps/:id", delete(mcps::delete_mcp))
         .route("/api/mcps/:id/test", post(mcps::test_mcp))
+        .route("/api/mcps/:id/oauth/status", get(mcps::mcp_oauth_status))
+        .route("/api/mcps/:id/oauth/start", post(mcps::start_mcp_oauth))
+        .route(
+            "/api/mcps/:id/oauth/disconnect",
+            post(mcps::disconnect_mcp_oauth),
+        )
+        .route("/api/mcps/oauth/callback", get(mcps::mcp_oauth_callback))
         // Connector endpoints
         .route("/api/connectors", get(connectors::list_connectors))
         .route("/api/connectors", post(connectors::create_connector))
@@ -316,6 +324,7 @@ pub fn create_http_router(
         .route("/api/sessions/archive", post(sessions::archive_sessions))
         .route("/api/sessions/restore/:id", post(sessions::restore_session))
         .route("/api/sessions/:id/state", get(sessions::get_session_state))
+        .route("/api/traces/query", post(traces::query_traces))
         // Hard-delete a session with memory-preserving cascade (R18)
         .route("/api/sessions/:id", delete(sessions::delete_session))
         // Artifact endpoints

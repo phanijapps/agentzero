@@ -15,6 +15,9 @@ readme = "README.md"
 keywords = ["ai", "agent", "gateway", "websocket", "api"]
 categories = ["web-programming"]
 
+[features]
+rig-parity-capture = []
+
 [dependencies]
 # Internal crates
 api-logs = { path = "../services/api-logs" }
@@ -22,12 +25,14 @@ execution-state = { path = "../services/execution-state" }
 knowledge-graph = { path = "../services/knowledge-graph" }
 agent-runtime = { path = "../runtime/agent-runtime" }
 agent-tools = { path = "../runtime/agent-tools" }
-zero-core = { path = "../framework/zero-core" }
-zero-app = { path = "../framework/zero-app" }
-zero-stores = { path = "../stores/zero-stores" }
-zero-stores-domain = { path = "../stores/zero-stores-domain" }
-zero-stores-traits = { path = "../stores/zero-stores-traits" }
-zero-stores-sqlite = { path = "../stores/zero-stores-sqlite" }
+agent-primitives = { path = "../runtime/agent-primitives" }
+zbot-stores = { path = "../stores/zbot-stores" }
+zbot-engram-adapter = { path = "../stores/zbot-engram-adapter" }
+zbot-stores-domain = { path = "../stores/zbot-stores-domain" }
+zbot-stores-traits = { path = "../stores/zbot-stores-traits" }
+zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }
+zbot-conversation = { path = "../stores/zbot-conversation" }
+zbot-trace = { path = "../stores/zbot-trace" }
 gateway-events = { path = "gateway-events" }
 gateway-templates = { path = "gateway-templates" }
 gateway-connectors = { path = "gateway-connectors" }
@@ -83,8 +88,8 @@ sha2 = "0.10"
 tokio-cron-scheduler = "0.13"
 
 # Database — D9: gateway no longer depends on rusqlite/r2d2 directly.
-# All SQLite-coupled types come through `zero-stores-sqlite` (the trait
-# implementation) and `zero-stores-traits` (the abstract surface). New
+# All SQLite-coupled types come through `zbot-stores-sqlite` (the trait
+# implementation) and `zbot-stores-traits` (the abstract surface). New
 # backends drop in by implementing the same traits in their own crate.
 
 [dev-dependencies]
@@ -92,7 +97,7 @@ tokio-test = "0.4"
 tempfile = "3"
 # Used only by the `query_session` debug example. The lib + bin do not
 # depend on rusqlite directly — all SQLite access flows through
-# `zero-stores-sqlite` (the trait impl) per the D-phase architecture.
+# `zbot-stores-sqlite` (the trait impl) per the D-phase architecture.
 rusqlite = { version = "0.32", features = ["bundled"] }
 assert_matches = "1.5"
 tower = { version = "0.5", features = ["util"] }
@@ -101,6 +106,11 @@ axum-test = "16"
 [lib]
 name = "gateway"
 path = "src/lib.rs"
+
+[[example]]
+name = "rig_parity_event_capture"
+path = "examples/rig_parity_event_capture.rs"
+required-features = ["rig-parity-capture"]
 
 [lints]
 workspace = true

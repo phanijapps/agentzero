@@ -13,7 +13,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use zero_stores_sqlite::DatabaseManager;
+use zbot_stores_sqlite::DatabaseManager;
 
 // ============================================================================
 // Types

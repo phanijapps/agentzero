@@ -1,25 +1,22 @@
 import { useState } from "react";
-import type { MemoryCategory } from "@/services/transport/types";
+import type { CreatableMemoryCategory } from "@/services/transport/types";
 import { AddDrawer } from "./AddDrawer";
 
-// MemoryCategory doesn't include "policy". The "+ Policy" button maps to
-// "instruction" (a directive), with the user-visible label "Policy" for UX.
-// See the Memory Tab Command Deck design doc.
-type WriteChoice = { label: string; category: MemoryCategory; key: string };
+type WriteChoice = { label: string; category: CreatableMemoryCategory; key: string };
 const CHOICES: WriteChoice[] = [
   { label: "+ Fact", category: "pattern", key: "F" },
-  { label: "+ Instruction", category: "instruction", key: "I" },
-  { label: "+ Policy", category: "instruction", key: "P" },
+  { label: "+ Preference", category: "preference", key: "P" },
+  { label: "+ Decision", category: "decision", key: "D" },
 ];
 
 interface Props {
   wardId: string;
   counts: { facts: number; wiki: number; procedures: number; episodes: number };
-  onSave: (v: { category: MemoryCategory; content: string; ward_id: string }) => void;
+  onSave: (v: { category: CreatableMemoryCategory; content: string; ward_id: string }) => void;
 }
 
 export function WriteRail({ wardId, counts, onSave }: Props) {
-  const [open, setOpen] = useState<MemoryCategory | null>(null);
+  const [open, setOpen] = useState<CreatableMemoryCategory | null>(null);
 
   return (
     <aside className="memory-write">

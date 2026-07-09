@@ -265,10 +265,10 @@ z-Bot uses a **goal-oriented execution model** — not a simple request-response
 | Document | Description |
 |----------|-------------|
 | [AGENTS.md](AGENTS.md) | Code organization and layer structure |
-| [memory-bank/architecture.md](memory-bank/architecture.md) | Technical architecture details |
-| [memory-bank/product.md](memory-bank/product.md) | Product features and roadmap |
-| [memory-bank/product-context.md](memory-bank/product-context.md) | Vision, principles, and differentiators |
-| [memory-bank/decisions.md](memory-bank/decisions.md) | Technology choices and architecture decisions |
+| [docs/architecture/architecture.md](docs/architecture/architecture.md) | Technical architecture details |
+| [docs/product/technical-product.md](docs/product/technical-product.md) | Product features and roadmap |
+| [docs/product/product-context.md](docs/product/product-context.md) | Vision, principles, and differentiators |
+| [docs/adr/decisions.md](docs/adr/decisions.md) | Technology choices and architecture decisions |
 
 ## Tech Stack
 

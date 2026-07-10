@@ -62,13 +62,7 @@ Skills and agents are indexed as recall/context facts (category `skill` / `agent
 
 This avoids round-tripping a discovery tool when the same information is already in context.
 
-## Execution Graphs
+## Parallel Work
 
-For workflows with dependencies:
-```
-execution_graph(action="create", nodes=[
-  {"id": "A", "agent": "data-analyst", "task": "Fetch data"},
-  {"id": "B", "agent": "data-analyst", "task": "Analyze {data}", "depends_on": ["A"],
-   "inputs": {"data": {"from": "A", "field": "result"}}}
-])
-```
+For simple parallel work, delegate independent tasks and join them with
+`wait_agent` only when the result was not requested inline.

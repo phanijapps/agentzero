@@ -2686,15 +2686,11 @@ components:
     ToolSettings:
       type: object
       properties:
-        grep_enabled:
+        fileTools:
           type: boolean
-        glob_enabled:
+        offloadLargeResults:
           type: boolean
-        python_enabled:
-          type: boolean
-        web_fetch_enabled:
-          type: boolean
-        offload_threshold:
+        offloadThresholdTokens:
           type: integer
 
     LogSettingsRequest:

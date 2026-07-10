@@ -39,20 +39,10 @@ pub async fn get_tool_settings(
     }
 }
 
-/// Request for updating tool settings.
-///
-/// Note: grep, load_skill are core tools and always enabled.
+/// Request for updating live tool settings.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateToolSettingsRequest {
-    #[serde(default)]
-    pub python: bool,
-    #[serde(default)]
-    pub web_fetch: bool,
-    #[serde(default)]
-    pub ui_tools: bool,
-    #[serde(default)]
-    pub create_agent: bool,
     #[serde(default)]
     pub file_tools: bool,
     #[serde(default)]
@@ -68,10 +58,6 @@ fn default_offload_threshold() -> usize {
 impl From<UpdateToolSettingsRequest> for ToolSettings {
     fn from(req: UpdateToolSettingsRequest) -> Self {
         ToolSettings {
-            python: req.python,
-            web_fetch: req.web_fetch,
-            ui_tools: req.ui_tools,
-            create_agent: req.create_agent,
             file_tools: req.file_tools,
             offload_large_results: req.offload_large_results,
             offload_threshold_tokens: req.offload_threshold_tokens,

@@ -385,15 +385,7 @@ export interface McpOAuthStartResponse {
 // ============================================================================
 
 export interface ToolSettings {
-  /** Enable python tool (run Python scripts) */
-  python: boolean;
-  /** Enable web_fetch tool (HTTP requests — large responses can cause context explosion) */
-  webFetch: boolean;
-  /** Enable UI tools (request_input, show_content) */
-  uiTools: boolean;
-  /** Enable create_agent tool */
-  createAgent: boolean;
-  /** Enable file tools (read, write, edit, glob) as separate tools */
+  /** Enable optional file-discovery tools such as glob */
   fileTools: boolean;
   /** Offload large tool results to filesystem instead of keeping in context */
   offloadLargeResults: boolean;

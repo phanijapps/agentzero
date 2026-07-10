@@ -159,7 +159,7 @@ pub struct AppState {
 
     /// Sleep-time worker — triggers graph compaction/consolidation cycles.
     /// Set by server.start() in Phase 4 Task 10; `None` until then.
-    pub sleep_time_worker: Option<Arc<gateway_execution::sleep::SleepTimeWorker>>,
+    pub sleep_time_worker: Option<Arc<gateway_memory::sleep::SleepTimeWorker>>,
 
     /// Compaction repository — read-model for the last compaction run.
     /// Set by server.start() in Phase 4 Task 10; `None` until then.

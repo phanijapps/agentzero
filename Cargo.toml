@@ -20,6 +20,7 @@ members = [
 
     # Runtime - Execution engine
     "runtime/agent-primitives",
+    "runtime/agent-surfaces",
     "runtime/agent-runtime",
     "runtime/agent-tools",
 

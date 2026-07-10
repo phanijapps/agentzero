@@ -1,0 +1,52 @@
+asyncapi: 3.0.0
+info:
+  title: zbot Agent-Driven Surfaces
+  version: 0.1.0
+x-spec:
+  - docs/specs/agent-driven-surfaces/
+channels:
+  sessionSurface:
+    address: /ws
+    messages:
+      surfaceCreated:
+        $ref: '#/components/messages/SurfaceCreated'
+      surfaceValidationFailed:
+        $ref: '#/components/messages/SurfaceValidationFailed'
+components:
+  messages:
+    SurfaceCreated:
+      name: surface.created
+      payload:
+        $ref: '#/components/schemas/WorkSurface'
+    SurfaceValidationFailed:
+      name: surface.validation_failed
+      payload:
+        type: object
+        required: [type, session_id, execution_id, surface_id, reason]
+        properties:
+          type: { const: surface.validation_failed }
+          session_id: { type: string }
+          execution_id: { type: string }
+          surface_id: { type: string }
+          reason: { type: string, maxLength: 256 }
+  schemas:
+    WorkSurface:
+      type: object
+      required: [type, session_id, execution_id, surface_id, catalog_id, components, data]
+      properties:
+        type: { const: surface.created }
+        session_id: { type: string }
+        execution_id: { type: string }
+        surface_id: { type: string, maxLength: 128 }
+        catalog_id: { const: zbot/work-surface/v1 }
+        components:
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            required: [id, type]
+            properties:
+              id: { type: string }
+              type:
+                enum: [DecisionMatrix, EvidenceTable, AssumptionRegister, PlanChecklist, ApprovalGate, OpenLoops]
+        data: { type: object }

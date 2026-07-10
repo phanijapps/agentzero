@@ -66,6 +66,8 @@ pub struct AppState {
     pub session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
     /// Versioned agent-state checkpoints — `session_state` reads here (T12).
     pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
+    /// Durable operational decision threads. Semantic memory remains in Engram.
+    pub autonomy: Arc<dyn zbot_conversation::AutonomyStore>,
     /// Slim (payload-free) `execution_logs` — the live `/api/logs` UI source.
     pub slim_logs: Arc<dyn zbot_trace::SlimLogStore>,
     /// Cross-session trace analytics over `traces/*.jsonl.gz` (DuckDB).
@@ -214,6 +216,7 @@ type ConversationStoreBundle = (
     Arc<dyn zbot_conversation::MessageStore>,
     Arc<dyn zbot_conversation::SessionMetaStore>,
     Arc<dyn zbot_conversation::CheckpointStore>,
+    Arc<dyn zbot_conversation::AutonomyStore>,
     Arc<dyn zbot_trace::SlimLogStore>,
     Arc<zbot_trace::TraceAnalytics>,
 );
@@ -232,6 +235,7 @@ fn build_conversation_stores(paths: &SharedVaultPaths) -> anyhow::Result<Convers
         Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone())),
         Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
         Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool.clone())),
+        Arc::new(zbot_conversation::SqliteAutonomyStore::new(pool.clone())),
         Arc::new(zbot_trace::SqliteSlimLogStore::new(pool)),
         Arc::new(zbot_trace::TraceAnalytics::open(&paths.traces_dir())?),
     ))
@@ -562,7 +566,7 @@ impl AppState {
 
         // Build the conversation stores before the distiller/runtime so both
         // use the same MessageStore/SessionMetaStore/CheckpointStore handles.
-        let (messages, session_meta, checkpoints, slim_logs, trace_analytics) =
+        let (messages, session_meta, checkpoints, autonomy, slim_logs, trace_analytics) =
             build_conversation_stores(&paths)
                 .expect("Failed to initialize conversation/trace stores");
 
@@ -906,6 +910,7 @@ impl AppState {
             messages,
             session_meta,
             checkpoints,
+            autonomy,
             slim_logs,
             trace_analytics,
             delegation_registry,
@@ -1001,7 +1006,7 @@ impl AppState {
         let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
             Some(engram_store_bundle.kg_store.clone());
 
-        let (messages, session_meta, checkpoints, slim_logs, trace_analytics) =
+        let (messages, session_meta, checkpoints, autonomy, slim_logs, trace_analytics) =
             build_conversation_stores(&paths)
                 .expect("Failed to initialize conversation/trace stores");
 
@@ -1009,6 +1014,7 @@ impl AppState {
             messages,
             session_meta,
             checkpoints,
+            autonomy,
             slim_logs,
             trace_analytics,
             agents: Arc::new(AgentService::new(agents_dir)),
@@ -1257,7 +1263,7 @@ impl AppState {
             None, // bus is set later by server.start()
         ));
 
-        let (messages, session_meta, checkpoints, slim_logs, trace_analytics) =
+        let (messages, session_meta, checkpoints, autonomy, slim_logs, trace_analytics) =
             build_conversation_stores(&paths)
                 .expect("Failed to initialize conversation/trace stores");
 
@@ -1272,6 +1278,7 @@ impl AppState {
             messages,
             session_meta,
             checkpoints,
+            autonomy,
             slim_logs,
             trace_analytics,
             delegation_registry: Arc::new(DelegationRegistry::new()),

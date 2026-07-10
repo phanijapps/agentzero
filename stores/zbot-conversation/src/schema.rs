@@ -40,11 +40,45 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     schema_version      INTEGER NOT NULL DEFAULT 1,
     created_at          TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS autonomy_items (
+    id                TEXT PRIMARY KEY,
+    title             TEXT NOT NULL,
+    objective         TEXT NOT NULL,
+    next_action       TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    approval_policy   TEXT NOT NULL,
+    source_session_id TEXT,
+    dedupe_key        TEXT NOT NULL UNIQUE,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    completed_at      TEXT
+);
+CREATE TABLE IF NOT EXISTS autonomy_evidence (
+    id           TEXT PRIMARY KEY,
+    item_id      TEXT NOT NULL REFERENCES autonomy_items(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL,
+    reference_id TEXT NOT NULL,
+    label        TEXT,
+    created_at   TEXT NOT NULL,
+    UNIQUE(item_id, kind, reference_id)
+);
+CREATE TABLE IF NOT EXISTS autonomy_runs (
+    id         TEXT PRIMARY KEY,
+    item_id    TEXT NOT NULL REFERENCES autonomy_items(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL,
+    from_state TEXT,
+    to_state   TEXT,
+    outcome    TEXT,
+    created_at TEXT NOT NULL
+);
 "#;
 
 const INDEXES_SQL: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_exec_turn ON checkpoints(execution_id, llm_turn DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_autonomy_items_state_updated ON autonomy_items(state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_autonomy_evidence_item ON autonomy_evidence(item_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_autonomy_runs_item ON autonomy_runs(item_id, created_at DESC);
 "#;
 
 /// Apply the conversation-store schema to a connection (idempotent, and

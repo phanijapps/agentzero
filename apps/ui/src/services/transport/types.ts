@@ -794,6 +794,36 @@ export interface MissionControlSessionTokens {
   executions: MissionControlExecutionSummary[];
 }
 
+/** Durable, user-controlled operational thread. This is not semantic memory. */
+export type AutonomyState = "proposed" | "approved" | "blocked" | "complete" | "stale";
+
+export interface AutonomyEvidence {
+  id: string;
+  item_id: string;
+  kind: string;
+  reference_id: string;
+  label?: string | null;
+  created_at: string;
+}
+
+export interface AutonomyItem {
+  id: string;
+  title: string;
+  objective: string;
+  next_action: string;
+  state: AutonomyState;
+  approval_policy: "manual" | "ask_once" | "auto_readonly";
+  source_session_id?: string | null;
+  dedupe_key: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+export interface AutonomyItemDetail extends AutonomyItem {
+  evidence: AutonomyEvidence[];
+}
+
 /** Filter for querying sessions */
 export interface SessionFilter {
   status?: SessionStateStatus;

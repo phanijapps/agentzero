@@ -61,6 +61,75 @@ async fn status_endpoint_returns_info() {
 }
 
 // ============================================================================
+// Autonomy ledger endpoints
+// ============================================================================
+
+#[tokio::test]
+async fn autonomy_item_lifecycle_is_explicit_and_auditable() {
+    let (server, _dir) = setup_test_server().await;
+    let create = server
+        .post("/api/autonomy")
+        .json(&json!({
+            "title": "Compare engines",
+            "objective": "Choose the execution engine",
+            "next_action": "Review migration evidence",
+            "source_session_id": "sess-source",
+            "dedupe_key": "engine-comparison",
+            "evidence": [{ "kind": "session", "reference_id": "sess-source", "label": "Source" }]
+        }))
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let created: Value = create.json();
+    assert_eq!(created["state"], "proposed");
+    assert_eq!(created["evidence"][0]["reference_id"], "sess-source");
+
+    let id = created["id"].as_str().unwrap();
+    let transition = server
+        .post(&format!("/api/autonomy/{id}/transition"))
+        .json(&json!({ "state": "approved", "outcome": "user approved" }))
+        .await;
+    transition.assert_status_ok();
+    let approved: Value = transition.json();
+    assert_eq!(approved["state"], "approved");
+
+    let open = server.get("/api/autonomy").await;
+    open.assert_status_ok();
+    let items: Vec<Value> = open.json();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], id);
+}
+
+#[tokio::test]
+async fn autonomy_rejects_invalid_transition_and_missing_fields() {
+    let (server, _dir) = setup_test_server().await;
+    let invalid = server.post("/api/autonomy").json(&json!({})).await;
+    invalid.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+    let oversized = server
+        .post("/api/autonomy")
+        .json(&json!({
+            "title": "A".repeat(201), "objective": "B", "next_action": "C", "dedupe_key": "large"
+        }))
+        .await;
+    oversized.assert_status(StatusCode::BAD_REQUEST);
+
+    let create = server
+        .post("/api/autonomy")
+        .json(&json!({
+            "title": "A", "objective": "B", "next_action": "C", "dedupe_key": "a"
+        }))
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let created: Value = create.json();
+    let id = created["id"].as_str().unwrap();
+    let transition = server
+        .post(&format!("/api/autonomy/{id}/transition"))
+        .json(&json!({ "state": "blocked" }))
+        .await;
+    transition.assert_status(StatusCode::BAD_REQUEST);
+}
+
+// ============================================================================
 // Execution Stats Endpoint Tests
 // ============================================================================
 

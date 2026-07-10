@@ -4,6 +4,7 @@
 
 mod agents;
 mod artifacts;
+mod autonomy;
 mod belief_network;
 mod beliefs;
 mod bridge;
@@ -116,6 +117,15 @@ pub fn create_http_router(
         .route(
             "/api/conversations/:id/messages",
             get(conversations::list_messages),
+        )
+        .route(
+            "/api/autonomy",
+            get(autonomy::list_items).post(autonomy::create_item),
+        )
+        .route("/api/autonomy/:id", get(autonomy::get_item))
+        .route(
+            "/api/autonomy/:id/transition",
+            post(autonomy::transition_item),
         )
         // Tool endpoints
         .route("/api/tools", get(tools::list_tools))

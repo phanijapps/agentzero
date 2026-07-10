@@ -50,6 +50,9 @@ import type {
   MissionControlSessionSummary,
   MissionControlSessionTokens,
   MissionControlFilter,
+  AutonomyItem,
+  AutonomyItemDetail,
+  AutonomyState,
   DashboardStats,
   // Legacy types (for backwards compatibility)
   ExecutionSession,
@@ -538,6 +541,22 @@ export class HttpTransport implements Transport {
     return this.get<MissionControlSessionTokens>(
       `/api/executions/v2/mission-control/sessions/${encodeURIComponent(sessionId)}/tokens`,
     );
+  }
+
+  async listAutonomyItems(): Promise<TransportResult<AutonomyItem[]>> {
+    return this.get<AutonomyItem[]>("/api/autonomy");
+  }
+
+  async getAutonomyItem(id: string): Promise<TransportResult<AutonomyItemDetail>> {
+    return this.get<AutonomyItemDetail>(`/api/autonomy/${encodeURIComponent(id)}`);
+  }
+
+  async transitionAutonomyItem(
+    id: string,
+    state: AutonomyState,
+    outcome?: string,
+  ): Promise<TransportResult<AutonomyItemDetail>> {
+    return this.post<AutonomyItemDetail>(`/api/autonomy/${encodeURIComponent(id)}/transition`, { state, outcome });
   }
 
   /** Get a single session with executions (V2 API) */

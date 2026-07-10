@@ -4515,6 +4515,21 @@
 .mission-control__narrative * { max-width: 100%; }
 .mission-control__narrative pre { overflow-x: auto; }
 .mission-control__sidebar { width: 260px; border-left: 1px solid var(--border); background: var(--card); overflow-y: auto; flex-shrink: 0; }
+.open-loops { width: 280px; border-left: 1px solid var(--border); background: var(--card); overflow-y: auto; flex-shrink: 0; }
+.open-loops__header { display: flex; align-items: center; justify-content: space-between; padding: var(--spacing-3) var(--spacing-4); border-bottom: 1px solid var(--border); }
+.open-loops__header h2 { margin: 0; font-size: 0.875rem; font-weight: 600; }
+.open-loops__header span { color: var(--muted-foreground); font-size: 0.75rem; }
+.open-loops__items { display: flex; flex-direction: column; }
+.open-loops__item { padding: var(--spacing-3) var(--spacing-4); border-bottom: 1px solid var(--border); }
+.open-loops__title { display: flex; gap: var(--spacing-2); justify-content: space-between; font-size: 0.8125rem; }
+.open-loops__title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.open-loops__title span { color: var(--muted-foreground); font-size: 0.6875rem; text-transform: uppercase; }
+.open-loops__item p { margin: var(--spacing-2) 0; color: var(--muted-foreground); font-size: 0.75rem; line-height: 1.35; }
+.open-loops__actions { display: flex; gap: var(--spacing-2); }
+.open-loops__actions button { border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--foreground); font-size: 0.6875rem; padding: 3px 6px; cursor: pointer; }
+.open-loops__actions button:disabled { cursor: wait; opacity: 0.55; }
+.open-loops__empty, .open-loops__error { margin: var(--spacing-4); color: var(--muted-foreground); font-size: 0.75rem; }
+.open-loops__error { color: var(--destructive); }
 .mission-control__input { border-top: 1px solid var(--border); padding: var(--spacing-4) var(--spacing-6); display: flex; align-items: flex-end; gap: var(--spacing-3); background: var(--card); flex-shrink: 0; }
 
 /* Session Bar */

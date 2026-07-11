@@ -40,17 +40,17 @@ vi.mock("@/services/transport", () => ({
 }));
 
 describe("Memory Tab e2e smoke", () => {
-  it("write flow: add instruction via right rail", async () => {
+  it("write flow: add fact via right rail", async () => {
     render(<MemoryTab agentId="root" />);
     // Ward appears in rail
     await waitFor(() =>
       expect(screen.getAllByText(/wardA/).length).toBeGreaterThan(0),
     );
-    // Open AddDrawer via "+ Instruction"
-    fireEvent.click(screen.getByRole("button", { name: /\+ instruction/i }));
+    // Open AddDrawer via "+ Fact"
+    fireEvent.click(screen.getByRole("button", { name: /\+ fact/i }));
     // Fill content
     fireEvent.change(screen.getByRole("textbox", { name: /memory content/i }), {
-      target: { value: "new instruction" },
+      target: { value: "new fact" },
     });
     // Save
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));

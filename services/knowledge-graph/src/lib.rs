@@ -11,7 +11,8 @@
 //!
 //! The SQLite-coupled storage (`storage`, `traversal`, `causal`, `service`) was
 //! relocated to `zbot-stores-sqlite::kg` during Slice D6b of the persistence
-//! refactor. Consumers should import those types via `zbot_stores_sqlite::kg::*`.
+//! refactor. Production consumers use the `zbot_stores` trait surfaces; the
+//! legacy SQLite types remain for migration/parity fixtures.
 //! See `docs/architecture/future-state/db-provider-portability.md`.
 
 pub mod error;

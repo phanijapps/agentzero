@@ -32,9 +32,10 @@ impl GatewayServer {
     /// Create a new gateway server with the given configuration.
     pub fn new(config: GatewayConfig, config_dir: PathBuf) -> Self {
         let state = AppState::new(config_dir);
-        let ws_handler = Arc::new(WebSocketHandler::new(
+        let ws_handler = Arc::new(WebSocketHandler::new_with_surfaces(
             state.event_bus.clone(),
             state.runtime.clone(),
+            config.agent_surfaces_enabled,
         ));
 
         Self {

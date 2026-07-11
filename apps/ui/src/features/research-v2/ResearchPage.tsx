@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { FolderOpen, Menu, PanelLeftOpen, Plus, Square } from "lucide-react";
+import { Menu, PanelLeftOpen, Plus, Square } from "lucide-react";
 import { toast } from "sonner";
 import { ChatInput, type UploadedFile } from "../chat/ChatInput";
 import { HeroInput } from "../chat/HeroInput";
@@ -34,7 +34,9 @@ import type { ResearchArtifactRef, ResearchSessionState } from "./types";
 import type { Artifact } from "@/services/transport/types";
 import { WardVaultExplorer } from "../vault/WardVaultExplorer";
 import { VaultFileSlideOut } from "../vault/VaultFileSlideOut";
+import { A2uiSurfaceRenderer } from "../surfaces/A2uiSurfaceRenderer";
 import { useVaultFilePreview } from "../vault/useVaultFilePreview";
+import type { WorkSurface } from "@/services/transport/types";
 import "./research.css";
 
 // --- Title derivation --------------------------------------------------------
@@ -66,13 +68,12 @@ interface ResearchHeaderProps {
   onOpenDrawer(): void;
   onNew(): void;
   onStop(): void;
-  onOpenWard(wardId: string): void;
   /** Hide the "New research" button on the landing page since the hero
    *  already provides the new-session entry point. */
   showNewButton?: boolean;
 }
 
-function ResearchHeader({ state, onOpenDrawer, onNew, onStop, onOpenWard, showNewButton = true }: ResearchHeaderProps) {
+function ResearchHeader({ state, onOpenDrawer, onNew, onStop, showNewButton = true }: ResearchHeaderProps) {
   return (
     <div className="research-page__header">
       <button
@@ -91,18 +92,6 @@ function ResearchHeader({ state, onOpenDrawer, onNew, onStop, onOpenWard, showNe
       </div>
 
       <div className="research-page__header-actions">
-        {state.wardId && state.wardName && (
-          <button
-            type="button"
-            className="research-page__ward-chip research-page__ward-chip--clickable"
-            onClick={() => onOpenWard(state.wardId as string)}
-            title={`Open ward in Vault: ${state.wardName}`}
-            aria-label={`Open ward in Vault: ${state.wardName}`}
-          >
-            <FolderOpen size={12} />
-            <span>{state.wardName}</span>
-          </button>
-        )}
         {showNewButton && (
           <button type="button" className="btn btn--ghost btn--sm" onClick={onNew}>
             <Plus size={14} /> New research
@@ -170,10 +159,11 @@ function EmptyHero({ onSend }: EmptyHeroProps) {
 
 interface MainColumnProps {
   state: ResearchSessionState;
+  surfaces: WorkSurface[];
   onSend: (message: string, attachments: UploadedFileShim[]) => void;
 }
 
-function MainColumn({ state, onSend }: MainColumnProps) {
+function MainColumn({ state, surfaces, onSend }: MainColumnProps) {
   const hasContent = state.turns.length > 0 || state.sessionId !== null;
 
   if (!hasContent) return <EmptyHero onSend={onSend} />;
@@ -184,6 +174,7 @@ function MainColumn({ state, onSend }: MainColumnProps) {
       {state.turns.map((turn) => (
         <SessionTurnBlock key={turn.id} turn={turn} />
       ))}
+      {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
     </>
   );
 }
@@ -191,7 +182,7 @@ function MainColumn({ state, onSend }: MainColumnProps) {
 // --- Page --------------------------------------------------------------------
 
 export function ResearchPage() {
-  const { state, pillState, wardVaultRevision, sendMessage, stopAgent, startNewResearch, getFullArtifact } =
+  const { state, pillState, surfaces, wardVaultRevision, sendMessage, stopAgent, startNewResearch, getFullArtifact } =
     useResearchSession();
   const { sessions, refresh: refreshSessions, deleteSession } = useSessionsList({
     onAfterDelete: (deletedId) => {
@@ -259,11 +250,6 @@ export function ResearchPage() {
     void refreshSessions();
   };
 
-  // Memoised so the ResearchHeader sub-component doesn't re-render each tick.
-  const handleOpenWard = useCallback((wardId: string) => {
-    navigate(`/vault?ward=${encodeURIComponent(wardId)}`);
-  }, [navigate]);
-
   const composerDisabled = state.status === "running";
   // Landing state: no user message, no agent turns, no bound session. Hero
   // takes over the column; the bottom composer + the header's "New
@@ -277,7 +263,6 @@ export function ResearchPage() {
         onOpenDrawer={() => setDrawerOpen(true)}
         onNew={handleNew}
         onStop={stopAgent}
-        onOpenWard={handleOpenWard}
         showNewButton={!isLanding}
       />
 
@@ -324,7 +309,7 @@ export function ResearchPage() {
           </>
         ) : null}
         <div className="research-page__column">
-          <MainColumn state={state} onSend={sendMessage} />
+          <MainColumn state={state} surfaces={surfaces} onSend={sendMessage} />
         </div>
       </div>
 

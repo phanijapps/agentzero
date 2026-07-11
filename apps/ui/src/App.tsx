@@ -322,11 +322,6 @@ export function WebAppShell({
 
   return (
     <div className="app-shell">
-      <span className="app-shell__reticle app-shell__reticle--tl" aria-hidden="true" />
-      <span className="app-shell__reticle app-shell__reticle--tr" aria-hidden="true" />
-      <span className="app-shell__reticle app-shell__reticle--bl" aria-hidden="true" />
-      <span className="app-shell__reticle app-shell__reticle--br" aria-hidden="true" />
-
       <header className="topbar">
         <Link to="/research" className="topbar__brand" aria-label="z-Bot home">
           <span className="topbar__brand-mark">z</span>

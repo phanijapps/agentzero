@@ -129,7 +129,7 @@ export function HeroInput({ onSend, recentSessions = [], onSelectSession }: Hero
     <div className="hero-input" onDrop={handleDrop} onDragOver={handleDragOver} role="region" aria-label="Drop files here">
       {/* Brand */}
       <div className="hero-input__brand">
-        <img src="/zbot_icon_light.svg" alt="z-Bot" className="hero-input__logo-img" />
+        <span className="hero-input__logo" role="img" aria-label="z-Bot">z</span>
         <span className="hero-input__name">z-Bot</span>
       </div>
 

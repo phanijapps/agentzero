@@ -10,6 +10,7 @@ import { useQuickChat } from "./useQuickChat";
 import { CopyButton } from "../shared/copyButton";
 import type { QuickChatArtifactRef, QuickChatMessage } from "./types";
 import type { Artifact } from "@/services/transport/types";
+import { A2uiSurfaceRenderer } from "../surfaces/A2uiSurfaceRenderer";
 import "./quick-chat.css";
 
 function AssistantBubble({ message }: { message: QuickChatMessage }) {
@@ -100,7 +101,7 @@ const CLEAR_CONFIRM =
   "Clear this chat and start a new session? Past messages remain in Logs.";
 
 export function QuickChat() {
-  const { state, pillState, sendMessage, stopAgent, clearSession } = useQuickChat();
+  const { state, pillState, surfaces, sendMessage, stopAgent, clearSession } = useQuickChat();
   const endRef = useRef<HTMLDivElement | null>(null);
   const [viewing, setViewing] = useState<Artifact | null>(null);
 
@@ -157,6 +158,7 @@ export function QuickChat() {
         <div className="quick-chat__scroll">
           <div className="quick-chat__messages">
             {state.messages.map((m) => <MessageRow key={m.id} message={m} />)}
+            {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
             {hasArtifacts && (
               <div className="quick-chat__artifacts" data-testid="quick-chat-artifacts">
                 {state.artifacts.map((a) => (

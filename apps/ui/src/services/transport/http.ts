@@ -50,6 +50,9 @@ import type {
   MissionControlSessionSummary,
   MissionControlSessionTokens,
   MissionControlFilter,
+  AutonomyItem,
+  AutonomyItemDetail,
+  AutonomyState,
   DashboardStats,
   // Legacy types (for backwards compatibility)
   ExecutionSession,
@@ -540,6 +543,22 @@ export class HttpTransport implements Transport {
     );
   }
 
+  async listAutonomyItems(): Promise<TransportResult<AutonomyItem[]>> {
+    return this.get<AutonomyItem[]>("/api/autonomy");
+  }
+
+  async getAutonomyItem(id: string): Promise<TransportResult<AutonomyItemDetail>> {
+    return this.get<AutonomyItemDetail>(`/api/autonomy/${encodeURIComponent(id)}`);
+  }
+
+  async transitionAutonomyItem(
+    id: string,
+    state: AutonomyState,
+    outcome?: string,
+  ): Promise<TransportResult<AutonomyItemDetail>> {
+    return this.post<AutonomyItemDetail>(`/api/autonomy/${encodeURIComponent(id)}/transition`, { state, outcome });
+  }
+
   /** Get a single session with executions (V2 API) */
   async getSessionFull(sessionId: string): Promise<TransportResult<SessionWithExecutions>> {
     return this.get<SessionWithExecutions>(`/api/executions/v2/sessions/${encodeURIComponent(sessionId)}/full`);
@@ -812,6 +831,12 @@ export class HttpTransport implements Transport {
           this.setConnectionState({ status: "connected" });
           this.startHeartbeat();
           this.setupBrowserEventHandlers();
+          // Opt in after every connect/reconnect. Older gateways ignore this
+          // additive frame; gateways with surfaces keep all legacy traffic intact.
+          this.ws?.send(JSON.stringify({
+            type: "presentation_capabilities",
+            catalogs: ["zbot/work-surface/v1"],
+          }));
           this.resubscribeAll();
           resolve({ success: true });
         };

@@ -93,6 +93,10 @@ pub enum ClientMessage {
     /// Used when user types /end, /new, or clicks +new button.
     EndSession { session_id: String },
 
+    /// Opt in to catalog-constrained work surfaces. Older clients never send
+    /// this frame and therefore retain the existing event stream unchanged.
+    PresentationCapabilities { catalogs: Vec<String> },
+
     /// Ping for keepalive.
     Ping,
 }
@@ -109,6 +113,37 @@ fn default_invoke_mode() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
+    /// Additive native work-surface projection for capable clients only.
+    SurfaceCreated {
+        session_id: String,
+        execution_id: String,
+        surface: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    SurfaceUpdated {
+        session_id: String,
+        execution_id: String,
+        surface: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    SurfaceDeleted {
+        session_id: String,
+        execution_id: String,
+        surface_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Bounded validation telemetry; no descriptor payload is exposed.
+    SurfaceValidationFailed {
+        session_id: String,
+        execution_id: String,
+        surface_id: String,
+        reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     // =========================================================================
     // SUBSCRIPTION RESPONSES
     // =========================================================================
@@ -535,6 +570,10 @@ impl ServerMessage {
     /// Get the conversation_id for this message, if any.
     pub fn conversation_id(&self) -> Option<&str> {
         match self {
+            Self::SurfaceCreated { .. }
+            | Self::SurfaceUpdated { .. }
+            | Self::SurfaceDeleted { .. }
+            | Self::SurfaceValidationFailed { .. } => None,
             Self::AgentStarted {
                 conversation_id, ..
             } => conversation_id.as_deref(),
@@ -623,6 +662,52 @@ impl ServerMessage {
     /// Return a copy of this message with the sequence number set.
     pub fn with_sequence(self, seq: u64) -> Self {
         match self {
+            Self::SurfaceCreated {
+                session_id,
+                execution_id,
+                surface,
+                ..
+            } => Self::SurfaceCreated {
+                session_id,
+                execution_id,
+                surface,
+                seq: Some(seq),
+            },
+            Self::SurfaceUpdated {
+                session_id,
+                execution_id,
+                surface,
+                ..
+            } => Self::SurfaceUpdated {
+                session_id,
+                execution_id,
+                surface,
+                seq: Some(seq),
+            },
+            Self::SurfaceDeleted {
+                session_id,
+                execution_id,
+                surface_id,
+                ..
+            } => Self::SurfaceDeleted {
+                session_id,
+                execution_id,
+                surface_id,
+                seq: Some(seq),
+            },
+            Self::SurfaceValidationFailed {
+                session_id,
+                execution_id,
+                surface_id,
+                reason,
+                ..
+            } => Self::SurfaceValidationFailed {
+                session_id,
+                execution_id,
+                surface_id,
+                reason,
+                seq: Some(seq),
+            },
             Self::AgentStarted {
                 agent_id,
                 session_id,
@@ -1063,5 +1148,26 @@ mod tests {
             }
             _ => panic!("Wrong message type"),
         }
+    }
+
+    #[test]
+    fn presentation_capabilities_and_surface_lifecycle_are_additive() {
+        let capabilities: ClientMessage = serde_json::from_str(
+            r#"{"type":"presentation_capabilities","catalogs":["zbot/work-surface/v1"]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            capabilities,
+            ClientMessage::PresentationCapabilities { .. }
+        ));
+        let message = ServerMessage::SurfaceDeleted {
+            session_id: "s".into(),
+            execution_id: "e".into(),
+            surface_id: "surface".into(),
+            seq: None,
+        };
+        let json = serde_json::to_value(message.with_sequence(3)).unwrap();
+        assert_eq!(json["type"], "surface_deleted");
+        assert_eq!(json["seq"], 3);
     }
 }

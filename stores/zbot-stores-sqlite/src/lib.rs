@@ -21,8 +21,6 @@ pub mod belief_contradiction_store;
 pub mod belief_store;
 pub mod compaction_repository;
 pub mod compaction_store;
-mod connection;
-pub mod distillation_repository;
 pub mod episode_repository;
 pub mod episode_store;
 pub mod goal_repository;
@@ -35,9 +33,7 @@ pub mod memory_repository;
 pub mod procedure_repository;
 pub mod procedure_store;
 pub mod recall_log_repository;
-mod schema;
 pub mod sqlite_vec_loader;
-pub mod system_profile;
 pub mod vector_index;
 pub mod wiki_repository;
 pub mod wiki_store;
@@ -46,15 +42,11 @@ pub mod wiki_store;
 pub use knowledge_graph::SqliteKgStore;
 
 // -- Public surface -----------------------------------------------------------
-pub use auxiliary_stores::{GatewayDistillationStore, GatewayGoalStore, GatewayRecallLogStore};
+pub use auxiliary_stores::{GatewayGoalStore, GatewayRecallLogStore};
 pub use belief_contradiction_store::SqliteBeliefContradictionStore;
 pub use belief_store::SqliteBeliefStore;
 pub use compaction_repository::{Compaction, CompactionRepository, RunSummary};
 pub use compaction_store::GatewayCompactionStore;
-pub use connection::DatabaseManager;
-pub use distillation_repository::{
-    DistillationRepository, DistillationRun, DistillationStats, UndistilledSession,
-};
 pub use episode_repository::{EpisodeRepository, SessionEpisode};
 pub use episode_store::GatewayEpisodeStore;
 pub use goal_repository::{Goal, GoalRepository};
@@ -72,6 +64,12 @@ pub use recall_log_repository::RecallLogRepository;
 pub use vector_index::{SqliteVecIndex, VectorIndex};
 pub use wiki_repository::{WardWikiRepository, WikiArticle, WikiHit};
 pub use wiki_store::GatewayWikiStore;
+pub use zbot_runtime_sqlite::system_profile;
+pub use zbot_runtime_sqlite::DatabaseManager;
+pub use zbot_runtime_sqlite::{
+    DistillationRepository, DistillationRun, DistillationStats, GatewayDistillationStore,
+    UndistilledSession,
+};
 
 /// Canonical alias for the SQLite `MemoryFactStore` impl. Mirrors the
 /// `Sqlite*` naming used by `SqliteKgStore` — the persistence factory in

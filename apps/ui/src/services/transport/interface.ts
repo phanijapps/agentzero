@@ -45,6 +45,9 @@ import type {
   MissionControlSessionSummary,
   MissionControlSessionTokens,
   MissionControlFilter,
+  AutonomyItem,
+  AutonomyItemDetail,
+  AutonomyState,
   DashboardStats,
   // Legacy types
   ExecutionSession,
@@ -343,6 +346,15 @@ export interface Transport {
 
   /** Get per-execution token slices for one selected Mission Control session */
   getMissionControlSessionTokens(sessionId: string): Promise<TransportResult<MissionControlSessionTokens>>;
+
+  /** List non-terminal user-controlled decision threads. */
+  listAutonomyItems(): Promise<TransportResult<AutonomyItem[]>>;
+
+  /** Read one decision thread with its evidence references. */
+  getAutonomyItem(id: string): Promise<TransportResult<AutonomyItemDetail>>;
+
+  /** Apply an explicit lifecycle transition. This never executes the item. */
+  transitionAutonomyItem(id: string, state: AutonomyState, outcome?: string): Promise<TransportResult<AutonomyItemDetail>>;
 
   /** Get a single session with executions (V2 API) */
   getSessionFull(sessionId: string): Promise<TransportResult<SessionWithExecutions>>;

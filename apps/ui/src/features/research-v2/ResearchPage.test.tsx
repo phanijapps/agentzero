@@ -254,7 +254,7 @@ describe("<ResearchPage>", () => {
     expect(container.textContent).toContain("stock-analysis");
   });
 
-  it("ward chip renders as a button when wardName + wardId are set", () => {
+  it("keeps ward context in the embedded explorer instead of a duplicate header link", () => {
     researchRef.current = {
       ...makeIdleResearch(),
       state: {
@@ -263,32 +263,9 @@ describe("<ResearchPage>", () => {
         wardName: "stock-analysis",
       },
     };
-    renderPage();
-    const btn = screen.getByRole("button", { name: /open ward in vault/i });
-    expect(btn).toBeTruthy();
-    expect(btn.tagName).toBe("BUTTON");
-  });
-
-  it("ward chip is NOT rendered when wardName is null", () => {
     renderPage();
     expect(screen.queryByRole("button", { name: /open ward in vault/i })).toBeNull();
-  });
-
-  it("clicking the ward chip navigates to the selected ward in Vault", async () => {
-    researchRef.current = {
-      ...makeIdleResearch(),
-      state: {
-        ...makeIdleResearch().state,
-        wardId: "stock-analysis",
-        wardName: "stock-analysis",
-      },
-    };
-    renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /open ward in vault/i }));
-    await waitFor(() => {
-      expect(screen.getByTestId("location").textContent).toBe("/vault?ward=stock-analysis");
-    });
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Research ward vault explorer")).toBeTruthy();
   });
 
   it("does not render or load the ward Vault explorer before a ward exists", () => {

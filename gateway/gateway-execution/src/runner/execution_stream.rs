@@ -15,7 +15,7 @@ use execution_state::StateService;
 use gateway_events::EventBus;
 use gateway_services::SharedVaultPaths;
 use tokio::sync::{mpsc, RwLock};
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::delegation::extract_structured_result;
 use crate::delegation::{DelegationRegistry, DelegationRequest};
@@ -50,7 +50,7 @@ pub struct ExecutionStream {
     pub delegation_registry: Arc<DelegationRegistry>,
     pub handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     pub distiller: Option<Arc<crate::distillation::SessionDistiller>>,
-    pub kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
+    pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub paths: SharedVaultPaths,
     pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
@@ -102,7 +102,7 @@ struct EventHandlerDeps<'a> {
     agent_id: &'a str,
     handle: &'a ExecutionHandle,
     tool_result_context: &'a ToolResultContextConfig,
-    kg_episode_repo: Option<&'a Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
+    kg_episode_store: Option<&'a Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     kg_store: Option<&'a Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     ingestion_adapter: Option<&'a Arc<dyn agent_tools::IngestionAccess>>,
 }
@@ -230,15 +230,13 @@ fn handle_tool_result(
     // Phase 6d: real-time graph extraction from tool output.
     // Non-blocking — fires in a background task so the execution
     // loop never waits.
-    if let (Some(ep_repo), Some(kg)) = (deps.kg_episode_repo, deps.kg_store) {
+    if let (Some(ep_store), Some(kg)) = (deps.kg_episode_store, deps.kg_store) {
         let tool_name_cl = acc.current_tool_name.clone();
         let tool_id_cl = tool_id.to_string();
         let result_cl = result.to_string();
         let session_id_cl = deps.session_id.to_string();
         let agent_id_cl = deps.agent_id.to_string();
-        let ep_store: Arc<dyn zbot_stores_traits::KgEpisodeStore> = Arc::new(
-            zbot_stores_sqlite::GatewayKgEpisodeStore::new(ep_repo.clone()),
-        );
+        let ep_store = ep_store.clone();
         let kg_cl = kg.clone();
         let intake_cl = deps.ingestion_adapter.cloned();
         tokio::spawn(async move {
@@ -439,7 +437,7 @@ impl ExecutionStream {
         let execution_id_inner = execution_id.clone();
         let agent_id_inner = agent_id.clone();
         let batch_writer_inner = batch_writer.clone();
-        let kg_episode_repo_inner = self.kg_episode_repo.clone();
+        let kg_episode_store_inner = self.kg_episode_store.clone();
         let kg_store_inner = self.kg_store.clone();
         let ingestion_adapter_inner = self.ingestion_adapter.clone();
 
@@ -467,7 +465,7 @@ impl ExecutionStream {
                 agent_id: &agent_id_inner,
                 handle: &handle,
                 tool_result_context: &tool_result_context,
-                kg_episode_repo: kg_episode_repo_inner.as_ref(),
+                kg_episode_store: kg_episode_store_inner.as_ref(),
                 kg_store: kg_store_inner.as_ref(),
                 ingestion_adapter: ingestion_adapter_inner.as_ref(),
             };
@@ -647,18 +645,8 @@ impl ExecutionStream {
                     let sid = session_id.clone();
                     let aid = agent_id.clone();
                     let ward_id_for_indexer = session_ward.clone();
-                    // Phase C: trait-routed indexer. Wrap the SQLite
-                    // kg_episode_repo as a KgEpisodeStore for the test
-                    // path; production already has the trait wired via
-                    // AppState but ExecutionStream's struct still holds
-                    // the concrete repo for backward compat. Same shape
-                    // for kg_store: the SqliteKgStore wrap of graph_storage.
-                    let kg_episode_store_for_indexer: Option<
-                        Arc<dyn zbot_stores_traits::KgEpisodeStore>,
-                    > = self.kg_episode_repo.as_ref().map(|r| {
-                        Arc::new(zbot_stores_sqlite::GatewayKgEpisodeStore::new(r.clone()))
-                            as Arc<dyn zbot_stores_traits::KgEpisodeStore>
-                    });
+                    // The indexer receives the active backend-neutral stores.
+                    let kg_episode_store_for_indexer = self.kg_episode_store.clone();
                     let kg_store_for_indexer: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
                         self.kg_store.clone();
                     let paths_for_indexer = self.paths.clone();
@@ -815,7 +803,7 @@ mod tests {
     use gateway_events::EventBus;
     use gateway_services::VaultPaths;
     use tokio::sync::{mpsc, RwLock};
-    use zbot_stores_sqlite::DatabaseManager;
+    use zbot_runtime_sqlite::DatabaseManager;
 
     #[test]
     fn execution_stream_constructs_with_minimum_required_deps() {
@@ -848,7 +836,7 @@ mod tests {
             delegation_registry: registry,
             handles,
             distiller: None,
-            kg_episode_repo: None,
+            kg_episode_store: None,
             paths,
             kg_store: None,
             ingestion_adapter: None,

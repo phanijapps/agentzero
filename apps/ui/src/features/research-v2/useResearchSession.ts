@@ -5,6 +5,7 @@ import type {
   Artifact,
   ConversationEvent,
   UnsubscribeFn,
+  WorkSurface,
 } from "@/services/transport/types";
 import { randomId } from "@/shared/utils/randomId";
 import { useStatusPill, type PillEventSink } from "../shared/statusPill";
@@ -81,11 +82,16 @@ interface EventHandlerCtx {
    *  delegate_to_agent tool call fired, or a delegation_completed arrived,
    *  both of which indicate child-turn state needs a pull from REST. */
   onReconcileHint: () => void;
+  onSurface: (event: ConversationEvent) => void;
 }
 
 function makeEventHandler(ctx: EventHandlerCtx) {
   return (event: ConversationEvent) => {
     const raw = event as unknown as Record<string, unknown>;
+    if (raw["type"] === "surface_created" || raw["type"] === "surface_updated" || raw["type"] === "surface_deleted") {
+      ctx.onSurface(event);
+      return;
+    }
     console.debug("[research-v2] event:", raw["type"], "sid:", raw["session_id"], "cid:", raw["conversation_id"], "eid:", raw["execution_id"]);
     const action = mapGatewayEventToResearchAction(event);
     if (action) ctx.dispatch(action);
@@ -110,6 +116,18 @@ function makeEventHandler(ctx: EventHandlerCtx) {
     // same hint so a second subagent in the same session also heals.
     handleReconcileHint(raw, ctx.onReconcileHint);
   };
+}
+
+function updateSurfaces(
+  event: ConversationEvent,
+  setSurfaces: (value: WorkSurface[] | ((current: WorkSurface[]) => WorkSurface[])) => void,
+) {
+  const raw = event as unknown as { surface?: WorkSurface; surface_id?: string };
+  if (event.type === "surface_deleted" && raw.surface_id) {
+    setSurfaces(current => current.filter(item => item.surface_id !== raw.surface_id));
+  } else if (raw.surface) {
+    setSurfaces(current => [...current.filter(item => item.surface_id !== raw.surface!.surface_id), raw.surface!]);
+  }
 }
 
 function toolCallIdOf(raw: Record<string, unknown>): string | null {
@@ -320,6 +338,7 @@ export function useResearchSession() {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(reduceResearch, EMPTY_RESEARCH_STATE);
   const [wardVaultRevision, setWardVaultRevision] = useState(0);
+  const [surfaces, setSurfaces] = useState<WorkSurface[]>([]);
   const { state: pillState, sink: pillSink } = useStatusPill();
 
   const hydratedForSessionRef = useRef<string | null>(null); // one-shot hydration guard (StrictMode)
@@ -397,6 +416,7 @@ export function useResearchSession() {
       onWardFileMutation: bumpWardVaultRevision,
       onRootAgentCompleted,
       onReconcileHint,
+      onSurface: (event) => updateSurfaces(event, setSurfaces),
     });
     // Tear down any prior session-id subscription, then register the new one.
     teardownSubscription({
@@ -512,6 +532,7 @@ export function useResearchSession() {
         onWardFileMutation: bumpWardVaultRevision,
         onRootAgentCompleted,
         onReconcileHint,
+        onSurface: (event) => updateSurfaces(event, setSurfaces),
       });
       try {
         await ensureSubscription(convId, onEvent, refs);
@@ -557,6 +578,7 @@ export function useResearchSession() {
     pillSink.push({ kind: "reset" });
     dispatch({ type: "RESET" });
     setWardVaultRevision(0);
+    setSurfaces([]);
     fileMutationToolIdsRef.current.clear();
     hydratedForSessionRef.current = null;
     resnapshotForExecRef.current = null;
@@ -572,5 +594,5 @@ export function useResearchSession() {
   // hydrateFromSnapshot (on open + on root agent_completed).
   const getFullArtifact = useCallback((id: string): Artifact | undefined => latestArtifactsRef.current.find((a) => a.id === id), []);
 
-  return { state, pillState, wardVaultRevision, sendMessage, stopAgent, startNewResearch, toggleThinking, getFullArtifact };
+  return { state, pillState, surfaces, wardVaultRevision, sendMessage, stopAgent, startNewResearch, toggleThinking, getFullArtifact };
 }

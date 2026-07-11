@@ -19,7 +19,7 @@ use gateway_services::VaultPaths;
 #[allow(deprecated)]
 use tempfile::tempdir;
 use zbot_conversation::{Message, MessageStore, SqliteMessageStore};
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 // ============================================================================
 // HELPERS

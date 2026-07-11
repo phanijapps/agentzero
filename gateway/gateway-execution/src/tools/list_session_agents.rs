@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use execution_state::{DelegationType, ExecutionFilter, StateService};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 pub struct ListSessionAgentsTool {
     state_service: Arc<StateService<DatabaseManager>>,

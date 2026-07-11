@@ -18,6 +18,7 @@ import { computeKpis } from "./kpi";
 import { KpiStrip } from "./KpiStrip";
 import { SessionListPanel, applyFilters, DEFAULT_FILTERS } from "./SessionListPanel";
 import { SessionDetailPane } from "./SessionDetailPane";
+import { OpenLoopsPanel } from "./OpenLoopsPanel";
 import { useMissionControlSessions } from "./useMissionControlSessions";
 import type { SessionFilters } from "./types";
 
@@ -64,6 +65,7 @@ export function MissionControlPage() {
           onSelect={setSelectedId}
         />
         <SessionDetailPane session={selected} tokenIndex={tokenIndex} />
+        <OpenLoopsPanel />
       </div>
     </div>
   );

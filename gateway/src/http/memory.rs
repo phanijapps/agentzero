@@ -870,9 +870,7 @@ pub struct MemoryHealth {
 /// `GET /api/memory/health` — queue depth, recent failures, last compaction.
 ///
 /// Pulls episode-pipeline metrics through `state.memory_store.health_metrics`
-/// instead of reaching into a concrete semantic database handle. Compaction
-/// metrics still come from `state.compaction_repo` for conversation/audit
-/// compatibility.
+/// instead of reaching into a concrete semantic database handle.
 pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
     let mut health = MemoryHealth::default();
 
@@ -884,8 +882,8 @@ pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
         }
     }
 
-    if let Some(compaction_repo) = state.compaction_repo.as_ref() {
-        if let Ok(Some(summary)) = compaction_repo.latest_run_summary() {
+    if let Some(compaction_store) = state.compaction_store.as_ref() {
+        if let Ok(Some(summary)) = compaction_store.latest_run_summary().await {
             health.last_compaction_run_id = Some(summary.run_id);
             health.last_compaction_merges = summary.merges;
             health.last_compaction_prunes = summary.prunes;

@@ -24,12 +24,13 @@
   gap: 12px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
+  background: var(--background-surface);
 }
 
 .research-page__title {
   flex: 1;
   text-align: center;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--foreground);
 }
 
@@ -221,14 +222,14 @@
   max-width: 80%;
   min-width: 0;
   padding: 10px 14px;
-  background: linear-gradient(135deg, var(--fx-accent), color-mix(in srgb, var(--fx-accent) 60%, #c08bff));
-  border-radius: 14px 14px 2px 14px;
+  background: var(--primary);
+  border-radius: var(--radius-lg) var(--radius-lg) 2px var(--radius-lg);
   font-size: 14px;
   font-weight: 500;
-  color: #02030a;
+  color: var(--primary-foreground);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  box-shadow: 0 0 calc(24px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 35%, transparent);
+  box-shadow: none;
 }
 
 /* --- Assistant turn bubble ----------------------------------------------- */
@@ -242,13 +243,11 @@
   max-width: 80%;
   min-width: 0;
   padding: 14px 16px;
-  border-radius: 14px 14px 14px 2px;
-  background: linear-gradient(180deg, rgba(13, 16, 24, 0.85), rgba(10, 12, 20, 0.85));
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.3),
-    0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 8%, transparent);
-  backdrop-filter: blur(6px);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) 2px;
+  background: var(--background-surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  backdrop-filter: none;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -470,12 +469,10 @@
 .agent-turn-block {
   padding: 12px 14px;
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(13, 16, 24, 0.85), rgba(10, 12, 20, 0.85));
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.3),
-    0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 8%, transparent);
-  backdrop-filter: blur(6px);
+  background: var(--background-elevated);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .agent-turn-block__header {
@@ -949,21 +946,22 @@
   gap: 6px;
   align-items: center;
   padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(13, 16, 24, 0.7);
+  background: var(--background-surface);
   color: var(--foreground);
   cursor: pointer;
   white-space: nowrap;
   font: inherit;
   font-family: var(--font-mono);
   font-size: 12px;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-  backdrop-filter: blur(4px);
+  transition: border-color 150ms ease, background 150ms ease;
+  backdrop-filter: none;
 }
 .research-artifact-chip:hover {
   border-color: var(--fx-accent);
-  box-shadow: 0 0 calc(12px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 22%, transparent);
+  box-shadow: none;
+  background: var(--background-elevated);
 }
 .research-artifact-chip:focus-visible {
   outline: 2px solid var(--ring);

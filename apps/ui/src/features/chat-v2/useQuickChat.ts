@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useReducer, useRef, type Dispatch } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type Dispatch } from "react";
 import { getTransport } from "@/services/transport";
 import type { Transport } from "@/services/transport";
 import type {
   Artifact,
   ConversationEvent,
   SessionMessage,
+  WorkSurface,
 } from "@/services/transport/types";
 import { randomId } from "@/shared/utils/randomId";
 import { useStatusPill, type PillEventSink } from "../shared/statusPill";
@@ -119,9 +120,14 @@ async function bootstrapChatSession(
 /** Build the WS event handler once; closure captures the stable pill sink. */
 function makeEventHandler(
   pillSink: PillEventSink,
-  dispatch: Dispatch<QuickChatAction>
+  dispatch: Dispatch<QuickChatAction>,
+  onSurface: (event: ConversationEvent) => void,
 ) {
   return (event: ConversationEvent) => {
+    if (event.type === "surface_created" || event.type === "surface_updated" || event.type === "surface_deleted") {
+      onSurface(event);
+      return;
+    }
     // When the agent used the `respond` tool, the gateway delivers the
     // final answer in `turn_complete.final_message` rather than as a
     // bare `respond` event or as streaming tokens. Populate the bubble
@@ -144,6 +150,7 @@ function makeEventHandler(
 export function useQuickChat() {
   const [state, dispatch] = useReducer(reduceQuickChat, EMPTY_QUICK_CHAT_STATE);
   const { state: pillState, sink: pillSink } = useStatusPill();
+  const [surfaces, setSurfaces] = useState<WorkSurface[]>([]);
 
   // Bootstrap idempotency guard. Set AFTER the async work resolves, not
   // before, so StrictMode's synthetic unmount doesn't leave us in a "bootstrap
@@ -181,7 +188,14 @@ export function useQuickChat() {
     const convId = state.conversationId;
     if (!convId || subscribedConvIdRef.current === convId) return;
     subscribedConvIdRef.current = convId;
-    const onEvent = makeEventHandler(pillSink, dispatch);
+    const onEvent = makeEventHandler(pillSink, dispatch, (event) => {
+      const raw = event as unknown as { surface?: WorkSurface; surface_id?: string };
+      if (event.type === "surface_deleted" && raw.surface_id) {
+        setSurfaces(current => current.filter(item => item.surface_id !== raw.surface_id));
+      } else if (raw.surface) {
+        setSurfaces(current => [...current.filter(item => item.surface_id !== raw.surface!.surface_id), raw.surface!]);
+      }
+    });
     const unsubscribe = Promise.resolve().then(async () => {
       const transport = await getTransport();
       return transport.subscribeConversation(convId, { onEvent });
@@ -277,5 +291,5 @@ export function useQuickChat() {
     });
   }, []);
 
-  return { state, pillState, sendMessage, stopAgent, clearSession };
+  return { state, pillState, surfaces, sendMessage, stopAgent, clearSession };
 }

@@ -4,6 +4,10 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Autonomy Ledger](autonomy-ledger/spec.md) | Implementing | Adds durable, approved cross-session decision threads with bounded resume context and Mission Control visibility. |
+| [Agent-Driven Surfaces](agent-driven-surfaces/spec.md) | Draft | Adds capability-gated, catalog-constrained agent work surfaces with channel-neutral results and server-owned actions. |
+| [SQLite Runtime Store Split](sqlite-runtime-store-split/spec.md) | Shipped | Separates unchanged runtime conversation persistence from quarantined legacy semantic SQLite as Engram owns the active memory layer. |
+| [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Implementing | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
 | [YFinance Market Analysis Skill Consolidation](yfinance-market-analysis-skill/spec.md) | Shipped | Consolidates bundled yfinance workflows into one primary skill while keeping old `yf-*` IDs as compatibility wrappers. |
 | [Tool Waste Visibility](tool-waste-visibility/spec.md) | Done | Makes blocked hooks, invalid tool arguments, planner skill drift, and tool durations visible in existing session telemetry. |
 | [Mission Control Performance](mission-control-performance/spec.md) | Shipped | Makes Mission Control load bounded summary data first, then lazy-load selected-session detail as the database grows. |

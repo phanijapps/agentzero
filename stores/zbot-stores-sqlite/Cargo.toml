@@ -17,6 +17,7 @@ execution-state = { path = "../../services/execution-state" }
 agent-runtime = { path = "../../runtime/agent-runtime" }
 gateway-services = { path = "../../gateway/gateway-services" }
 agent-primitives = { path = "../../runtime/agent-primitives" }
+zbot-runtime-sqlite = { path = "../zbot-runtime-sqlite" }
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }

@@ -29,7 +29,7 @@ use gateway_services::{
 };
 use knowledge_graph::{Entity, EntityType, Relationship, RelationshipType};
 use serde::{Deserialize, Serialize};
-use zbot_stores_domain::{MemoryFact, SessionEpisode};
+use zbot_stores_domain::{MemoryFact, Procedure, SessionEpisode};
 
 /// Distills completed sessions into structured memory facts.
 ///
@@ -1667,7 +1667,7 @@ impl SessionDistiller {
             .as_ref()
             .map(|p| serde_json::to_string(p).unwrap_or_default());
 
-        let proc = zbot_stores_sqlite::Procedure {
+        let proc = Procedure {
             id: format!("proc-{}", uuid::Uuid::new_v4()),
             agent_id: agent_id.to_string(),
             ward_id: ward_id.or_else(|| Some("__global__".to_string())),

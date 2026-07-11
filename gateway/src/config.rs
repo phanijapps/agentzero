@@ -45,9 +45,17 @@ pub struct GatewayConfig {
     /// migrated yet. Slated for removal in a future release.
     #[serde(default)]
     pub legacy_ws_port_enabled: bool,
+    /// Enable capability-gated agent work-surface events. Enabled by default;
+    /// the daemon's `--no-agent-surfaces` flag provides an immediate rollback.
+    #[serde(default = "default_agent_surfaces_enabled")]
+    pub agent_surfaces_enabled: bool,
 }
 
 fn default_serve_dashboard() -> bool {
+    true
+}
+
+fn default_agent_surfaces_enabled() -> bool {
     true
 }
 
@@ -77,6 +85,7 @@ impl Default for GatewayConfig {
             static_dir: None,
             serve_dashboard: true,
             legacy_ws_port_enabled: false,
+            agent_surfaces_enabled: true,
         }
     }
 }
@@ -195,6 +204,7 @@ mod gateway_config_tests {
         assert!(cfg.serve_dashboard);
         assert!(cfg.cors_enabled);
         assert!(!cfg.legacy_ws_port_enabled);
+        assert!(cfg.agent_surfaces_enabled);
         assert!(cfg
             .cors_origins
             .contains(&"http://localhost:1420".to_string()));
@@ -254,5 +264,6 @@ mod gateway_config_tests {
         assert!(cfg.cors_origins.is_empty());
         assert!(cfg.static_dir.is_none());
         assert!(!cfg.legacy_ws_port_enabled);
+        assert!(cfg.agent_surfaces_enabled);
     }
 }

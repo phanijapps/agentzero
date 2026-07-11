@@ -8,13 +8,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 20px;
+  padding: 14px 24px;
   border-bottom: 1px solid var(--border);
+  background: var(--background-surface);
 }
 .quick-chat__ward-chip {
   font-size: 11px;
   padding: 3px 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--primary-muted);
   color: var(--fx-accent);
   font-family: var(--font-mono);
@@ -36,9 +37,12 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 10px;
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--fx-accent) 8%, transparent), transparent 32%),
+    var(--background);
 }
-.quick-chat__empty h1 { font-size: 24px; font-weight: 600; }
+.quick-chat__empty h1 { font-size: 28px; font-weight: 650; letter-spacing: 0; }
 .quick-chat__empty-subtext { color: var(--muted-foreground); font-size: 13px; }
 
 .quick-chat__scroll {
@@ -58,12 +62,12 @@
   cursor: pointer;
 }
 .quick-chat__messages {
-  max-width: 720px;
+  max-width: 780px;
   margin: 0 auto;
   padding: 0 20px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 22px;
 }
 .quick-chat__msg { display: flex; align-items: flex-start; gap: 8px; }
 .quick-chat__msg--user { justify-content: flex-end; }
@@ -79,27 +83,24 @@
   max-width: 80%;
   min-width: 0;
   padding: 10px 14px;
-  border-radius: 14px 14px 2px 14px;
-  background: linear-gradient(135deg, var(--fx-accent), color-mix(in srgb, var(--fx-accent) 60%, #c08bff));
-  color: #02030a;
+  border-radius: var(--radius-lg) var(--radius-lg) 2px var(--radius-lg);
+  background: var(--primary);
+  color: var(--primary-foreground);
   font-size: 14px;
   font-weight: 500;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  box-shadow: 0 0 calc(24px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 35%, transparent);
+  box-shadow: none;
 }
 /* Assistant bubble — holo card with accent-tinted border + glow. */
 .quick-chat__assistant {
   max-width: 80%;
   min-width: 0;
   padding: 10px 14px;
-  border-radius: 14px 14px 14px 2px;
-  background: linear-gradient(180deg, rgba(13, 16, 24, 0.85), rgba(10, 12, 20, 0.85));
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.3),
-    0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 8%, transparent);
-  backdrop-filter: blur(6px);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) 2px;
+  background: var(--background-surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
   color: var(--foreground);
   font-size: 14px;
   line-height: 1.6;
@@ -137,19 +138,19 @@
   gap: 6px;
   padding: 6px 10px;
   border-radius: 6px;
-  background: rgba(13, 16, 24, 0.7);
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
+  background: var(--background-surface);
+  border: 1px solid var(--border);
   color: var(--foreground);
   font-size: 12px;
   font-family: var(--font-mono);
   cursor: pointer;
   transition: border-color 150ms ease, box-shadow 150ms ease;
   max-width: 100%;
-  backdrop-filter: blur(4px);
+  backdrop-filter: none;
 }
 .quick-chat__artifact-card:hover {
   border-color: var(--fx-accent);
-  box-shadow: 0 0 calc(12px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 22%, transparent);
+  box-shadow: none;
 }
 .quick-chat__artifact-icon {
   color: var(--primary);
@@ -168,7 +169,7 @@
 .quick-chat__composer {
   border-top: 1px solid var(--border);
   padding: 12px 20px;
-  max-width: 720px;
+  max-width: 780px;
   width: 100%;
   margin: 0 auto;
 }

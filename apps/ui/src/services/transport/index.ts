@@ -59,6 +59,10 @@ export type {
   MissionControlSessionTokens,
   MissionControlExecutionSummary,
   MissionControlFilter,
+  AutonomyState,
+  AutonomyEvidence,
+  AutonomyItem,
+  AutonomyItemDetail,
   // Subscription types
   SubscriptionScope,
   SubscriptionOptions,

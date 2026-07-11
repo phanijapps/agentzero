@@ -18,6 +18,7 @@ categories = ["development-tools"]
 [dependencies]
 # Internal crates
 agent-primitives = { path = "../agent-primitives" }
+agent-surfaces = { path = "../agent-surfaces" }
 agent-tools = { path = "../agent-tools" }
 zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 

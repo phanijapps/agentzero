@@ -4,7 +4,9 @@
 //! and extracts response deltas for accumulation.
 
 use agent_runtime::StreamEvent;
+use agent_surfaces::{ComponentType, SurfaceComponent, WorkSurface, ZBOT_WORK_SURFACE_CATALOG};
 use gateway_events::{EventBus, GatewayEvent};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::delegation_handler::handle_delegation;
@@ -25,6 +27,7 @@ pub fn process_stream_event(
     handle_artifact_declarations(ctx, event);
     handle_delegation_event(ctx, event);
     handle_side_effects(ctx, event);
+    publish_projected_surface(ctx, event);
 
     // Convert to gateway event (may return None for internal events)
     let gateway_event = crate::events::convert_stream_event(
@@ -37,6 +40,75 @@ pub fn process_stream_event(
 
     let response_delta = extract_response_delta(&gateway_event);
     (gateway_event, response_delta)
+}
+
+/// Project gateway-owned plan data into the initial native work-surface
+/// catalog. This uses the `update_plan` tool's structured payload rather than
+/// interpreting arbitrary assistant text as UI.
+fn publish_projected_surface(ctx: &StreamContext, event: &StreamEvent) {
+    let StreamEvent::ActionPlanUpdate { plan, .. } = event else {
+        return;
+    };
+    let surface_id = format!("plan-{}", ctx.execution_id);
+    let is_update = ctx
+        .surface_ids
+        .lock()
+        .map(|mut ids| !ids.insert(surface_id.clone()))
+        .unwrap_or(false);
+    let surface = WorkSurface {
+        surface_id,
+        catalog_id: ZBOT_WORK_SURFACE_CATALOG.to_owned(),
+        components: vec![
+            SurfaceComponent {
+                id: "plan".to_owned(),
+                component_type: ComponentType::PlanChecklist,
+                props: BTreeMap::from([
+                    (
+                        "title".to_owned(),
+                        serde_json::Value::String("Plan".to_owned()),
+                    ),
+                    (
+                        "plan_path".to_owned(),
+                        serde_json::Value::String("/plan".to_owned()),
+                    ),
+                ]),
+            },
+            SurfaceComponent {
+                id: "open-loops".to_owned(),
+                component_type: ComponentType::OpenLoops,
+                props: BTreeMap::from([
+                    (
+                        "title".to_owned(),
+                        serde_json::Value::String("Open loops".to_owned()),
+                    ),
+                    (
+                        "items_path".to_owned(),
+                        serde_json::Value::String("/open_loops".to_owned()),
+                    ),
+                ]),
+            },
+        ],
+        data: serde_json::json!({ "plan": plan, "open_loops": plan }),
+    };
+    if let Some(surface_event) = crate::events::convert_stream_event(
+        if is_update {
+            StreamEvent::WorkSurfaceUpdated {
+                timestamp: event.timestamp(),
+                surface,
+            }
+        } else {
+            StreamEvent::WorkSurface {
+                timestamp: event.timestamp(),
+                surface,
+            }
+        },
+        &ctx.agent_id,
+        &ctx.conversation_id,
+        &ctx.session_id,
+        &ctx.execution_id,
+    ) {
+        ctx.event_bus.publish_sync(surface_event);
+    }
 }
 
 /// Broadcast a gateway event synchronously to preserve token ordering.

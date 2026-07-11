@@ -614,6 +614,26 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
+export interface WorkSurfaceComponent {
+  id: string;
+  type: "DecisionMatrix" | "EvidenceTable" | "AssumptionRegister" | "PlanChecklist" | "ApprovalGate" | "OpenLoops";
+  props?: Record<string, unknown>;
+}
+
+export interface WorkSurface {
+  surface_id: string;
+  catalog_id: "zbot/work-surface/v1";
+  components: WorkSurfaceComponent[];
+  data: Record<string, unknown>;
+}
+
+export interface SurfaceCreatedEvent extends StreamEvent {
+  type: "surface_created";
+  session_id: string;
+  execution_id: string;
+  surface: WorkSurface;
+}
+
 export type EventCallback = (event: StreamEvent) => void;
 export type UnsubscribeFn = () => void;
 
@@ -792,6 +812,36 @@ export interface MissionControlSessionTokens {
   total_tokens_in: number;
   total_tokens_out: number;
   executions: MissionControlExecutionSummary[];
+}
+
+/** Durable, user-controlled operational thread. This is not semantic memory. */
+export type AutonomyState = "proposed" | "approved" | "blocked" | "complete" | "stale";
+
+export interface AutonomyEvidence {
+  id: string;
+  item_id: string;
+  kind: string;
+  reference_id: string;
+  label?: string | null;
+  created_at: string;
+}
+
+export interface AutonomyItem {
+  id: string;
+  title: string;
+  objective: string;
+  next_action: string;
+  state: AutonomyState;
+  approval_policy: "manual" | "ask_once" | "auto_readonly";
+  source_session_id?: string | null;
+  dedupe_key: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+export interface AutonomyItemDetail extends AutonomyItem {
+  evidence: AutonomyEvidence[];
 }
 
 /** Filter for querying sessions */

@@ -61,7 +61,7 @@ function makeRow(overrides: Partial<LogSession> & { session_id: string; conversa
 describe("<HeroInput>", () => {
   it("renders the brand mark", () => {
     render(<HeroInput onSend={vi.fn()} />);
-    expect(screen.getByAltText("z-Bot")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "z-Bot" })).toBeTruthy();
     expect(screen.getByText("z-Bot")).toBeTruthy();
   });
 

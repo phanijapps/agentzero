@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+agent-surfaces = { path = "../../runtime/agent-surfaces" }
 
 [dev-dependencies]
 tokio-test = "0.4"

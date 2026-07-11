@@ -13,7 +13,6 @@ description = "WebSocket bridge for AgentZero worker connections"
 
 [dependencies]
 # Internal crates
-zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
 zbot-runtime-sqlite = { path = "../../stores/zbot-runtime-sqlite" }
 gateway-bus = { path = "../gateway-bus" }
 agent-primitives = { path = "../../runtime/agent-primitives" }

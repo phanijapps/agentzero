@@ -31,7 +31,6 @@ zbot-stores = { path = "../stores/zbot-stores" }
 zbot-engram-adapter = { path = "../stores/zbot-engram-adapter" }
 zbot-stores-domain = { path = "../stores/zbot-stores-domain" }
 zbot-stores-traits = { path = "../stores/zbot-stores-traits" }
-zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }
 zbot-runtime-sqlite = { path = "../stores/zbot-runtime-sqlite" }
 zbot-conversation = { path = "../stores/zbot-conversation" }
 zbot-trace = { path = "../stores/zbot-trace" }
@@ -97,9 +96,10 @@ tokio-cron-scheduler = "0.13"
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
+zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }
 # Used only by the `query_session` debug example. The lib + bin do not
-# depend on rusqlite directly — all SQLite access flows through
-# `zbot-stores-sqlite` (the trait impl) per the D-phase architecture.
+# depend on rusqlite directly — production SQLite access flows through
+# `zbot-runtime-sqlite`; legacy semantic SQLite is test-only.
 rusqlite = { version = "0.32", features = ["bundled"] }
 assert_matches = "1.5"
 tower = { version = "0.5", features = ["util"] }

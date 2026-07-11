@@ -32,7 +32,6 @@ zbot-stores = { path = "../../stores/zbot-stores" }
 zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }
 zbot-trace = { path = "../../stores/zbot-trace" }
-zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
 zbot-runtime-sqlite = { path = "../../stores/zbot-runtime-sqlite" }
 zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
@@ -88,6 +87,7 @@ test-stubs = []
 
 [dev-dependencies]
 tempfile = "3"
+zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
 tokio-test = "0.4"
 filetime = "0.2"
 

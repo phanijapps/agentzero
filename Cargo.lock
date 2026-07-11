@@ -2514,7 +2514,6 @@ dependencies = [
  "tracing",
  "uuid",
  "zbot-runtime-sqlite",
- "zbot-stores-sqlite",
  "zbot-stores-traits",
 ]
 

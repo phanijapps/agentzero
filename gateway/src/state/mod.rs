@@ -28,10 +28,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use zbot_engram_adapter::GovernanceCapabilityHealth;
-use zbot_stores_sqlite::kg::service::GraphService;
-use zbot_stores_sqlite::{
-    DatabaseManager, DistillationRepository, EpisodeRepository, KgEpisodeRepository,
-};
+use zbot_runtime_sqlite::{DatabaseManager, DistillationRepository};
 
 /// Shared application state for the gateway.
 #[derive(Clone)]
@@ -98,8 +95,8 @@ pub struct AppState {
     /// memory facts.
     pub memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
 
-    /// Goal repository — active goals used for intent boost in unified recall.
-    pub goal_repo: Option<Arc<zbot_stores_sqlite::GoalRepository>>,
+    /// Backend-neutral active goals used for intent boost and the goal tool.
+    pub goal_store: Option<Arc<dyn zbot_stores_traits::GoalStore>>,
 
     /// Distillation repository for tracking distillation run outcomes.
     pub distillation_repo: Option<Arc<DistillationRepository>>,
@@ -107,12 +104,7 @@ pub struct AppState {
     /// Session distiller for triggering on-demand distillation (e.g., backfill).
     pub distiller: Option<Arc<SessionDistiller>>,
 
-    /// Episode repository for accessing session episodes.
-    pub episode_repo: Option<Arc<EpisodeRepository>>,
-
-    /// Trait-routed episode store (Phase D2). Coexists with `episode_repo`
-    /// for now; consumers migrate incrementally per the portability doc.
-    /// `None` when `episode_repo` itself is `None`.
+    /// Backend-neutral session episode store.
     pub episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>>,
 
     /// Trait-routed wiki store (Phase D3). The handler-side migrations
@@ -123,21 +115,10 @@ pub struct AppState {
     /// Trait-routed procedure store (Phase D4).
     pub procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
 
-    /// Knowledge graph episode repository (Phase 6a+).
-    pub kg_episode_repo: Option<Arc<KgEpisodeRepository>>,
-
-    /// Trait-routed kg-ingestion-episode store (Phase B). Wraps the
-    /// SQLite kg_episode_repo. Backend-agnostic — a new backend
-    /// implements the trait without consumers changing.
+    /// Backend-neutral kg-ingestion-episode store.
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
 
-    /// Graph service for knowledge graph operations.
-    pub graph_service: Option<Arc<GraphService>>,
-
-    /// Trait-based knowledge-graph store (Phase 1 extraction).
-    /// Coexists with `graph_service` — consumers are migrated incrementally.
-    /// `None` when `GraphStorage` fails to initialise (same condition as
-    /// `graph_service`).
+    /// Trait-based knowledge-graph store.
     pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
 
     /// Additive path-free governance health for Observatory/read-model routes.
@@ -163,11 +144,7 @@ pub struct AppState {
     /// Set by server.start() in Phase 4 Task 10; `None` until then.
     pub sleep_time_worker: Option<Arc<gateway_memory::sleep::SleepTimeWorker>>,
 
-    /// Compaction repository — read-model for the last compaction run.
-    /// Set by server.start() in Phase 4 Task 10; `None` until then.
-    pub compaction_repo: Option<Arc<zbot_stores_sqlite::CompactionRepository>>,
-
-    /// Trait-routed compaction audit store (Phase D1). Wired in both
+    /// Trait-routed compaction audit store. Wired in both
     /// SQLite and SurrealDB modes — the maintenance worker writes
     /// merge/prune/synthesis events here for Observatory display.
     /// Backend-agnostic: the trait has default no-op impls so any
@@ -302,7 +279,6 @@ impl AppState {
         let bridge_registry = Arc::new(gateway_bridge::BridgeRegistry::new());
         let bridge_outbox = Arc::new(gateway_bridge::OutboxRepository::new(db_manager.clone()));
 
-        let goal_repo: Option<Arc<zbot_stores_sqlite::GoalRepository>> = None;
         // Phase E6c: distillation_run rows live on the conversation DB
         // (DatabaseManager), not knowledge.db. Wire unconditionally —
         // both backends have the conversation DB. This makes
@@ -311,12 +287,6 @@ impl AppState {
         // actually persists.
         let distillation_repo: Option<Arc<DistillationRepository>> =
             Some(Arc::new(DistillationRepository::new(db_manager.clone())));
-        let episode_repo: Option<Arc<EpisodeRepository>> = None;
-        let kg_episode_repo: Option<Arc<KgEpisodeRepository>> = None;
-
-        // The old concrete SQLite graph service is not opened in runtime
-        // composition. Graph behavior routes through Engram-backed trait stores.
-        let graph_service: Option<Arc<GraphService>> = None;
 
         // EmbeddingService — owns the live EmbeddingClient and supports
         // hot-swap between internal (fastembed) and Ollama backends.
@@ -576,8 +546,6 @@ impl AppState {
         // trait object.
         let memory_store = early_memory_store;
 
-        let episode_repo_ref = episode_repo.clone();
-
         // SessionDistiller writes semantic artifacts through Engram-backed
         // trait stores. Conversation-linked run tracking still uses
         // conversations.db through DistillationRepository.
@@ -614,7 +582,7 @@ impl AppState {
             // SQLite DistillationRepository for run-tracking writes.
             if let Some(dr) = distillation_repo.as_ref() {
                 let store: Arc<dyn zbot_stores_traits::DistillationStore> = Arc::new(
-                    zbot_stores_sqlite::GatewayDistillationStore::new(dr.clone()),
+                    zbot_runtime_sqlite::GatewayDistillationStore::new(dr.clone()),
                 );
                 distiller_inner.set_distillation_store(store);
             }
@@ -729,7 +697,6 @@ impl AppState {
         // Phase 4: CompactionRepository + SleepTimeWorker (background maintenance).
         // The concrete SQLite compaction repository is retired from runtime
         // composition; Engram-backed compaction audit storage is wired below.
-        let compaction_repo: Option<Arc<zbot_stores_sqlite::CompactionRepository>> = None;
 
         // Phase D1: trait-routed compaction audit store. Wired in BOTH
         // backends so the maintenance worker can record merges/prunes
@@ -924,7 +891,6 @@ impl AppState {
             cron_scheduler: None, // Initialized by server.start()
             session_archiver: Some(session_archiver),
             sleep_time_worker,
-            compaction_repo,
             compaction_store,
             plugin_manager,
             model_registry,
@@ -932,16 +898,15 @@ impl AppState {
             paths,
             config_dir,
             memory_store,
-            goal_repo,
+            goal_store: engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.goal_store.clone()),
             distillation_repo,
             distiller: distiller_ref,
             episode_store: episode_store_for_state,
             wiki_store: wiki_store_for_state,
             procedure_store: procedure_store_for_state,
-            episode_repo: episode_repo_ref,
-            kg_episode_repo,
             kg_episode_store,
-            graph_service,
             kg_store,
             governance_health: engram_store_bundle
                 .as_ref()
@@ -1035,7 +1000,6 @@ impl AppState {
             cron_scheduler: None,
             session_archiver: None,
             sleep_time_worker: None,
-            compaction_repo: None,
             compaction_store: None,
             model_registry: Arc::new(ModelRegistry::load()),
             embedding_service: Arc::new(
@@ -1046,16 +1010,13 @@ impl AppState {
             paths,
             config_dir,
             memory_store,
-            goal_repo: None,
+            goal_store: Some(engram_store_bundle.goal_store.clone()),
             distillation_repo: None,
             distiller: None,
-            episode_repo: None,
             episode_store,
             wiki_store,
             procedure_store,
-            kg_episode_repo: None,
             kg_episode_store,
-            graph_service: None,
             kg_store,
             governance_health: Some(engram_store_bundle.governance_health.clone()),
             ingestion_queue: None,
@@ -1121,11 +1082,9 @@ impl AppState {
             );
             builder = builder.with_ingestion_adapter(adapter);
         }
-        if let Some(repo) = &self.goal_repo {
-            let store: Arc<dyn zbot_stores_traits::GoalStore> =
-                Arc::new(zbot_stores_sqlite::GatewayGoalStore::new(repo.clone()));
+        if let Some(store) = &self.goal_store {
             let adapter = Arc::new(gateway_execution::invoke::goal_adapter::GoalAdapter::new(
-                store,
+                store.clone(),
             ));
             builder = builder.with_goal_adapter(adapter);
         }
@@ -1292,7 +1251,6 @@ impl AppState {
             cron_scheduler: None,
             session_archiver: None,
             sleep_time_worker: None,
-            compaction_repo: None,
             compaction_store: None,
             model_registry: Arc::new(ModelRegistry::load()),
             embedding_service: Arc::new(
@@ -1303,16 +1261,13 @@ impl AppState {
             paths,
             config_dir,
             memory_store,
-            goal_repo: None,
+            goal_store: Some(engram_store_bundle.goal_store.clone()),
             distillation_repo: None,
             distiller: None,
-            episode_repo: None,
             episode_store,
             wiki_store,
             procedure_store,
-            kg_episode_repo: None,
             kg_episode_store,
-            graph_service: None,
             kg_store,
             governance_health: Some(engram_store_bundle.governance_health.clone()),
             ingestion_queue: None,
@@ -2768,12 +2723,9 @@ mod tests {
         let state = AppState::new(dir.path().to_path_buf());
         assert!(state.memory_store.is_some());
         assert!(state.kg_store.is_some());
-        assert!(state.graph_service.is_none());
         assert!(state.distillation_repo.is_some());
         assert!(state.distiller.is_some());
         assert!(state.session_archiver.is_some());
-        assert!(state.episode_repo.is_none());
-        assert!(state.kg_episode_repo.is_none());
         assert!(state.episode_store.is_some());
         assert!(state.kg_episode_store.is_some());
         assert!(state.cron_scheduler.is_none());
@@ -2803,8 +2755,6 @@ mod tests {
 
         let state = AppState::new(dir.path().to_path_buf());
 
-        assert!(state.graph_service.is_none());
-        assert!(state.kg_episode_repo.is_none());
         assert!(state.memory_store.is_some());
         assert!(state.kg_store.is_some());
         assert!(state.episode_store.is_some());

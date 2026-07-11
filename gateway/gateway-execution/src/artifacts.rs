@@ -6,7 +6,7 @@
 use execution_state::{Artifact, StateService};
 use std::path::Path;
 use std::sync::Arc;
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 /// Process artifact declarations from a respond action.
 ///

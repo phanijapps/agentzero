@@ -29,7 +29,7 @@ use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPat
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::delegation::{DelegationRegistry, DelegationRequest};
 use crate::handle::ExecutionHandle;
@@ -74,7 +74,7 @@ pub(crate) struct RunnerContinuationInvoker {
     pub(crate) model_registry:
         Arc<arc_swap::ArcSwapOption<gateway_services::models::ModelRegistry>>,
     pub(crate) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    pub(crate) kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
+    pub(crate) kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub(crate) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     pub(crate) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     pub(crate) procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
@@ -119,7 +119,7 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             // Read the live registry at fire time — not a stale capture.
             model_registry: self.model_registry.load_full(),
             kg_store: self.kg_store.clone(),
-            kg_episode_repo: self.kg_episode_repo.clone(),
+            kg_episode_store: self.kg_episode_store.clone(),
             ingestion_adapter: self.ingestion_adapter.clone(),
             goal_adapter: self.goal_adapter.clone(),
             procedure_store: self.procedure_store.clone(),

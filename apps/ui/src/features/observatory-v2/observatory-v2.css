@@ -1,5 +1,5 @@
 /* ============================================================================
-   OBSERVATORY V2 — Apple-Vision glass aesthetic
+   OBSERVATORY V2 — Quiet Instrument canvas aesthetic
    ============================================================================
 
    Design tokens:
@@ -24,15 +24,14 @@
   overflow: hidden;
   /* Deep dark glass background — radial gradient so the 3D fog blends
      into the page rather than ending abruptly at the canvas edge. */
-  background:
-    radial-gradient(ellipse at center, #131722 0%, #0a0e15 60%, #06080d 100%);
-  color: #f5ecd9;
-  --obs2-glass: rgba(20, 26, 36, 0.55);
-  --obs2-border: rgba(245, 236, 217, 0.10);
-  --obs2-border-hover: rgba(245, 236, 217, 0.22);
-  --obs2-cream: #f5ecd9;
-  --obs2-cream-dim: rgba(245, 236, 217, 0.55);
-  --obs2-warning: #f0c46b;
+  background: radial-gradient(ellipse at center, #18181b 0%, #111113 56%, #09090b 100%);
+  color: var(--foreground);
+  --obs2-glass: color-mix(in srgb, var(--background-surface) 92%, transparent);
+  --obs2-border: var(--border);
+  --obs2-border-hover: color-mix(in srgb, var(--fx-accent) 42%, var(--border));
+  --obs2-cream: var(--foreground);
+  --obs2-cream-dim: var(--muted-foreground);
+  --obs2-warning: var(--warning);
 }
 
 .obs2__canvas-wrap {
@@ -54,17 +53,15 @@
 
 .obs2__empty-card {
   background: var(--obs2-glass);
-  backdrop-filter: blur(24px) saturate(140%);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--obs2-border);
-  border-radius: 18px;
+  border-radius: var(--radius-lg);
   padding: 28px 32px;
   max-width: 460px;
   text-align: center;
   pointer-events: auto;
-  box-shadow:
-    0 1px 0 rgba(245, 236, 217, 0.04) inset,
-    0 24px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
 }
 
 .obs2__empty-icon {
@@ -101,14 +98,12 @@
 .obs2__hud {
   position: absolute;
   background: var(--obs2-glass);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--obs2-border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   padding: 14px 16px;
-  box-shadow:
-    0 1px 0 rgba(245, 236, 217, 0.05) inset,
-    0 14px 32px rgba(0, 0, 0, 0.40);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
   pointer-events: auto;
   transition: border-color 240ms ease;
 }
@@ -220,16 +215,14 @@
   align-items: center;
   gap: 12px;
   background: var(--obs2-glass);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--obs2-border);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 10px 14px;
   min-width: 220px;
   transition: border-color 240ms ease, transform 240ms ease;
-  box-shadow:
-    0 1px 0 rgba(245, 236, 217, 0.04) inset,
-    0 10px 24px rgba(0, 0, 0, 0.36);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
 }
 
 .obs2__pill:hover {
@@ -287,7 +280,7 @@
 }
 
 .obs2__pill-open:hover {
-  background: rgba(245, 236, 217, 0.06);
+  background: var(--background-elevated);
   border-color: var(--obs2-border-hover);
 }
 
@@ -298,14 +291,12 @@
   right: 22px;
   width: 320px;
   background: var(--obs2-glass);
-  backdrop-filter: blur(24px) saturate(140%);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--obs2-border-hover);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   padding: 16px 18px 18px;
-  box-shadow:
-    0 1px 0 rgba(245, 236, 217, 0.05) inset,
-    0 20px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.28);
   pointer-events: auto;
   animation: obs2-pick-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }

@@ -3,6 +3,7 @@
 // Events emitted during agent execution
 // ============================================================================
 
+use agent_surfaces::WorkSurface;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -104,6 +105,21 @@ pub enum StreamEvent {
         schema: Value,
         submit_button: Option<String>,
     },
+
+    /// A bounded, declarative work surface. Gateway validation determines
+    /// whether it is published; normal execution never depends on it.
+    #[serde(rename = "work_surface")]
+    WorkSurface {
+        timestamp: u64,
+        surface: WorkSurface,
+    },
+    #[serde(rename = "work_surface_updated")]
+    WorkSurfaceUpdated {
+        timestamp: u64,
+        surface: WorkSurface,
+    },
+    #[serde(rename = "work_surface_deleted")]
+    WorkSurfaceDeleted { timestamp: u64, surface_id: String },
 
     // ========================================================================
     // ACTION EVENTS
@@ -234,6 +250,9 @@ impl StreamEvent {
             | Self::Error { timestamp, .. }
             | Self::ShowContent { timestamp, .. }
             | Self::RequestInput { timestamp, .. }
+            | Self::WorkSurface { timestamp, .. }
+            | Self::WorkSurfaceUpdated { timestamp, .. }
+            | Self::WorkSurfaceDeleted { timestamp, .. }
             | Self::ActionRespond { timestamp, .. }
             | Self::ActionDelegate { timestamp, .. }
             | Self::ActionPlanUpdate { timestamp, .. }

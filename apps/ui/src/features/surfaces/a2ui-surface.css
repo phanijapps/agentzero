@@ -1,0 +1,17 @@
+.a2ui-surface { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
+.a2ui-surface__card { border: 1px solid var(--border-subtle, #334155); border-radius: 0.75rem; padding: 0.875rem; background: var(--surface-raised, rgba(15, 23, 42, .5)); }
+.a2ui-surface__card h3 { margin: 0 0 0.5rem; font-size: 0.9rem; }
+.a2ui-surface__card p, .a2ui-surface__card ul { margin: 0; font-size: 0.875rem; }
+.a2ui-plan { display: grid; gap: 0.45rem; margin: 0; padding: 0; list-style: none; }
+.a2ui-plan__item { display: grid; grid-template-columns: 1.25rem minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; }
+.a2ui-plan__mark { color: var(--text-muted, #94a3b8); font-weight: 700; }
+.a2ui-plan__mark--completed, .a2ui-plan__mark--complete, .a2ui-plan__mark--done { color: var(--success, #34d399); }
+.a2ui-plan__step { min-width: 0; }
+.a2ui-plan__status { color: var(--text-muted, #94a3b8); font-size: 0.75rem; text-transform: capitalize; }
+.a2ui-table-wrap { overflow-x: auto; }
+.a2ui-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.a2ui-table th, .a2ui-table td { padding: 0.45rem; border-bottom: 1px solid var(--border-subtle, #334155); text-align: left; vertical-align: top; }
+.a2ui-table th { color: var(--text-muted, #94a3b8); font-weight: 600; }
+.a2ui-record-list { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.a2ui-record-list li { display: flex; justify-content: space-between; gap: 1rem; }
+.a2ui-record-list span { color: var(--text-muted, #94a3b8); font-size: 0.8rem; text-align: right; }

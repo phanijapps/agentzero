@@ -677,16 +677,24 @@ runtime/
 
 ### Stores (`stores/`)
 
-Persistence traits, domain types, SQLite implementation, and conformance:
+Persistence traits, domain types, runtime SQLite, legacy semantic SQLite, and
+conformance:
 
 ```
 stores/
 ├── zbot-stores-domain/       # Serde-only domain/request types
 ├── zbot-stores-traits/       # Dependency-light store traits
 ├── zbot-stores/              # Persistence facade and trait re-exports
-├── zbot-stores-sqlite/       # SQLite backend, schema, repositories
+├── zbot-runtime-sqlite/      # conversations.db: sessions, execution, logs, outbox
+├── zbot-stores-sqlite/       # Legacy semantic SQLite migration/parity backend
 └── zbot-stores-conformance/  # Backend conformance harness
 ```
+
+Active semantic memory, graph, procedures, goals, episodes, and compaction
+audit are composed through `zbot-engram-adapter` and store traits. The
+`zbot-stores-sqlite` crate remains for legacy migration/parity fixtures; it is
+not part of the production semantic-memory composition. Runtime data continues
+to use the same `~/Documents/zbot/data/conversations.db` file.
 
 ### Services (`services/`)
 

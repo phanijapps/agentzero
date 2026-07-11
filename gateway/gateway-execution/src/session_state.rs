@@ -21,7 +21,7 @@ use api_logs::{ExecutionLog, LogCategory, LogService, SessionStatus};
 use execution_state::StateService;
 use serde::Serialize;
 use zbot_conversation::{Message, MessageStore};
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 // ============================================================================
 // TYPES

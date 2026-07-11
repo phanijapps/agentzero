@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use execution_state::{SessionStatus, StateService};
 use std::path::PathBuf;
 use std::sync::Arc;
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 /// HTTP-based Gateway Bus implementation.
 ///

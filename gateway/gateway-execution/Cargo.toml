@@ -18,6 +18,7 @@ agent-tools = { path = "../../runtime/agent-tools" }
 api-logs = { path = "../../services/api-logs" }
 execution-state = { path = "../../services/execution-state" }
 agent-primitives = { path = "../../runtime/agent-primitives" }
+agent-surfaces = { path = "../../runtime/agent-surfaces" }
 gateway-events = { path = "../gateway-events" }
 # JSON Schema derivation for the Rig extractor (intent analysis typed output).
 schemars = { workspace = true }
@@ -32,6 +33,7 @@ zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }
 zbot-trace = { path = "../../stores/zbot-trace" }
 zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
+zbot-runtime-sqlite = { path = "../../stores/zbot-runtime-sqlite" }
 zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
 # Async

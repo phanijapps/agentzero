@@ -1,0 +1,79 @@
+asyncapi: 3.0.0
+info:
+  title: zbot Agent-Driven Surfaces
+  version: 0.1.0
+  description: Additive capability-gated work-surface events over the existing zbot WebSocket.
+x-spec:
+  - docs/specs/agent-driven-surfaces/
+channels:
+  sessionSurface:
+    address: /ws
+    messages:
+      surfaceCreated:
+        $ref: '#/components/messages/SurfaceCreated'
+      surfaceUpdated:
+        $ref: '#/components/messages/SurfaceUpdated'
+      surfaceDeleted:
+        $ref: '#/components/messages/SurfaceDeleted'
+      surfaceValidationFailed:
+        $ref: '#/components/messages/SurfaceValidationFailed'
+operations:
+  receiveSessionSurface:
+    action: receive
+    channel:
+      $ref: '#/channels/sessionSurface'
+components:
+  messages:
+    SurfaceCreated:
+      name: surface.created
+      payload:
+        $ref: '#/components/schemas/WorkSurface'
+    SurfaceUpdated:
+      name: surface.updated
+      payload:
+        $ref: '#/components/schemas/WorkSurface'
+    SurfaceDeleted:
+      name: surface.deleted
+      payload:
+        type: object
+        required: [type, session_id, execution_id, surface_id]
+        properties:
+          type: { const: surface.deleted }
+          session_id: { type: string }
+          execution_id: { type: string }
+          surface_id: { type: string }
+    SurfaceValidationFailed:
+      name: surface.validation_failed
+      payload:
+        type: object
+        required: [type, session_id, execution_id, surface_id, reason]
+        properties:
+          type: { const: surface.validation_failed }
+          session_id: { type: string }
+          execution_id: { type: string }
+          surface_id: { type: string }
+          reason: { type: string, maxLength: 256 }
+  schemas:
+    WorkSurface:
+      type: object
+      required: [type, session_id, execution_id, surface_id, catalog_id, components, data]
+      properties:
+        type: { enum: [surface.created, surface.updated] }
+        session_id: { type: string }
+        execution_id: { type: string }
+        surface_id: { type: string, maxLength: 128 }
+        catalog_id: { const: zbot/work-surface/v1 }
+        components:
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            required: [id, type]
+            properties:
+              id: { type: string, maxLength: 128 }
+              type:
+                enum: [DecisionMatrix, EvidenceTable, AssumptionRegister, PlanChecklist, ApprovalGate, OpenLoops]
+              props: { type: object, additionalProperties: true }
+        data:
+          type: object
+          additionalProperties: true

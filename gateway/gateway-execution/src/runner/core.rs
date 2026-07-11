@@ -21,7 +21,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock, Semaphore};
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 /// Callback invoked after session creation but before any events are emitted.
 /// Receives the session_id so the caller can set up subscriptions before events fire.
@@ -120,8 +120,8 @@ pub struct ExecutionRunner {
     >,
     /// Trait-routed kg store for the `graph_query` tool — wired by AppState.
     kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    /// KG episode repository for ward artifact indexing after distillation.
-    kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
+    /// Backend-neutral KG episode store for tool-result and ward indexing.
+    kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     /// Adapter for the `ingest` agent tool. Wired via [`Self::set_ingestion_adapter`].
     ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     /// Adapter for the `goal` agent tool. Wired via [`Self::set_goal_adapter`].
@@ -194,7 +194,7 @@ pub struct ExecutionRunnerConfig {
 /// Inputs for [`invoke_continuation`]. Previously 24 positional arguments,
 /// with eight same-type `Option<Arc<…>>` dependencies in a row
 /// (memory_store, embedding_client, distiller, memory_recall,
-/// model_registry, graph_storage, kg_episode_repo, ingestion_adapter,
+/// model_registry, graph_storage, kg_episode_store, ingestion_adapter,
 /// goal_adapter) — the densest silent-swap cluster in the file. A
 /// psychopath adding a 25th dependency to the old signature had an even
 /// chance of scrambling which optional dep routed where.
@@ -221,7 +221,7 @@ pub(super) struct ContinuationArgs<'a> {
     pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub(super) model_registry: Option<Arc<gateway_services::models::ModelRegistry>>,
     pub(super) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    pub(super) kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
+    pub(super) kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub(super) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     pub(super) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     pub(super) procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
@@ -515,7 +515,7 @@ impl ExecutionRunner {
             model_registry,
             rate_limiters,
             kg_store: None,
-            kg_episode_repo: None,
+            kg_episode_store: None,
             ingestion_adapter: None,
             goal_adapter: None,
             steering_registry,
@@ -556,9 +556,9 @@ impl ExecutionRunner {
         self.model_registry.store(Some(registry));
     }
 
-    /// Set the KG episode repository used by post-distillation ward indexing.
-    pub fn set_kg_episode_repo(&mut self, repo: Arc<zbot_stores_sqlite::KgEpisodeRepository>) {
-        self.kg_episode_repo = Some(repo);
+    /// Set the KG episode store used by post-distillation ward indexing.
+    pub fn set_kg_episode_store(&mut self, store: Arc<dyn zbot_stores_traits::KgEpisodeStore>) {
+        self.kg_episode_store = Some(store);
     }
 
     /// Late-wired setter for the trait-routed kg store. Mirrored to the
@@ -693,7 +693,7 @@ impl ExecutionRunner {
             memory_recall: self.memory_recall.clone(),
             model_registry: self.model_registry.clone(),
             kg_store: self.kg_store.clone(),
-            kg_episode_repo: self.kg_episode_repo.clone(),
+            kg_episode_store: self.kg_episode_store.clone(),
             ingestion_adapter: self.ingestion_adapter.clone(),
             goal_adapter: self.goal_adapter.clone(),
             procedure_store: self.procedure_store.clone(),
@@ -808,7 +808,7 @@ impl ExecutionRunner {
             handles: self.handles.clone(),
             distiller: self.distiller.clone(),
             handoff_writer: self.handoff_writer.clone(),
-            kg_episode_repo: self.kg_episode_repo.clone(),
+            kg_episode_store: self.kg_episode_store.clone(),
             paths: self.paths.clone(),
             kg_store: self.kg_store.clone(),
             ingestion_adapter: self.ingestion_adapter.clone(),
@@ -1223,7 +1223,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         memory_recall,
         model_registry,
         kg_store,
-        kg_episode_repo,
+        kg_episode_store,
         ingestion_adapter,
         goal_adapter,
         procedure_store,
@@ -1436,7 +1436,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         let mut turn_text = String::new();
 
         // Phase 6d: clones for real-time tool-result extraction (fire-and-forget).
-        let kg_episode_repo_inner = kg_episode_repo.clone();
+        let kg_episode_store_inner = kg_episode_store.clone();
         let kg_store_inner = kg_store.clone();
         let agent_id_inner = agent_id_clone.clone();
         // Track current tool name so the extractor can dispatch by name.
@@ -1514,17 +1514,15 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
                     // Phase 6d: real-time graph extraction from tool output.
                     // Non-blocking — fires in a background task so the
                     // execution loop never waits.
-                    if let (Some(ref ep_repo), Some(ref kg)) =
-                        (&kg_episode_repo_inner, &kg_store_inner)
+                    if let (Some(ref ep_store), Some(ref kg)) =
+                        (&kg_episode_store_inner, &kg_store_inner)
                     {
                         let tool_name_cl = current_tool_name.clone();
                         let tool_id_cl = tool_id.clone();
                         let result_cl = result.clone();
                         let session_id_cl = session_id_inner.clone();
                         let agent_id_cl = agent_id_inner.clone();
-                        let ep_store: Arc<dyn zbot_stores_traits::KgEpisodeStore> = Arc::new(
-                            zbot_stores_sqlite::GatewayKgEpisodeStore::new(ep_repo.clone()),
-                        );
+                        let ep_store = ep_store.clone();
                         let kg_cl = kg.clone();
                         let intake_cl = ingestion_adapter.clone();
                         tokio::spawn(async move {
@@ -1642,17 +1640,8 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
                         .ok()
                         .flatten()
                         .and_then(|s| s.ward_id);
-                    // Phase C: indexer is trait-routed. Build a
-                    // KgEpisodeStore wrapper from the SQLite repo (or
-                    // re-use whatever trait impl is wired). graph_storage
-                    // -> kg_store is already on the runner via
-                    // set_kg_store, so we pass that directly.
-                    let kg_episode_store_for_indexer: Option<
-                        Arc<dyn zbot_stores_traits::KgEpisodeStore>,
-                    > = kg_episode_repo.as_ref().map(|r| {
-                        Arc::new(zbot_stores_sqlite::GatewayKgEpisodeStore::new(r.clone()))
-                            as Arc<dyn zbot_stores_traits::KgEpisodeStore>
-                    });
+                    // Both indexer dependencies are backend-neutral stores.
+                    let kg_episode_store_for_indexer = kg_episode_store.clone();
                     let kg_store_for_indexer = kg_store.clone();
                     let paths_for_indexer = paths.clone();
                     tokio::spawn(async move {

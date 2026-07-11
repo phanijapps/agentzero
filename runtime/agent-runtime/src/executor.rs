@@ -1194,6 +1194,56 @@ impl AgentExecutor {
 
                             // Check for generative UI markers
                             if let Ok(parsed) = serde_json::from_str::<Value>(&output) {
+                                // A work surface is declarative data only. It is validated by
+                                // gateway-execution before any client can receive it.
+                                if parsed
+                                    .get("__work_surface")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false)
+                                {
+                                    if let Some(surface) = parsed.get("surface").cloned() {
+                                        if let Ok(surface) = serde_json::from_value(surface) {
+                                            on_event(StreamEvent::WorkSurface {
+                                                timestamp: chrono::Utc::now().timestamp_millis()
+                                                    as u64,
+                                                surface,
+                                            });
+                                        }
+                                    }
+                                }
+                                if parsed
+                                    .get("__work_surface_updated")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false)
+                                {
+                                    if let Some(surface) = parsed
+                                        .get("surface")
+                                        .cloned()
+                                        .and_then(|value| serde_json::from_value(value).ok())
+                                    {
+                                        on_event(StreamEvent::WorkSurfaceUpdated {
+                                            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                                            surface,
+                                        });
+                                    }
+                                }
+                                if parsed
+                                    .get("__work_surface_deleted")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false)
+                                {
+                                    if let Some(surface_id) = parsed
+                                        .get("surface_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .filter(|id| !id.is_empty() && id.len() <= 128)
+                                    {
+                                        on_event(StreamEvent::WorkSurfaceDeleted {
+                                            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                                            surface_id: surface_id.to_owned(),
+                                        });
+                                    }
+                                }
+
                                 // Check for show_content marker
                                 if parsed
                                     .get("__show_content")

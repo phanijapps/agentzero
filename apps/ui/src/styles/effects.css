@@ -1,119 +1,31 @@
-/* ============================================================================
-   FUTURISTIC EFFECTS
-   Page-void background, ambient scan beam, corner reticles, holo helpers.
-   Tunable via --fx-glow / --fx-grid / --fx-scan vars on :root.
-   ============================================================================ */
+/* Quiet Instrument effects are intentionally sparse. The interface conveys
+   activity through stateful controls, not decorative overlays. */
 
-/* ---- page void + 32px grid -------------------------------------------------- */
 body {
-  background-color: #02030a;
-  background-image:
-    radial-gradient(ellipse 80% 60% at 50% 0%,
-      color-mix(in srgb, var(--fx-accent) 12%, transparent),
-      transparent 70%),
-    linear-gradient(rgba(120, 160, 255, var(--fx-grid)) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(120, 160, 255, var(--fx-grid)) 1px, transparent 1px);
-  background-size: auto, 32px 32px, 32px 32px;
-  background-position: center, center, center;
-  background-attachment: fixed;
+  background: var(--background);
   min-height: 100vh;
   min-height: 100dvh;
 }
 
-/* ---- ambient scan beam (sweeps top-edge of app shell every 6s) ------------- */
-.app-shell {
-  position: relative;
-}
-
-.app-shell::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--fx-accent), transparent);
-  opacity: 0.7;
-  animation: fx-scanbeam 6s linear infinite;
-  box-shadow: 0 0 calc(12px * var(--fx-glow)) var(--fx-accent);
-  pointer-events: none;
-  z-index: 1;
-}
-
-@keyframes fx-scanbeam {
-  0%   { transform: translateY(0);     opacity: 0; }
-  10%  { opacity: 0.8; }
-  100% { transform: translateY(100vh); opacity: 0; }
-}
-
-/* ---- corner reticles (HUD brackets) ---------------------------------------- */
-.app-shell__reticle {
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  border-color: var(--fx-accent);
-  pointer-events: none;
-  opacity: 0.7;
-  box-shadow: 0 0 calc(8px * var(--fx-glow)) var(--fx-accent);
-  z-index: 2;
-}
-
-.app-shell__reticle--tl { top: 8px;    left: 8px;   border-top: 1px solid; border-left: 1px solid; }
-.app-shell__reticle--tr { top: 8px;    right: 8px;  border-top: 1px solid; border-right: 1px solid; }
-.app-shell__reticle--bl { bottom: 8px; left: 8px;   border-bottom: 1px solid; border-left: 1px solid; }
-.app-shell__reticle--br { bottom: 8px; right: 8px;  border-bottom: 1px solid; border-right: 1px solid; }
-
-/* hide reticles on small screens — they fight with mobile chrome */
-@media (max-width: 768px) {
-  .app-shell__reticle { display: none; }
-}
-
-/* ---- optional CRT scanlines overlay (toggle via <html data-scan="on">) ---- */
-html[data-scan="on"] body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  background:
-    repeating-linear-gradient(to bottom,
-      rgba(120, 160, 255, 0.04) 0 1px,
-      transparent 1px 3px),
-    radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.45) 100%);
-  mix-blend-mode: screen;
-  opacity: var(--fx-scan);
-}
-
-/* ---- holo card helper (use on cards that should glow) --------------------- */
 .holo {
-  background: linear-gradient(180deg, rgba(13, 16, 24, 0.85), rgba(10, 12, 20, 0.85));
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.3),
-    0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 8%, transparent);
-  backdrop-filter: blur(6px);
+  background: var(--background-surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
 }
 
 .holo--strong {
-  border-color: color-mix(in srgb, var(--fx-accent) 30%, transparent);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.4),
-    0 0 calc(40px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 25%, transparent),
-    inset 0 0 30px color-mix(in srgb, var(--fx-accent) 4%, transparent);
-  backdrop-filter: blur(8px);
+  border-color: color-mix(in srgb, var(--fx-accent) 42%, var(--border));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-/* ---- accent gradient (cyan→violet) for primary affordances --------------- */
 .fx-gradient {
-  background: linear-gradient(135deg, var(--fx-accent), color-mix(in srgb, var(--fx-accent) 60%, #c08bff));
+  background: var(--fx-accent);
   color: var(--primary-foreground);
-  box-shadow: 0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 50%, transparent);
+  box-shadow: none;
 }
 
-/* ---- streaming block cursor ---------------------------------------------- */
 .fx-cursor {
   color: var(--fx-accent);
-  text-shadow: 0 0 calc(10px * var(--fx-glow)) var(--fx-accent);
   animation: fx-blink 1s steps(2) infinite;
 }
 
@@ -121,8 +33,6 @@ html[data-scan="on"] body::after {
   50% { opacity: 0; }
 }
 
-/* ---- respect prefers-reduced-motion -------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
-  .app-shell::before { animation: none; opacity: 0; }
   .fx-cursor { animation: none; }
 }

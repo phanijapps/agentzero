@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use zbot_conversation::MessageStore;
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 use zbot_trace::TraceWriter;
 
 /// An appended row on a session's conversation stream.

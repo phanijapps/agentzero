@@ -34,6 +34,7 @@ mod sessions;
 mod settings;
 mod setup;
 mod skills;
+mod surfaces;
 mod tools;
 mod traces;
 mod upload;
@@ -123,6 +124,7 @@ pub fn create_http_router(
             get(autonomy::list_items).post(autonomy::create_item),
         )
         .route("/api/autonomy/:id", get(autonomy::get_item))
+        .route("/api/surfaces/actions", post(surfaces::invoke_action))
         .route(
             "/api/autonomy/:id/transition",
             post(autonomy::transition_item),

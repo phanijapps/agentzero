@@ -12,8 +12,8 @@ use execution_state::{DelegationType, StateService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::TempDir;
+use zbot_runtime_sqlite::DatabaseManager;
 use zbot_stores_domain::MemoryFact;
-use zbot_stores_sqlite::DatabaseManager;
 
 // ============================================================================
 // Test Setup

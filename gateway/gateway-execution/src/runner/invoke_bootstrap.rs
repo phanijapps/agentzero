@@ -24,7 +24,7 @@ use gateway_services::{
     AgentService, McpService, ModelRegistry, ProviderService, SharedVaultPaths, SkillService,
 };
 use tokio::sync::RwLock;
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::agent_pool::AgentResultBus;
 use crate::config::ExecutionConfig;
@@ -1364,7 +1364,7 @@ mod tests {
     use gateway_events::EventBus;
     use gateway_services::VaultPaths;
     use tokio::sync::RwLock;
-    use zbot_stores_sqlite::DatabaseManager;
+    use zbot_runtime_sqlite::DatabaseManager;
 
     #[test]
     fn ward_doctrine_is_graduated_true_for_canonical_agents_md() {

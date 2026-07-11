@@ -15,7 +15,7 @@ use crate::services::{AgentService, McpService, ProviderService, SharedVaultPath
 use api_logs::LogService;
 use execution_state::StateService;
 use std::sync::Arc;
-use zbot_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 /// Execution state for a conversation.
 #[derive(Debug, Clone)]
@@ -89,7 +89,7 @@ impl RuntimeService {
             None, // embedding_client
             2,    // default max_parallel_agents
             None, // kg_store
-            None, // kg_episode_repo
+            None, // kg_episode_store
             None, // ingestion_adapter
             None, // goal_adapter
             None, // procedure_store
@@ -121,7 +121,7 @@ impl RuntimeService {
         embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
         max_parallel_agents: u32,
         kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-        kg_episode_repo: Option<Arc<zbot_stores_sqlite::KgEpisodeRepository>>,
+        kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
         ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
         goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
         procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
@@ -172,8 +172,8 @@ impl RuntimeService {
             runner.set_kg_store(ks);
         }
 
-        if let Some(repo) = kg_episode_repo {
-            runner.set_kg_episode_repo(repo);
+        if let Some(repo) = kg_episode_store {
+            runner.set_kg_episode_store(repo);
         }
 
         if let Some(a) = ingestion_adapter {

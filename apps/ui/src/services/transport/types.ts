@@ -614,6 +614,26 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
+export interface WorkSurfaceComponent {
+  id: string;
+  type: "DecisionMatrix" | "EvidenceTable" | "AssumptionRegister" | "PlanChecklist" | "ApprovalGate" | "OpenLoops";
+  props?: Record<string, unknown>;
+}
+
+export interface WorkSurface {
+  surface_id: string;
+  catalog_id: "zbot/work-surface/v1";
+  components: WorkSurfaceComponent[];
+  data: Record<string, unknown>;
+}
+
+export interface SurfaceCreatedEvent extends StreamEvent {
+  type: "surface_created";
+  session_id: string;
+  execution_id: string;
+  surface: WorkSurface;
+}
+
 export type EventCallback = (event: StreamEvent) => void;
 export type UnsubscribeFn = () => void;
 

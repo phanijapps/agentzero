@@ -90,6 +90,21 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   unblocked by adding generic finding persistence/query APIs to Engram and
   moving zbot's sidecar-backed finding read model behind that public port.
 
+## engram-host-application-portability-contract
+
+- **Engram upstream follow-up:** Engram needs a backend-neutral host-application
+  contract before semantic persistence can move fully out of zbot. The contract
+  must cover a provider facade, backend selection and lifecycle, capability
+  discovery, facts/graph/episodes/evidence/ontology/taxonomy/belief APIs,
+  atomic batches, embeddings, unified recall, maintenance, observability,
+  stable identifiers and metadata, errors, conformance testing, and
+  migration/export. Blocked on Engram API and conformance-suite design;
+  unblocked when a host can change SQLite to another supported backend through
+  Engram configuration and dependencies, without owning database connections,
+  schema/migration internals, or backend-specific semantic queries. Detailed
+  requirements are maintained in
+  `~/Documents/engram-host-application-requirements.md`.
+
 ## spec-driven-research-development-contract-defect
 
 - **Defect:** The spec-driven research/development loop uses markdown prose as
@@ -128,3 +143,11 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   on the conversation-store-revamp base (append-only `messages` + `checkpoints`)
   landing; unblocked by a follow-up spec that adds the summary writer +
   context-window assembly.
+
+## personal-finance-agui-modules
+
+- **Agent-driven-surfaces follow-up:** Add read-only personal-finance surfaces:
+  watchlist, allocation chart, research brief, risk flags, and market calendar.
+  Blocked on a chosen market-data provider and an explicit personal-data
+  retention policy; unblocked by a focused provider/configuration spec. Never
+  add broker credentials, trade execution, or personalized buy/sell directives.

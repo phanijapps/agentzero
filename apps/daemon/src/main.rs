@@ -132,6 +132,11 @@ struct Args {
     /// Disable serving the web dashboard
     #[arg(long)]
     no_dashboard: bool,
+
+    /// Disable capability-gated agent work surfaces. They are enabled by
+    /// default for the native web UI and can be rolled back without a deploy.
+    #[arg(long)]
+    no_agent_surfaces: bool,
 }
 
 /// Merged logging configuration from settings.json and CLI args.
@@ -413,6 +418,7 @@ async fn main() -> Result<()> {
             websocket_port: args.ws_port,
             http_port: args.http_port,
             legacy_ws_port_enabled: args.legacy_ws_port_enabled,
+            agent_surfaces_enabled: !args.no_agent_surfaces,
             ..Default::default()
         }
     };
@@ -424,6 +430,9 @@ async fn main() -> Result<()> {
     }
     if args.no_dashboard {
         gateway_config.serve_dashboard = false;
+    }
+    if args.no_agent_surfaces {
+        gateway_config.agent_surfaces_enabled = false;
     }
 
     // Create and start server

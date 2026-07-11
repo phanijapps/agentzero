@@ -271,6 +271,54 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                         // publish the corresponding stream events.
                         if let Ok(parsed) = serde_json::from_str::<Value>(&result_text) {
                             if parsed
+                                .get("__work_surface")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false)
+                            {
+                                if let Some(surface) = parsed
+                                    .get("surface")
+                                    .cloned()
+                                    .and_then(|value| serde_json::from_value(value).ok())
+                                {
+                                    on_event(StreamEvent::WorkSurface {
+                                        timestamp: current_timestamp(),
+                                        surface,
+                                    });
+                                }
+                            }
+                            if parsed
+                                .get("__work_surface_updated")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false)
+                            {
+                                if let Some(surface) = parsed
+                                    .get("surface")
+                                    .cloned()
+                                    .and_then(|value| serde_json::from_value(value).ok())
+                                {
+                                    on_event(StreamEvent::WorkSurfaceUpdated {
+                                        timestamp: current_timestamp(),
+                                        surface,
+                                    });
+                                }
+                            }
+                            if parsed
+                                .get("__work_surface_deleted")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false)
+                            {
+                                if let Some(surface_id) = parsed
+                                    .get("surface_id")
+                                    .and_then(Value::as_str)
+                                    .filter(|id| !id.is_empty() && id.len() <= 128)
+                                {
+                                    on_event(StreamEvent::WorkSurfaceDeleted {
+                                        timestamp: current_timestamp(),
+                                        surface_id: surface_id.to_owned(),
+                                    });
+                                }
+                            }
+                            if parsed
                                 .get("__session_title_changed__")
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false)

@@ -26,16 +26,26 @@ pub struct WebSocketHandler {
     sessions: Arc<SessionRegistry>,
     runtime: Arc<RuntimeService>,
     subscriptions: Arc<SubscriptionManager>,
+    agent_surfaces_enabled: bool,
 }
 
 impl WebSocketHandler {
     /// Create a new WebSocket handler.
     pub fn new(event_bus: Arc<EventBus>, runtime: Arc<RuntimeService>) -> Self {
+        Self::new_with_surfaces(event_bus, runtime, false)
+    }
+
+    pub fn new_with_surfaces(
+        event_bus: Arc<EventBus>,
+        runtime: Arc<RuntimeService>,
+        agent_surfaces_enabled: bool,
+    ) -> Self {
         Self {
             event_bus,
             sessions: Arc::new(SessionRegistry::new()),
             runtime,
             subscriptions: Arc::new(SubscriptionManager::new()),
+            agent_surfaces_enabled,
         }
     }
 
@@ -93,12 +103,14 @@ impl WebSocketHandler {
 
         let router_subscriptions = self.subscriptions.clone();
         let router_runtime = self.runtime.clone();
+        let agent_surfaces_enabled = self.agent_surfaces_enabled;
         let mut router_event_rx = self.event_bus.subscribe_all();
         let mut router_shutdown = shutdown.subscribe();
         tokio::spawn(async move {
             Self::run_event_router(
                 router_subscriptions,
                 router_runtime,
+                agent_surfaces_enabled,
                 &mut router_event_rx,
                 &mut router_shutdown,
             )
@@ -110,6 +122,7 @@ impl WebSocketHandler {
     async fn run_event_router(
         router_subscriptions: Arc<SubscriptionManager>,
         router_runtime: Arc<RuntimeService>,
+        agent_surfaces_enabled: bool,
         router_event_rx: &mut tokio::sync::broadcast::Receiver<GatewayEvent>,
         router_shutdown: &mut broadcast::Receiver<()>,
     ) {
@@ -118,6 +131,9 @@ impl WebSocketHandler {
                 result = router_event_rx.recv() => {
                     match result {
                         Ok(event) => {
+                            if !agent_surfaces_enabled && matches!(event, GatewayEvent::SurfaceCreated { .. } | GatewayEvent::SurfaceUpdated { .. } | GatewayEvent::SurfaceDeleted { .. } | GatewayEvent::SurfaceValidationFailed { .. }) {
+                                continue;
+                            }
                             match &event {
                                 GatewayEvent::DelegationCompleted { session_id, child_agent_id, .. } => {
                                     tracing::debug!(session_id = %session_id, agent = %child_agent_id, "Delegation completed");
@@ -797,6 +813,11 @@ async fn handle_client_message(
                 let _ = session.send(ServerMessage::Unsubscribed { conversation_id });
             }
         }
+        ClientMessage::PresentationCapabilities { catalogs } => {
+            subscriptions
+                .set_surface_catalogs(&session_id.to_string(), catalogs.into_iter().collect())
+                .await;
+        }
     }
 
     Ok(())
@@ -804,6 +825,48 @@ async fn handle_client_message(
 
 pub(crate) fn gateway_event_to_server_message(event: GatewayEvent) -> Option<ServerMessage> {
     match event {
+        GatewayEvent::SurfaceCreated {
+            session_id,
+            execution_id,
+            surface,
+        } => Some(ServerMessage::SurfaceCreated {
+            session_id,
+            execution_id,
+            surface: serde_json::to_value(surface).expect("work surface is serializable"),
+            seq: None,
+        }),
+        GatewayEvent::SurfaceUpdated {
+            session_id,
+            execution_id,
+            surface,
+        } => Some(ServerMessage::SurfaceUpdated {
+            session_id,
+            execution_id,
+            surface: serde_json::to_value(surface).expect("work surface is serializable"),
+            seq: None,
+        }),
+        GatewayEvent::SurfaceDeleted {
+            session_id,
+            execution_id,
+            surface_id,
+        } => Some(ServerMessage::SurfaceDeleted {
+            session_id,
+            execution_id,
+            surface_id,
+            seq: None,
+        }),
+        GatewayEvent::SurfaceValidationFailed {
+            session_id,
+            execution_id,
+            surface_id,
+            reason,
+        } => Some(ServerMessage::SurfaceValidationFailed {
+            session_id,
+            execution_id,
+            surface_id,
+            reason,
+            seq: None,
+        }),
         GatewayEvent::AgentStarted {
             agent_id,
             session_id,

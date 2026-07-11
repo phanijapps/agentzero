@@ -831,6 +831,12 @@ export class HttpTransport implements Transport {
           this.setConnectionState({ status: "connected" });
           this.startHeartbeat();
           this.setupBrowserEventHandlers();
+          // Opt in after every connect/reconnect. Older gateways ignore this
+          // additive frame; gateways with surfaces keep all legacy traffic intact.
+          this.ws?.send(JSON.stringify({
+            type: "presentation_capabilities",
+            catalogs: ["zbot/work-surface/v1"],
+          }));
           this.resubscribeAll();
           resolve({ success: true });
         };

@@ -592,8 +592,8 @@ pub async fn trigger_distillation(
 ///
 /// Counts come from trait-erased stores where possible: `kg_store`
 /// for entity/relationship counts and `memory_store` for fact count.
-/// `episode_repo` and `distillation_repo` remain on their concrete
-/// repos — neither has been migrated to a `zbot-stores` trait yet.
+/// Distillation run status remains on the conversation database; semantic
+/// counts route through backend-neutral stores.
 pub async fn graph_stats(
     State(state): State<AppState>,
 ) -> Result<Json<AggregateGraphStats>, (StatusCode, Json<ErrorResponse>)> {
@@ -618,12 +618,9 @@ pub async fn graph_stats(
         None => 0,
     };
 
-    // Episode count: prefer the trait surface; fall back to the SQLite
-    // repo when only that is available (legacy / minimal AppStates).
-    let episodes = match (&state.episode_store, &state.episode_repo) {
-        (Some(store), _) => store.episode_stats().await.map(|s| s.total).unwrap_or(0),
-        (None, Some(repo)) => repo.count().unwrap_or(0),
-        (None, None) => 0,
+    let episodes = match &state.episode_store {
+        Some(store) => store.episode_stats().await.map(|s| s.total).unwrap_or(0),
+        None => 0,
     };
 
     // Distillation stats

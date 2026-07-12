@@ -6,7 +6,6 @@
 import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
 
 // ─── Mock transport ───────────────────────────────────────────────────────────
 
@@ -20,9 +19,9 @@ vi.mock("@/services/transport", () => ({
 }));
 
 // Mock all the heavy child pages so they don't need their own transport
-vi.mock("./features/setup", () => ({
-  SetupWizard: () => <div>SetupWizard</div>,
-  SetupGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+vi.mock("./features/commissioning", () => ({
+  CommissioningScreen: () => <div>CommissioningScreen</div>,
+  CommissioningGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("./features/agent/WebAgentsPanel", () => ({ WebAgentsPanel: () => <div>WebAgentsPanel</div> }));
 vi.mock("./features/settings/WebSettingsPanel", () => ({ WebSettingsPanel: () => <div>WebSettingsPanel</div> }));
@@ -76,7 +75,7 @@ describe("App — initialization flow", () => {
     await waitFor(() => {
       expect(screen.queryByText(/connecting to gateway/i)).toBeNull();
     });
-    // The setup page redirect means we end up on the app shell
+    // Commissioning guard is mocked here; verify the app shell still starts.
     // Just check that the error state is NOT showing
     expect(screen.queryByText(/connection failed/i)).toBeNull();
   });

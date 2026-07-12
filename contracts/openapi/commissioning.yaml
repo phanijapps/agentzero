@@ -1,0 +1,174 @@
+openapi: 3.0.3
+info:
+  title: z-Bot Agent Commissioning API
+  version: 1.0.0
+  description: Durable first-run commissioning for a local z-Bot installation.
+x-spec: docs/specs/agent-commissioning/spec.md
+paths:
+  /api/commissioning/status:
+    get:
+      operationId: getCommissioningStatus
+      summary: Get durable commissioning readiness
+      responses:
+        '200':
+          description: Redacted commissioning status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommissioningStatus'
+  /api/commissioning/local/diagnose:
+    post:
+      operationId: diagnoseLocalRuntime
+      summary: Diagnose the fixed local model runtime
+      responses:
+        '200':
+          description: Local runtime state and recovery action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalDiagnosis'
+  /api/commissioning/complete:
+    post:
+      operationId: completeCommissioning
+      summary: Validate and persist a complete commission
+      description: Available only to the local z-Bot browser origin or a native local client.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommissioningRequest'
+      responses:
+        '200':
+          description: Redacted completed commission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommissioningStatus'
+        '400':
+          description: Recoverable validation or provider failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommissioningError'
+components:
+  schemas:
+    CommissioningStatus:
+      type: object
+      required: [state, semanticProfile]
+      properties:
+        state:
+          type: string
+          enum: [not_started, in_progress, needs_attention, complete]
+        recoveryCode:
+          type: string
+          nullable: true
+        semanticProfile:
+          $ref: '#/components/schemas/SemanticProfile'
+    SemanticProfile:
+      type: object
+      required: [version, basePackIds, domainPackIds, provisioning]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        basePackIds:
+          type: array
+          items: { type: string }
+          example: [zbot.base:v1, zbot.general:v1]
+        domainPackIds:
+          type: array
+          items: { type: string }
+        provisioning:
+          type: string
+          enum: [deferred]
+    CommissioningRequest:
+      type: object
+      additionalProperties: false
+      required: [displayName, userName, interests, primaryFocus, domains, provider]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        profile:
+          type: string
+          maxLength: 2000
+          description: Optional working preferences for the agent.
+        userName:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: Stored only in local z-Bot data and not returned by this API.
+        interests:
+          type: array
+          minItems: 1
+          maxItems: 12
+          description: Stored only in local z-Bot data and not returned by this API.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 60
+        hobbies:
+          type: array
+          maxItems: 12
+          description: Optional local-only profile details.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 80
+        dateOfBirth:
+          type: string
+          format: date
+          description: Optional local-only profile detail; not returned by this API.
+        primaryFocus:
+          type: string
+          enum: [think_organize, build_code, research_learn, run_work]
+        domains:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [personal_knowledge, software, writing, learning, planning]
+        provider:
+          $ref: '#/components/schemas/ProviderSelection'
+    ProviderSelection:
+      type: object
+      additionalProperties: false
+      required: [kind, model]
+      properties:
+        kind:
+          type: string
+          enum: [cloud, local]
+        presetId:
+          type: string
+          description: Required for cloud; resolved server-side to a known preset.
+        model:
+          type: string
+          minLength: 1
+          maxLength: 160
+        apiKey:
+          type: string
+          writeOnly: true
+          minLength: 1
+          maxLength: 1024
+    LocalDiagnosis:
+      type: object
+      required: [state, recoveryCode]
+      properties:
+        state:
+          type: string
+          enum: [unavailable, unreachable, no_model, ready]
+        recoveryCode:
+          type: string
+        models:
+          type: array
+          items: { type: string }
+    CommissioningError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string

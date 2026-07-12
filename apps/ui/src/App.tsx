@@ -23,7 +23,7 @@ import {
   Archive,
 } from "lucide-react";
 import { initializeTransport, getTransport } from "@/services/transport";
-import { SetupWizard, SetupGuard } from "./features/setup";
+import { CommissioningGuard, CommissioningScreen } from "./features/commissioning";
 import { WebAgentsPanel } from "./features/agent/WebAgentsPanel";
 import { WebSettingsPanel } from "./features/settings/WebSettingsPanel";
 import { WebIntegrationsPanel } from "./features/integrations/WebIntegrationsPanel";
@@ -226,12 +226,13 @@ function App() {
         }}
       />
       <Routes>
-          {/* Setup wizard — renders without app shell */}
-          <Route path="/setup" element={<SetupWizard />} />
+          {/* Commissioning renders without the application shell. */}
+          <Route path="/commission" element={<CommissioningScreen />} />
+          <Route path="/setup" element={<Navigate to="/commission" replace />} />
 
           {/* Main app with sidebar */}
           <Route path="/*" element={
-            <SetupGuard>
+            <CommissioningGuard>
               <WebAppShell
                 connectionStatus={connectionStatus}
                 version={daemonVersion}
@@ -266,7 +267,7 @@ function App() {
                   <Route path="/mcps" element={<Navigate to="/integrations" replace />} />
                 </Routes>
               </WebAppShell>
-            </SetupGuard>
+            </CommissioningGuard>
           } />
         </Routes>
     </BrowserRouter>

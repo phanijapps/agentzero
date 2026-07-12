@@ -100,7 +100,9 @@ import type {
   GraphSubgraphResponse,
   GraphNeighborOptions,
   GraphSubgraphOptions,
-  SetupStatus,
+  CommissioningStatus,
+  CommissioningRequest,
+  LocalDiagnosis,
   SessionState,
   Artifact,
   EmbeddingsHealth,
@@ -437,12 +439,16 @@ export class HttpTransport implements Transport {
     return { success: false, error: result.error || result.data?.error || "Failed to update execution settings" };
   }
 
-  async getSetupStatus(): Promise<TransportResult<SetupStatus>> {
-    return this.get<SetupStatus>("/api/setup/status");
+  async getCommissioningStatus(): Promise<TransportResult<CommissioningStatus>> {
+    return this.get<CommissioningStatus>("/api/commissioning/status");
   }
 
-  async getMcpDefaults(): Promise<TransportResult<McpServerConfig[]>> {
-    return this.get<McpServerConfig[]>("/api/setup/mcp-defaults");
+  async diagnoseLocalRuntime(): Promise<TransportResult<LocalDiagnosis>> {
+    return this.post<LocalDiagnosis>("/api/commissioning/local/diagnose", {});
+  }
+
+  async completeCommissioning(request: CommissioningRequest): Promise<TransportResult<CommissioningStatus>> {
+    return this.post<CommissioningStatus>("/api/commissioning/complete", request);
   }
 
   // =========================================================================

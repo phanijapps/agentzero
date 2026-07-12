@@ -74,7 +74,11 @@ export type {
   CreateCronJobRequest,
   UpdateCronJobRequest,
   CronTriggerResult,
-  SetupStatus,
+  CommissioningStatus,
+  CommissioningRequest,
+  LocalDiagnosis,
+  LocalRuntimeState,
+  SemanticProfile,
   // Embedding backend types
   EmbeddingsBackend,
   EmbeddingsStatus,

@@ -39,6 +39,125 @@ pub struct AppSettings {
     /// (`exposeToLan: true`) applies.
     #[serde(default)]
     pub network: discovery::DiscoveryConfig,
+
+    /// Durable first-run commissioning choices. This deliberately records
+    /// portable semantic intent only; provisioning stays outside the gateway.
+    #[serde(default)]
+    pub commissioning: CommissioningSettings,
+}
+
+/// Durable readiness state for the Agent Commissioning flow.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommissioningState {
+    #[default]
+    NotStarted,
+    InProgress,
+    NeedsAttention,
+    Complete,
+}
+
+/// Portable semantic choices consumed by a later semantic provider integration.
+/// No Engram identifier, crate type, or storage path belongs in this type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticProfile {
+    pub version: u32,
+    pub base_pack_ids: Vec<String>,
+    pub domain_pack_ids: Vec<String>,
+    pub provisioning: SemanticProvisioning,
+}
+
+impl Default for SemanticProfile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            base_pack_ids: vec!["zbot.base:v1".to_string(), "zbot.general:v1".to_string()],
+            domain_pack_ids: Vec::new(),
+            provisioning: SemanticProvisioning::Deferred,
+        }
+    }
+}
+
+/// Commissioning owns the selection; semantic provisioning is intentionally
+/// deferred until the provider integration consumes this profile.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticProvisioning {
+    #[default]
+    Deferred,
+}
+
+/// User-owned configuration collected during commissioning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommissioningSettings {
+    pub version: u32,
+    pub state: CommissioningState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_focus: Option<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Personal details the user elects to keep in local z-Bot data. These are
+    /// deliberately separate from the agent's working instructions, so they
+    /// are not copied into `SOUL.md` or sent as model context by commissioning.
+    #[serde(default)]
+    pub user_profile: UserProfile,
+    #[serde(default = "default_commissioning_autonomy")]
+    pub autonomy: String,
+    #[serde(default = "default_commissioning_privacy")]
+    pub privacy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub semantic_profile: SemanticProfile,
+}
+
+/// A locally persisted, user-owned profile collected during commissioning.
+///
+/// This is configuration data, not semantic memory. It has no backend or
+/// provider dependency and is intentionally omitted from status responses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub interests: Vec<String>,
+    #[serde(default)]
+    pub hobbies: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_of_birth: Option<String>,
+}
+
+impl Default for CommissioningSettings {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            state: CommissioningState::NotStarted,
+            primary_focus: None,
+            domains: Vec::new(),
+            profile: None,
+            user_profile: UserProfile::default(),
+            autonomy: default_commissioning_autonomy(),
+            privacy: default_commissioning_privacy(),
+            provider_id: None,
+            model: None,
+            semantic_profile: SemanticProfile::default(),
+        }
+    }
+}
+
+fn default_commissioning_autonomy() -> String {
+    "guided".to_string()
+}
+
+fn default_commissioning_privacy() -> String {
+    "local_preferred".to_string()
 }
 
 /// Execution settings for controlling agent concurrency and delegation behavior.
@@ -539,6 +658,38 @@ mod tests {
         assert!(settings.tools.offload_large_results);
         // Logging is enabled by default (quiet mode)
         assert!(settings.logs.enabled);
+        assert_eq!(settings.commissioning.state, CommissioningState::NotStarted);
+        assert_eq!(
+            settings.commissioning.semantic_profile.base_pack_ids,
+            ["zbot.base:v1", "zbot.general:v1"]
+        );
+    }
+
+    #[test]
+    fn commissioning_settings_round_trip_without_semantic_provider_details() {
+        let dir = tempdir().unwrap();
+        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let mut settings = AppSettings::default();
+        settings.commissioning.state = CommissioningState::Complete;
+        settings.commissioning.primary_focus = Some("research_learn".to_string());
+        settings.commissioning.domains = vec!["learning".to_string()];
+        settings.commissioning.user_profile = UserProfile {
+            name: Some("Ada".to_string()),
+            interests: vec!["Learning".to_string()],
+            hobbies: vec!["Reading".to_string()],
+            date_of_birth: Some("1990-01-01".to_string()),
+        };
+        settings.commissioning.semantic_profile.domain_pack_ids =
+            vec!["zbot.learning:v1".to_string()];
+
+        service.save(&settings).unwrap();
+        service.invalidate_cache();
+        let loaded = service.load().unwrap();
+
+        assert_eq!(loaded.commissioning, settings.commissioning);
+        let json = serde_json::to_string(&loaded.commissioning).unwrap();
+        assert!(!json.contains("engram"));
+        assert!(!json.contains("storagePath"));
     }
 
     #[test]

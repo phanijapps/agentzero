@@ -89,7 +89,9 @@ import type {
   GraphSubgraphResponse,
   GraphNeighborOptions,
   GraphSubgraphOptions,
-  SetupStatus,
+  CommissioningStatus,
+  CommissioningRequest,
+  LocalDiagnosis,
   SessionState,
   Artifact,
   EmbeddingsHealth,
@@ -298,14 +300,16 @@ export interface Transport {
   updateExecutionSettings(settings: ExecutionSettings): Promise<TransportResult<ExecutionSettings & { restartRequired: boolean }>>;
 
   // =========================================================================
-  // Setup Wizard Operations
+  // Agent Commissioning Operations
   // =========================================================================
+  /** Durable server-owned first-run readiness. */
+  getCommissioningStatus(): Promise<TransportResult<CommissioningStatus>>;
 
-  /** Check if first-time setup is needed */
-  getSetupStatus(): Promise<TransportResult<SetupStatus>>;
+  /** Diagnose only the fixed local model runtime. */
+  diagnoseLocalRuntime(): Promise<TransportResult<LocalDiagnosis>>;
 
-  /** Get sanitized MCP server templates for wizard */
-  getMcpDefaults(): Promise<TransportResult<McpServerConfig[]>>;
+  /** Validate and persist one complete first-run commission. */
+  completeCommissioning(request: CommissioningRequest): Promise<TransportResult<CommissioningStatus>>;
 
   // =========================================================================
   // Execution Log Operations

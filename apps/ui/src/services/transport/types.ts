@@ -580,10 +580,46 @@ export interface ExecutionSettingsResponse {
   error?: string;
 }
 
-/** Setup wizard status check */
-export interface SetupStatus {
-  setupComplete: boolean;
-  hasProviders: boolean;
+export type CommissioningState = "not_started" | "in_progress" | "needs_attention" | "complete";
+export type LocalRuntimeState = "unavailable" | "unreachable" | "no_model" | "ready";
+
+export interface SemanticProfile {
+  version: number;
+  basePackIds: string[];
+  domainPackIds: string[];
+  provisioning: "deferred";
+}
+
+export interface CommissioningStatus {
+  state: CommissioningState;
+  recoveryCode?: string | null;
+  semanticProfile: SemanticProfile;
+}
+
+export interface LocalDiagnosis {
+  state: LocalRuntimeState;
+  recoveryCode: string;
+  models?: string[];
+}
+
+export interface CommissioningRequest {
+  displayName: string;
+  profile?: string;
+  /** Stored only in local z-Bot data; commissioning never adds it to model instructions. */
+  userName: string;
+  interests: string[];
+  hobbies?: string[];
+  /** Optional ISO-8601 calendar date stored only in local z-Bot data. */
+  dateOfBirth?: string;
+  primaryFocus: "think_organize" | "build_code" | "research_learn" | "run_work";
+  domains: Array<"personal_knowledge" | "software" | "writing" | "learning" | "planning">;
+  provider: {
+    kind: "cloud" | "local";
+    presetId?: "openai" | "deepseek" | "openrouter" | "z-ai" | "mistral";
+    model: string;
+    /** Write-only. Never place this in component state after submit. */
+    apiKey?: string;
+  };
 }
 
 // ============================================================================

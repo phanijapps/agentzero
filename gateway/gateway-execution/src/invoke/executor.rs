@@ -38,7 +38,7 @@ use execution_state::StateService;
 use gateway_services::agents::Agent;
 use gateway_services::models::{ModelRegistry, DEFAULT_MAX_INPUT_TOKENS};
 use gateway_services::providers::Provider;
-use gateway_services::{McpService, SettingsService, SkillService};
+use gateway_services::{McpService, SettingsService, SkillService, VaultPaths};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -736,7 +736,7 @@ fn build_runtime_middleware_pipeline(
 /// Encapsulates the complex setup process for creating an executor
 /// with all required components (LLM client, tools, MCP, middleware).
 pub struct ExecutorBuilder {
-    config_dir: PathBuf,
+    vault_dir: PathBuf,
     tool_settings: ToolSettings,
     fact_store: Option<Arc<dyn MemoryFactStore>>,
     connector_provider: Option<Arc<dyn ConnectorResourceProvider>>,
@@ -763,9 +763,9 @@ pub struct ExecutorBuilder {
 
 impl ExecutorBuilder {
     /// Create a new executor builder.
-    pub fn new(config_dir: PathBuf, tool_settings: ToolSettings) -> Self {
+    pub fn new(vault_dir: PathBuf, tool_settings: ToolSettings) -> Self {
         Self {
-            config_dir,
+            vault_dir,
             tool_settings,
             fact_store: None,
             connector_provider: None,
@@ -928,7 +928,7 @@ impl ExecutorBuilder {
         agent_id: Option<String>,
     ) -> ContextCapabilityCatalog {
         let fs_context: Arc<dyn FileSystemContext> =
-            Arc::new(GatewayFileSystem::new(self.config_dir.clone()));
+            Arc::new(GatewayFileSystem::new(self.vault_dir.clone()));
         let registry = self.build_tool_registry(fs_context);
 
         build_context_capability_catalog(self.actor_kind, registry.as_ref(), session_id, agent_id)
@@ -1035,12 +1035,12 @@ impl ExecutorBuilder {
         }
 
         // Inject multimodal config for the multimodal_analyze tool
-        let settings_service = SettingsService::new_legacy(self.config_dir.clone());
+        let settings_service = SettingsService::from_vault_dir(self.vault_dir.clone());
         if let Ok(settings) = settings_service.load() {
             let mm = &settings.execution.multimodal;
             if let (Some(provider_id), Some(model)) = (&mm.provider_id, &mm.model) {
                 // Resolve the provider to get base_url and api_key
-                let providers_path = self.config_dir.join("config/providers.json");
+                let providers_path = VaultPaths::new(self.vault_dir.clone()).providers();
                 let provider_creds = std::fs::read_to_string(&providers_path)
                     .ok()
                     .and_then(|content| {
@@ -1128,7 +1128,7 @@ impl ExecutorBuilder {
 
         // Create file system context for tools
         let fs_context: Arc<dyn FileSystemContext> =
-            Arc::new(GatewayFileSystem::new(self.config_dir.clone()));
+            Arc::new(GatewayFileSystem::new(self.vault_dir.clone()));
 
         // Build tool registry
         let tool_registry = self.build_tool_registry(fs_context);
@@ -1208,7 +1208,7 @@ impl ExecutorBuilder {
         // Configure tool result offload settings
         executor_config.offload_large_results = self.tool_settings.offload_large_results;
         executor_config.offload_threshold_chars = self.tool_settings.offload_threshold_tokens * 4;
-        executor_config.offload_dir = Some(self.config_dir.join("temp"));
+        executor_config.offload_dir = Some(self.vault_dir.join("temp"));
 
         AgentExecutor::new(
             executor_config,
@@ -2303,21 +2303,20 @@ mod tests {
     #[test]
     fn broad_tools_expose_split_target_metadata() {
         let catalog = catalog_for_actor(RuntimeActorKind::Root);
-        for name in ["memory"] {
-            let capability = catalog_capability(&catalog, name);
-            assert!(
-                !capability.default_visible,
-                "{name} should move behind resource/context packet lanes"
-            );
-            assert!(
-                capability.split_target.is_some(),
-                "{name} must name its split target"
-            );
-            assert_eq!(
-                capability.visibility_policy,
-                "hidden_from_model_use_context_resources"
-            );
-        }
+        let name = "memory";
+        let capability = catalog_capability(&catalog, name);
+        assert!(
+            !capability.default_visible,
+            "{name} should move behind resource/context packet lanes"
+        );
+        assert!(
+            capability.split_target.is_some(),
+            "{name} must name its split target"
+        );
+        assert_eq!(
+            capability.visibility_policy,
+            "hidden_from_model_use_context_resources"
+        );
 
         let memory_write = catalog_capability(&catalog, "memory_write");
         assert!(memory_write.default_visible);
@@ -2330,17 +2329,16 @@ mod tests {
             Some("action:memory_write")
         );
 
-        for name in ["graph_query"] {
-            assert!(
-                !default_visible_for_tool(name, RuntimeActorKind::Root),
-                "{name} should move behind resource/context packet lanes"
-            );
-            assert_eq!(
-                visibility_policy_for_tool(name, RuntimeActorKind::Root),
-                "hidden_from_model_use_context_resources"
-            );
-            assert!(split_target_for_tool(name).is_some());
-        }
+        let name = "graph_query";
+        assert!(
+            !default_visible_for_tool(name, RuntimeActorKind::Root),
+            "{name} should move behind resource/context packet lanes"
+        );
+        assert_eq!(
+            visibility_policy_for_tool(name, RuntimeActorKind::Root),
+            "hidden_from_model_use_context_resources"
+        );
+        assert!(split_target_for_tool(name).is_some());
 
         assert!(!default_visible_for_tool(
             "query_resource",

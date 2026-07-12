@@ -429,7 +429,7 @@ pub async fn inbound(
     let bus = HttpGatewayBus::new(
         runner.clone(),
         state.state_service.clone(),
-        state.config_dir.clone(),
+        state.vault_dir.clone(),
     );
 
     match bus.submit(request).await {

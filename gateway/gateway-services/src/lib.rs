@@ -47,8 +47,9 @@ pub use plugin_service::PluginService;
 pub use providers::ProviderService;
 pub use recall_config::{KgDecayConfig, RecallConfig};
 pub use settings::{
-    AppSettings, ChatConfig, CuratorConfig, DistillationConfig, ExecutionSettings,
-    IntentAnalysisConfig, MemorySettings, MultimodalConfig, OrchestratorConfig, SettingsService,
+    AppSettings, ChatConfig, CommissioningSettings, CommissioningState, CuratorConfig,
+    DistillationConfig, ExecutionSettings, IntentAnalysisConfig, MemorySettings, MultimodalConfig,
+    OrchestratorConfig, SemanticProfile, SemanticProvisioning, SettingsService, UserProfile,
 };
 pub use skills::{
     Skill, SkillFileInfo, SkillFrontmatter, SkillService, SkillSource, WardAgentsMdConfig,

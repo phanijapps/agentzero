@@ -1,4 +1,4 @@
-//! GET / PUT endpoints for editing markdown files under `<vault>/config/`.
+//! GET / PUT endpoints for editing canonical agent markdown under `<vault>/config/`.
 //! Used by the Settings → Customization UI tab.
 
 use crate::state::AppState;
@@ -14,15 +14,15 @@ use std::path::{Path, PathBuf};
 /// Validate a relative path supplied by the UI.
 ///
 /// Allowed shapes (server only ever reads/writes files matching these):
-/// - `<file>.md`               → root-level config markdown
-/// - `shards/<file>.md`        → markdown shard
+/// - `agent/<file>.md`         → exact-case agent contract or chat instructions
+/// - `agent-prompts/<file>.md` → lowercase-kebab prompt
 ///
 /// Rejected:
 /// - empty
 /// - absolute path (`/...` or `\...`)
 /// - parent traversal (`..`)
 /// - non-`.md` files
-/// - any nested path beyond `shards/<file>.md`
+/// - any nested path beyond the two canonical directories
 pub(crate) fn validate_customization_path(p: &str) -> Result<PathBuf, &'static str> {
     if p.is_empty() || p.starts_with('/') || p.starts_with('\\') {
         return Err("invalid path");
@@ -35,8 +35,15 @@ pub(crate) fn validate_customization_path(p: &str) -> Result<PathBuf, &'static s
     }
     let parts: Vec<&str> = p.split('/').collect();
     match parts.as_slice() {
-        [_file] => Ok(PathBuf::from(p)),
-        ["shards", _file] => Ok(PathBuf::from(p)),
+        ["agent", file]
+            if matches!(
+                *file,
+                "SOUL.md" | "INSTRUCTIONS.md" | "OS.md" | "chat-instructions.md"
+            ) =>
+        {
+            Ok(PathBuf::from(p))
+        }
+        ["agent-prompts", file] if is_canonical_prompt_filename(file) => Ok(PathBuf::from(p)),
         _ => Err("invalid path"),
     }
 }
@@ -54,8 +61,8 @@ pub struct FileEntry {
 #[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum FileKind {
-    Root,
-    Shard,
+    Agent,
+    Prompt,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,13 +76,21 @@ pub struct ListResponse {
 
 const AUTO_GENERATED_NAMES: &[&str] = &["OS.md"];
 
-/// Walk `config_dir/` and `config_dir/shards/` and return entries for every `*.md`.
+/// Walk canonical agent contracts and prompts under `config_dir/`.
 pub(crate) fn enumerate_customization_files(config_dir: &Path) -> std::io::Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
-    push_md_files(config_dir, FileKind::Root, "", &mut entries)?;
-    let shards = config_dir.join("shards");
-    if shards.is_dir() {
-        push_md_files(&shards, FileKind::Shard, "shards/", &mut entries)?;
+    let agent_dir = config_dir.join("agent");
+    if agent_dir.is_dir() {
+        push_md_files(&agent_dir, FileKind::Agent, "agent/", &mut entries)?;
+    }
+    let prompts_dir = config_dir.join("agent-prompts");
+    if prompts_dir.is_dir() {
+        push_md_files(
+            &prompts_dir,
+            FileKind::Prompt,
+            "agent-prompts/",
+            &mut entries,
+        )?;
     }
     entries.sort_by(|a, b| {
         a.kind_order()
@@ -118,10 +133,22 @@ fn push_md_files(
 impl FileEntry {
     fn kind_order(&self) -> u8 {
         match self.kind {
-            FileKind::Root => 0,
-            FileKind::Shard => 1,
+            FileKind::Agent => 0,
+            FileKind::Prompt => 1,
         }
     }
+}
+
+fn is_canonical_prompt_filename(filename: &str) -> bool {
+    let Some(stem) = filename.strip_suffix(".md") else {
+        return false;
+    };
+    !stem.is_empty()
+        && !stem.starts_with('-')
+        && !stem.ends_with('-')
+        && stem
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// `GET /api/customization/files` — list editable markdowns.
@@ -388,7 +415,7 @@ mod tests {
             Err("invalid path")
         );
         assert_eq!(
-            validate_customization_path("shards/../../etc/passwd"),
+            validate_customization_path("agent-prompts/../../etc/passwd"),
             Err("invalid path")
         );
     }
@@ -400,7 +427,7 @@ mod tests {
             Err("only markdown files allowed")
         );
         assert_eq!(
-            validate_customization_path("shards/foo.txt"),
+            validate_customization_path("agent-prompts/foo.txt"),
             Err("only markdown files allowed")
         );
     }
@@ -412,28 +439,28 @@ mod tests {
             Err("invalid path")
         );
         assert_eq!(
-            validate_customization_path("shards/foo/bar.md"),
+            validate_customization_path("agent-prompts/foo/bar.md"),
             Err("invalid path")
         );
     }
 
     #[test]
-    fn accepts_root_md() {
+    fn accepts_agent_contracts() {
         assert_eq!(
-            validate_customization_path("SOUL.md"),
-            Ok(PathBuf::from("SOUL.md"))
+            validate_customization_path("agent/SOUL.md"),
+            Ok(PathBuf::from("agent/SOUL.md"))
         );
         assert_eq!(
-            validate_customization_path("INSTRUCTIONS.md"),
-            Ok(PathBuf::from("INSTRUCTIONS.md"))
+            validate_customization_path("agent/INSTRUCTIONS.md"),
+            Ok(PathBuf::from("agent/INSTRUCTIONS.md"))
         );
     }
 
     #[test]
-    fn accepts_shard_md() {
+    fn accepts_canonical_prompt_md() {
         assert_eq!(
-            validate_customization_path("shards/memory_learning.md"),
-            Ok(PathBuf::from("shards/memory_learning.md"))
+            validate_customization_path("agent-prompts/memory-learning.md"),
+            Ok(PathBuf::from("agent-prompts/memory-learning.md"))
         );
     }
 
@@ -441,34 +468,36 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn list_files_finds_root_and_shards() {
+    fn list_files_finds_agent_contracts_and_prompts() {
         let tmp = tempdir().unwrap();
         let config = tmp.path();
-        fs::write(config.join("SOUL.md"), "soul").unwrap();
-        fs::write(config.join("INSTRUCTIONS.md"), "instr").unwrap();
-        fs::write(config.join("OS.md"), "os").unwrap();
+        let agent = config.join("agent");
+        fs::create_dir_all(&agent).unwrap();
+        fs::write(agent.join("SOUL.md"), "soul").unwrap();
+        fs::write(agent.join("INSTRUCTIONS.md"), "instr").unwrap();
+        fs::write(agent.join("OS.md"), "os").unwrap();
         fs::write(config.join("settings.json"), "{}").unwrap();
-        fs::create_dir_all(config.join("shards")).unwrap();
+        fs::create_dir_all(config.join("agent-prompts")).unwrap();
         fs::write(
-            config.join("shards").join("first_turn_protocol.md"),
-            "shard",
+            config.join("agent-prompts").join("first-turn-protocol.md"),
+            "prompt",
         )
         .unwrap();
-        fs::write(config.join("shards").join("ignored.txt"), "no").unwrap();
+        fs::write(config.join("agent-prompts").join("ignored.txt"), "no").unwrap();
 
         let entries = enumerate_customization_files(config).expect("enumerate ok");
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
-        assert!(paths.contains(&"SOUL.md"));
-        assert!(paths.contains(&"INSTRUCTIONS.md"));
-        assert!(paths.contains(&"OS.md"));
-        assert!(paths.contains(&"shards/first_turn_protocol.md"));
+        assert!(paths.contains(&"agent/SOUL.md"));
+        assert!(paths.contains(&"agent/INSTRUCTIONS.md"));
+        assert!(paths.contains(&"agent/OS.md"));
+        assert!(paths.contains(&"agent-prompts/first-turn-protocol.md"));
         assert!(!paths.contains(&"settings.json"));
-        assert!(!paths.contains(&"shards/ignored.txt"));
+        assert!(!paths.contains(&"agent-prompts/ignored.txt"));
 
-        let os_entry = entries.iter().find(|e| e.path == "OS.md").unwrap();
+        let os_entry = entries.iter().find(|e| e.path == "agent/OS.md").unwrap();
         assert!(os_entry.auto_generated);
 
-        let soul_entry = entries.iter().find(|e| e.path == "SOUL.md").unwrap();
+        let soul_entry = entries.iter().find(|e| e.path == "agent/SOUL.md").unwrap();
         assert!(!soul_entry.auto_generated);
     }
 
@@ -482,10 +511,11 @@ mod tests {
     fn read_file_content_resolves_relative_to_config_dir() {
         let tmp = tempdir().unwrap();
         let config = tmp.path();
-        touch(&config.join("SOUL.md"), "soul body");
+        fs::create_dir_all(config.join("agent")).unwrap();
+        touch(&config.join("agent").join("SOUL.md"), "soul body");
 
-        let resolved = resolve_path(config, "SOUL.md").expect("ok");
-        assert_eq!(resolved, config.join("SOUL.md"));
+        let resolved = resolve_path(config, "agent/SOUL.md").expect("ok");
+        assert_eq!(resolved, config.join("agent").join("SOUL.md"));
 
         let body = fs::read_to_string(&resolved).unwrap();
         assert_eq!(body, "soul body");
@@ -503,13 +533,14 @@ mod tests {
     fn save_file_succeeds_when_version_matches() {
         let tmp = tempdir().unwrap();
         let config = tmp.path();
-        let file = config.join("SOUL.md");
+        fs::create_dir_all(config.join("agent")).unwrap();
+        let file = config.join("agent").join("SOUL.md");
         touch(&file, "v1");
 
         let initial_version = file_version(&file).unwrap();
         std::thread::sleep(Duration::from_millis(20));
 
-        let result = save_file_with_check(config, "SOUL.md", "v2", &initial_version);
+        let result = save_file_with_check(config, "agent/SOUL.md", "v2", &initial_version);
         assert!(matches!(result, SaveOutcome::Ok(_)));
         assert_eq!(fs::read_to_string(&file).unwrap(), "v2");
     }
@@ -518,7 +549,8 @@ mod tests {
     fn save_file_returns_conflict_when_disk_changed() {
         let tmp = tempdir().unwrap();
         let config = tmp.path();
-        let file = config.join("SOUL.md");
+        fs::create_dir_all(config.join("agent")).unwrap();
+        let file = config.join("agent").join("SOUL.md");
         touch(&file, "v1");
 
         let stale_version = file_version(&file).unwrap();
@@ -526,7 +558,7 @@ mod tests {
         // Someone else updates the file:
         touch(&file, "v_external");
 
-        let result = save_file_with_check(config, "SOUL.md", "v_ours", &stale_version);
+        let result = save_file_with_check(config, "agent/SOUL.md", "v_ours", &stale_version);
         match result {
             SaveOutcome::Conflict {
                 current_content,
@@ -542,7 +574,7 @@ mod tests {
     #[test]
     fn save_file_returns_not_found_for_missing_file() {
         let tmp = tempdir().unwrap();
-        let result = save_file_with_check(tmp.path(), "missing.md", "x", "v");
+        let result = save_file_with_check(tmp.path(), "agent-prompts/missing.md", "x", "v");
         assert!(matches!(result, SaveOutcome::NotFound));
     }
 
@@ -574,59 +606,67 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_skips_when_shards_dir_missing() {
+    fn enumerate_skips_when_prompt_dir_missing() {
         let tmp = tempdir().unwrap();
-        fs::write(tmp.path().join("SOUL.md"), "x").unwrap();
+        fs::create_dir_all(tmp.path().join("agent")).unwrap();
+        fs::write(tmp.path().join("agent").join("SOUL.md"), "x").unwrap();
         let entries = enumerate_customization_files(tmp.path()).expect("ok");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path, "SOUL.md");
+        assert_eq!(entries[0].path, "agent/SOUL.md");
     }
 
     #[test]
-    fn enumerate_sorts_root_before_shards_then_alphabetic() {
+    fn enumerate_sorts_agent_before_prompts_then_alphabetic() {
         let tmp = tempdir().unwrap();
         let config = tmp.path();
-        fs::write(config.join("ZZZ.md"), "z").unwrap();
-        fs::write(config.join("AAA.md"), "a").unwrap();
-        fs::create_dir_all(config.join("shards")).unwrap();
-        fs::write(config.join("shards").join("z_shard.md"), "z").unwrap();
-        fs::write(config.join("shards").join("a_shard.md"), "a").unwrap();
+        fs::create_dir_all(config.join("agent")).unwrap();
+        fs::write(config.join("agent").join("SOUL.md"), "z").unwrap();
+        fs::write(config.join("agent").join("OS.md"), "a").unwrap();
+        fs::create_dir_all(config.join("agent-prompts")).unwrap();
+        fs::write(config.join("agent-prompts").join("z-prompt.md"), "z").unwrap();
+        fs::write(config.join("agent-prompts").join("a-prompt.md"), "a").unwrap();
 
         let entries = enumerate_customization_files(config).expect("ok");
         let order: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(
             order,
-            vec!["AAA.md", "ZZZ.md", "shards/a_shard.md", "shards/z_shard.md"]
+            vec![
+                "agent/OS.md",
+                "agent/SOUL.md",
+                "agent-prompts/a-prompt.md",
+                "agent-prompts/z-prompt.md"
+            ]
         );
     }
 
     #[test]
     fn file_kind_serialization_matches_lowercase() {
         let entry = FileEntry {
-            path: "x.md".into(),
-            kind: FileKind::Root,
+            path: "agent/SOUL.md".into(),
+            kind: FileKind::Agent,
             size: 0,
             modified_at: "2026-04-01T00:00:00Z".into(),
             auto_generated: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("\"kind\":\"root\""));
+        assert!(json.contains("\"kind\":\"agent\""));
         let entry2 = FileEntry {
-            kind: FileKind::Shard,
+            kind: FileKind::Prompt,
             ..entry
         };
         let json = serde_json::to_string(&entry2).unwrap();
-        assert!(json.contains("\"kind\":\"shard\""));
+        assert!(json.contains("\"kind\":\"prompt\""));
     }
 
     #[test]
     fn save_outcome_ok_carries_new_version() {
         let tmp = tempdir().unwrap();
-        let file = tmp.path().join("SOUL.md");
+        fs::create_dir_all(tmp.path().join("agent")).unwrap();
+        let file = tmp.path().join("agent").join("SOUL.md");
         touch(&file, "v1");
         let initial = file_version(&file).unwrap();
         std::thread::sleep(Duration::from_millis(20));
-        let outcome = save_file_with_check(tmp.path(), "SOUL.md", "v2", &initial);
+        let outcome = save_file_with_check(tmp.path(), "agent/SOUL.md", "v2", &initial);
         match outcome {
             SaveOutcome::Ok(new_version) => assert_ne!(new_version, initial),
             other => panic!("expected Ok, got {:?}", other),
@@ -636,8 +676,8 @@ mod tests {
     #[test]
     fn resolve_path_joins_to_config_dir() {
         let tmp = tempdir().unwrap();
-        let resolved = resolve_path(tmp.path(), "shards/foo.md").expect("ok");
-        assert_eq!(resolved, tmp.path().join("shards/foo.md"));
+        let resolved = resolve_path(tmp.path(), "agent-prompts/foo.md").expect("ok");
+        assert_eq!(resolved, tmp.path().join("agent-prompts/foo.md"));
     }
 }
 
@@ -661,14 +701,14 @@ mod handler_tests {
     async fn list_files_returns_ok_with_existing_files() {
         let (_dir, state) = make_state();
         let cfg = state.paths.config_dir();
-        std::fs::create_dir_all(&cfg).unwrap();
-        fs::write(cfg.join("SOUL.md"), "soul body").unwrap();
+        std::fs::create_dir_all(cfg.join("agent")).unwrap();
+        fs::write(cfg.join("agent").join("SOUL.md"), "soul body").unwrap();
 
         let (status, body) = list_files(State(state)).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.0.success);
         let files = body.0.files.unwrap();
-        assert!(files.iter().any(|f| f.path == "SOUL.md"));
+        assert!(files.iter().any(|f| f.path == "agent/SOUL.md"));
     }
 
     #[tokio::test]
@@ -686,7 +726,7 @@ mod handler_tests {
     async fn get_file_returns_404_when_file_missing() {
         let (_dir, state) = make_state();
         let q = Query(PathQuery {
-            path: "MISSING.md".to_string(),
+            path: "agent-prompts/missing.md".to_string(),
         });
         let (status, body) = get_file(State(state), q).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -697,11 +737,11 @@ mod handler_tests {
     async fn get_file_returns_content_with_version_for_existing_file() {
         let (_dir, state) = make_state();
         let cfg = state.paths.config_dir();
-        std::fs::create_dir_all(&cfg).unwrap();
-        fs::write(cfg.join("SOUL.md"), "soul body").unwrap();
+        std::fs::create_dir_all(cfg.join("agent")).unwrap();
+        fs::write(cfg.join("agent").join("SOUL.md"), "soul body").unwrap();
 
         let q = Query(PathQuery {
-            path: "SOUL.md".to_string(),
+            path: "agent/SOUL.md".to_string(),
         });
         let (status, body) = get_file(State(state), q).await;
         assert_eq!(status, StatusCode::OK);
@@ -715,11 +755,11 @@ mod handler_tests {
     async fn get_file_marks_os_md_as_auto_generated() {
         let (_dir, state) = make_state();
         let cfg = state.paths.config_dir();
-        std::fs::create_dir_all(&cfg).unwrap();
-        fs::write(cfg.join("OS.md"), "os body").unwrap();
+        std::fs::create_dir_all(cfg.join("agent")).unwrap();
+        fs::write(cfg.join("agent").join("OS.md"), "os body").unwrap();
 
         let q = Query(PathQuery {
-            path: "OS.md".to_string(),
+            path: "agent/OS.md".to_string(),
         });
         let (_status, body) = get_file(State(state), q).await;
         assert_eq!(body.0.auto_generated, Some(true));
@@ -729,7 +769,7 @@ mod handler_tests {
     async fn put_file_returns_413_when_content_too_large() {
         let (_dir, state) = make_state();
         let body = SaveRequest {
-            path: "SOUL.md".to_string(),
+            path: "agent/SOUL.md".to_string(),
             content: "x".repeat(MAX_CONTENT_BYTES + 1),
             expected_version: "v".to_string(),
         };
@@ -742,7 +782,7 @@ mod handler_tests {
     async fn put_file_returns_404_when_file_missing() {
         let (_dir, state) = make_state();
         let body = SaveRequest {
-            path: "MISSING.md".to_string(),
+            path: "agent-prompts/missing.md".to_string(),
             content: "x".to_string(),
             expected_version: "v".to_string(),
         };
@@ -768,14 +808,14 @@ mod handler_tests {
     async fn put_file_succeeds_when_version_matches() {
         let (_dir, state) = make_state();
         let cfg = state.paths.config_dir();
-        std::fs::create_dir_all(&cfg).unwrap();
-        let file_path = cfg.join("SOUL.md");
+        std::fs::create_dir_all(cfg.join("agent")).unwrap();
+        let file_path = cfg.join("agent").join("SOUL.md");
         fs::write(&file_path, "v1").unwrap();
         let initial = file_version(&file_path).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
 
         let body = SaveRequest {
-            path: "SOUL.md".to_string(),
+            path: "agent/SOUL.md".to_string(),
             content: "v2".to_string(),
             expected_version: initial,
         };
@@ -789,15 +829,15 @@ mod handler_tests {
     async fn put_file_returns_409_on_version_conflict() {
         let (_dir, state) = make_state();
         let cfg = state.paths.config_dir();
-        std::fs::create_dir_all(&cfg).unwrap();
-        let file_path = cfg.join("SOUL.md");
+        std::fs::create_dir_all(cfg.join("agent")).unwrap();
+        let file_path = cfg.join("agent").join("SOUL.md");
         fs::write(&file_path, "v1").unwrap();
         let stale = file_version(&file_path).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&file_path, "v_external").unwrap();
 
         let body = SaveRequest {
-            path: "SOUL.md".to_string(),
+            path: "agent/SOUL.md".to_string(),
             content: "v_ours".to_string(),
             expected_version: stale,
         };

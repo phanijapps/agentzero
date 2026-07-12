@@ -10,6 +10,7 @@ mod beliefs;
 mod bridge;
 mod chat;
 mod cleanup;
+mod commissioning;
 mod connectors;
 mod conversations;
 mod cron;
@@ -32,7 +33,6 @@ mod plugins;
 mod providers;
 mod sessions;
 mod settings;
-mod setup;
 mod skills;
 mod surfaces;
 mod tools;
@@ -140,6 +140,19 @@ pub fn create_http_router(
         .route("/api/skills/:id", delete(skills::delete_skill))
         // Provider endpoints
         .nest("/api/providers", providers::routes())
+        // Durable first-run commissioning
+        .route(
+            "/api/commissioning/status",
+            get(commissioning::get_commissioning_status),
+        )
+        .route(
+            "/api/commissioning/local/diagnose",
+            post(commissioning::diagnose_local_runtime),
+        )
+        .route(
+            "/api/commissioning/complete",
+            post(commissioning::complete_commissioning),
+        )
         // Model registry endpoints
         .route("/api/models", get(models::list_models))
         .route("/api/models/:id", get(models::get_model))
@@ -232,9 +245,6 @@ pub fn create_http_router(
         .route("/api/customization/files", get(customization::list_files))
         .route("/api/customization/file", get(customization::get_file))
         .route("/api/customization/file", put(customization::put_file))
-        // Setup wizard endpoints
-        .route("/api/setup/status", get(setup::get_setup_status))
-        .route("/api/setup/mcp-defaults", get(setup::get_mcp_defaults))
         // Embedding backend selection (Phase 1)
         .route("/api/embeddings/health", get(embeddings::get_health))
         .route("/api/embeddings/models", get(embeddings::list_models))

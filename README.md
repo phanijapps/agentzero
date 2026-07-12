@@ -221,9 +221,11 @@ with trusted clients, and use ngrok-side access controls when needed.
 │  ├── config/                                            │
 │  │   ├── providers.json   # LLM provider configs        │
 │  │   ├── settings.json    # System configuration        │
-│  │   ├── mcps.json        # MCP server configs          │
-│  │   ├── SOUL.md          # Root agent personality      │
-│  │   └── INSTRUCTIONS.md  # Root agent instructions     │
+│  │   ├── mcp-servers.json # MCP server configs          │
+│  │   ├── agent/           # Root agent contracts        │
+│  │   │   ├── SOUL.md      #   Personality               │
+│  │   │   └── INSTRUCTIONS.md # Execution rules          │
+│  │   └── agent-prompts/   # User-editable prompt modules│
 │  ├── data/                                              │
 │  │   ├── conversations.db # Sessions, messages, memory  │
 │  │   └── knowledge.db     # Entities & relationships    │

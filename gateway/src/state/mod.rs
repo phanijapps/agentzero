@@ -178,8 +178,8 @@ pub struct AppState {
     /// Vault paths for accessing configuration and data directories.
     pub paths: SharedVaultPaths,
 
-    /// Configuration directory path (legacy, use paths.vault_dir() instead).
-    pub config_dir: PathBuf,
+    /// Vault root path. Prefer `paths` for child locations.
+    pub vault_dir: PathBuf,
 
     /// LAN service advertiser. NoopAdvertiser when discovery is disabled.
     pub advertiser: std::sync::Arc<dyn discovery::Advertiser>,
@@ -208,6 +208,7 @@ fn build_conversation_stores(paths: &SharedVaultPaths) -> anyhow::Result<Convers
         let conn = pool.get()?;
         zbot_trace::schema::initialize(&conn)?;
     }
+    paths.ensure_optional_dir(&paths.traces_dir())?;
     Ok((
         Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone())),
         Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
@@ -222,13 +223,16 @@ impl AppState {
     /// Create a new application state.
     ///
     /// This creates a fully initialized state with execution runner and SQLite database.
-    pub fn new(config_dir: PathBuf) -> Self {
+    pub fn new(vault_dir: PathBuf) -> Self {
         // Create centralized vault paths
-        let paths = Arc::new(VaultPaths::new(config_dir.clone()));
+        let paths = Arc::new(VaultPaths::new(vault_dir.clone()));
 
         // Ensure required directories exist
         if let Err(e) = paths.ensure_dirs_exist() {
             tracing::warn!("Failed to create vault directories: {}", e);
+        }
+        if let Err(e) = paths.migrate_legacy_layout() {
+            tracing::warn!("Failed to migrate legacy vault layout: {}", e);
         }
 
         let agents_dir = paths.agents_dir();
@@ -329,8 +333,8 @@ impl AppState {
         tracing::info!("Engram memory provider initialized for trait-routed stores");
 
         // Load recall configuration (compiled defaults merged with optional user overrides)
-        let recall_config = Arc::new(gateway_services::RecallConfig::load_from_path(
-            paths.vault_dir(),
+        let recall_config = Arc::new(gateway_services::RecallConfig::load_from_file(
+            &paths.recall_config(),
         ));
 
         // Create session archiver for offloading old transcripts to compressed files
@@ -896,7 +900,7 @@ impl AppState {
             model_registry,
             embedding_service,
             paths,
-            config_dir,
+            vault_dir,
             memory_store,
             goal_store: engram_store_bundle
                 .as_ref()
@@ -922,8 +926,14 @@ impl AppState {
     }
 
     /// Create a minimal state without execution runner (for testing).
-    pub fn minimal(config_dir: PathBuf) -> Self {
-        let paths = Arc::new(VaultPaths::new(config_dir.clone()));
+    pub fn minimal(vault_dir: PathBuf) -> Self {
+        let paths = Arc::new(VaultPaths::new(vault_dir.clone()));
+        if let Err(e) = paths.ensure_dirs_exist() {
+            tracing::warn!("Failed to create vault directories: {}", e);
+        }
+        if let Err(e) = paths.migrate_legacy_layout() {
+            tracing::warn!("Failed to migrate legacy vault layout: {}", e);
+        }
         let agents_dir = paths.agents_dir();
         let skills_roots = paths.skills_dirs();
         let event_bus = Arc::new(EventBus::new());
@@ -1008,7 +1018,7 @@ impl AppState {
             ),
             plugin_manager,
             paths,
-            config_dir,
+            vault_dir,
             memory_store,
             goal_store: Some(engram_store_bundle.goal_store.clone()),
             distillation_repo: None,
@@ -1184,7 +1194,7 @@ impl AppState {
         connector_registry: Arc<ConnectorRegistry>,
         paths: SharedVaultPaths,
     ) -> Self {
-        let config_dir = paths.vault_dir().clone();
+        let vault_dir = paths.vault_dir().clone();
         let engram_store_bundle = persistence_factory::build_engram_store_bundle(
             paths.as_ref(),
             &gateway_memory::MemoryProviderSettings::default(),
@@ -1259,7 +1269,7 @@ impl AppState {
             ),
             plugin_manager,
             paths,
-            config_dir,
+            vault_dir,
             memory_store,
             goal_store: Some(engram_store_bundle.goal_store.clone()),
             distillation_repo: None,
@@ -1384,7 +1394,8 @@ impl AppState {
             tracing::warn!("Failed to preload skills: {}", e);
         }
 
-        // Create Python venv and Node env if missing, then seed workspace memory
+        // Seed required workspace structure. Runtime environments are created
+        // only by an explicit tool/runtime action, never during startup.
         self.ensure_runtime_environments().await;
 
         // Discover and start plugins
@@ -1464,7 +1475,7 @@ impl AppState {
     ///
     /// Each ID is seeded **at most once per vault**: the first time we see
     /// it, we create the job (or migrate a pre-existing one) and record the
-    /// ID in `<vault>/config/seeded_defaults.json`. Subsequent boots skip
+    /// ID in `<vault>/config/seeded-defaults.json`. Subsequent boots skip
     /// any ID already in the registry, so deletes the user makes through
     /// the UI stick across daemon restarts.
     async fn seed_default_cron(&self) {
@@ -1622,14 +1633,10 @@ impl AppState {
         );
     }
 
-    /// Ensure Python venv and Node.js environment exist.
+    /// Ensure the required workspace structure exists without creating optional
+    /// Python or Node runtime directories on every startup.
     async fn ensure_runtime_environments(&self) {
-        // Create wards directory structure
         self.ensure_wards_dir();
-
-        // Side-effects: create .venv / .node_env directories used by the shell tool.
-        let _ = self.ensure_python_venv().await;
-        let _ = self.ensure_node_env();
     }
 
     /// Create the wards directory with scratch ward + wiki vault ward.
@@ -1640,7 +1647,7 @@ impl AppState {
     /// execution.wiki.wardName` (default `"wiki"`). We seed it at startup so
     /// delegated subagents (which cannot create wards) can just `use` it.
     fn ensure_wards_dir(&self) {
-        let wards_dir = self.config_dir.join("wards");
+        let wards_dir = self.vault_dir.join("wards");
         let scratch_dir = wards_dir.join("scratch");
 
         if !scratch_dir.exists() {
@@ -1789,99 +1796,6 @@ impl AppState {
         }
 
         tracing::info!("Wiki vault ward ready at {}", wiki_dir.display());
-    }
-
-    /// Create Python venv at `{config_dir}/wards/.venv` if it doesn't exist.
-    /// Falls back to legacy `{config_dir}/venv` if it exists there.
-    /// Returns true if the venv exists (either already existed or was created).
-    async fn ensure_python_venv(&self) -> bool {
-        let new_path = self.config_dir.join("wards").join(".venv");
-        let legacy_path = self.config_dir.join("venv");
-
-        // Use new path, but check legacy location too
-        let venv_path = if new_path.exists() {
-            new_path
-        } else if legacy_path.exists() {
-            legacy_path
-        } else {
-            new_path // Create at new location
-        };
-
-        let python_exe = if cfg!(windows) {
-            venv_path.join("Scripts").join("python.exe")
-        } else {
-            venv_path.join("bin").join("python")
-        };
-
-        if python_exe.exists() {
-            tracing::debug!("Python venv already exists at {}", venv_path.display());
-            return true;
-        }
-
-        tracing::info!("Creating Python venv at {}", venv_path.display());
-        let mut failures = Vec::new();
-
-        for candidate in python_venv_commands() {
-            let result = tokio::process::Command::new(candidate.program)
-                .args(candidate.prefix_args)
-                .args(["-m", "venv"])
-                .arg(&venv_path)
-                .output()
-                .await;
-
-            match result {
-                Ok(output) if output.status.success() => {
-                    tracing::info!(
-                        python = candidate.display(),
-                        "Python venv created successfully"
-                    );
-                    return true;
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    failures.push(format!("{}: {}", candidate.display(), stderr.trim()));
-                }
-                Err(e) => {
-                    failures.push(format!("{}: {}", candidate.display(), e));
-                }
-            }
-        }
-
-        tracing::warn!(
-            attempts = %failures.join(" | "),
-            "Failed to create Python venv. Install Python with venv support, for example `sudo apt install python3 python3-venv` on Debian/Ubuntu/Pop!_OS."
-        );
-        false
-    }
-
-    /// Ensure Node.js working directory exists at `{config_dir}/wards/.node_env`.
-    /// Falls back to legacy `{config_dir}/node_env` if it exists there.
-    /// Just creates the directory — no npm init needed.
-    fn ensure_node_env(&self) -> bool {
-        let new_path = self.config_dir.join("wards").join(".node_env");
-        let legacy_path = self.config_dir.join("node_env");
-
-        let node_env_dir = if new_path.exists() {
-            new_path
-        } else if legacy_path.exists() {
-            legacy_path
-        } else {
-            new_path
-        };
-
-        if node_env_dir.exists() {
-            tracing::debug!("Node env already exists at {}", node_env_dir.display());
-            return true;
-        }
-
-        tracing::info!("Creating Node env at {}", node_env_dir.display());
-
-        if let Err(e) = std::fs::create_dir_all(&node_env_dir) {
-            tracing::warn!("Failed to create node_env directory: {}", e);
-            return false;
-        }
-
-        true
     }
 }
 
@@ -2283,50 +2197,6 @@ fn catalog_id_component(raw: &str) -> String {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PythonVenvCommand {
-    program: &'static str,
-    prefix_args: &'static [&'static str],
-}
-
-impl PythonVenvCommand {
-    fn display(self) -> String {
-        if self.prefix_args.is_empty() {
-            self.program.to_string()
-        } else {
-            format!("{} {}", self.program, self.prefix_args.join(" "))
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn python_venv_commands() -> Vec<PythonVenvCommand> {
-    vec![
-        PythonVenvCommand {
-            program: "python3",
-            prefix_args: &[],
-        },
-        PythonVenvCommand {
-            program: "python",
-            prefix_args: &[],
-        },
-    ]
-}
-
-#[cfg(windows)]
-fn python_venv_commands() -> Vec<PythonVenvCommand> {
-    vec![
-        PythonVenvCommand {
-            program: "python",
-            prefix_args: &[],
-        },
-        PythonVenvCommand {
-            program: "py",
-            prefix_args: &["-3"],
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2529,9 +2399,9 @@ mod tests {
         let (_dir, state) = make_temp_state();
         state.ensure_wards_dir();
 
-        assert!(state.config_dir.join("wards").join("scratch").is_dir());
+        assert!(state.vault_dir.join("wards").join("scratch").is_dir());
 
-        let wiki = state.config_dir.join("wards").join("wiki");
+        let wiki = state.vault_dir.join("wards").join("wiki");
         assert!(wiki.is_dir());
         for folder in [
             "00_Inbox",
@@ -2558,11 +2428,7 @@ mod tests {
     fn ensure_wards_dir_is_idempotent_and_preserves_user_edits() {
         let (_dir, state) = make_temp_state();
         state.ensure_wards_dir();
-        let agents_md_path = state
-            .config_dir
-            .join("wards")
-            .join("wiki")
-            .join("AGENTS.md");
+        let agents_md_path = state.vault_dir.join("wards").join("wiki").join("AGENTS.md");
 
         std::fs::write(&agents_md_path, "user-authored content").unwrap();
         state.ensure_wards_dir();
@@ -2574,11 +2440,7 @@ mod tests {
     fn ensure_wards_dir_reseeds_when_marker_present() {
         let (_dir, state) = make_temp_state();
         state.ensure_wards_dir();
-        let agents_md_path = state
-            .config_dir
-            .join("wards")
-            .join("wiki")
-            .join("AGENTS.md");
+        let agents_md_path = state.vault_dir.join("wards").join("wiki").join("AGENTS.md");
 
         std::fs::write(
             &agents_md_path,
@@ -2594,7 +2456,7 @@ mod tests {
     #[test]
     fn ensure_wiki_ward_handles_custom_name() {
         let (_dir, state) = make_temp_state();
-        let wards = state.config_dir.join("wards");
+        let wards = state.vault_dir.join("wards");
         std::fs::create_dir_all(&wards).unwrap();
         state.ensure_wiki_ward(&wards, "knowledge");
 
@@ -2603,52 +2465,6 @@ mod tests {
         assert!(custom.join("AGENTS.md").exists());
         let content = std::fs::read_to_string(custom.join("AGENTS.md")).unwrap();
         assert!(content.contains("# knowledge"));
-    }
-
-    #[test]
-    fn ensure_node_env_creates_directory_when_missing() {
-        let (_dir, state) = make_temp_state();
-        let new_path = state.config_dir.join("wards").join(".node_env");
-        assert!(!new_path.exists());
-
-        assert!(state.ensure_node_env());
-        assert!(new_path.is_dir());
-    }
-
-    #[test]
-    fn ensure_node_env_returns_true_when_already_exists() {
-        let (_dir, state) = make_temp_state();
-        let new_path = state.config_dir.join("wards").join(".node_env");
-        std::fs::create_dir_all(&new_path).unwrap();
-        assert!(state.ensure_node_env());
-    }
-
-    #[test]
-    fn ensure_node_env_uses_legacy_path_when_present() {
-        let (_dir, state) = make_temp_state();
-        let legacy = state.config_dir.join("node_env");
-        std::fs::create_dir_all(&legacy).unwrap();
-        assert!(state.ensure_node_env());
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn python_venv_commands_prefer_python3_on_unix() {
-        let commands = python_venv_commands();
-
-        assert_eq!(
-            commands,
-            vec![
-                PythonVenvCommand {
-                    program: "python3",
-                    prefix_args: &[],
-                },
-                PythonVenvCommand {
-                    program: "python",
-                    prefix_args: &[],
-                },
-            ]
-        );
     }
 
     #[test]
@@ -2678,7 +2494,7 @@ mod tests {
         let (_dir, state) = make_temp_state();
         state.seed_default_cron().await;
 
-        let registry_path = state.paths.config_dir().join("seeded_defaults.json");
+        let registry_path = state.paths.seeded_defaults();
         assert!(registry_path.exists());
     }
 
@@ -2703,12 +2519,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_runtime_environments_creates_wards_and_envs() {
+    async fn ensure_runtime_environments_creates_workspace_without_optional_envs() {
         let (_dir, state) = make_temp_state();
         state.ensure_runtime_environments().await;
 
-        assert!(state.config_dir.join("wards").join("scratch").is_dir());
-        assert!(state.config_dir.join("wards").join(".node_env").is_dir());
+        assert!(state.vault_dir.join("wards").join("scratch").is_dir());
+        assert!(!state.vault_dir.join("wards").join(".node_env").exists());
     }
 
     #[tokio::test]
@@ -2794,7 +2610,7 @@ mod tests {
             paths.clone(),
         );
 
-        assert_eq!(state.config_dir, *paths.vault_dir());
+        assert_eq!(state.vault_dir, *paths.vault_dir());
         assert!(state.memory_store.is_some());
         assert!(state.episode_store.is_some());
         assert!(state.wiki_store.is_some());

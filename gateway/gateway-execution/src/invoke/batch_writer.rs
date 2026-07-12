@@ -149,6 +149,13 @@ pub fn spawn_batch_writer_with_traces(
     traces_dir: PathBuf,
     messages: Arc<dyn MessageStore>,
 ) -> BatchWriterHandle {
+    if let Err(error) = std::fs::create_dir_all(&traces_dir) {
+        tracing::warn!(
+            traces_dir = %traces_dir.display(),
+            %error,
+            "failed to create lazy trace directory"
+        );
+    }
     spawn_batch_writer_inner(state_service, log_service, Some(traces_dir), messages)
 }
 
@@ -592,9 +599,10 @@ mod tests {
     #[tokio::test]
     async fn trace_events_stream_to_jsonl_gz() {
         let h = setup();
-        // setup()'s VaultPaths::ensure_dirs_exist created data/traces (T9).
         let traces_dir = h._tmp.path().join("data").join("traces");
-        assert!(traces_dir.exists(), "traces_dir should exist");
+        // `batch_writer_loop` is intentionally lower-level than its public
+        // spawn helper, so this fixture creates the trace sink explicitly.
+        std::fs::create_dir_all(&traces_dir).expect("create lazy trace directory");
 
         let (tx, rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(batch_writer_loop(

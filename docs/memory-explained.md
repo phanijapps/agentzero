@@ -528,7 +528,7 @@ Two files own every knob. Both are optional — missing keys, missing files, and
 | `hierarchy` | disabled | H-3 builder + H-4 LCA recall. K-means clusters entities, LLM synthesises aggregate entities at higher layers, inter-cluster relations gated by λ > τ. Recall surfaces the LCA topical map alongside facts. |
 | `kgDecay` | `null` | KG decay tuning override; `null` = compiled defaults. |
 
-**`config/recall_config.json`** controls the recall and rescore pipeline. Headline knobs:
+**`config/recall-config.json`** controls the recall and rescore pipeline. Headline knobs:
 
 | Knob | Default | What it controls |
 |---|---|---|

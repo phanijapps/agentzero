@@ -583,8 +583,7 @@ pub fn append_system_context(
     role: SubagentRole,
 ) -> String {
     // OS context: platform-correct commands (bash vs PowerShell). ~500B.
-    let os_context =
-        std::fs::read_to_string(paths.vault_dir().join("config").join("OS.md")).unwrap_or_default();
+    let os_context = std::fs::read_to_string(paths.os()).unwrap_or_default();
 
     // Rules: only append if not already present (delegated agents prepend
     // mode-specific rules in spawn.rs). Direct non-root loads use the
@@ -623,8 +622,7 @@ pub fn append_system_context(
 }
 
 fn append_system_context_without_rules(instructions: &str, paths: &SharedVaultPaths) -> String {
-    let os_context =
-        std::fs::read_to_string(paths.vault_dir().join("config").join("OS.md")).unwrap_or_default();
+    let os_context = std::fs::read_to_string(paths.os()).unwrap_or_default();
     let memory_shard = gateway_templates::Templates::get("shards/memory_learning.md")
         .map(|f| String::from_utf8_lossy(&f.data).to_string())
         .unwrap_or_default();
@@ -645,8 +643,7 @@ fn build_specialist_instructions(agent_id: &str, paths: &SharedVaultPaths) -> St
     let role_preamble = generate_role_preamble(agent_id);
 
     // Load OS context for platform-native commands
-    let os_context =
-        std::fs::read_to_string(paths.vault_dir().join("config").join("OS.md")).unwrap_or_default();
+    let os_context = std::fs::read_to_string(paths.os()).unwrap_or_default();
 
     // Load tooling shard for write_file/edit_file syntax and tool docs
     let tooling = gateway_templates::Templates::get("shards/tooling_skills.md")

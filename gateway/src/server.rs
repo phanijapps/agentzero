@@ -30,8 +30,8 @@ pub struct GatewayServer {
 
 impl GatewayServer {
     /// Create a new gateway server with the given configuration.
-    pub fn new(config: GatewayConfig, config_dir: PathBuf) -> Self {
-        let state = AppState::new(config_dir);
+    pub fn new(config: GatewayConfig, vault_dir: PathBuf) -> Self {
+        let state = AppState::new(vault_dir);
         let ws_handler = Arc::new(WebSocketHandler::new_with_surfaces(
             state.event_bus.clone(),
             state.runtime.clone(),
@@ -434,7 +434,7 @@ impl GatewayServer {
                 return;
             }
             let parts: Vec<&str> = rel.split('/').collect();
-            let valid = matches!(parts.as_slice(), [_] | ["shards", _]);
+            let valid = matches!(parts.as_slice(), ["agent", _] | ["agent-prompts", _]);
             if !valid {
                 return;
             }
@@ -525,17 +525,17 @@ mod tests {
     #[tokio::test]
     async fn test_server_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path().to_path_buf();
-        let server = GatewayServer::new(GatewayConfig::default(), config_dir);
+        let vault_dir = temp_dir.path().to_path_buf();
+        let server = GatewayServer::new(GatewayConfig::default(), vault_dir);
         assert!(server.shutdown_tx.is_none());
     }
 
     #[tokio::test]
     async fn test_custom_config() {
         let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path().to_path_buf();
+        let vault_dir = temp_dir.path().to_path_buf();
         let config = GatewayConfig::with_ports(19000, 19001);
-        let server = GatewayServer::new(config, config_dir);
+        let server = GatewayServer::new(config, vault_dir);
         assert_eq!(server.config.websocket_port, 19000);
         assert_eq!(server.config.http_port, 19001);
     }

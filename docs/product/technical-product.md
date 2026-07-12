@@ -55,7 +55,8 @@ When reviewing code:
 Skills are stored in `~/Documents/zbot/skills/{name}/SKILL.md`.
 
 ### 5. MCP Server Integration
-Connect to external tools via Model Context Protocol servers. Configure in `mcps.json`:
+Connect to external tools via Model Context Protocol servers. Configure in
+`~/Documents/zbot/config/mcp-servers.json`:
 
 ```json
 {

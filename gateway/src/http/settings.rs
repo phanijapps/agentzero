@@ -362,7 +362,7 @@ pub async fn update_execution_settings(
 
     // Update SOUL.md if agent_name is provided
     if let Some(ref name) = settings.agent_name {
-        let soul_path = state.paths.vault_dir().join("config").join("SOUL.md");
+        let soul_path = state.paths.soul();
         let current = std::fs::read_to_string(&soul_path).unwrap_or_default();
         // Replace the first line "You are **OldName**" with the new name
         let updated = if let Some(rest) = current.strip_prefix("You are **") {

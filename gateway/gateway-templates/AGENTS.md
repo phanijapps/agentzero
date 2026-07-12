@@ -1,6 +1,8 @@
 # gateway-templates
 
-System prompt assembly for AgentZero agents. Assembles SOUL.md + INSTRUCTIONS.md + OS.md + shards from `config/` (user customizable), falling back to embedded defaults.
+System prompt assembly for AgentZero agents. Assembles the canonical agent
+contracts and prompt modules from `config/` (user customizable), falling back
+to embedded defaults.
 
 ## Build & Test
 
@@ -21,14 +23,14 @@ pub fn default_system_prompt() -> String;                      // fallback
 
 ## Assembly Order (full prompt)
 
-1. `config/SOUL.md` — identity/personality (created from `soul_starter.md` if missing)
-2. `config/INSTRUCTIONS.md` — execution rules (created from `instructions_starter.md` if missing)
-3. `config/OS.md` — platform commands (auto-generated for current OS if missing)
-4. Required shards (`config/shards/` override embedded defaults): `first_turn_protocol`, `tooling_skills`, `memory_learning`, `planning_autonomy`
-5. Extra user shards (any additional `.md` in `config/shards/`)
+1. `config/agent/SOUL.md` — identity/personality (created from `soul_starter.md` if missing)
+2. `config/agent/INSTRUCTIONS.md` — execution rules (created from `instructions_starter.md` if missing)
+3. `config/agent/OS.md` — platform commands (auto-generated for current OS if missing)
+4. Required prompt modules (`config/agent-prompts/` override embedded defaults): `first-turn-protocol`, `tooling-skills`, `memory-learning`, `planning-autonomy`
+5. Extra user prompt modules (any additional `.md` in `config/agent-prompts/`)
 6. Runtime environment info (vault path, venv status)
 
-**Fast chat prompt** uses: SOUL.md + `chat_instructions.md` + OS.md + `chat_protocol` + `tooling_skills` shards only.
+**Fast chat prompt** uses: SOUL.md + `chat-instructions.md` + OS.md + `chat-protocol` + `tooling-skills` prompt modules only.
 
 ## Embedded Templates
 
@@ -39,7 +41,7 @@ templates/
 ├── chat_instructions.md         # Default chat-mode instructions
 ├── system_prompt.md             # Emergency fallback
 ├── os_linux.md / os_macos.md / os_windows.md
-├── distillation_prompt.md       # Session distillation prompt
+├── distillation_prompt.md       # Internal embedded session distillation prompt
 └── shards/
     ├── first_turn_protocol.md
     ├── tooling_skills.md
@@ -52,6 +54,6 @@ templates/
 
 ## Notes
 
-- User files in `config/` take priority over embedded defaults.
-- Embedded shards are written to `config/shards/` on first run so users can edit them.
-- Extra user `.md` files in `config/shards/` are appended after required shards.
+- User files in `config/agent/` and `config/agent-prompts/` take priority over embedded defaults.
+- Embedded template asset names intentionally remain Rust-style because they are compile-time resources; user-facing vault paths are lowercase-kebab names.
+- Extra user `.md` files in `config/agent-prompts/` are appended after required modules.

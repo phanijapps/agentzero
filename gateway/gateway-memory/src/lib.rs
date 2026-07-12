@@ -283,14 +283,20 @@ impl Default for RecallConfig {
 }
 
 impl RecallConfig {
-    /// Load recall config from `{path}/config/recall_config.json`.
+    /// Load recall config from `{path}/config/recall-config.json`.
     ///
     /// - Missing file → compiled defaults (info log)
     /// - Corrupted file → compiled defaults (warning log)
     /// - Partial file → deep merge with defaults (user values win per key)
+    ///
+    /// This compatibility entry point accepts a vault root. New callers that
+    /// already own a canonical path should use [`Self::load_from_file`].
     pub fn load_from_path(path: &Path) -> Self {
-        let file_path = path.join("config").join("recall_config.json");
+        Self::load_from_file(&path.join("config").join("recall-config.json"))
+    }
 
+    /// Load recall configuration from one resolved config file path.
+    pub fn load_from_file(file_path: &Path) -> Self {
         if !file_path.exists() {
             tracing::info!(
                 "No recall config at {} — using compiled defaults",
@@ -299,7 +305,7 @@ impl RecallConfig {
             return Self::default();
         }
 
-        let content = match std::fs::read_to_string(&file_path) {
+        let content = match std::fs::read_to_string(file_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
@@ -1157,7 +1163,7 @@ mod tests {
         });
 
         fs::write(
-            config_dir.join("recall_config.json"),
+            config_dir.join("recall-config.json"),
             serde_json::to_string_pretty(&override_json).unwrap(),
         )
         .unwrap();
@@ -1197,7 +1203,7 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
 
         fs::write(
-            config_dir.join("recall_config.json"),
+            config_dir.join("recall-config.json"),
             "this is not valid json {{{",
         )
         .unwrap();
@@ -1256,7 +1262,7 @@ mod tests {
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"graph_traversal": {"max_hops": 3}}"#,
         )
         .unwrap();
@@ -1285,7 +1291,7 @@ mod tests {
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"graph_traversal": {"min_kg_confidence": 0.5}}"#,
         )
         .unwrap();
@@ -1300,14 +1306,14 @@ mod tests {
 
     #[test]
     fn min_kg_confidence_missing_key_falls_back_to_default() {
-        // Older recall_config.json files won't have the field — verify
+        // Older recall-config.json files won't have the field — verify
         // serde's `default = "..."` attribute fills in the compiled value
         // rather than failing to deserialize.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"graph_traversal": {"max_hops": 3}}"#,
         )
         .unwrap();
@@ -1353,7 +1359,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join("recall_config.json"), r#"{"min_score": 0.5}"#).unwrap();
+        std::fs::write(path.join("recall-config.json"), r#"{"min_score": 0.5}"#).unwrap();
         let config = RecallConfig::load_from_path(dir.path());
         assert_eq!(config.min_score, 0.5);
     }
@@ -1374,7 +1380,7 @@ mod tests {
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"kg_decay": {"entity_half_life_days": 30.0}}"#,
         )
         .unwrap();

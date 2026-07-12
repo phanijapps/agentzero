@@ -45,7 +45,7 @@ pub use ward::{WardTool, WardUsageAccess};
 // ============================================================================
 
 /// Settings that affect live gateway tool behavior.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolSettings {
     /// Enable optional file-discovery tools such as glob in the live gateway
@@ -63,6 +63,16 @@ pub struct ToolSettings {
     /// Results larger than this are saved to filesystem.
     #[serde(default = "default_offload_threshold")]
     pub offload_threshold_tokens: usize,
+}
+
+impl Default for ToolSettings {
+    fn default() -> Self {
+        Self {
+            file_tools: false,
+            offload_large_results: default_offload_enabled(),
+            offload_threshold_tokens: default_offload_threshold(),
+        }
+    }
 }
 
 fn default_offload_threshold() -> usize {

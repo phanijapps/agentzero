@@ -316,12 +316,13 @@ pub enum GatewayEvent {
     },
 
     /// A markdown file in <vault>/config/ was created, modified, or deleted.
-    /// Only emitted for files matching the customization allow-list (root
-    /// `*.md` and `shards/*.md`). Used by the Settings → Customization tab
+    /// Only emitted for files matching the customization allow-list
+    /// (`agent/*.md` and `agent-prompts/*.md`). Used by the Settings → Customization tab
     /// to refresh its file list and detect external edits while a file is
     /// being edited in the UI.
     CustomizationFileChanged {
-        /// Relative to <vault>/config/ (e.g., "SOUL.md" or "shards/foo.md")
+        /// Relative to <vault>/config/ (e.g., "agent/SOUL.md" or
+        /// "agent-prompts/foo.md")
         path: String,
         /// New mtime as RFC3339, or empty string if the file was deleted.
         modified_at: String,

@@ -133,7 +133,7 @@ pub async fn submit_session(
     let bus = HttpGatewayBus::new(
         runner.clone(),
         state.state_service.clone(),
-        state.config_dir.clone(),
+        state.vault_dir.clone(),
     );
 
     // Submit the session
@@ -165,7 +165,7 @@ pub async fn get_status(
     let bus = HttpGatewayBus::new(
         runner.clone(),
         state.state_service.clone(),
-        state.config_dir.clone(),
+        state.vault_dir.clone(),
     );
 
     let status = bus
@@ -193,7 +193,7 @@ pub async fn cancel_session(
     let bus = HttpGatewayBus::new(
         runner.clone(),
         state.state_service.clone(),
-        state.config_dir.clone(),
+        state.vault_dir.clone(),
     );
 
     bus.cancel(&session_id)
@@ -217,7 +217,7 @@ pub async fn pause_session(
     let bus = HttpGatewayBus::new(
         runner.clone(),
         state.state_service.clone(),
-        state.config_dir.clone(),
+        state.vault_dir.clone(),
     );
 
     bus.pause(&session_id)
@@ -241,7 +241,7 @@ pub async fn resume_session(
     let bus = HttpGatewayBus::new(
         runner.clone(),
         state.state_service.clone(),
-        state.config_dir.clone(),
+        state.vault_dir.clone(),
     );
 
     bus.resume(&session_id)

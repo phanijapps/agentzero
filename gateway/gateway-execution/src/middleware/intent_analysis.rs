@@ -149,10 +149,10 @@ pub struct EdgeCondition {
 // ---------------------------------------------------------------------------
 
 /// Default intent-analysis system prompt. Used when no user override exists
-/// at `config/intent_analysis_prompt.md`. The user can copy this into that
+/// at `config/intent-analysis-prompt.md`. The user can copy this into that
 /// file via `load_intent_analysis_prompt` on first run and then customize it.
 /// Load the intent-analysis system prompt from the vault config directory.
-/// Mirrors the distillation prompt pattern: if `config/intent_analysis_prompt.md`
+/// Mirrors the distillation prompt pattern: if `config/intent-analysis-prompt.md`
 /// exists and is non-empty, use it; otherwise materialize the default to disk
 /// so the user can customize it on subsequent runs.
 pub fn load_intent_analysis_prompt(paths: &gateway_services::SharedVaultPaths) -> String {

@@ -68,22 +68,19 @@
 │  ├── config/                          # App config, prompts, registries  │
 │  │   ├── settings.json                #   App settings (network, logs)   │
 │  │   ├── providers.json               #   LLM provider credentials       │
-│  │   ├── recall_config.json           #   Recall tuning: weights, graph  │
-│  │   ├── mcps.json                    #   MCP server configurations      │
+│  │   ├── recall-config.json           #   Recall tuning: weights, graph  │
+│  │   ├── mcp-servers.json             #   MCP server configurations      │
 │  │   ├── connectors.json              #   Connector configurations       │
-│  │   ├── cron_jobs.json               #   Scheduled job configurations   │
-│  │   ├── seeded_defaults.json         #   IDs of bundled defaults seeded │
-│  │   ├── SOUL.md                      #   Agent identity/personality     │
-│  │   ├── INSTRUCTIONS.md              #   Execution rules                │
-│  │   ├── OS.md                        #   Platform commands (auto-gen)   │
-│  │   ├── distillation_prompt.md       #   Distillation prompt override   │
-│  │   ├── intent_analysis_prompt.md    #   Intent-analysis prompt override│
-│  │   ├── shards/                      #   Overridable prompt shards      │
-│  │   │   ├── tooling_skills.md        #     Skills-first approach        │
-│  │   │   ├── memory_learning.md       #     Memory patterns              │
-│  │   │   └── planning_autonomy.md     #     Planning and autonomy        │
-│  │   └── wards/                       #   Per-language ward index configs│
-│  │       └── *.yaml                                                      │
+│  │   ├── schedules.json               #   Scheduled job configurations   │
+│  │   ├── seeded-defaults.json         #   IDs of bundled defaults seeded │
+│  │   ├── distillation-prompt.md       #   Distillation prompt override   │
+│  │   ├── intent-analysis-prompt.md    #   Intent-analysis prompt override│
+│  │   ├── agent/                       #   Exact-case agent contracts     │
+│  │   │   ├── SOUL.md                  #     Identity/personality         │
+│  │   │   ├── INSTRUCTIONS.md          #     Execution rules              │
+│  │   │   └── OS.md                    #     Platform commands            │
+│  │   ├── agent-prompts/               #   Overridable prompt modules     │
+│  │   └── auth/mcp/                    #   OAuth pending state and tokens │
 │  ├── data/                            # SQLite databases                  │
 │  │   ├── conversations.db             #   Conversations, messages,       │
 │  │   │                                #   memory_facts, embedding_cache  │
@@ -93,13 +90,6 @@
 │  ├── agents/{name}/                   # Agent configurations             │
 │  │   ├── config.yaml                  #   Model, provider, temperature   │
 │  │   └── AGENTS.md                    #   System instructions            │
-│  ├── agents_data/{id}/                # Per-agent runtime data           │
-│  │   └── memory.json                  #   Persistent key-value storage   │
-│  ├── agents_data/shared/              # Cross-agent shared memory        │
-│  │   ├── user_info.json               #   User preferences               │
-│  │   ├── workspace.json               #   Project paths (auto-injected)  │
-│  │   ├── patterns.json                #   Learned patterns               │
-│  │   └── session_summaries.json       #   Distilled learnings            │
 │  ├── skills/{name}/                   # Vault-owned skill definitions    │
 │  │   └── SKILL.md                     #   Instructions + frontmatter     │
 │  ├── wards/                           # Wards (delegatable agents + dirs)│
@@ -115,20 +105,29 @@
 │  │       │   ├── core_docs.md         #       Function signatures        │
 │  │       │   └── structure.md         #       Directory tree             │
 │  │       └── (project files)          #     Code, reports, artifacts     │
-│  ├── plugins/                         # Node.js plugin directories       │
-│  │   ├── .example/                    #   Reference plugin               │
-│  │   └── {plugin-name}/                                                  │
-│  │       ├── plugin.json              #     Plugin manifest              │
-│  │       ├── package.json             #     Node.js dependencies         │
-│  │       ├── index.js                 #     Entry point                  │
-│  │       ├── .config.json             #     User config + secrets        │
-│  │       └── node_modules/            #     Auto-installed deps          │
-│  └── temp/                            # Ephemeral scratch (auto-wiped)   │
+│  ├── plugins/                         # Created when a plugin is installed│
+│  └── temp/                            # Created for ephemeral work       │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Vault-path source of truth:** `gateway/gateway-services/src/paths.rs`. Schema for `config/*.json` files lives in the consuming services (e.g. `gateway-services::SettingsService`, `gateway-cron::CronJobsStore`). System-wide skills also load from `~/.agents/skills/` outside the vault.
+> **Vault-path source of truth:** `gateway/gateway-services/src/paths.rs`. Startup creates only `config/`, `data/`, `logs/`, and `wards/`; other roots are created by their owning feature. Legacy filenames are copied forward at startup, never deleted, and canonical files win a conflict. Schema for `config/*.json` files lives in the consuming services (e.g. `gateway-services::SettingsService`, `gateway-cron::CronJobsStore`). System-wide skills also load from `~/.agents/skills/` outside the vault.
 >
+### Layout migration and naming
+
+Ordinary vault files and directories use lowercase-kebab names. The exact-case
+agent contracts `SOUL.md`, `INSTRUCTIONS.md`, `OS.md`, and ward-local
+`AGENTS.md` are deliberate exceptions. On startup z-Bot copies the following
+legacy files to their canonical destinations only when that destination does
+not exist: `mcps.json`, `cron_jobs.json`, flat MCP OAuth files, underscore
+prompt/config names, root contracts, and `shards/*.md`. It never removes the
+legacy source. If both paths exist, z-Bot retains the canonical version and
+logs the conflict for review.
+
+The old `config/shards/okf_tooling.md`, `config/okf/`, and external hook YAML
+are compatibility content only: z-Bot does not load them because it has no OKF
+tool or external hook runner. They remain untouched until the user chooses an
+explicit cleanup release.
+
 ## Technology Stack
 
 | Layer | Technology | Purpose |
@@ -525,7 +524,7 @@ On re-run, the wizard hydrates from current state (providers, agent configs, MCP
 
 ### Name Presets
 
-Step 1 offers quick-pick personalities: **Brahmi**, **JohnnyLever**, **z-Bot**, or custom. The chosen name is stored in `settings.json` (`execution.agentName`) and written to `config/SOUL.md` (first line: `You are **Name**`).
+Step 1 offers quick-pick personalities: **Brahmi**, **JohnnyLever**, **z-Bot**, or custom. The chosen name is stored in `settings.json` (`execution.agentName`) and written to `config/agent/SOUL.md` (first line: `You are **Name**`).
 
 ### Implementation Files
 
@@ -1411,7 +1410,7 @@ Recall is **tool-call based** — the agent explicitly calls `memory recall` (no
 **Priority scoring**: Each recalled fact is scored by:
 1. **Category weight**: correction (1.5x) > strategy (1.4x) > user preference (1.3x) > domain (1.0x)
 2. **Ward affinity boost**: facts from the active ward score higher
-3. **Temporal decay**: per-category half-lives (corrections 90d, domain 30d) via `recall_config.json`
+3. **Temporal decay**: per-category half-lives (corrections 90d, domain 30d) via `recall-config.json`
 4. **Contradiction penalty**: facts flagged by `contradicted_by` are penalized
 5. **Predictive recall**: success-correlated facts bubble up from historical recall_log
 
@@ -1423,7 +1422,7 @@ Recall is **tool-call based** — the agent explicitly calls `memory recall` (no
 
 **Recall nudges**: System nudges at session start, ward entry, and post-delegation prompt the agent to recall via the tool.
 
-**Configuration**: `config/recall_config.json` with `category_weights`, `ward_affinity`, `temporal_decay` half-lives, `graph_traversal` (max_hops, hop_decay), `predictive_recall`, `session_offload`.
+**Configuration**: `config/recall-config.json` with `category_weights`, `ward_affinity`, `temporal_decay` half-lives, `graph_traversal` (max_hops, hop_decay), `predictive_recall`, `session_offload`.
 
 #### Session Offload
 
@@ -1444,7 +1443,7 @@ Temporal decay moves old facts past their category half-life to `memory_facts_ar
 - `gateway/gateway-execution/src/distillation.rs` — SessionDistiller (health reporting, episode extraction, strategy emergence, failure clustering, ward file sync)
 - `gateway/gateway-execution/src/recall.rs` — MemoryRecall (priority engine, graph expansion, corrections as rules, nudges)
 - `runtime/agent-tools/src/tools/memory.rs` — save_fact, recall, graph actions
-- `config/recall_config.json` — recall tuning: weights, decay, graph traversal, predictive recall
+- `config/recall-config.json` — recall tuning: weights, decay, graph traversal, predictive recall
 
 ### distillation_runs
 Tracks distillation health per session (v11).
@@ -1766,7 +1765,7 @@ User Message
 
 ## System Prompt Architecture
 
-The system prompt is assembled from modular config files at `~/Documents/zbot/config/`. Each file is created from an embedded starter template on first run and is user-customizable. Assembly is handled by `gateway/gateway-templates/src/lib.rs`.
+The system prompt is assembled from modular files at `~/Documents/zbot/config/agent/` and `~/Documents/zbot/config/agent-prompts/`. Each file is created from an embedded starter template on first run and is user-customizable. Assembly is handled by `gateway/gateway-templates/src/lib.rs`.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -1785,45 +1784,45 @@ The system prompt is assembled from modular config files at `~/Documents/zbot/co
 │ - macOS: Unix shell + brew              │
 │ - Linux: Unix shell + package managers  │
 ├─────────────────────────────────────────┤
-│ # --- SYSTEM SHARDS ---                 │
+│ # --- SYSTEM PROMPTS ---                │
 ├─────────────────────────────────────────┤
-│ tooling_skills.md (shard)               │
+│ tooling-skills.md (prompt module)       │
 │ - Skills-first approach                 │
 │ - Delegation patterns                   │
 ├─────────────────────────────────────────┤
-│ memory_learning.md (shard)              │
+│ memory-learning.md (prompt module)      │
 │ - Shared memory usage                   │
 │ - Pattern recording                     │
 ├─────────────────────────────────────────┤
-│ planning_autonomy.md (shard)            │
+│ planning-autonomy.md (prompt module)    │
 │ - Planning and autonomous execution     │
 ├─────────────────────────────────────────┤
-│ (any extra user shards in config/shards)│
+│ (extra user prompt modules)             │
 └─────────────────────────────────────────┘
 ```
 
 ### Assembly Order
 
-1. **`config/SOUL.md`** — Agent identity/personality (created from `soul_starter.md` if missing)
-2. **`config/INSTRUCTIONS.md`** — Execution rules (created from `instructions_starter.md` if missing)
-3. **`config/OS.md`** — Platform-specific commands (auto-generated for current OS if missing)
-4. **Shards** — `config/shards/{name}.md` overrides embedded defaults; extra user files included too
+1. **`config/agent/SOUL.md`** — Agent identity/personality (created from `soul_starter.md` if missing)
+2. **`config/agent/INSTRUCTIONS.md`** — Execution rules (created from `instructions_starter.md` if missing)
+3. **`config/agent/OS.md`** — Platform-specific commands (auto-generated for current OS if missing)
+4. **Prompt modules** — `config/agent-prompts/{name}.md` overrides embedded defaults; extra user files are included too
 
-### Shards
+### Prompt modules
 
-Required shards are loaded from `config/shards/` if present, otherwise from embedded defaults. Users can override any shard by placing a file with the same name in the shards directory.
+Required prompt modules are loaded from `config/agent-prompts/` if present, otherwise from embedded defaults. Users can override any module by placing a file with the same name in that directory.
 
-| Shard | Purpose |
+| Module | Purpose |
 |-------|---------|
-| `tooling_skills` | Skills-first approach, delegation |
-| `memory_learning` | Shared memory patterns |
-| `planning_autonomy` | Planning and autonomous execution |
+| `tooling-skills` | Skills-first approach, delegation |
+| `memory-learning` | Shared memory patterns |
+| `planning-autonomy` | Planning and autonomous execution |
 
-Extra `.md` files placed in `config/shards/` are automatically included after the required shards.
+Extra `.md` files placed in `config/agent-prompts/` are automatically included after the required modules.
 
 ### Distillation Prompt
 
-The distillation prompt is customizable via `config/distillation_prompt.md`. If the file does not exist, the embedded default is written to disk on first run. This allows users to tune what facts, entities, and relationships are extracted during session distillation.
+The distillation prompt is customizable via `config/distillation-prompt.md`. If the file does not exist, the embedded default is written to disk on first run. This allows users to tune what facts, entities, and relationships are extracted during session distillation.
 
 ### Key Files
 

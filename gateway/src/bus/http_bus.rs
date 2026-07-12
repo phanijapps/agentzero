@@ -21,7 +21,7 @@ use zbot_runtime_sqlite::DatabaseManager;
 /// ```ignore
 /// use gateway::bus::{HttpGatewayBus, GatewayBus, SessionRequest};
 ///
-/// let bus = HttpGatewayBus::new(runner, state_service, config_dir);
+/// let bus = HttpGatewayBus::new(runner, state_service, vault_dir);
 ///
 /// let request = SessionRequest::new("root", "Hello!")
 ///     .with_source(TriggerSource::Web);
@@ -33,8 +33,8 @@ pub struct HttpGatewayBus {
     runner: Arc<ExecutionRunner>,
     /// State service for session/execution management.
     state_service: Arc<StateService<DatabaseManager>>,
-    /// Configuration directory (vault path).
-    config_dir: PathBuf,
+    /// Vault root containing configuration, data, and workspaces.
+    vault_dir: PathBuf,
 }
 
 impl HttpGatewayBus {
@@ -44,16 +44,16 @@ impl HttpGatewayBus {
     ///
     /// * `runner` - The execution runner to use for agent invocations
     /// * `state_service` - The state service for session/execution queries
-    /// * `config_dir` - The configuration directory (vault path)
+    /// * `vault_dir` - The vault root containing configuration and workspaces
     pub fn new(
         runner: Arc<ExecutionRunner>,
         state_service: Arc<StateService<DatabaseManager>>,
-        config_dir: PathBuf,
+        vault_dir: PathBuf,
     ) -> Self {
         Self {
             runner,
             state_service,
-            config_dir,
+            vault_dir,
         }
     }
 
@@ -81,7 +81,7 @@ impl HttpGatewayBus {
         let mut config = ExecutionConfig::new(
             request.agent_id.clone(),
             conversation_id,
-            self.config_dir.clone(),
+            self.vault_dir.clone(),
         )
         .with_source(request.source);
 

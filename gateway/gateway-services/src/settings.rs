@@ -480,11 +480,11 @@ impl SettingsService {
         }
     }
 
-    /// Create a legacy settings service with a direct config path.
-    /// Used for early initialization before VaultPaths is available.
-    pub fn new_legacy(config_dir: PathBuf) -> Self {
+    /// Create a settings service from a vault root.
+    /// Used for early initialization before shared paths are available.
+    pub fn from_vault_dir(vault_dir: PathBuf) -> Self {
         Self {
-            paths: std::sync::Arc::new(crate::paths::VaultPaths::new(config_dir)),
+            paths: std::sync::Arc::new(crate::paths::VaultPaths::new(vault_dir)),
             cache: RwLock::new(None),
         }
     }
@@ -651,7 +651,7 @@ mod tests {
     #[test]
     fn test_default_settings() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let settings = service.load().unwrap();
         assert!(!settings.tools.file_tools);
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn commissioning_settings_round_trip_without_semantic_provider_details() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
         let mut settings = AppSettings::default();
         settings.commissioning.state = CommissioningState::Complete;
         settings.commissioning.primary_focus = Some("research_learn".to_string());
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn test_save_and_load() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
         settings.tools.file_tools = true;
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn test_log_settings_crud() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         // Default: logging enabled with stdout suppressed
         let log_settings = service.get_log_settings().unwrap();
@@ -736,7 +736,7 @@ mod tests {
     #[test]
     fn test_log_settings_validation() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         // Invalid log level should fail
         let invalid_settings = LogSettings {
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn test_settings_json_format() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
         settings.tools.file_tools = true;
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn test_distillation_config_in_execution_settings() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
         settings.execution.distillation = DistillationConfig {
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn test_distillation_config_absent_in_json() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let json = r#"{ "execution": { "maxParallelAgents": 3 } }"#;
         let config_dir = dir.path().join("config");
@@ -845,7 +845,7 @@ mod tests {
     #[test]
     fn save_preserves_unknown_top_level_keys() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let initial_json = r#"{
   "tools": { "fileTools": true, "offloadLargeResults": true },

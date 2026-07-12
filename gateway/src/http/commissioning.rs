@@ -605,7 +605,10 @@ fn write_commissioning_soul(
     primary_focus: &str,
     domains: &[String],
 ) -> Result<(), (StatusCode, Json<CommissioningError>)> {
-    let path = state.paths.vault_dir().join("config").join("SOUL.md");
+    let path = state.paths.soul();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| internal_error())?;
+    }
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     let identity = if let Some(rest) = current.strip_prefix("You are **") {
         if let Some(after_name) = rest.find("**") {

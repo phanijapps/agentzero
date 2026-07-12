@@ -5,6 +5,7 @@
 use agent_primitives::FileSystemContext;
 use execution_state::TriggerSource;
 use gateway_events::HookContext;
+use gateway_services::VaultPaths;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -89,7 +90,7 @@ impl FileSystemContext for GatewayFileSystem {
     }
 
     fn mcps_config(&self) -> Option<PathBuf> {
-        Some(self.vault_dir.join("config").join("mcps.json"))
+        Some(VaultPaths::new(self.vault_dir.clone()).mcps())
     }
 }
 
@@ -104,8 +105,8 @@ pub struct ExecutionConfig {
     pub agent_id: String,
     /// Conversation ID for tracking (legacy, used for message persistence)
     pub conversation_id: String,
-    /// Configuration directory (vault path)
-    pub config_dir: PathBuf,
+    /// Vault root containing configuration, data, and workspaces.
+    pub vault_dir: PathBuf,
     /// Maximum iterations before prompting for continuation
     pub max_iterations: u32,
     /// Optional hook context for routing responses
@@ -163,11 +164,11 @@ impl SessionMode {
 
 impl ExecutionConfig {
     /// Create a new execution config.
-    pub fn new(agent_id: String, conversation_id: String, config_dir: PathBuf) -> Self {
+    pub fn new(agent_id: String, conversation_id: String, vault_dir: PathBuf) -> Self {
         Self {
             agent_id,
             conversation_id,
-            config_dir,
+            vault_dir,
             max_iterations: 1000,
             hook_context: None,
             session_id: None,
@@ -413,7 +414,7 @@ mod tests {
         assert_eq!(fs.wards_root_dir(), Some(vault.join("wards")));
         assert_eq!(
             fs.mcps_config(),
-            Some(vault.join("config").join("mcps.json"))
+            Some(vault.join("config").join("mcp-servers.json"))
         );
         assert_eq!(
             fs.conversation_dir("c1"),

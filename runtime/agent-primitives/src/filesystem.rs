@@ -85,7 +85,7 @@ pub trait FileSystemContext: Send + Sync {
     }
 
     /// Get the MCP servers configuration file path.
-    /// Returns `{vault}/config/mcps.json`
+    /// Returns `{vault}/config/mcp-servers.json`.
     fn mcps_config(&self) -> Option<PathBuf> {
         None
     }

@@ -30,7 +30,7 @@ cargo run -p daemon -- --data-dir ~/.agentzero
 - `--static-dir` — Path to React dashboard dist/ directory
 - `--port` / `--http-port` — HTTP port (default: 18791)
 - `--ws-port` — WebSocket port (default: 18790)
-- `--data-dir` — Data directory / vault (default: `~/Documents/agentzero`)
+- `--data-dir` — Data directory / vault (default: `~/Documents/zbot`)
 - `--log-dir` — Enable file logging
 - `--no-dashboard` — Disable static file serving
 
@@ -57,19 +57,27 @@ cd apps/ui && npm install && npm run dev
 
 ## Data Directory
 
-All apps use `~/Documents/agentzero/` by default:
+All apps use `~/Documents/zbot/` by default:
 
 ```
-agentzero/
-├── conversations.db      # SQLite database
-├── config/               # SOUL.md, INSTRUCTIONS.md, OS.md, shards/
+zbot/
+├── config/
+│   ├── settings.json          # App settings
+│   ├── providers.json         # LLM provider configurations
+│   ├── mcp-servers.json       # MCP server configurations
+│   ├── connectors.json        # External connectors
+│   ├── schedules.json         # Scheduled tasks
+│   ├── agent/                 # User-editable agent contracts
+│   │   ├── SOUL.md
+│   │   ├── INSTRUCTIONS.md
+│   │   └── OS.md
+│   ├── agent-prompts/         # User-editable prompt modules
+│   └── auth/mcp/              # OAuth pending state and tokens
+├── data/
+│   └── conversations.db       # SQLite runtime conversation data
 ├── agents/{name}/        # Agent configs
 ├── wards/                # Code project directories
-│   ├── venv/             #   Shared Python venv
-│   └── {name}/           #   Named project directories
 ├── skills/{name}/        # Skill definitions
-├── providers.json        # LLM providers
-├── mcps.json             # MCP servers
-├── connectors.json       # External connectors
-└── cron_jobs.json        # Scheduled tasks
+├── plugins/              # Created only when a plugin is installed
+└── temp/                 # Created only when transient work is needed
 ```

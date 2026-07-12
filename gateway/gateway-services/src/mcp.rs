@@ -103,7 +103,7 @@ impl McpService {
     /// Create a new MCP service.
     ///
     /// The paths should contain the z-Bot configuration directory
-    /// (e.g., ~/Documents/zbot). The service will look for mcps.json
+    /// (e.g., ~/Documents/zbot). The service will look for mcp-servers.json
     /// in the config subdirectory.
     pub fn new(paths: SharedVaultPaths) -> Self {
         Self {
@@ -118,20 +118,14 @@ impl McpService {
         self.paths.mcps()
     }
 
-    /// Secret token-store path. Kept outside `mcps.json`.
+    /// Secret token-store path. Kept outside `mcp-servers.json`.
     pub fn oauth_tokens_path(&self) -> PathBuf {
-        self.config_path()
-            .parent()
-            .unwrap_or_else(|| self.paths.vault_dir())
-            .join("mcp_oauth_tokens.json")
+        self.paths.mcp_oauth_tokens()
     }
 
-    /// Secret pending-state path. Kept outside `mcps.json`.
+    /// Secret pending-state path. Kept outside `mcp-servers.json`.
     pub fn oauth_pending_path(&self) -> PathBuf {
-        self.config_path()
-            .parent()
-            .unwrap_or_else(|| self.paths.vault_dir())
-            .join("mcp_oauth_pending.json")
+        self.paths.mcp_oauth_pending()
     }
 
     /// Invalidate the cache, forcing next read to go to disk.
@@ -148,10 +142,10 @@ impl McpService {
         }
 
         let content = fs::read_to_string(self.config_path())
-            .map_err(|e| format!("Failed to read mcps.json: {}", e))?;
+            .map_err(|e| format!("Failed to read mcp-servers.json: {}", e))?;
 
         let configs: Vec<McpServerConfig> = serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse mcps.json: {}", e))?;
+            .map_err(|e| format!("Failed to parse mcp-servers.json: {}", e))?;
 
         validate_oauth_configs(&configs)?;
 
@@ -225,7 +219,7 @@ impl McpService {
     }
 
     /// Get enabled MCP configs for runtime startup, injecting bearer tokens for
-    /// connected OAuth servers without persisting those headers to `mcps.json`.
+    /// connected OAuth servers without persisting those headers to `mcp-servers.json`.
     pub fn get_multiple_for_runtime(&self, ids: &[String]) -> Vec<McpServerConfig> {
         self.get_multiple(ids)
             .into_iter()
@@ -410,10 +404,10 @@ impl McpService {
         }
 
         let content = serde_json::to_string_pretty(configs)
-            .map_err(|e| format!("Failed to serialize mcps.json: {}", e))?;
+            .map_err(|e| format!("Failed to serialize mcp-servers.json: {}", e))?;
 
         fs::write(self.config_path(), content)
-            .map_err(|e| format!("Failed to write mcps.json: {}", e))?;
+            .map_err(|e| format!("Failed to write mcp-servers.json: {}", e))?;
 
         // Update cache with the data we just wrote
         if let Ok(mut cache) = self.cache.write() {

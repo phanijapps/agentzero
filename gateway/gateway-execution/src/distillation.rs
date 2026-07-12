@@ -319,7 +319,7 @@ impl SessionDistiller {
 
     /// Load the distillation prompt from filesystem or use embedded default.
     ///
-    /// Checks for `config/distillation_prompt.md` in the vault directory.
+    /// Checks for `config/distillation-prompt.md` in the vault directory.
     /// Falls back to the embedded `gateway/templates/distillation_prompt.md`
     /// (loaded via [`default_distillation_prompt`]) if not found.
     fn load_distillation_prompt(&self) -> String {
@@ -2227,7 +2227,7 @@ fn extract_json_from_content(content: &str) -> String {
 
 /// Load the embedded default distillation prompt from `gateway/templates/`.
 ///
-/// Can be overridden by creating `config/distillation_prompt.md` in the vault.
+/// Can be overridden by creating `config/distillation-prompt.md` in the vault.
 fn default_distillation_prompt() -> String {
     let bytes = gateway_templates::Templates::get("distillation_prompt.md")
         .expect("distillation_prompt.md must be embedded in gateway/templates/")

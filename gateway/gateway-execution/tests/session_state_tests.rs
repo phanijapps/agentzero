@@ -31,13 +31,15 @@ use zbot_runtime_sqlite::DatabaseManager;
 /// The MessageStore shares `conversations.db` (the same file
 /// `DatabaseManager` opens) via its own r2d2 pool, mirroring the production
 /// wiring in `AppState::build_conversation_stores`.
-fn setup() -> (
+type TestHarness = (
     SessionStateBuilder,
     Arc<DatabaseManager>,
     Arc<LogService<DatabaseManager>>,
     Arc<dyn MessageStore>,
     Arc<StateService<DatabaseManager>>,
-) {
+);
+
+fn setup() -> TestHarness {
     let dir = tempdir().unwrap();
     #[allow(deprecated)]
     let dir_path = dir.into_path();
@@ -136,6 +138,7 @@ fn append_message(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_message_for_execution(
     messages: &Arc<dyn MessageStore>,
     execution_id: &str,

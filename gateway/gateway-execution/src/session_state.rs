@@ -157,7 +157,8 @@ const INTERNAL_TOOLS: &[&str] = &["analyze_intent", "update_plan", "set_session_
 /// - `response`, `plan`, `recalled_facts` ← `MessageStore::replay` (durable,
 ///   shape-agnostic; handles delegation `system` messages too).
 /// - `ward`, `title` ← `state_service.get_session()` (persisted by
-///   `WardChanged`/`SessionTitleChanged` handlers), fallback to intent.
+///   `WardChanged`/`SessionTitleChanged` handlers); title alone falls back to
+///   intent because an intent recommendation is not an active workspace.
 /// - `user_message`, `token_count` ← `MessageStore::replay`.
 pub struct SessionStateBuilder {
     log_service: Arc<LogService<DatabaseManager>>,
@@ -203,9 +204,10 @@ impl SessionStateBuilder {
         let user_message = Self::extract_user_message(&root_messages);
         let intent_analysis = Self::extract_intent(logs);
 
-        // ward / title: prefer the sessions row (WardChanged /
-        // SessionTitleChanged handlers), fallback to legacy log scan, then
-        // intent.
+        // The active ward is runtime state, not an intent recommendation.
+        // A session with a NULL ward_id is deliberately wardless even if its
+        // analysis suggested a future workspace. Title can still use intent
+        // metadata because it carries no filesystem/tool-routing authority.
         let session_row = self
             .state_service
             .get_session(&session.conversation_id)
@@ -217,8 +219,7 @@ impl SessionStateBuilder {
             .map(|name| WardInfo {
                 name,
                 content: None,
-            })
-            .or_else(|| Self::extract_ward(logs, intent_analysis.as_ref()));
+            });
         let title = session_row
             .as_ref()
             .and_then(|s| s.title.clone())
@@ -358,46 +359,6 @@ impl SessionStateBuilder {
         logs.iter()
             .find(|l| l.category == LogCategory::Intent)
             .and_then(|l| l.metadata.clone())
-    }
-
-    /// Extract ward info. Primary source is `sessions.ward_id` (handled by the
-    /// caller via `state_service`); this fallback tries the intent-analysis
-    /// `ward_recommendation` block. The legacy ward-tool-call scan is gone
-    /// (its `args` are slimmed out of `execution_logs.metadata` — full args
-    /// now live only in `messages.tool_calls`, which the caller does not
-    /// thread into this helper).
-    fn extract_ward(logs: &[ExecutionLog], intent: Option<&serde_json::Value>) -> Option<WardInfo> {
-        // Legacy fallback: extract from intent analysis metadata. The Intent
-        // log is un-slimmed and still carries ward_recommendation.
-        if let Some(intent_val) = intent {
-            if let Some(ward_name) = intent_val
-                .get("ward_recommendation")
-                .and_then(|wr| wr.get("ward_name"))
-                .or_else(|| intent_val.get("ward"))
-                .and_then(|v| v.as_str())
-            {
-                return Some(WardInfo {
-                    name: ward_name.to_string(),
-                    content: None,
-                });
-            }
-        }
-
-        // Allow other callers (tests, ad-hoc) to surface a ward from a
-        // model-emitted metadata blob if present. This is best-effort and
-        // does not depend on the slimmed tool-call args.
-        for log in logs {
-            if let Some(meta) = log.metadata.as_ref() {
-                if let Some(ward_name) = meta.get("ward").and_then(|v| v.as_str()) {
-                    return Some(WardInfo {
-                        name: ward_name.to_string(),
-                        content: None,
-                    });
-                }
-            }
-        }
-
-        None
     }
 
     /// Extract the model from the first log entry that carries model metadata.

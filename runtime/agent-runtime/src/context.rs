@@ -228,6 +228,8 @@ pub enum ContextCapabilityHealth {
     Unsupported,
     /// Disabled by config or policy.
     Disabled,
+    /// Known capability whose required runtime adapter is not configured.
+    Unavailable,
 }
 
 /// Bounded, traceable context assembled before an LLM call.

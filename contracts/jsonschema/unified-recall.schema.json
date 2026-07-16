@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zbot.local/contracts/unified-recall.schema.json",
+  "title": "Unified Recall Tool",
+  "description": "Read-only, bounded model-tool contract for unified semantic recall. The response trust boundary applies to every result item.",
+  "x-spec": "docs/specs/unified-recall-default/spec.md",
+  "type": "object",
+  "required": ["request", "response"],
+  "properties": {
+    "request": {"$ref": "#/$defs/request"},
+    "response": {"$ref": "#/$defs/response"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["query"],
+      "properties": {
+        "query": {"type": "string", "minLength": 1, "maxLength": 500},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5}
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["query", "mode", "results", "count", "source_summary", "trust_boundary", "truncated"],
+      "properties": {
+        "query": {"type": "string", "maxLength": 500},
+        "mode": {"type": "string", "enum": ["unified", "facts"]},
+        "results": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/item"}},
+        "count": {"type": "integer", "minimum": 0, "maximum": 20},
+        "source_summary": {"$ref": "#/$defs/source_summary"},
+        "taxonomy_expansion": {"$ref": "#/$defs/taxonomy_expansion"},
+        "degraded": {"type": "boolean"},
+        "degraded_reason_codes": {"type": "array", "maxItems": 9, "items": {"$ref": "#/$defs/reason_code"}},
+        "source": {"type": "string", "enum": ["unified_recall", "memory_db", "kv_store"]},
+        "prioritized": {"type": "boolean"},
+        "recalled": {"description": "Legacy compatibility alias that, when emitted, is JSON-identical to results.", "type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/item"}},
+        "reason": {"anyOf": [{"$ref": "#/$defs/safe_message"}, {"type": "null"}]},
+        "reason_code": {"anyOf": [{"$ref": "#/$defs/reason_code"}, {"type": "null"}]},
+        "trust_boundary": {"type": "string", "const": "untrusted_reference_data"},
+        "truncated": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "item": {
+      "type": "object",
+      "required": ["id", "kind", "content", "score", "provenance"],
+      "properties": {
+        "id": {"type": "string", "maxLength": 256},
+        "kind": {"type": "string", "enum": ["fact", "wiki", "procedure", "graph_node", "goal", "episode", "belief", "hier_entity", "hier_relation"]},
+        "content": {"type": "string", "maxLength": 4000},
+        "score": {"type": "number"},
+        "provenance": {
+          "type": "object",
+          "required": ["source", "source_id"],
+          "properties": {
+            "source": {"type": "string", "enum": ["memory_facts", "knowledge_graph", "ward_wiki", "procedures", "episodes", "beliefs", "hierarchy", "goals"]},
+            "source_id": {"type": "string", "maxLength": 256},
+            "session_id": {"type": ["string", "null"], "maxLength": 256},
+            "ward_id": {"type": ["string", "null"], "maxLength": 256}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_summary": {
+      "type": "object",
+      "required": ["facts", "graph", "wiki", "procedures", "episodes", "beliefs", "hierarchy", "goals", "taxonomy"],
+      "properties": {
+        "facts": {"$ref": "#/$defs/source_status"},
+        "graph": {"$ref": "#/$defs/source_status"},
+        "wiki": {"$ref": "#/$defs/source_status"},
+        "procedures": {"$ref": "#/$defs/source_status"},
+        "episodes": {"$ref": "#/$defs/source_status"},
+        "beliefs": {"$ref": "#/$defs/source_status"},
+        "hierarchy": {"$ref": "#/$defs/source_status"},
+        "goals": {"$ref": "#/$defs/source_status"},
+        "taxonomy": {"$ref": "#/$defs/source_status"}
+      },
+      "additionalProperties": false
+    },
+    "source_status": {
+      "type": "object",
+      "required": ["status", "count"],
+      "properties": {
+        "status": {"type": "string", "enum": ["used", "empty", "not_configured", "unavailable", "degraded"]},
+        "count": {"type": "integer", "minimum": 0, "maximum": 20},
+        "reason_code": {"anyOf": [{"$ref": "#/$defs/reason_code"}, {"type": "null"}]}
+      },
+      "additionalProperties": false
+    },
+    "taxonomy_expansion": {
+      "type": ["object", "null"],
+      "required": ["retrieval_query", "candidates"],
+      "properties": {
+        "retrieval_query": {"type": "string", "maxLength": 4000},
+        "candidates": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["scheme_id", "concept_id", "label", "relation"],
+            "properties": {
+              "scheme_id": {"type": "string", "maxLength": 256},
+              "concept_id": {"type": "string", "maxLength": 256},
+              "label": {"type": "string", "maxLength": 256},
+              "relation": {"type": "string", "enum": ["pref_label", "alt_label", "broader", "narrower", "related"]}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "reason_code": {
+      "type": "string",
+      "enum": ["not_configured", "embedding_unavailable", "embedding_identity_mismatch", "source_unavailable", "source_timeout", "authorization_filtered", "historical_unified_unsupported", "legacy_fallback", "output_sanitized", "output_truncated"]
+    },
+    "safe_message": {
+      "type": "string",
+      "enum": ["Recall is not configured.", "Recall embedding is unavailable.", "Recall requires reindexing.", "A recall source is unavailable.", "Recall results were limited by scope.", "Historical unified recall is unavailable.", "Recall used its legacy fallback.", "Recall output was limited for safety."]
+    }
+  }
+}

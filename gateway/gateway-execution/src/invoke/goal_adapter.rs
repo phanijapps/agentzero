@@ -25,6 +25,7 @@ impl GoalAdapter {
 fn to_summary(g: Goal) -> GoalSummary {
     GoalSummary {
         id: g.id,
+        ward_id: g.ward_id,
         title: g.title,
         description: g.description,
         state: g.state,

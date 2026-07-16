@@ -21,8 +21,8 @@ use crate::{
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
     mapping::belief::{
-        belief_record_to_belief, belief_to_belief_record, contradiction_resolution_to_record,
-        contradiction_to_record,
+        belief_record_to_belief, belief_to_belief_record_with_governance,
+        contradiction_resolution_to_record, contradiction_to_record,
     },
     scope::ScopeMapper,
 };
@@ -34,6 +34,7 @@ const SIDECAR_COMPONENT: &str = "belief_sidecar";
 pub struct EngramBeliefStore {
     beliefs: Arc<dyn BeliefRepository>,
     mapper: ScopeMapper,
+    governance: crate::governance::GovernancePolicy,
     sidecar: BeliefSidecar,
 }
 
@@ -74,6 +75,7 @@ impl EngramBeliefStore {
         Ok(Self {
             beliefs,
             mapper,
+            governance: config.governance.clone(),
             sidecar,
         })
     }
@@ -125,8 +127,9 @@ impl EngramBeliefStore {
             belief.created_at = existing.belief.created_at;
         }
         let embedding = belief.embedding.clone();
-        let record = belief_to_belief_record(&belief, &self.mapper)
-            .map_err(AdapterError::into_trait_error)?;
+        let record =
+            belief_to_belief_record_with_governance(&belief, &self.mapper, Some(&self.governance))
+                .map_err(AdapterError::into_trait_error)?;
         self.beliefs
             .upsert_belief(record)
             .await

@@ -16,6 +16,7 @@ mod stream_context;
 mod stream_event_processor;
 mod token_tracking;
 mod tool_call_accumulator;
+pub mod unified_recall_adapter;
 mod ward_scaffolding;
 pub mod ward_usage_adapter;
 pub mod working_memory;

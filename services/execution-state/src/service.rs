@@ -155,6 +155,26 @@ impl<D: StateDbProvider> StateService<D> {
         self.repo.get_mission_control_session_tokens(session_id)
     }
 
+    /// Accept the latest validated `update_plan` snapshot for a trusted session
+    /// and execution. Validation rejections are expected outcomes; database
+    /// failures are returned separately.
+    pub fn save_session_plan(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        plan: serde_json::Value,
+        explanation: Option<String>,
+        source_event_timestamp: u64,
+    ) -> Result<SessionPlanSaveOutcome, String> {
+        self.repo.save_session_plan(
+            session_id,
+            execution_id,
+            plan,
+            explanation,
+            source_event_timestamp,
+        )
+    }
+
     /// Find a session by its thread_id.
     ///
     /// Returns the session if found, regardless of its status.
@@ -340,6 +360,16 @@ impl<D: StateDbProvider> StateService<D> {
     /// Update the active ward for a session.
     pub fn update_session_ward(&self, session_id: &str, ward_id: &str) -> Result<(), String> {
         self.repo.update_session_ward(session_id, ward_id)
+    }
+
+    /// Claim a session's initial active ward without overwriting an existing
+    /// binding. Bootstrap callers must use the returned effective ward.
+    pub fn claim_session_ward_if_unset(
+        &self,
+        session_id: &str,
+        ward_id: &str,
+    ) -> Result<SessionWardClaim, String> {
+        self.repo.claim_session_ward_if_unset(session_id, ward_id)
     }
 
     /// Update session routing fields (thread_id, connector_id, respond_to).
@@ -826,6 +856,15 @@ impl<D: StateDbProvider> StateService<D> {
         self.repo.list_artifacts_by_session(session_id)
     }
 
+    /// List only explicitly marked final user deliverables for a session.
+    pub fn list_goal_artifacts_by_session(
+        &self,
+        session_id: &str,
+        limit: u32,
+    ) -> Result<Vec<crate::types::Artifact>, String> {
+        self.repo.list_goal_artifacts_by_session(session_id, limit)
+    }
+
     pub fn get_artifact(
         &self,
         artifact_id: &str,
@@ -963,6 +1002,43 @@ mod tests {
         let retrieved = service.get_session(&session.id).unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().id, session.id);
+    }
+
+    #[test]
+    fn claim_session_ward_is_first_writer_wins() {
+        let service = Arc::new(setup_service());
+        let (session, _) = service.create_session("test-agent").unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let first_service = service.clone();
+        let first_session_id = session.id.clone();
+        let first_barrier = barrier.clone();
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            first_service.claim_session_ward_if_unset(&first_session_id, "financial-analysis")
+        });
+        let second_service = service.clone();
+        let second_session_id = session.id.clone();
+        let second_barrier = barrier.clone();
+        let second = std::thread::spawn(move || {
+            second_barrier.wait();
+            second_service.claim_session_ward_if_unset(&second_session_id, "travel-planning")
+        });
+
+        barrier.wait();
+        let first = first.join().unwrap().unwrap();
+        let second = second.join().unwrap().unwrap();
+        let claimed = match (&first, &second) {
+            (SessionWardClaim::Claimed(ward_id), SessionWardClaim::Existing(existing))
+            | (SessionWardClaim::Existing(existing), SessionWardClaim::Claimed(ward_id)) => {
+                assert_eq!(existing, ward_id, "loser must receive the winner's ward");
+                ward_id
+            }
+            _ => panic!("exactly one concurrent claim must win: {first:?}, {second:?}"),
+        };
+        assert_eq!(
+            service.get_session(&session.id).unwrap().unwrap().ward_id,
+            Some(claimed.to_string())
+        );
     }
 
     // ========================================================================

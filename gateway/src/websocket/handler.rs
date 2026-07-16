@@ -413,8 +413,8 @@ async fn handle_client_message(
             conversation_id,
             message,
             session_id: exec_session_id,
+            metadata,
             mode,
-            ..
         } => {
             debug!(
                 "Session {} invoking agent {} conversation {} (exec_session: {:?}): {}",
@@ -461,6 +461,10 @@ async fn handle_client_message(
 
             // Invoke the agent via runtime service with hook context and callback.
             let invoke_mode = normalized_invoke_mode(&conversation_id, &mode);
+            // The invoke envelope can carry arbitrary metadata from untrusted
+            // clients. This path needs only the opaque correlation id, so do
+            // not propagate unrelated keys into execution configuration.
+            let client_message_id = client_message_id_from_metadata(metadata);
             match runtime
                 .invoke_with_hook_and_callback(
                     &agent_id,
@@ -470,6 +474,7 @@ async fn handle_client_message(
                     exec_session_id,
                     Some(on_ready),
                     invoke_mode,
+                    client_message_id,
                 )
                 .await
             {
@@ -1292,9 +1297,19 @@ fn gateway_event_to_metadata(event: &GatewayEvent) -> EventMetadata {
     }
 }
 
+/// Retain only the correlation id used to reconcile an optimistic Research
+/// turn with its durable root message. Validation happens in the execution
+/// bootstrap, immediately before it can become a message-store primary key.
+fn client_message_id_from_metadata(metadata: Option<serde_json::Value>) -> Option<String> {
+    metadata?
+        .get("client_message_id")?
+        .as_str()
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::normalized_invoke_mode;
+    use super::{client_message_id_from_metadata, normalized_invoke_mode};
 
     #[test]
     fn research_conversation_ids_force_research_mode() {
@@ -1325,6 +1340,22 @@ mod tests {
         assert_eq!(
             normalized_invoke_mode("chat-abc", "deep"),
             Some("research".to_string())
+        );
+    }
+
+    #[test]
+    fn invoke_metadata_forwards_only_the_client_message_id() {
+        let client_message_id = client_message_id_from_metadata(Some(serde_json::json!({
+            "client_message_id": "msg-550e8400-e29b-41d4-a716-446655440000",
+            "unexpected": "must not enter execution config",
+        })));
+        assert_eq!(
+            client_message_id.as_deref(),
+            Some("msg-550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(
+            client_message_id_from_metadata(Some(serde_json::json!({}))),
+            None
         );
     }
 }

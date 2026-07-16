@@ -69,17 +69,9 @@ pub fn get_or_create_session(
             }
         };
 
-        // Reactivate session if it was in a terminal state (completed/crashed)
-        // This handles the case where user sends a new message to a completed session
-        if let Err(e) = state_service.reactivate_session(session_id) {
-            tracing::warn!("Failed to reactivate session: {}", e);
-        }
-
-        // Also reactivate the execution if it was completed
-        if let Err(e) = state_service.reactivate_execution(&execution_id) {
-            tracing::warn!("Failed to reactivate execution: {}", e);
-        }
-
+        // Reactivation is intentionally deferred to InvokeBootstrap, after
+        // the next root user message has been made durable. That preserves a
+        // completed/crashed session if the new submission cannot be appended.
         return SessionSetup {
             session_id: session_id.to_string(),
             execution_id,

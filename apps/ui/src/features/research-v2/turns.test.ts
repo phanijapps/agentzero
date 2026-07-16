@@ -16,6 +16,7 @@ import {
   buildSessionTurns,
   extractAssistantReplyForTurn,
   extractDelegationTasksInWindow,
+  extractToolActivityForTurn,
   findTurnBoundaries,
   type TurnBoundary,
 } from "./turns";
@@ -269,6 +270,35 @@ describe("extractDelegationTasksInWindow", () => {
 });
 
 // -----------------------------------------------------------------------------
+// extractToolActivityForTurn
+// -----------------------------------------------------------------------------
+
+describe("extractToolActivityForTurn", () => {
+  it("retains chronological non-response tool names without arguments", () => {
+    const entries = extractToolActivityForTurn([
+      asstMsg(
+        "a1",
+        "2026-05-03T13:05:39Z",
+        "[tool calls]",
+        JSON.stringify([
+          { tool_name: "recall", args: { query: "private query" } },
+          { tool_name: "respond", args: { message: "answer" } },
+        ]),
+      ),
+      asstMsg(
+        "a2",
+        "2026-05-03T13:05:40Z",
+        "[tool calls]",
+        JSON.stringify([{ tool_name: "write_file", args: { path: "/home/private" } }]),
+      ),
+    ]);
+
+    expect(entries.map((entry) => entry.toolName)).toEqual(["recall", "write_file"]);
+    expect(entries.every((entry) => entry.toolArgsPreview === undefined)).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // buildSessionTurns end-to-end
 // -----------------------------------------------------------------------------
 
@@ -312,6 +342,11 @@ describe("buildSessionTurns", () => {
       "write answers",
     ]);
     expect(turns[0].assistantText).toBe("The assignment is fully complete!");
+    expect(turns[0].timeline.map((entry) => entry.toolName)).toEqual([
+      "delegate_to_agent",
+      "delegate_to_agent",
+      "delegate_to_agent",
+    ]);
     expect(turns[0].status).toBe("completed");
     expect(turns[0].index).toBe(0);
     expect(turns[1].userMessage.content).toBe("can you make it into a presentation");

@@ -1,6 +1,9 @@
 //! SKOS-style taxonomy expansion for recall.
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use engram_domain::{Concept, ConceptStatus, Id, Scope};
@@ -14,7 +17,7 @@ use crate::{
     bootstrap::EngramProvider,
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
-    governance::{builtin_starter_skos_scheme, GovernancePolicy, GovernanceScope},
+    governance::{GovernancePolicy, GovernanceScope, SkosSchemeDefinition},
 };
 
 /// Engram-backed taxonomy recall expander.
@@ -23,6 +26,7 @@ pub struct EngramTaxonomyRecallExpander {
     taxonomy: Arc<dyn TaxonomyRepository>,
     tenant: String,
     governance: GovernancePolicy,
+    definitions: BTreeMap<String, SkosSchemeDefinition>,
 }
 
 impl EngramTaxonomyRecallExpander {
@@ -48,10 +52,23 @@ impl EngramTaxonomyRecallExpander {
         }
 
         config.validate()?;
+        if !provider.matches_governance_config(&config) {
+            return Err(AdapterError::UnsupportedFeature {
+                feature: "taxonomy_recall",
+                reason: "provider governance configuration does not match".to_string(),
+            });
+        }
         Ok(Self {
             taxonomy: provider.taxonomy()?,
             tenant: config.tenant.clone(),
             governance: config.governance.clone(),
+            definitions: provider
+                .taxonomy_definitions()
+                .unwrap_or_default()
+                .iter()
+                .cloned()
+                .map(|definition| (definition.scheme_id.clone(), definition))
+                .collect(),
         })
     }
 
@@ -64,10 +81,34 @@ impl EngramTaxonomyRecallExpander {
             environment: Some("runtime".to_string()),
         }
     }
+
+    fn selected_taxonomy_scheme_ids(
+        &self,
+        ward_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Vec<String> {
+        if self.governance.has_unsupported_recall_overlays() {
+            return Vec::new();
+        }
+        let ward_id = ward_id.unwrap_or("__global__");
+        self.governance
+            .select(GovernanceScope {
+                ward_id: Some(ward_id),
+                session_id,
+                ..GovernanceScope::default()
+            })
+            .taxonomy_scheme_ids
+    }
 }
 
 #[async_trait]
 impl RecallTaxonomyExpander for EngramTaxonomyRecallExpander {
+    fn is_configured_for(&self, ward_id: Option<&str>, session_id: Option<&str>) -> bool {
+        !self
+            .selected_taxonomy_scheme_ids(ward_id, session_id)
+            .is_empty()
+    }
+
     async fn expand_recall_query(
         &self,
         request: RecallTaxonomyExpansionRequest,
@@ -79,15 +120,11 @@ impl RecallTaxonomyExpander for EngramTaxonomyRecallExpander {
             });
         }
 
-        let ward_id = request
-            .ward_id
-            .clone()
-            .unwrap_or_else(|| "__global__".to_string());
-        let selected = self.governance.select(GovernanceScope {
-            ward_id: Some(&ward_id),
-            ..GovernanceScope::default()
-        });
-        if selected.taxonomy_scheme_ids.is_empty() {
+        let selected_taxonomy_scheme_ids = self.selected_taxonomy_scheme_ids(
+            request.ward_id.as_deref(),
+            request.session_id.as_deref(),
+        );
+        if selected_taxonomy_scheme_ids.is_empty() {
             return Ok(RecallTaxonomyExpansion {
                 expanded_query: request.query,
                 candidates: Vec::new(),
@@ -95,7 +132,7 @@ impl RecallTaxonomyExpander for EngramTaxonomyRecallExpander {
         }
 
         let mut candidates = Vec::new();
-        for scheme_id in selected.taxonomy_scheme_ids {
+        for scheme_id in selected_taxonomy_scheme_ids {
             if candidates.len() >= request.max_candidates as usize {
                 break;
             }
@@ -104,10 +141,26 @@ impl RecallTaxonomyExpander for EngramTaxonomyRecallExpander {
                 .list_concepts(&Id::from(scheme_id.clone()), &self.governance_scope())
                 .await
                 .map_err(|error| error.to_string())?;
-            concepts.retain(|concept| concept.status == ConceptStatus::Active);
+            let Some(definition) = self.definitions.get(&scheme_id) else {
+                return Err("configured taxonomy definition is unavailable".to_string());
+            };
+            let configured_concept_ids = definition
+                .concepts
+                .iter()
+                .map(|concept| format!("{scheme_id}:concept:{}", concept.id))
+                .collect::<std::collections::BTreeSet<_>>();
+            concepts.retain(|concept| {
+                concept.status == ConceptStatus::Active
+                    && configured_concept_ids.contains(concept.id.as_str())
+            });
             concepts.sort_by(|left, right| left.id.to_string().cmp(&right.id.to_string()));
-            let mut scheme_candidates =
-                expand_scheme(&request.query, &scheme_id, &concepts, &request);
+            let mut scheme_candidates = expand_scheme(
+                &request.query,
+                &scheme_id,
+                &concepts,
+                Some(definition),
+                &request,
+            );
             let remaining = request.max_candidates as usize - candidates.len();
             scheme_candidates.truncate(remaining);
             candidates.extend(scheme_candidates);
@@ -125,6 +178,7 @@ fn expand_scheme(
     query: &str,
     scheme_id: &str,
     concepts: &[Concept],
+    definition: Option<&SkosSchemeDefinition>,
     request: &RecallTaxonomyExpansionRequest,
 ) -> Vec<RecallTaxonomyExpansionCandidate> {
     let query_lc = query.to_lowercase();
@@ -150,16 +204,14 @@ fn expand_scheme(
         queue.push_back((concept.id.to_string(), 0_u8));
     }
 
-    if scheme_id != crate::governance::ZBOT_GENERAL_SCHEME_ID {
+    let Some(definition) = definition else {
         return out;
-    }
-
-    let builtin = builtin_starter_skos_scheme();
+    };
     while let Some((concept_id, depth)) = queue.pop_front() {
         if depth >= request.max_depth || out.len() >= request.max_candidates as usize {
             continue;
         }
-        let Some(source) = builtin
+        let Some(source) = definition
             .concepts
             .iter()
             .find(|concept| concept.id == compact_concept_id(&concept_id))

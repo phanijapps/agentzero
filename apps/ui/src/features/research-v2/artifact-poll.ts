@@ -3,8 +3,8 @@
 //
 // Under R14f the research hook no longer polls `/api/sessions/:id/artifacts`
 // on an interval; snapshotSession() fetches once on open and again on the
-// root's `agent_completed`. The `toArtifactRef` mapper and the `fetchArtifactsOnce`
-// helper are still used by snapshot and by the slide-out's cache-miss fallback.
+// root's `agent_completed`. The `toArtifactRef` mapper and the
+// `fetchArtifactsOnce` helper remain the Research artifact projection helpers.
 //
 // The former `startArtifactPolling` + `sameArtifactIdSet` + `ARTIFACT_POLL_INTERVAL_MS`
 // exports were deleted together with the timer machinery they supported.
@@ -16,6 +16,20 @@ import { getTransport } from "@/services/transport";
 import type { Artifact } from "@/services/transport/types";
 import type { ResearchAction } from "./reducer";
 import type { ResearchArtifactRef } from "./types";
+
+/** Research attachments are final deliverables, never the full working set. */
+export const GOAL_ARTIFACT_LIST_OPTIONS = {
+  goalArtifactsOnly: true,
+  limit: 24,
+} as const;
+
+/**
+ * The server query is the primary filter. Keep this local guard so a stale or
+ * legacy server response cannot expose an undesignated working file in the UI.
+ */
+export function selectGoalArtifacts(artifacts: readonly Artifact[]): Artifact[] {
+  return artifacts.filter((artifact) => artifact.isGoalArtifact === true);
+}
 
 /**
  * Pure mapper: full transport `Artifact` → lightweight `ResearchArtifactRef`.
@@ -40,8 +54,8 @@ export function toArtifactRef(a: Artifact): ResearchArtifactRef {
  * ref → Artifact without another fetch. Non-throwing: surfaces errors via sonner.
  *
  * Previously this call also diffed the id-set before dispatching; that check is
- * now redundant because snapshotSession() is the only live caller and runs at
- * most twice per session-open (once on hydrate, once on agent_completed).
+ * now redundant because Research refreshes its manifest only at snapshot
+ * boundaries (open and root completion), never on an interval.
  */
 export async function fetchArtifactsOnce(
   sessionId: string,
@@ -51,10 +65,14 @@ export async function fetchArtifactsOnce(
 ): Promise<void> {
   try {
     const transport = await getTransport();
-    const result = await transport.listSessionArtifacts(sessionId);
+    const result = await transport.listSessionArtifacts(
+      sessionId,
+      GOAL_ARTIFACT_LIST_OPTIONS,
+    );
     if (!result.success || !result.data) return;
-    latestArtifactsRef.current = result.data;
-    dispatch({ type: "SET_ARTIFACTS", artifacts: result.data.map(toArtifactRef) });
+    const goalArtifacts = selectGoalArtifacts(result.data);
+    latestArtifactsRef.current = goalArtifacts;
+    dispatch({ type: "SET_ARTIFACTS", artifacts: goalArtifacts.map(toArtifactRef) });
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown";
     toast.error(`Failed to refresh artifacts: ${message}`);

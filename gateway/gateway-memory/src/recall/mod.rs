@@ -43,6 +43,193 @@ use zbot_stores_traits::{
 
 const MAX_RECALL_EMBED_QUERY_CHARS: usize = 500;
 const RETRY_RECALL_EMBED_QUERY_CHARS: usize = 384;
+const MAX_OUTCOME_SOURCE_COUNT: usize = 20;
+const MAX_OUTCOME_TAXONOMY_FIELD_CHARS: usize = 256;
+const GLOBAL_SESSION_SCOPE: &str = "__global__";
+
+/// Finite public state for one logical source in a unified recall outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnifiedRecallSourceState {
+    Used,
+    Empty,
+    NotConfigured,
+    Unavailable,
+    Degraded,
+}
+
+/// Stable, non-sensitive explanation for a degraded recall source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnifiedRecallReasonCode {
+    NotConfigured,
+    EmbeddingUnavailable,
+    SourceUnavailable,
+}
+
+/// Count and finite diagnostic for one logical recall source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedRecallSourceStatus {
+    pub state: UnifiedRecallSourceState,
+    pub count: usize,
+    pub reason_code: Option<UnifiedRecallReasonCode>,
+}
+
+impl UnifiedRecallSourceStatus {
+    fn used_or_empty(count: usize) -> Self {
+        Self {
+            state: if count == 0 {
+                UnifiedRecallSourceState::Empty
+            } else {
+                UnifiedRecallSourceState::Used
+            },
+            count: count.min(MAX_OUTCOME_SOURCE_COUNT),
+            reason_code: None,
+        }
+    }
+
+    fn not_configured() -> Self {
+        Self {
+            state: UnifiedRecallSourceState::NotConfigured,
+            count: 0,
+            reason_code: Some(UnifiedRecallReasonCode::NotConfigured),
+        }
+    }
+
+    fn embedding_unavailable() -> Self {
+        Self {
+            state: UnifiedRecallSourceState::Degraded,
+            count: 0,
+            reason_code: Some(UnifiedRecallReasonCode::EmbeddingUnavailable),
+        }
+    }
+
+    fn unavailable(count: usize) -> Self {
+        Self {
+            state: if count == 0 {
+                UnifiedRecallSourceState::Unavailable
+            } else {
+                UnifiedRecallSourceState::Degraded
+            },
+            count: count.min(MAX_OUTCOME_SOURCE_COUNT),
+            reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable),
+        }
+    }
+}
+
+/// Fixed source-status map for a unified recall invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedRecallSourceSummary {
+    pub facts: UnifiedRecallSourceStatus,
+    pub graph: UnifiedRecallSourceStatus,
+    pub wiki: UnifiedRecallSourceStatus,
+    pub procedures: UnifiedRecallSourceStatus,
+    pub episodes: UnifiedRecallSourceStatus,
+    pub beliefs: UnifiedRecallSourceStatus,
+    pub hierarchy: UnifiedRecallSourceStatus,
+    pub goals: UnifiedRecallSourceStatus,
+    pub taxonomy: UnifiedRecallSourceStatus,
+}
+
+/// Finite relation label exposed for a taxonomy recall cue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnifiedRecallTaxonomyRelation {
+    PrefLabel,
+    AltLabel,
+    Broader,
+    Narrower,
+    Related,
+}
+
+/// Normalized, bounded taxonomy cue used to expand one unified-recall query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedRecallTaxonomyCandidate {
+    pub scheme_id: String,
+    pub concept_id: String,
+    pub label: String,
+    pub relation: UnifiedRecallTaxonomyRelation,
+}
+
+/// Bounded taxonomy cues used to expand one unified-recall query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedRecallTaxonomyTrace {
+    pub retrieval_query: String,
+    pub candidates: Vec<UnifiedRecallTaxonomyCandidate>,
+}
+
+/// Gateway-only result model for one unified-recall invocation.
+#[derive(Debug, Clone)]
+pub struct UnifiedRecallOutcome {
+    pub items: Vec<ScoredItem>,
+    pub source_summary: UnifiedRecallSourceSummary,
+    pub taxonomy_expansion: Option<UnifiedRecallTaxonomyTrace>,
+}
+
+/// Trusted scope controls for a gateway-authorized unified-recall invocation.
+///
+/// Model input must never construct this value. The gateway derives the
+/// visibility predicate from authenticated execution state and only enables
+/// taxonomy expansion after it has proved the corresponding configuration
+/// scope.
+pub struct UnifiedRecallScope<'a> {
+    candidate_visible: &'a (dyn Fn(&ScoredItem) -> bool + Send + Sync),
+    taxonomy_scope_proven: bool,
+    taxonomy_session_id: Option<&'a str>,
+}
+
+/// Immutable identity of the semantic provider wired into one `MemoryRecall`
+/// instance.
+///
+/// The gateway composition root creates this from the provider configuration
+/// that opened the stores. Executor code may only resolve the configured ward
+/// workspace; it may not infer provider ownership from a model request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecallProviderScope {
+    pub tenant_id: String,
+    workspace_from_ward: bool,
+    taxonomy_scope_proven: bool,
+}
+
+impl RecallProviderScope {
+    #[must_use]
+    pub fn new(tenant_id: String, workspace_from_ward: bool, taxonomy_scope_proven: bool) -> Self {
+        Self {
+            tenant_id,
+            workspace_from_ward,
+            taxonomy_scope_proven,
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_for_ward(&self, ward_id: Option<&str>) -> Option<String> {
+        self.workspace_from_ward
+            .then(|| ward_id.map(str::to_owned))
+            .flatten()
+    }
+
+    #[must_use]
+    pub const fn taxonomy_scope_proven(&self) -> bool {
+        self.taxonomy_scope_proven
+    }
+}
+
+impl<'a> UnifiedRecallScope<'a> {
+    pub fn new(
+        candidate_visible: &'a (dyn Fn(&ScoredItem) -> bool + Send + Sync),
+        taxonomy_scope_proven: bool,
+    ) -> Self {
+        Self {
+            candidate_visible,
+            taxonomy_scope_proven,
+            taxonomy_session_id: None,
+        }
+    }
+
+    /// Attach the trusted session identity used for governance selection.
+    #[must_use]
+    pub fn with_taxonomy_session_id(mut self, session_id: Option<&'a str>) -> Self {
+        self.taxonomy_session_id = session_id;
+        self
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecallSkosExpansionLimits {
@@ -88,6 +275,7 @@ pub struct MemoryRecall {
     mmr_config: Option<MmrConfig>,
     taxonomy_expander: Option<Arc<dyn RecallTaxonomyExpander>>,
     taxonomy_limits: RecallSkosExpansionLimits,
+    provider_scope: Option<RecallProviderScope>,
     /// Observatory v2 (Phase 3) — optional EventBus for emitting
     /// `RecallTrace` telemetry. When `None` (tests, headless invocations),
     /// recall stays silent. Production wiring attaches this in
@@ -100,6 +288,17 @@ struct HybridSearchOutcome {
     facts: Vec<ScoredFact>,
     embedding_attempted: bool,
     embedding_available: bool,
+}
+
+#[derive(Debug, Default)]
+struct UnifiedRecallSourceFailures {
+    facts: bool,
+    graph: bool,
+    wiki: bool,
+    procedures: bool,
+    episodes: bool,
+    beliefs: bool,
+    hierarchy: bool,
 }
 
 impl MemoryRecall {
@@ -122,6 +321,7 @@ impl MemoryRecall {
             mmr_config: None,
             taxonomy_expander: None,
             taxonomy_limits: RecallSkosExpansionLimits::default(),
+            provider_scope: None,
             event_bus: None,
             config,
         }
@@ -164,6 +364,18 @@ impl MemoryRecall {
 
     pub fn set_taxonomy_expansion_limits(&mut self, limits: RecallSkosExpansionLimits) {
         self.taxonomy_limits = limits;
+    }
+
+    /// Attach the immutable provider identity selected by the composition
+    /// root. A model-visible recall invocation fails closed when this is not
+    /// present.
+    pub fn set_provider_scope(&mut self, scope: RecallProviderScope) {
+        self.provider_scope = Some(scope);
+    }
+
+    #[must_use]
+    pub fn provider_scope(&self) -> Option<RecallProviderScope> {
+        self.provider_scope.clone()
     }
 
     /// Access the recall configuration.
@@ -415,7 +627,98 @@ impl MemoryRecall {
         active_goals: &[GoalLite],
         budget: usize,
     ) -> Result<Vec<ScoredItem>, String> {
-        let taxonomy_expansion = self.expand_query_with_taxonomy(query, ward_id).await;
+        self.recall_unified_outcome(agent_id, query, ward_id, active_goals, budget)
+            .await
+            .map(|outcome| outcome.items)
+    }
+
+    /// Same retrieval pipeline as [`Self::recall_unified`], with bounded source
+    /// diagnostics and taxonomy-expansion evidence for model-facing adapters.
+    ///
+    /// Detailed backend failures remain private: this method emits only the
+    /// finite [`UnifiedRecallReasonCode`] values in its source summary.
+    pub async fn recall_unified_outcome(
+        &self,
+        agent_id: &str,
+        query: &str,
+        ward_id: Option<&str>,
+        active_goals: &[GoalLite],
+        budget: usize,
+    ) -> Result<UnifiedRecallOutcome, String> {
+        self.recall_unified_outcome_with_visibility(
+            agent_id,
+            query,
+            ward_id,
+            active_goals,
+            budget,
+            None,
+        )
+        .await
+    }
+
+    /// Scoped variant of unified recall for gateway-authorized callers.
+    ///
+    /// Candidate visibility is applied after every configured source has
+    /// projected explicit provenance but before intent boost, RRF, and MMR.
+    /// Callers must pass a fail-closed predicate derived from trusted execution
+    /// state; the compatibility method above intentionally remains unscoped.
+    pub async fn recall_unified_outcome_scoped(
+        &self,
+        agent_id: &str,
+        query: &str,
+        ward_id: Option<&str>,
+        active_goals: &[GoalLite],
+        budget: usize,
+        scope: UnifiedRecallScope<'_>,
+    ) -> Result<UnifiedRecallOutcome, String> {
+        self.recall_unified_outcome_with_visibility(
+            agent_id,
+            query,
+            ward_id,
+            active_goals,
+            budget,
+            Some(scope),
+        )
+        .await
+    }
+
+    async fn recall_unified_outcome_with_visibility(
+        &self,
+        agent_id: &str,
+        query: &str,
+        ward_id: Option<&str>,
+        active_goals: &[GoalLite],
+        budget: usize,
+        scope: Option<UnifiedRecallScope<'_>>,
+    ) -> Result<UnifiedRecallOutcome, String> {
+        let taxonomy_scope_proven = scope
+            .as_ref()
+            .is_none_or(|scope| scope.taxonomy_scope_proven);
+        let taxonomy_session_id = scope.as_ref().and_then(|scope| scope.taxonomy_session_id);
+        let taxonomy_configured = taxonomy_scope_proven
+            && self
+                .taxonomy_expander
+                .as_ref()
+                .is_some_and(|expander| expander.is_configured_for(ward_id, taxonomy_session_id))
+            && self.taxonomy_limits.max_candidates > 0;
+        let taxonomy_result = if taxonomy_scope_proven {
+            self.expand_query_with_taxonomy(query, ward_id, taxonomy_session_id)
+                .await
+        } else {
+            Ok(None)
+        };
+        let (taxonomy_expansion, taxonomy_status) = match taxonomy_result {
+            Ok(Some(expansion)) => {
+                let status = UnifiedRecallSourceStatus::used_or_empty(expansion.candidates.len());
+                (Some(expansion), status)
+            }
+            Ok(None) if taxonomy_configured => (None, UnifiedRecallSourceStatus::used_or_empty(0)),
+            Ok(None) if taxonomy_scope_proven => {
+                (None, UnifiedRecallSourceStatus::not_configured())
+            }
+            Ok(None) => (None, UnifiedRecallSourceStatus::unavailable(0)),
+            Err(()) => (None, UnifiedRecallSourceStatus::unavailable(0)),
+        };
         let retrieval_query = taxonomy_expansion
             .as_ref()
             .map(|expansion| expansion.expanded_query.as_str())
@@ -424,20 +727,25 @@ impl MemoryRecall {
             .as_ref()
             .map(|expansion| expansion.candidates.clone())
             .unwrap_or_default();
+        let taxonomy_outcome_trace = taxonomy_expansion.as_ref().map(taxonomy_outcome_trace);
         let query_emb = self.embed_query(retrieval_query).await;
         let query_identity = query_emb
             .as_ref()
             .and_then(|_| self.embedding_query_identity());
+        let mut source_failures = UnifiedRecallSourceFailures::default();
 
         // 1. Facts via hybrid search. Phase E8: prefer the trait
         // `memory_store` (wired by AppState), fall back to the
         // SQLite repo. On Surreal, scores aren't yet preserved by the
         // trait surface — we synthesize 0.5 so facts still rank into
         // the fused pool but don't dominate it.
-        let fact_items: Vec<ScoredItem> = if let (Some(store), Some(query_emb)) =
+        let (mut fact_items, facts_unavailable): (Vec<ScoredItem>, bool) = if let (
+            Some(store),
+            Some(query_emb),
+        ) =
             (self.memory_store.as_ref(), query_emb.as_ref())
         {
-            store
+            match store
                 .search_memory_facts_hybrid_with_identity(
                     Some(agent_id),
                     retrieval_query,
@@ -449,27 +757,44 @@ impl MemoryRecall {
                     None, // as_of — default "now" recall
                 )
                 .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|v| {
-                    let score = normalized_trait_fact_score(&v);
-                    // See note on `zbot_stores_sqlite::MemoryFact` above — we
-                    // decode into the domain type to avoid a dep cycle.
-                    serde_json::from_value::<MemoryFact>(v)
-                        .ok()
-                        .filter(|fact| fact.superseded_by.is_none())
-                        .map(|fact| adapters::fact_to_item(&fact, score))
-                })
-                .filter(|item| item.score >= self.config.min_score)
-                .collect()
+            {
+                Ok(values) => (
+                    values
+                        .into_iter()
+                        .filter_map(|v| {
+                            let score = normalized_trait_fact_score(&v);
+                            serde_json::from_value::<MemoryFact>(v)
+                                .ok()
+                                .filter(|fact| fact.superseded_by.is_none())
+                                .map(|fact| {
+                                    let durable_scope = fact.scope != "session";
+                                    let mut item = adapters::fact_to_item(&fact, score);
+                                    if durable_scope {
+                                        // The query already bound this fact to
+                                        // the authenticated agent and ward.
+                                        // Its source session is provenance, not
+                                        // an access boundary for durable facts.
+                                        item.provenance.session_id =
+                                            Some(GLOBAL_SESSION_SCOPE.to_string());
+                                    }
+                                    item
+                                })
+                        })
+                        .filter(|item| item.score >= self.config.min_score)
+                        .collect(),
+                    false,
+                ),
+                Err(_) => (Vec::new(), true),
+            }
         } else {
-            Vec::new()
+            (Vec::new(), false)
         };
+        source_failures.facts = facts_unavailable;
 
         // 2. Wiki articles (ward-scoped).
-        let wiki_items: Vec<ScoredItem> =
+        let (mut wiki_items, wiki_unavailable): (Vec<ScoredItem>, bool) =
             match (self.wiki_store.as_ref(), query_emb.as_ref(), ward_id) {
-                (Some(store), Some(emb), Some(wid)) => store
+                (Some(store), Some(emb), Some(wid)) => match store
                     .search_wiki_by_similarity_typed_with_identity(
                         wid,
                         emb,
@@ -477,17 +802,26 @@ impl MemoryRecall {
                         5,
                     )
                     .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(a, s)| adapters::wiki_to_item(&a, s))
-                    .collect(),
-                _ => Vec::new(),
+                {
+                    Ok(values) => (
+                        values
+                            .into_iter()
+                            .filter(|(article, _score)| article.agent_id == agent_id)
+                            .map(|(a, s)| adapters::wiki_to_item(&a, s))
+                            .map(mark_durable_global_session)
+                            .collect(),
+                        false,
+                    ),
+                    Err(_) => (Vec::new(), true),
+                },
+                _ => (Vec::new(), false),
             };
+        source_failures.wiki = wiki_unavailable;
 
         // 3. Procedures.
-        let procedure_items: Vec<ScoredItem> =
+        let (mut procedure_items, procedures_unavailable): (Vec<ScoredItem>, bool) =
             match (self.procedure_store.as_ref(), query_emb.as_ref()) {
-                (Some(store), Some(emb)) => store
+                (Some(store), Some(emb)) => match store
                     .search_procedures_by_similarity_typed_with_identity(
                         emb,
                         query_identity.as_ref(),
@@ -496,12 +830,20 @@ impl MemoryRecall {
                         5,
                     )
                     .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(p, s)| adapters::procedure_to_item(&p, s))
-                    .collect(),
-                _ => Vec::new(),
+                {
+                    Ok(values) => (
+                        values
+                            .into_iter()
+                            .map(|(p, s)| adapters::procedure_to_item(&p, s))
+                            .map(mark_durable_global_session)
+                            .collect(),
+                        false,
+                    ),
+                    Err(_) => (Vec::new(), true),
+                },
+                _ => (Vec::new(), false),
             };
+        source_failures.procedures = procedures_unavailable;
 
         // 4. Graph ANN over the entity name embedding index. We share
         // the raw hit set with step 5c (hierarchy LCA) so both surfaces
@@ -516,60 +858,83 @@ impl MemoryRecall {
         // to seed_ids too, so the hierarchy LCA surface (step 5c) is
         // consistent with what recall actually shows.
         let min_kg_conf = self.config.graph_traversal.min_kg_confidence;
-        let (graph_items, graph_seed_ids): (Vec<ScoredItem>, Vec<zbot_stores::types::EntityId>) =
-            match (self.kg_store.as_ref(), query_emb.as_ref()) {
-                (Some(store), Some(emb)) => match store
-                    .search_entities_by_name_embedding_with_identity(
-                        agent_id,
-                        emb,
-                        query_identity.as_ref(),
-                        10,
-                    )
-                    .await
-                {
-                    Ok(raw_hits) => {
-                        let hits: Vec<_> = raw_hits
-                            .into_iter()
-                            .filter(|h| h.confidence >= min_kg_conf)
-                            .collect();
-                        let seed_ids: Vec<zbot_stores::types::EntityId> = hits
-                            .iter()
-                            .filter(|h| !h.id.is_empty())
-                            .map(|h| zbot_stores::types::EntityId(h.id.clone()))
-                            .collect();
-                        let items: Vec<ScoredItem> = hits
-                            .into_iter()
-                            .enumerate()
-                            .map(|(idx, hit)| {
-                                // Mirror graph_ann_to_items scoring exactly,
-                                // plus the B-1 entity-confidence multiplier.
-                                let cosine = 1.0 - (hit.distance as f64) / 2.0;
-                                let rank_one = (idx as f64) + 1.0;
-                                let score = (1.0 / rank_one) * cosine * hit.confidence;
-                                ScoredItem {
-                                    kind: ItemKind::GraphNode,
-                                    id: format!("graph:{}", hit.name),
-                                    content: format!(
-                                        "Entity: {} [{}] (cosine ~ {cosine:.2}, conf ~ {:.2})",
-                                        hit.name, hit.entity_type, hit.confidence
-                                    ),
-                                    score,
-                                    provenance: Provenance {
-                                        source: "kg_name_index".to_string(),
-                                        source_id: hit.name,
-                                        session_id: None,
-                                        ward_id: None,
-                                    },
-                                    route_hint: None,
-                                }
-                            })
-                            .collect();
-                        (items, seed_ids)
-                    }
-                    Err(_) => (Vec::new(), Vec::new()),
-                },
-                _ => (Vec::new(), Vec::new()),
-            };
+        let mut graph_unavailable = false;
+        let (mut graph_items, mut graph_seed_ids): (
+            Vec<ScoredItem>,
+            Vec<zbot_stores::types::EntityId>,
+        ) = match (self.kg_store.as_ref(), query_emb.as_ref()) {
+            (Some(store), Some(emb)) => match store
+                .search_entities_by_name_embedding_with_identity(
+                    agent_id,
+                    emb,
+                    query_identity.as_ref(),
+                    10,
+                )
+                .await
+            {
+                Ok(raw_hits) => {
+                    let hits: Vec<_> = raw_hits
+                        .into_iter()
+                        .filter(|h| h.confidence >= min_kg_conf)
+                        .collect();
+                    let seed_ids: Vec<zbot_stores::types::EntityId> = hits
+                        .iter()
+                        .filter(|h| !h.id.is_empty())
+                        .map(|h| zbot_stores::types::EntityId(h.id.clone()))
+                        .collect();
+                    let items: Vec<ScoredItem> = hits
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, hit)| {
+                            // Mirror graph_ann_to_items scoring exactly,
+                            // plus the B-1 entity-confidence multiplier.
+                            let cosine = 1.0 - (hit.distance as f64) / 2.0;
+                            let rank_one = (idx as f64) + 1.0;
+                            let score = (1.0 / rank_one) * cosine * hit.confidence;
+                            ScoredItem {
+                                kind: ItemKind::GraphNode,
+                                id: format!("graph:{}", hit.name),
+                                content: format!(
+                                    "Entity: {} [{}] (cosine ~ {cosine:.2}, conf ~ {:.2})",
+                                    hit.name, hit.entity_type, hit.confidence
+                                ),
+                                score,
+                                provenance: Provenance {
+                                    source: "kg_name_index".to_string(),
+                                    source_id: hit.id,
+                                    // The graph query is authenticated by
+                                    // agent at the store seam. Graph data is
+                                    // deliberately agent-wide, so mark both
+                                    // dimensions as explicit global scope.
+                                    session_id: Some(GLOBAL_SESSION_SCOPE.to_string()),
+                                    ward_id: Some(GLOBAL_SESSION_SCOPE.to_string()),
+                                },
+                                route_hint: None,
+                            }
+                        })
+                        .collect();
+                    (items, seed_ids)
+                }
+                Err(_) => {
+                    graph_unavailable = true;
+                    (Vec::new(), Vec::new())
+                }
+            },
+            _ => (Vec::new(), Vec::new()),
+        };
+
+        // Scope graph hits before they can become traversal/LCA seeds or
+        // telemetry. The graph projection above classifies its agent-bound
+        // records as explicit global scope; the gateway still has to grant the
+        // matching source-specific capability before they can proceed.
+        if let Some(scope) = scope.as_ref() {
+            apply_scoped_candidate_visibility(&mut graph_items, scope.candidate_visible);
+            graph_seed_ids = graph_items
+                .iter()
+                .filter(|item| item.kind == ItemKind::GraphNode)
+                .map(|item| zbot_stores::types::EntityId(item.provenance.source_id.clone()))
+                .collect();
+        }
 
         // 4b. Confidence-weighted graph traversal from top seeds
         // (MEM-001 Part B-2). For each top-3 graph-ANN seed, walk
@@ -585,7 +950,7 @@ impl MemoryRecall {
         let traversal_enabled =
             self.config.graph_traversal.enabled && traversal_max_hops > 0 && traversal_cap > 0;
 
-        let traversal_items: Vec<ScoredItem> = if traversal_enabled {
+        let mut traversal_items: Vec<ScoredItem> = if traversal_enabled {
             match self.kg_store.as_ref() {
                 Some(store) if !graph_seed_ids.is_empty() => {
                     let already_surfaced: std::collections::HashSet<String> =
@@ -595,7 +960,7 @@ impl MemoryRecall {
                     let mut best_by_id: std::collections::HashMap<String, ScoredItem> =
                         std::collections::HashMap::new();
                     for seed in graph_seed_ids.iter().take(3) {
-                        let hits = store
+                        let hits = match store
                             .traverse_weighted(
                                 seed,
                                 agent_id,
@@ -604,7 +969,13 @@ impl MemoryRecall {
                                 traversal_cap.saturating_mul(2),
                             )
                             .await
-                            .unwrap_or_default();
+                        {
+                            Ok(hits) => hits,
+                            Err(_) => {
+                                graph_unavailable = true;
+                                Vec::new()
+                            }
+                        };
                         for h in hits {
                             if already_surfaced.contains(&h.entity_id.0) {
                                 continue;
@@ -612,7 +983,7 @@ impl MemoryRecall {
                             let score = traversal_hop_decay.powi(h.hop as i32)
                                 * h.edge_confidence_product
                                 * h.entity_confidence;
-                            let item = ScoredItem {
+                            let item = mark_agent_global_scope(ScoredItem {
                                 kind: ItemKind::GraphNode,
                                 id: format!("graph:{}", h.name),
                                 content: format!(
@@ -627,11 +998,11 @@ impl MemoryRecall {
                                 provenance: Provenance {
                                     source: "kg_traversal".to_string(),
                                     source_id: h.name,
-                                    session_id: None,
-                                    ward_id: None,
+                                    session_id: Some(GLOBAL_SESSION_SCOPE.to_string()),
+                                    ward_id: Some(GLOBAL_SESSION_SCOPE.to_string()),
                                 },
                                 route_hint: None,
-                            };
+                            });
                             best_by_id
                                 .entry(h.entity_id.0)
                                 .and_modify(|prev| {
@@ -656,20 +1027,26 @@ impl MemoryRecall {
         } else {
             Vec::new()
         };
+        source_failures.graph = graph_unavailable;
 
         // 5a. Previous episodes in this ward (chain continuity).
-        let episode_items: Vec<ScoredItem> = match (self.episode_store.as_ref(), ward_id) {
-            (Some(store), Some(wid)) => {
-                previous_episodes::PreviousEpisodesAdapter::new(store.clone())
-                    .fetch(wid)
-                    .await
-                    .unwrap_or_default()
-            }
-            _ => Vec::new(),
-        };
+        let (mut episode_items, episodes_unavailable): (Vec<ScoredItem>, bool) =
+            match (self.episode_store.as_ref(), ward_id) {
+                (Some(store), Some(wid)) => {
+                    match previous_episodes::PreviousEpisodesAdapter::new(store.clone())
+                        .fetch(agent_id, wid)
+                        .await
+                    {
+                        Ok(items) => (items, false),
+                        Err(_) => (Vec::new(), true),
+                    }
+                }
+                _ => (Vec::new(), false),
+            };
+        source_failures.episodes = episodes_unavailable;
 
         // 5. Active goals as retrievable items.
-        let goal_items: Vec<ScoredItem> = active_goals
+        let mut goal_items: Vec<ScoredItem> = active_goals
             .iter()
             .map(|g| ScoredItem {
                 kind: ItemKind::Goal,
@@ -679,7 +1056,10 @@ impl MemoryRecall {
                 provenance: Provenance {
                     source: "kg_goals".to_string(),
                     source_id: g.id.clone(),
-                    session_id: None,
+                    // GoalAccess has already bound this record to the
+                    // executing agent and the gateway checked ward ownership
+                    // before converting it to GoalLite.
+                    session_id: Some(GLOBAL_SESSION_SCOPE.to_string()),
                     ward_id: ward_id.map(String::from),
                 },
                 route_hint: ward_id.map(|ward| {
@@ -700,21 +1080,30 @@ impl MemoryRecall {
         // to pre-B-4. The partition_id used here is `agent_id`,
         // mirroring how the synthesizer writes beliefs (one belief
         // partition per agent).
-        let belief_items: Vec<ScoredItem> = match (self.belief_store.as_ref(), query_emb.as_ref()) {
-            (Some(store), Some(emb)) => store
-                .search_beliefs_with_identity(agent_id, emb, query_identity.as_ref(), 10)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|sb| {
-                    let weight = self.config.category_weight("belief");
-                    let mut item = adapters::belief_to_item(&sb.belief, sb.score);
-                    item.score *= weight;
-                    item
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
+        let (mut belief_items, beliefs_unavailable): (Vec<ScoredItem>, bool) =
+            match (self.belief_store.as_ref(), query_emb.as_ref()) {
+                (Some(store), Some(emb)) => match store
+                    .search_beliefs_with_identity(agent_id, emb, query_identity.as_ref(), 10)
+                    .await
+                {
+                    Ok(values) => (
+                        values
+                            .into_iter()
+                            .map(|sb| {
+                                let weight = self.config.category_weight("belief");
+                                let mut item = adapters::belief_to_item(&sb.belief, sb.score);
+                                item.score *= weight;
+                                item
+                            })
+                            .map(mark_agent_global_scope)
+                            .collect(),
+                        false,
+                    ),
+                    Err(_) => (Vec::new(), true),
+                },
+                _ => (Vec::new(), false),
+            };
+        source_failures.beliefs = beliefs_unavailable;
 
         // 5c. Hierarchical-memory LCA path (Phase H-4 / LeanRAG).
         // Opportunistic: when the hierarchy hasn't been built yet,
@@ -729,7 +1118,8 @@ impl MemoryRecall {
         // any inter-cluster relations whose both endpoints sit on the
         // path. That's the "lean" part of LeanRAG — the edges between
         // sibling abstractions that explain how they relate.
-        let (hier_items, hier_relation_items): (Vec<ScoredItem>, Vec<ScoredItem>) =
+        let mut hierarchy_unavailable = false;
+        let (mut hier_items, mut hier_relation_items): (Vec<ScoredItem>, Vec<ScoredItem>) =
             match (self.kg_store.as_ref(), graph_seed_ids.is_empty()) {
                 (Some(store), false) => {
                     match store.compute_lca_path(agent_id, &graph_seed_ids).await {
@@ -748,7 +1138,7 @@ impl MemoryRecall {
                                     let mut item =
                                         adapters::hier_entity_to_item(id, lca.max_layer, raw);
                                     item.score *= weight;
-                                    item
+                                    mark_agent_global_scope(item)
                                 })
                                 .collect();
 
@@ -777,19 +1167,44 @@ impl MemoryRecall {
                                                 raw,
                                             );
                                             item.score *= weight;
-                                            item
+                                            mark_agent_global_scope(item)
                                         })
                                         .collect(),
-                                    Err(_) => Vec::new(),
+                                    Err(_) => {
+                                        hierarchy_unavailable = true;
+                                        Vec::new()
+                                    }
                                 }
                             };
                             (entity_items, relation_items)
                         }
-                        Err(_) => (Vec::new(), Vec::new()),
+                        Err(_) => {
+                            hierarchy_unavailable = true;
+                            (Vec::new(), Vec::new())
+                        }
                     }
                 }
                 _ => (Vec::new(), Vec::new()),
             };
+        source_failures.hierarchy = hierarchy_unavailable;
+
+        if let Some(scope) = scope.as_ref() {
+            let visible = scope.candidate_visible;
+            for items in [
+                &mut fact_items,
+                &mut wiki_items,
+                &mut procedure_items,
+                &mut graph_items,
+                &mut traversal_items,
+                &mut episode_items,
+                &mut goal_items,
+                &mut belief_items,
+                &mut hier_items,
+                &mut hier_relation_items,
+            ] {
+                apply_scoped_candidate_visibility(items, visible);
+            }
+        }
 
         // Observatory v2 Phase 3 — broadcast a RecallTrace telemetry
         // event so the dashboard can light up the consulted clusters in
@@ -905,36 +1320,122 @@ impl MemoryRecall {
 
         let fused = rrf_merge(all_lists, 60.0, fusion_budget);
 
-        if !run_mmr {
-            return Ok(fused);
-        }
+        let items = if run_mmr {
+            let lambda = self.mmr_config.as_ref().map(|c| c.lambda).unwrap_or(0.6);
+            self.mmr_rerank(fused, lambda, budget).await
+        } else {
+            fused
+        };
+        let source_summary = self.unified_source_summary(
+            &items,
+            query_emb.is_some(),
+            taxonomy_status,
+            &source_failures,
+        );
+        Ok(UnifiedRecallOutcome {
+            items,
+            source_summary,
+            taxonomy_expansion: taxonomy_outcome_trace,
+        })
+    }
 
-        let lambda = self.mmr_config.as_ref().map(|c| c.lambda).unwrap_or(0.6);
-        let reranked = self.mmr_rerank(fused, lambda, budget).await;
-        Ok(reranked)
+    fn unified_source_summary(
+        &self,
+        items: &[ScoredItem],
+        embedding_available: bool,
+        taxonomy: UnifiedRecallSourceStatus,
+        failures: &UnifiedRecallSourceFailures,
+    ) -> UnifiedRecallSourceSummary {
+        let count = |kind: ItemKind| items.iter().filter(|item| item.kind == kind).count();
+        UnifiedRecallSourceSummary {
+            facts: source_status(
+                self.memory_store.is_some(),
+                true,
+                embedding_available,
+                count(ItemKind::Fact),
+                failures.facts,
+            ),
+            graph: source_status(
+                self.kg_store.is_some(),
+                true,
+                embedding_available,
+                count(ItemKind::GraphNode),
+                failures.graph,
+            ),
+            wiki: source_status(
+                self.wiki_store.is_some(),
+                true,
+                embedding_available,
+                count(ItemKind::Wiki),
+                failures.wiki,
+            ),
+            procedures: source_status(
+                self.procedure_store.is_some(),
+                true,
+                embedding_available,
+                count(ItemKind::Procedure),
+                failures.procedures,
+            ),
+            episodes: source_status(
+                self.episode_store.is_some(),
+                false,
+                embedding_available,
+                count(ItemKind::Episode),
+                failures.episodes,
+            ),
+            beliefs: source_status(
+                self.belief_store.is_some(),
+                true,
+                embedding_available,
+                count(ItemKind::Belief),
+                failures.beliefs,
+            ),
+            hierarchy: source_status(
+                self.kg_store.is_some(),
+                true,
+                embedding_available,
+                count(ItemKind::HierEntity) + count(ItemKind::HierRelation),
+                failures.hierarchy,
+            ),
+            goals: UnifiedRecallSourceStatus::used_or_empty(count(ItemKind::Goal)),
+            taxonomy,
+        }
     }
 
     async fn expand_query_with_taxonomy(
         &self,
         query: &str,
         ward_id: Option<&str>,
-    ) -> Option<zbot_stores_traits::RecallTaxonomyExpansion> {
-        let expander = self.taxonomy_expander.as_ref()?;
+        session_id: Option<&str>,
+    ) -> Result<Option<zbot_stores_traits::RecallTaxonomyExpansion>, ()> {
+        let Some(expander) = self.taxonomy_expander.as_ref() else {
+            return Ok(None);
+        };
         let limits = self.taxonomy_limits;
         if limits.max_candidates == 0 {
-            return None;
+            return Ok(None);
         }
         expander
             .expand_recall_query(RecallTaxonomyExpansionRequest {
                 query: query.to_string(),
                 ward_id: ward_id.map(ToOwned::to_owned),
+                session_id: session_id.map(ToOwned::to_owned),
                 max_depth: limits.max_depth,
                 max_fan_out: limits.max_fan_out,
                 max_candidates: limits.max_candidates,
             })
             .await
-            .ok()
-            .filter(|expansion| !expansion.candidates.is_empty())
+            .map_err(|_| ())
+            .map(|mut expansion| {
+                expansion
+                    .candidates
+                    .truncate(usize::from(limits.max_candidates));
+                expansion.expanded_query = bounded_recall_embedding_query(
+                    &expansion.expanded_query,
+                    MAX_RECALL_EMBED_QUERY_CHARS,
+                );
+                (!expansion.candidates.is_empty()).then_some(expansion)
+            })
     }
 
     /// Emit typed context atoms from the existing unified recall path.
@@ -1197,6 +1698,91 @@ fn recall_embedding_queries(text: &str) -> Vec<String> {
     }
 }
 
+fn apply_scoped_candidate_visibility(
+    items: &mut Vec<ScoredItem>,
+    visible: &(dyn Fn(&ScoredItem) -> bool + Send + Sync),
+) {
+    // Source adapters must attach an explicit, trusted scope before a
+    // candidate reaches this point. Missing metadata is not a synonym for the
+    // current request scope or a global record: the gateway predicate denies
+    // it before telemetry, traversal, RRF, MMR, and model output.
+    items.retain(|item| visible(item));
+}
+
+fn mark_durable_global_session(mut item: ScoredItem) -> ScoredItem {
+    item.provenance.session_id = Some(GLOBAL_SESSION_SCOPE.to_string());
+    item
+}
+
+fn mark_agent_global_scope(mut item: ScoredItem) -> ScoredItem {
+    item.provenance.ward_id = Some(GLOBAL_SESSION_SCOPE.to_string());
+    item.provenance.session_id = Some(GLOBAL_SESSION_SCOPE.to_string());
+    item
+}
+
+fn source_status(
+    configured: bool,
+    requires_embedding: bool,
+    embedding_available: bool,
+    count: usize,
+    unavailable: bool,
+) -> UnifiedRecallSourceStatus {
+    if !configured {
+        UnifiedRecallSourceStatus::not_configured()
+    } else if unavailable {
+        UnifiedRecallSourceStatus::unavailable(count)
+    } else if requires_embedding && !embedding_available {
+        UnifiedRecallSourceStatus::embedding_unavailable()
+    } else {
+        UnifiedRecallSourceStatus::used_or_empty(count)
+    }
+}
+
+fn taxonomy_outcome_trace(
+    expansion: &zbot_stores_traits::RecallTaxonomyExpansion,
+) -> UnifiedRecallTaxonomyTrace {
+    UnifiedRecallTaxonomyTrace {
+        retrieval_query: bounded_recall_embedding_query(
+            &expansion.expanded_query,
+            MAX_RECALL_EMBED_QUERY_CHARS,
+        ),
+        candidates: expansion
+            .candidates
+            .iter()
+            .map(|candidate| UnifiedRecallTaxonomyCandidate {
+                scheme_id: bounded_outcome_text(
+                    &candidate.scheme_id,
+                    MAX_OUTCOME_TAXONOMY_FIELD_CHARS,
+                ),
+                concept_id: bounded_outcome_text(
+                    &candidate.concept_id,
+                    MAX_OUTCOME_TAXONOMY_FIELD_CHARS,
+                ),
+                label: bounded_outcome_text(&candidate.label, MAX_OUTCOME_TAXONOMY_FIELD_CHARS),
+                relation: normalized_taxonomy_relation(candidate),
+            })
+            .collect(),
+    }
+}
+
+fn normalized_taxonomy_relation(
+    candidate: &RecallTaxonomyExpansionCandidate,
+) -> UnifiedRecallTaxonomyRelation {
+    match candidate.relation.as_deref() {
+        Some("pref_label") => UnifiedRecallTaxonomyRelation::PrefLabel,
+        Some("alt_label") => UnifiedRecallTaxonomyRelation::AltLabel,
+        Some("broader") => UnifiedRecallTaxonomyRelation::Broader,
+        Some("narrower") => UnifiedRecallTaxonomyRelation::Narrower,
+        Some("related") => UnifiedRecallTaxonomyRelation::Related,
+        _ if candidate.matched_label == candidate.label => UnifiedRecallTaxonomyRelation::PrefLabel,
+        _ => UnifiedRecallTaxonomyRelation::AltLabel,
+    }
+}
+
+fn bounded_outcome_text(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
 fn bounded_recall_embedding_query(text: &str, max_chars: usize) -> String {
     let compact = compact_recall_embedding_query(text);
     if compact.chars().count() <= max_chars {
@@ -1349,6 +1935,9 @@ fn temporal_decay(last_seen: chrono::DateTime<chrono::Utc>, half_life_days: f64)
     1.0 / (1.0 + (age_days / half_life_days))
 }
 
+#[cfg(test)]
+mod ontology_retrieval_evaluation;
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -1434,6 +2023,120 @@ mod tests {
             .expect("atom serializes")
             .find("embedding")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn scoped_unified_outcome_rejects_missing_provenance_before_fusion() {
+        let recall = MemoryRecall::new(None, relaxed_recall_config());
+        let goals = vec![
+            GoalLite {
+                id: "allowed-goal".to_string(),
+                title: "Authorized goal".to_string(),
+                unfilled_slot_names: Vec::new(),
+            },
+            GoalLite {
+                id: "blocked-goal".to_string(),
+                title: "Cross-scope goal".to_string(),
+                unfilled_slot_names: Vec::new(),
+            },
+        ];
+        let visible = |item: &ScoredItem| {
+            item.provenance.ward_id.as_deref() == Some("ward-a")
+                && item.provenance.session_id.as_deref() == Some("sess-a")
+        };
+
+        let outcome = recall
+            .recall_unified_outcome_scoped(
+                "agent-a",
+                "goal",
+                Some("ward-a"),
+                &goals,
+                5,
+                UnifiedRecallScope::new(&visible, true),
+            )
+            .await
+            .expect("scoped outcome");
+
+        assert!(outcome.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoped_unified_outcome_admits_explicitly_classified_durable_goals() {
+        let recall = MemoryRecall::new(None, relaxed_recall_config());
+        let goals = vec![GoalLite {
+            id: "goal-a".to_string(),
+            title: "Authorized durable goal".to_string(),
+            unfilled_slot_names: Vec::new(),
+        }];
+        let visible = |item: &ScoredItem| {
+            item.provenance.source == "kg_goals"
+                && item.provenance.ward_id.as_deref() == Some("ward-a")
+                && item.provenance.session_id.as_deref() == Some("__global__")
+        };
+
+        let outcome = recall
+            .recall_unified_outcome_scoped(
+                "agent-a",
+                "goal",
+                Some("ward-a"),
+                &goals,
+                5,
+                UnifiedRecallScope::new(&visible, true),
+            )
+            .await
+            .expect("scoped outcome");
+
+        assert_eq!(outcome.items.len(), 1);
+        assert_eq!(outcome.items[0].id, "goal-a");
+    }
+
+    #[test]
+    fn scoped_visibility_only_admits_explicit_authorized_provenance() {
+        let mut items = vec![
+            mk_item(ItemKind::Fact, "missing", "missing scope", 1.0),
+            ScoredItem {
+                provenance: Provenance {
+                    source: "memory_facts".to_string(),
+                    source_id: "explicit-global".to_string(),
+                    ward_id: Some("__global__".to_string()),
+                    session_id: Some("__global__".to_string()),
+                },
+                ..mk_item(ItemKind::Fact, "explicit-global", "global scope", 0.9)
+            },
+        ];
+        let visible = |item: &ScoredItem| {
+            item.provenance.ward_id.as_deref() == Some("__global__")
+                && item.provenance.session_id.as_deref() == Some("__global__")
+        };
+
+        apply_scoped_candidate_visibility(&mut items, &visible);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "explicit-global");
+    }
+
+    #[tokio::test]
+    async fn scoped_unified_outcome_hides_taxonomy_when_scope_cannot_be_proven() {
+        let recall = MemoryRecall::new(None, relaxed_recall_config());
+        let visible = |_item: &ScoredItem| true;
+
+        let outcome = recall
+            .recall_unified_outcome_scoped(
+                "agent-a",
+                "taxonomy",
+                Some("ward-a"),
+                &[],
+                5,
+                UnifiedRecallScope::new(&visible, false),
+            )
+            .await
+            .expect("scope denial is a safe partial outcome");
+
+        assert!(outcome.taxonomy_expansion.is_none());
+        assert_eq!(
+            outcome.source_summary.taxonomy,
+            UnifiedRecallSourceStatus::unavailable(0)
+        );
     }
 
     #[test]
@@ -1620,9 +2323,13 @@ mod tests {
     use crate::recall::query_gate::{GateResponse, QueryGateLlm};
     use async_trait::async_trait;
     use gateway_services::VaultPaths;
+    use knowledge_graph::types::{Entity, EntityType};
     use std::sync::Mutex;
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zbot_stores_sqlite::{GatewayMemoryFactStore, KnowledgeDatabase, MemoryRepository};
+    use zbot_stores_sqlite::{
+        GatewayMemoryFactStore, KnowledgeDatabase, MemoryRepository, SqliteKgStore,
+    };
 
     struct FixedDecisionLlm {
         decision: Mutex<&'static str>,
@@ -2128,6 +2835,32 @@ mod tests {
         Arc::new(IdentityAwareFixtureStore {
             inner: Arc::new(GatewayMemoryFactStore::new(memory_repo, Some(embed))),
         })
+    }
+
+    /// A real graph ANN fixture used to prove taxonomy configuration is
+    /// additive. It uses the same bounded embedding dimension as facts so the
+    /// `kg_name_index` path is exercised rather than mocked.
+    async fn make_kg_store_with_apple_entity(
+        tmp: &tempfile::TempDir,
+    ) -> Arc<dyn zbot_stores::KnowledgeGraphStore> {
+        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
+        let db = Arc::new(KnowledgeDatabase::new(paths).expect("graph db"));
+        let store: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(
+            Arc::new(GraphStorage::new(db).expect("graph storage")),
+        ));
+        let mut entity = Entity::new(
+            "agent-a".to_string(),
+            EntityType::Concept,
+            "Apple Knowledge Graph".to_string(),
+        );
+        entity.id = "taxonomy-disabled-graph".to_string();
+        entity.name_embedding = Some(direction_for_text("apple"));
+        store
+            .upsert_entity("agent-a", entity)
+            .await
+            .expect("graph entity");
+        store
     }
 
     struct IdentityAwareFixtureStore {
@@ -2737,7 +3470,7 @@ mod tests {
                         concept_id: "zbot.general:v1:concept:knowledge_graph".to_string(),
                         label: "Knowledge Graph".to_string(),
                         matched_label: "kg".to_string(),
-                        relation: None,
+                        relation: Some("alt_label".to_string()),
                         depth: 0,
                     }],
                 })
@@ -2762,6 +3495,209 @@ mod tests {
             saw_query.lock().unwrap().as_deref(),
             Some("kg recall Knowledge Graph")
         );
+
+        let outcome = recall
+            .recall_unified_outcome("agent-a", "kg recall", None, &[], 5)
+            .await
+            .expect("unified recall outcome");
+        let taxonomy = outcome.taxonomy_expansion.expect("taxonomy trace");
+        assert_eq!(taxonomy.retrieval_query, "kg recall Knowledge Graph");
+        assert_eq!(taxonomy.candidates.len(), 1);
+        assert_eq!(taxonomy.candidates[0].label, "Knowledge Graph");
+        assert_eq!(
+            taxonomy.candidates[0].relation,
+            UnifiedRecallTaxonomyRelation::AltLabel
+        );
+        assert_eq!(
+            outcome.source_summary.taxonomy.state,
+            UnifiedRecallSourceState::Used
+        );
+        assert_eq!(outcome.source_summary.taxonomy.count, 1);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_taxonomy_is_not_configured_and_leaves_fact_retrieval_intact() {
+        let tmp = tempfile::tempdir().expect("temporary memory store");
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(DirectionalEmbed);
+        let store = make_memory_store_with_embedder(&tmp, embed.clone()).await;
+        let kg_store = make_kg_store_with_apple_entity(&tmp).await;
+        store
+            .save_fact(
+                "agent-a",
+                "domain",
+                "taxonomy.disabled.fact",
+                "apple taxonomy retrieval fact",
+                0.9,
+                None,
+                None,
+            )
+            .await
+            .expect("fact");
+
+        let mut recall = MemoryRecall::new(Some(embed), relaxed_recall_config());
+        recall.set_memory_store(store);
+        recall.set_kg_store(kg_store);
+        let outcome = recall
+            .recall_unified_outcome("agent-a", "apple", None, &[], 8)
+            .await
+            .expect("unified recall");
+
+        assert!(
+            outcome.items.iter().any(|item| {
+                item.kind == ItemKind::Fact
+                    && item.content.contains("taxonomy.disabled.fact")
+                    && item.content.contains("apple")
+            }),
+            "fact retrieval changed when taxonomy is unconfigured: {outcome:#?}"
+        );
+        assert!(
+            outcome.items.iter().any(|item| {
+                item.kind == ItemKind::GraphNode && item.content.contains("Apple Knowledge Graph")
+            }),
+            "graph retrieval changed when taxonomy is unconfigured: {outcome:#?}"
+        );
+        assert_eq!(
+            outcome.source_summary.facts.state,
+            UnifiedRecallSourceState::Used
+        );
+        assert_eq!(
+            outcome.source_summary.graph.state,
+            UnifiedRecallSourceState::Used
+        );
+        assert_eq!(
+            outcome.source_summary.taxonomy,
+            UnifiedRecallSourceStatus::not_configured()
+        );
+        assert!(outcome.taxonomy_expansion.is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_unified_outcome_exposes_only_finite_source_failure_diagnostics() {
+        struct FailingTaxonomyExpander;
+
+        #[async_trait]
+        impl zbot_stores_traits::RecallTaxonomyExpander for FailingTaxonomyExpander {
+            async fn expand_recall_query(
+                &self,
+                _request: zbot_stores_traits::RecallTaxonomyExpansionRequest,
+            ) -> Result<zbot_stores_traits::RecallTaxonomyExpansion, String> {
+                Err("postgres://user:secret@db.internal/zbot /mnt/private/taxonomy.db".to_string())
+            }
+        }
+
+        let mut recall = MemoryRecall::new(None, Arc::new(RecallConfig::default()));
+        recall.set_taxonomy_expander(Arc::new(FailingTaxonomyExpander));
+
+        let outcome = recall
+            .recall_unified_outcome("agent-a", "taxonomy failure", None, &[], 5)
+            .await
+            .expect("source failure degrades instead of failing recall");
+        assert!(outcome.items.is_empty());
+        assert!(outcome.taxonomy_expansion.is_none());
+        assert_eq!(
+            outcome.source_summary.taxonomy,
+            UnifiedRecallSourceStatus {
+                state: UnifiedRecallSourceState::Unavailable,
+                count: 0,
+                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable),
+            }
+        );
+        assert!(format!("{:?}", outcome.source_summary).contains("SourceUnavailable"));
+        assert!(!format!("{:?}", outcome.source_summary).contains("postgres://"));
+        assert!(!format!("{:?}", outcome.source_summary).contains("/mnt/private"));
+    }
+
+    #[tokio::test]
+    async fn recall_unified_outcome_marks_a_failed_fact_source_unavailable() {
+        struct FailingFactStore;
+
+        #[async_trait]
+        impl zbot_stores::MemoryFactStore for FailingFactStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!([]))
+            }
+
+            async fn search_memory_facts_hybrid_with_identity(
+                &self,
+                _agent_id: Option<&str>,
+                _query: &str,
+                _mode: &str,
+                _limit: usize,
+                _ward_id: Option<&str>,
+                _query_embedding: Option<&[f32]>,
+                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                _as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> Result<Vec<serde_json::Value>, String> {
+                Err("sqlite:///mnt/private/conversations.db unavailable".to_string())
+            }
+        }
+
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(TestEmbed);
+        let mut recall = MemoryRecall::new(Some(embed), Arc::new(RecallConfig::default()));
+        recall.set_memory_store(Arc::new(FailingFactStore));
+
+        let outcome = recall
+            .recall_unified_outcome("agent-a", "fact failure", None, &[], 5)
+            .await
+            .expect("source failure degrades instead of failing recall");
+        assert_eq!(
+            outcome.source_summary.facts,
+            UnifiedRecallSourceStatus {
+                state: UnifiedRecallSourceState::Unavailable,
+                count: 0,
+                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable),
+            }
+        );
+        assert!(!format!("{:?}", outcome.source_summary).contains("sqlite:///"));
+    }
+
+    #[test]
+    fn taxonomy_direct_match_defaults_to_pref_label_in_outcome() {
+        let candidate = RecallTaxonomyExpansionCandidate {
+            scheme_id: "zbot.general:v1".to_string(),
+            concept_id: "zbot.general:v1:concept:memory".to_string(),
+            label: "Memory".to_string(),
+            matched_label: "Memory".to_string(),
+            relation: None,
+            depth: 0,
+        };
+        assert_eq!(
+            normalized_taxonomy_relation(&candidate),
+            UnifiedRecallTaxonomyRelation::PrefLabel
+        );
+    }
+
+    #[test]
+    fn partial_graph_or_hierarchy_failure_is_degraded_not_unavailable() {
+        for status in [
+            source_status(true, true, true, 2, true),
+            source_status(true, true, true, 1, true),
+        ] {
+            assert_eq!(status.state, UnifiedRecallSourceState::Degraded);
+            assert_eq!(
+                status.reason_code,
+                Some(UnifiedRecallReasonCode::SourceUnavailable)
+            );
+            assert!(status.count > 0);
+        }
     }
 
     #[tokio::test]

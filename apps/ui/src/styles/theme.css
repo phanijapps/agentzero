@@ -25,19 +25,19 @@
      ======================================================================== */
 
   /* Backgrounds (deep void → holo surface → elevated) */
-  --background: #09090b;
-  --background-surface: #111113;
-  --background-elevated: #18181b;
-  --sidebar: rgba(9, 9, 11, 0.94);
+  --background: #090b10;
+  --background-surface: #10141d;
+  --background-elevated: #151b26;
+  --sidebar: rgba(9, 11, 16, 0.94);
 
   /* Foreground hierarchy (4 stops) */
-  --foreground: #fafafa;
-  --muted-foreground: #a1a1aa;
-  --subtle-foreground: #71717a;
-  --dim-foreground: #52525b;
+  --foreground: #eef3ff;
+  --muted-foreground: #92a0b7;
+  --subtle-foreground: #6f7c91;
+  --dim-foreground: #4c586c;
 
   /* Borders — barely-there, accent-tinted */
-  --border: rgba(255, 255, 255, 0.10);
+  --border: #273043;
   --border-hover: var(--fx-accent);
 
   /* Primary accent — driven by --fx-accent (live-mutated by picker) */
@@ -46,6 +46,16 @@
   --primary-hover: color-mix(in srgb, var(--fx-accent) 80%, white);
   --primary-muted: color-mix(in srgb, var(--fx-accent) 14%, transparent);
   --primary-subtle: color-mix(in srgb, var(--fx-accent) 6%, transparent);
+
+  /* Attention Radar hierarchy — these describe the calm operational canvas
+     shared by workbench routes. `--primary` remains user-configurable. */
+  --attention-panel: #10141d;
+  --attention-panel-raised: #151b26;
+  --attention-line-soft: #1d2635;
+  --attention-soft: #c5d0e4;
+  --attention-violet: #ae7bff;
+  --attention-violet-muted: #38285c;
+  --attention-cyan: #54d9ec;
 
   /* Semantic colors — bright on dark */
   --success: #4cf2c2;
@@ -130,8 +140,8 @@
      ======================================================================== */
   --radius-sm: 0.375rem;    /* 6px */
   --radius-md: 0.5rem;      /* 8px */
-  --radius-lg: 0.5rem;      /* 8px */
-  --radius-xl: 0.5rem;      /* 8px */
+  --radius-lg: 0.75rem;     /* 12px */
+  --radius-xl: 1rem;        /* 16px */
   --radius-full: 9999px;
 
   /* ========================================================================
@@ -147,7 +157,7 @@
      LAYOUT DIMENSIONS
      ======================================================================== */
   --sidebar-width: 14rem;           /* 224px (legacy — top-bar shell uses --topbar-height) */
-  --topbar-height: 44px;
+  --topbar-height: 56px;
   --panel-sidebar-width: 18rem;     /* 288px */
   --content-max-width: 64rem;       /* 1024px */
   --content-narrow-width: 32rem;    /* 512px */

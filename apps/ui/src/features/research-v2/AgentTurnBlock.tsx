@@ -13,6 +13,7 @@ import type { AgentTurn, AgentTurnStatus } from "./types";
 import { childrenOf } from "./turn-tree";
 import { AgentAvatar, CopyButton } from "./ResearchMessages";
 import { describeTool } from "../shared/statusPill/tool-phrase";
+import { ToolActivity } from "./ToolActivity";
 
 /**
  * Per-turn inline live ticker — shows the latest timeline entry while the
@@ -187,10 +188,10 @@ function copyableRespondText(turn: AgentTurn): string | null {
 }
 
 /**
- * Subagent card: Request + Response only, no thinking/tool timeline. All
- * subagent tool/thinking events surface in the top pill (news ticker). The
- * card's job is to show "what we asked of this delegate" and "what it came
- * back with". Running → Request + "waiting…". Completed → Request + Response.
+ * Subagent card: request, response, and the safe tool-name audit recorded for
+ * this execution. Tool arguments and results stay out of the UI. Running →
+ * Request + "waiting…" and its live ticker. Completed → Request + Response
+ * + the durable tools-used list.
  */
 interface SubagentCardProps {
   turn: AgentTurn;
@@ -254,6 +255,7 @@ function SubagentCard({ turn }: SubagentCardProps) {
           </div>
         </div>
       )}
+      {expanded && turn.status !== "running" && <ToolActivity entries={turn.timeline} />}
       {expanded && respondText !== null && (
         <CopyButton text={respondText} label="Copy response" />
       )}
@@ -263,9 +265,8 @@ function SubagentCard({ turn }: SubagentCardProps) {
 
 /**
  * Root block: avatar + nested subagent cards + final respond + copy.
- * No thinking chevron, no tool timeline — root's thinking/tool_calls surface
- * only in the top pill ticker. All subagent cards appear here; whether they're
- * running or complete they render as minimal Request/Response cards.
+ * No thinking chevron. While running, root tool activity appears only in the
+ * live ticker; once complete, the safe durable tools-used list remains.
  */
 interface RootTurnProps {
   turn: AgentTurn;
@@ -297,6 +298,7 @@ function RootTurn({ turn, childTurns, allTurns }: RootTurnProps) {
           <div className="research-page__assistant">
             <RespondBody turn={turn} />
           </div>
+          {turn.status !== "running" && <ToolActivity entries={turn.timeline} />}
         </div>
       </div>
       {respondText !== null && (

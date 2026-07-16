@@ -524,6 +524,13 @@ fn resource_read_evidence_record(
         source_id: source_id.to_string(),
         source_type: source_type.to_string(),
         session_id: non_empty(session_id).map(str::to_string),
+        ward_id: ctx.get_state("ward_id").and_then(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|ward_id| !ward_id.is_empty())
+                .map(str::to_string)
+        }),
         agent_id: ctx.agent_name().to_string(),
         retention_policy: args
             .get("retention_policy")

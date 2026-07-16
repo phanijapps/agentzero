@@ -47,6 +47,7 @@ import type {
   MissionControlFilter,
   AutonomyItem,
   AutonomyItemDetail,
+  AutonomyResumeResult,
   AutonomyState,
   DashboardStats,
   // Legacy types
@@ -94,6 +95,7 @@ import type {
   LocalDiagnosis,
   SessionState,
   Artifact,
+  ArtifactListOptions,
   EmbeddingsHealth,
   CuratedModel,
   EmbeddingConfig,
@@ -251,7 +253,8 @@ export interface Transport {
     conversationId: string,
     message: string,
     sessionId?: string,
-    mode?: string
+    mode?: string,
+    clientMessageId?: string,
   ): Promise<TransportResult<{ conversationId: string; sessionId?: string }>>;
 
   /** Stop an agent execution */
@@ -359,6 +362,9 @@ export interface Transport {
 
   /** Apply an explicit lifecycle transition. This never executes the item. */
   transitionAutonomyItem(id: string, state: AutonomyState, outcome?: string): Promise<TransportResult<AutonomyItemDetail>>;
+
+  /** Start a new session for one explicitly selected approved decision thread. */
+  resumeAutonomyItem(id: string): Promise<TransportResult<AutonomyResumeResult>>;
 
   /** Get a single session with executions (V2 API) */
   getSessionFull(sessionId: string): Promise<TransportResult<SessionWithExecutions>>;
@@ -581,11 +587,14 @@ export interface Transport {
   // Artifact Operations
   // =========================================================================
 
-  /** List all artifacts for a session */
-  listSessionArtifacts(sessionId: string): Promise<TransportResult<Artifact[]>>;
+  /** List a session artifact manifest, optionally as bounded goal deliverables. */
+  listSessionArtifacts(
+    sessionId: string,
+    options?: ArtifactListOptions,
+  ): Promise<TransportResult<Artifact[]>>;
 
-  /** Get the URL to fetch artifact content */
-  getArtifactContentUrl(artifactId: string): string;
+  /** Get a session-bound URL to fetch artifact content. */
+  getArtifactContentUrl(artifactId: string, sessionId: string): string;
 
   // =========================================================================
   // Embedding Backend Operations

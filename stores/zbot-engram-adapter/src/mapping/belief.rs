@@ -17,6 +17,7 @@ use zbot_stores_domain::{
 
 use crate::{
     error::{AdapterError, AdapterResult},
+    governance::{select_and_persist_governance_metadata, GovernancePolicy, GovernanceScope},
     scope::ScopeMapper,
 };
 
@@ -26,6 +27,16 @@ const ZBOT_BELIEF_METADATA_KEY: &str = "zbotBelief";
 pub fn belief_to_belief_record(
     belief: &ZbotBelief,
     mapper: &ScopeMapper,
+) -> AdapterResult<engram_domain::Belief> {
+    belief_to_belief_record_with_governance(belief, mapper, None)
+}
+
+/// Map a zbot belief and persist the configured governance selection on its
+/// canonical Engram record.
+pub fn belief_to_belief_record_with_governance(
+    belief: &ZbotBelief,
+    mapper: &ScopeMapper,
+    governance: Option<&GovernancePolicy>,
 ) -> AdapterResult<engram_domain::Belief> {
     let scope = mapper.partition_scope(&belief.partition_id)?;
     let mut sidecar = belief.clone();
@@ -43,6 +54,19 @@ pub fn belief_to_belief_record(
         "synthesizerVersion".to_string(),
         json!(belief.synthesizer_version),
     );
+    if let Some(governance) = governance {
+        let selection = select_and_persist_governance_metadata(
+            governance,
+            GovernanceScope {
+                ward_id: Some(&belief.partition_id),
+                ..GovernanceScope::default()
+            },
+            &mut metadata,
+        );
+        if !selection.taxonomy_scheme_ids.is_empty() {
+            metadata.insert("governanceRecordKind".to_string(), json!("belief"));
+        }
+    }
 
     Ok(engram_domain::Belief {
         id: EngramBeliefId::from(belief.id.clone()),

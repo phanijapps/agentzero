@@ -18,6 +18,9 @@ use agent_primitives::{AgentError, Result, Tool, ToolContext};
 #[derive(Debug, Clone)]
 pub struct GoalSummary {
     pub id: String,
+    /// Optional ward ownership. `None` means the goal is explicitly global to
+    /// the owning agent, never an unknown ward.
+    pub ward_id: Option<String>,
     pub title: String,
     pub description: Option<String>,
     pub state: String,
@@ -207,6 +210,7 @@ async fn execute_get(access: &Arc<dyn GoalAccess>, args: &Value) -> Result<Value
 fn summary_to_value(g: &GoalSummary) -> Value {
     json!({
         "id": g.id,
+        "ward_id": g.ward_id,
         "title": g.title,
         "description": g.description,
         "state": g.state,

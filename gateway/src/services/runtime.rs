@@ -248,6 +248,37 @@ impl RuntimeService {
         runner.invoke(config, message.to_string()).await
     }
 
+    /// Start a fresh execution for a server-validated decision-thread packet.
+    /// This deliberately does not accept a session id, caller metadata, or a
+    /// caller-controlled message, so it cannot reuse generic session resume.
+    pub async fn invoke_ledger_resume(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        packet: zbot_conversation::LedgerResumePacket,
+    ) -> Result<(ExecutionHandle, String), String> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            "Runtime not initialized with executor. Call with_runner() first.".to_string()
+        })?;
+        let paths = self
+            .paths
+            .clone()
+            .ok_or_else(|| "Vault paths not set".to_string())?;
+        let config = ExecutionConfig::new(
+            agent_id.to_string(),
+            conversation_id.to_string(),
+            paths.vault_dir().clone(),
+        )
+        .with_ledger_resume_packet(packet);
+        runner
+            .invoke(
+                config,
+                "Continue the explicitly selected approved decision thread using the saved next action."
+                    .to_string(),
+            )
+            .await
+    }
+
     /// Invoke an agent with a message and hook context.
     ///
     /// The hook context is passed to tools so they can route responses
@@ -297,6 +328,7 @@ impl RuntimeService {
         session_id: Option<String>,
         on_session_ready: Option<gateway_execution::OnSessionReady>,
         mode: Option<String>,
+        client_message_id: Option<String>,
     ) -> Result<(ExecutionHandle, String), String> {
         let runner = self.runner.as_ref().ok_or_else(|| {
             "Runtime not initialized with executor. Call with_runner() first.".to_string()
@@ -320,6 +352,10 @@ impl RuntimeService {
 
         if let Some(m) = mode {
             config = config.with_mode(m);
+        }
+
+        if let Some(client_message_id) = client_message_id {
+            config = config.with_client_message_id(client_message_id);
         }
 
         runner

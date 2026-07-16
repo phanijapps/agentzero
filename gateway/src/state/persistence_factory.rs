@@ -34,7 +34,8 @@ pub struct EngramStoreBundle {
     pub goal_store: Arc<dyn zbot_stores_traits::GoalStore>,
     pub belief_store: Arc<dyn zbot_stores_traits::BeliefStore>,
     pub belief_contradiction_store: Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
-    pub taxonomy_expander: Arc<dyn zbot_stores_traits::RecallTaxonomyExpander>,
+    /// Present only when an active governance selection names a taxonomy.
+    pub taxonomy_expander: Option<Arc<dyn zbot_stores_traits::RecallTaxonomyExpander>>,
     pub governance_health: GovernanceCapabilityHealth,
 }
 
@@ -79,12 +80,19 @@ pub fn build_engram_store_bundle(
         EngramBeliefStore::from_provider(config.clone(), &provider)
             .map_err(|error| error.to_string())?,
     );
-    let sidecars =
-        Arc::new(EngramSidecarStores::open(config.clone()).map_err(|error| error.to_string())?);
-    let taxonomy_expander = Arc::new(
-        EngramTaxonomyRecallExpander::from_provider(config.clone(), &provider)
+    let sidecars = Arc::new(
+        EngramSidecarStores::from_provider(config.clone(), &provider)
             .map_err(|error| error.to_string())?,
     );
+    let taxonomy_expander = if config.governance.has_taxonomy_selection() {
+        Some(Arc::new(
+            EngramTaxonomyRecallExpander::from_provider(config.clone(), &provider)
+                .map_err(|error| error.to_string())?,
+        )
+            as Arc<dyn zbot_stores_traits::RecallTaxonomyExpander>)
+    } else {
+        None
+    };
 
     Ok(EngramStoreBundle {
         memory_store,
@@ -222,6 +230,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use zbot_engram_adapter::ProviderMode;
+    use zbot_stores_traits::RecallTaxonomyExpansionRequest;
 
     struct RecordingEmbedder {
         calls: AtomicUsize,
@@ -289,6 +298,16 @@ mod tests {
         let paths = VaultPaths::new(dir.path().to_path_buf());
         std::fs::create_dir_all(paths.data_dir()).unwrap();
         std::fs::create_dir_all(paths.config_dir().join("governance")).unwrap();
+        std::fs::write(
+            paths.config_dir().join("governance/base-ontology.json"),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(
+            paths.config_dir().join("governance/base-taxonomy.json"),
+            "{}",
+        )
+        .unwrap();
         let settings = gateway_memory::MemoryProviderSettings {
             governance: gateway_memory::MemoryGovernanceSettings {
                 ontology_definition_paths: vec!["governance/base-ontology.json".to_string()],
@@ -342,7 +361,78 @@ mod tests {
         .expect("selection");
 
         assert!(Arc::strong_count(&bundle.memory_store) >= 1);
+        assert!(bundle.taxonomy_expander.is_none());
         assert!(paths.data_dir().join("engram").exists());
+    }
+
+    #[tokio::test]
+    async fn configured_taxonomy_is_wired_into_the_engram_bundle() {
+        let dir = TempDir::new().unwrap();
+        let paths = VaultPaths::new(dir.path().to_path_buf());
+        std::fs::create_dir_all(paths.data_dir()).unwrap();
+        let governance_dir = paths.config_dir().join("governance");
+        std::fs::create_dir_all(&governance_dir).unwrap();
+        std::fs::write(
+            governance_dir.join("base-taxonomy.json"),
+            r#"{
+              "kind": "zbot.skos_taxonomy",
+              "schemaVersion": 1,
+              "schemeId": "zbot.general:v1",
+              "label": "Zbot General Taxonomy",
+              "concepts": [
+                { "id": "memory", "prefLabel": "Memory", "altLabels": ["recall"] },
+                { "id": "graph", "prefLabel": "Knowledge Graph", "altLabels": ["kg"], "broader": ["memory"] }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let settings = gateway_memory::MemoryProviderSettings {
+            governance: gateway_memory::MemoryGovernanceSettings {
+                taxonomy_definition_paths: vec!["governance/base-taxonomy.json".to_string()],
+                default_selection: gateway_memory::MemoryGovernanceSelection {
+                    ontology_ids: Vec::new(),
+                    taxonomy_scheme_ids: vec!["zbot.general:v1".to_string()],
+                },
+                ..gateway_memory::MemoryGovernanceSettings::default()
+            },
+            ..gateway_memory::MemoryProviderSettings::default()
+        };
+
+        let bundle = build_engram_store_bundle(&paths, &settings, None).expect("selection");
+        let expander = bundle
+            .taxonomy_expander
+            .expect("configured taxonomy expander");
+        let expansion = expander
+            .expand_recall_query(RecallTaxonomyExpansionRequest {
+                query: "kg recall".to_string(),
+                ward_id: None,
+                session_id: None,
+                max_depth: 1,
+                max_fan_out: 8,
+                max_candidates: 8,
+            })
+            .await
+            .expect("expansion");
+
+        assert!(expansion.expanded_query.contains("Knowledge Graph"));
+        assert!(expansion
+            .candidates
+            .iter()
+            .any(|candidate| candidate.relation.as_deref() == Some("broader")));
+
+        let mut recall = gateway_memory::MemoryRecall::new(
+            None,
+            Arc::new(gateway_memory::RecallConfig::default()),
+        );
+        recall.set_taxonomy_expander(expander);
+        let outcome = recall
+            .recall_unified_outcome("agent-a", "kg recall", None, &[], 8)
+            .await
+            .expect("unified recall");
+        let trace = outcome.taxonomy_expansion.expect("taxonomy trace");
+        assert!(trace.retrieval_query.contains("Knowledge Graph"));
+        assert!(trace.candidates.iter().any(|candidate| candidate.relation
+            == gateway_memory::UnifiedRecallTaxonomyRelation::Broader));
     }
 
     #[test]

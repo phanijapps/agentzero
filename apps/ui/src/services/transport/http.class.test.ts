@@ -292,6 +292,7 @@ describe('HttpTransport — query-string builders', () => {
     const t = newTransport();
     await t.listLogSessions({
       agent_id: 'planner',
+      conversation_id: 'sess-history',
       level: 'error',
       from_time: '2026-01-01',
       to_time: '2026-12-31',
@@ -303,6 +304,7 @@ describe('HttpTransport — query-string builders', () => {
     const u = new URL(url);
     expect(u.pathname).toBe('/api/logs/sessions');
     expect(u.searchParams.get('agent_id')).toBe('planner');
+    expect(u.searchParams.get('conversation_id')).toBe('sess-history');
     expect(u.searchParams.get('level')).toBe('error');
     expect(u.searchParams.get('from_time')).toBe('2026-01-01');
     expect(u.searchParams.get('to_time')).toBe('2026-12-31');

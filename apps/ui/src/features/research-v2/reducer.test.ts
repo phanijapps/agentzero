@@ -93,6 +93,25 @@ describe("reduceResearch", () => {
     expect(s.turns).toHaveLength(1);
   });
 
+  it("AGENT_STARTED root binds the server session when invoke_accepted was not delivered", () => {
+    let s = reduceResearch(EMPTY_RESEARCH_STATE, {
+      type: "APPEND_USER",
+      message: { id: "u1", content: "go", createdAt: "2026-04-19T00:00:00.000Z" },
+    });
+    s = reduceResearch(s, {
+      type: "AGENT_STARTED",
+      turnId: ROOT_EXEC,
+      agentId: "root",
+      parentExecutionId: null,
+      wardId: null,
+      startedAt: 2,
+      sessionId: "sess-root",
+      conversationId: "research-client",
+    });
+    expect(s.sessionId).toBe("sess-root");
+    expect(s.conversationId).toBe("research-client");
+  });
+
   it("AGENT_STARTED subagent without wardId inherits sticky ward onto the subagent", () => {
     let s = reduceResearch(EMPTY_RESEARCH_STATE, {
       type: "WARD_CHANGED",
@@ -263,6 +282,270 @@ describe("reduceResearch", () => {
     expect(s.turns).toHaveLength(1);
     expect(s.turns[0].userMessage.content).toBe("go");
     expect(s.artifacts).toHaveLength(1);
+  });
+
+  it("HYDRATE keeps a just-submitted turn when its snapshot predates the durable message", () => {
+    // The Research subscription starts as soon as agent_started arrives. A
+    // snapshot that was already in flight can therefore predate the user's
+    // just-submitted message. It must not erase the optimistic turn.
+    const submitted = reduceResearch(EMPTY_RESEARCH_STATE, {
+      type: "APPEND_USER",
+      message: {
+        id: "u-pending",
+        content: "compare SQLite and Postgres",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+    });
+
+    const hydrated = reduceResearch(submitted, {
+      type: "HYDRATE",
+      sessionId: "sess-pending",
+      conversationId: "research-client",
+      title: "",
+      status: "running",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-pending",
+      turns: [],
+      artifacts: [],
+    });
+
+    expect(hydrated.turns).toHaveLength(1);
+    expect(hydrated.turns[0].userMessage.content).toBe(
+      "compare SQLite and Postgres",
+    );
+    expect(hydrated.turns[0].status).toBe("running");
+  });
+
+  it("HYDRATE replaces the optimistic turn once the server snapshot contains it", () => {
+    const submitted = reduceResearch(EMPTY_RESEARCH_STATE, {
+      type: "APPEND_USER",
+      message: {
+        id: "u-pending",
+        content: "compare SQLite and Postgres",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+    });
+    const persistedTurn = {
+      id: "turn-server-u-pending",
+      index: 0,
+      userMessage: {
+        id: "u-pending",
+        content: "compare SQLite and Postgres",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+      subagents: [],
+      assistantText: null,
+      assistantStreaming: "",
+      timeline: [],
+      status: "running" as const,
+      startedAt: "2026-07-13T12:00:00.000Z",
+      endedAt: null,
+      durationMs: null,
+    };
+
+    const hydrated = reduceResearch(submitted, {
+      type: "HYDRATE",
+      sessionId: "sess-pending",
+      conversationId: "research-client",
+      title: "",
+      status: "running",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-pending",
+      turns: [persistedTurn],
+      artifacts: [],
+    });
+
+    expect(hydrated.turns).toEqual([persistedTurn]);
+  });
+
+  it("keeps a confirmed turn when an older snapshot resolves afterward", () => {
+    const submitted = reduceResearch(EMPTY_RESEARCH_STATE, {
+      type: "APPEND_USER",
+      message: {
+        id: "u-ordering",
+        content: "do not reorder snapshots",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+    });
+    const persistedTurn = {
+      id: "turn-u-ordering",
+      index: 0,
+      userMessage: {
+        id: "u-ordering",
+        content: "do not reorder snapshots",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+      subagents: [],
+      assistantText: null,
+      assistantStreaming: "",
+      timeline: [],
+      status: "running" as const,
+      startedAt: "2026-07-13T12:00:00.000Z",
+      endedAt: null,
+      durationMs: null,
+    };
+    const fresh = reduceResearch(submitted, {
+      type: "HYDRATE",
+      sessionId: "sess-ordering",
+      conversationId: "research-client",
+      title: "",
+      status: "running",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-ordering",
+      turns: [persistedTurn],
+      artifacts: [],
+    });
+    const delayedStale = reduceResearch(fresh, {
+      type: "HYDRATE",
+      sessionId: "sess-ordering",
+      conversationId: "research-client",
+      title: "",
+      status: "running",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-ordering",
+      turns: [],
+      artifacts: [],
+    });
+
+    expect(delayedStale.turns).toEqual([persistedTurn]);
+  });
+
+  it("does not mistake an earlier identical prompt for the pending turn", () => {
+    const existingTurn = {
+      id: "turn-old",
+      index: 0,
+      userMessage: {
+        id: "old",
+        content: "status",
+        createdAt: "2026-07-13T11:00:00.000Z",
+      },
+      subagents: [],
+      assistantText: "Earlier answer",
+      assistantStreaming: "",
+      timeline: [],
+      status: "completed" as const,
+      startedAt: "2026-07-13T11:00:00.000Z",
+      endedAt: "2026-07-13T11:01:00.000Z",
+      durationMs: 60_000,
+    };
+    const hydratedExisting = reduceResearch(EMPTY_RESEARCH_STATE, {
+      type: "HYDRATE",
+      sessionId: "sess-repeat",
+      conversationId: "research-client",
+      title: "",
+      status: "complete",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-old",
+      turns: [existingTurn],
+      artifacts: [],
+    });
+    const submitted = reduceResearch(hydratedExisting, {
+      type: "APPEND_USER",
+      message: {
+        id: "u-repeat",
+        content: "status",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+    });
+
+    const stale = reduceResearch(submitted, {
+      type: "HYDRATE",
+      sessionId: "sess-repeat",
+      conversationId: "research-client",
+      title: "",
+      status: "running",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-repeat",
+      turns: [existingTurn],
+      artifacts: [],
+    });
+
+    expect(stale.turns).toHaveLength(2);
+    expect(stale.turns[1].userMessage.id).toBe("u-repeat");
+  });
+
+  it("does not match a different durable row solely because its content is identical", () => {
+    const submitted = reduceResearch(EMPTY_RESEARCH_STATE, {
+      type: "APPEND_USER",
+      message: {
+        id: "u-client",
+        content: "status",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+    });
+    const otherClientTurn = {
+      id: "turn-u-other",
+      index: 0,
+      userMessage: {
+        id: "u-other",
+        content: "status",
+        createdAt: "2026-07-13T12:00:01.000Z",
+      },
+      subagents: [],
+      assistantText: null,
+      assistantStreaming: "",
+      timeline: [],
+      status: "running" as const,
+      startedAt: "2026-07-13T12:00:01.000Z",
+      endedAt: null,
+      durationMs: null,
+    };
+
+    const hydrated = reduceResearch(submitted, {
+      type: "HYDRATE",
+      sessionId: "sess-pending",
+      conversationId: "research-client",
+      title: "",
+      status: "running",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-pending",
+      turns: [otherClientTurn],
+      artifacts: [],
+    });
+
+    expect(hydrated.turns.map((turn) => turn.userMessage.id)).toEqual([
+      "u-other",
+      "u-client",
+    ]);
+  });
+
+  it("keeps a failed optimistic turn visible when a late stale snapshot arrives", () => {
+    const submitted = reduceResearch(EMPTY_RESEARCH_STATE, {
+      type: "APPEND_USER",
+      message: {
+        id: "u-failed",
+        content: "do not lose me",
+        createdAt: "2026-07-13T12:00:00.000Z",
+      },
+    });
+    const failed = reduceResearch(submitted, {
+      type: "ERROR",
+      message: "Unable to start this request",
+    });
+    const hydrated = reduceResearch(failed, {
+      type: "HYDRATE",
+      sessionId: "sess-failed",
+      conversationId: "research-client",
+      title: "",
+      status: "running",
+      wardId: null,
+      wardName: null,
+      rootExecutionId: "exec-failed",
+      turns: [],
+      artifacts: [],
+    });
+
+    expect(hydrated.status).toBe("error");
+    expect(hydrated.turns).toHaveLength(1);
+    expect(hydrated.turns[0].status).toBe("error");
+    expect(hydrated.turns[0].assistantText).toContain("Request failed");
   });
 
   it("INTENT_ANALYSIS_STARTED flips the flag", () => {

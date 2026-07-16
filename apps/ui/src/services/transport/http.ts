@@ -52,6 +52,7 @@ import type {
   MissionControlFilter,
   AutonomyItem,
   AutonomyItemDetail,
+  AutonomyResumeResult,
   AutonomyState,
   DashboardStats,
   // Legacy types (for backwards compatibility)
@@ -105,6 +106,7 @@ import type {
   LocalDiagnosis,
   SessionState,
   Artifact,
+  ArtifactListOptions,
   EmbeddingsHealth,
   CuratedModel,
   EmbeddingConfig,
@@ -458,6 +460,7 @@ export class HttpTransport implements Transport {
   async listLogSessions(filter?: LogFilter): Promise<TransportResult<LogSession[]>> {
     const params = new URLSearchParams();
     if (filter?.agent_id) params.set("agent_id", filter.agent_id);
+    if (filter?.conversation_id) params.set("conversation_id", filter.conversation_id);
     if (filter?.level) params.set("level", filter.level);
     if (filter?.from_time) params.set("from_time", filter.from_time);
     if (filter?.to_time) params.set("to_time", filter.to_time);
@@ -563,6 +566,10 @@ export class HttpTransport implements Transport {
     outcome?: string,
   ): Promise<TransportResult<AutonomyItemDetail>> {
     return this.post<AutonomyItemDetail>(`/api/autonomy/${encodeURIComponent(id)}/transition`, { state, outcome });
+  }
+
+  async resumeAutonomyItem(id: string): Promise<TransportResult<AutonomyResumeResult>> {
+    return this.post<AutonomyResumeResult>(`/api/autonomy/${encodeURIComponent(id)}/resume`, {});
   }
 
   /** Get a single session with executions (V2 API) */
@@ -734,7 +741,8 @@ export class HttpTransport implements Transport {
     conversationId: string,
     message: string,
     sessionId?: string,
-    mode?: string
+    mode?: string,
+    clientMessageId?: string,
   ): Promise<TransportResult<{ conversationId: string; sessionId?: string }>> {
     // Send execute command via WebSocket
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -756,6 +764,10 @@ export class HttpTransport implements Transport {
     // Include mode for fast chat
     if (mode) {
       command.mode = mode;
+    }
+
+    if (clientMessageId) {
+      command.metadata = { client_message_id: clientMessageId };
     }
 
 
@@ -1728,13 +1740,21 @@ export class HttpTransport implements Transport {
   // Artifact Operations
   // ─────────────────────────────────────────────────────────────────────────
 
-  async listSessionArtifacts(sessionId: string): Promise<TransportResult<Artifact[]>> {
-    return this.get<Artifact[]>(`/api/sessions/${encodeURIComponent(sessionId)}/artifacts`);
+  async listSessionArtifacts(
+    sessionId: string,
+    options?: ArtifactListOptions,
+  ): Promise<TransportResult<Artifact[]>> {
+    const params = new URLSearchParams();
+    if (options?.goalArtifactsOnly) params.set("goal_artifacts_only", "true");
+    if (options?.limit !== undefined) params.set("limit", options.limit.toString());
+    const query = params.toString();
+    const path = `/api/sessions/${encodeURIComponent(sessionId)}/artifacts${query ? `?${query}` : ""}`;
+    return this.get<Artifact[]>(path);
   }
 
-  getArtifactContentUrl(artifactId: string): string {
+  getArtifactContentUrl(artifactId: string, sessionId: string): string {
     const base = this.config?.httpUrl ?? "";
-    return `${base}/api/artifacts/${encodeURIComponent(artifactId)}/content`;
+    return `${base}/api/artifacts/${encodeURIComponent(artifactId)}/content?session_id=${encodeURIComponent(sessionId)}`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────

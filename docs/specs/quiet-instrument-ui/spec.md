@@ -11,6 +11,15 @@
 > **Spec contract:** this document defines what "done" means. The implementing
 > PR must match this spec, or update it. Verification must be derivable from it.
 
+## Successor visual contract
+
+This spec's shared-token baseline and its behavior, accessibility, route, and
+public-contract boundaries remain binding. The subsequent
+[Attention Radar UI Rollout](../attention-radar-ui-rollout/spec.md) owns the
+art direction, route composition, state/deep-link matrix, and future visual
+implementation sequencing. New UI work must follow that visual contract rather
+than treating Quiet Instrument as a competing layout authority.
+
 ## Objective
 
 Give zbot one striking, restrained desktop-command-center visual language across

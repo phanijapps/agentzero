@@ -1,4 +1,5 @@
 use agent_runtime::{ContextActorKind, LlmClient};
+use agent_tools::{GoalAccess, RecallAuthorizationContext};
 use gateway_services::{AgentService, SharedVaultPaths, SkillService, SkillSource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,13 +23,11 @@ pub struct IntentAnalysis {
     #[serde(default)]
     #[schemars(skip)]
     pub rewritten_prompt: String,
-    /// Pre-rendered "## Recommended action: run_procedure" or legacy
-    /// "## Proven Procedure Available" markdown block, computed in
-    /// `analyze_intent` after the classifier LLM returns. Carried on the
-    /// struct so `format_intent_injection` can render it into the root
-    /// agent's system prompt — the agent that actually decides whether to
-    /// call `run_procedure`. `#[serde(default, skip_serializing)]` because
-    /// it's populated post-deserialization and not requested from the LLM.
+    /// Legacy/manual procedure recommendation block retained for compatible
+    /// serialized analyses. Automatic intent analysis no longer populates it:
+    /// procedures reach the prompt only through scoped, sanitized unified
+    /// recall. `#[serde(default, skip_serializing)]` keeps it out of the LLM
+    /// classifier contract.
     #[serde(default, skip_serializing)]
     #[schemars(skip)]
     pub procedure_recommendation: Option<String>,
@@ -315,27 +314,38 @@ pub fn format_intent_injection(
         return out;
     }
 
-    // Ward — phrased as a directive, not a suggestion. The agent has
-    // historically paraphrased the ward name to match task-specific
-    // terminology (e.g. "geopolitical-analysis" → "india-pok-analysis")
-    // which violates the reusable-domain rule. Show the exact tool call.
+    // No filesystem-validated ward was available. Do not propagate an
+    // untrusted model-suggested name into the ward tool; it is responsible
+    // for listing existing workspaces or creating a safe new one.
     let wr = &analysis.ward_recommendation;
-    let action_verb = if wr.action == WardAction::UseExisting {
-        "use"
+    if wr.ward_name == "unassigned" {
+        out.push_str(
+            "\n**Required workspace:** No existing workspace was selected. Before writing task files, \
+             call `ward(action=\"list\")` and then use an appropriate existing ward or create a \
+             reusable domain ward with a safe single-component name.\n",
+        );
     } else {
-        "create"
-    };
-    out.push_str(&format!(
-        "\n**Required workspace:** Your first tool call MUST be \
-         `ward(action=\"{}\", name=\"{}\")`. The ward name `{}` is mandatory — \
-         do not rename it to a task-specific alternative. Reason: {}\n",
-        action_verb, wr.ward_name, wr.ward_name, wr.reason
-    ));
-    if let Some(ref sub) = wr.subdirectory {
+        // Ward — phrased as a directive, not a suggestion. The agent has
+        // historically paraphrased the ward name to match task-specific
+        // terminology (e.g. "geopolitical-analysis" → "india-pok-analysis")
+        // which violates the reusable-domain rule. Show the exact tool call.
+        let action_verb = if wr.action == WardAction::UseExisting {
+            "use"
+        } else {
+            "create"
+        };
         out.push_str(&format!(
-            "  Place task-specific work under subdirectory `{}/` within that ward.\n",
-            sub
+            "\n**Required workspace:** Your first tool call MUST be \
+             `ward(action=\"{}\", name=\"{}\")`. The ward name `{}` is mandatory — \
+             do not rename it to a task-specific alternative. Reason: {}\n",
+            action_verb, wr.ward_name, wr.ward_name, wr.reason
         ));
+        if let Some(ref sub) = wr.subdirectory {
+            out.push_str(&format!(
+                "  Place task-specific work under subdirectory `{}/` within that ward.\n",
+                sub
+            ));
+        }
     }
 
     // Available resources
@@ -417,10 +427,9 @@ pub fn format_intent_injection(
 **Ward Rule:** All file-producing work happens inside the ward. Enter it before delegating. Read AGENTS.md to know what exists — reuse before creating.
 "#);
 
-    // Surface the procedure recommendation last so it sits near the agent's
-    // first decision point in the prompt. The block already carries its own
-    // markdown heading ("## Recommended action: run_procedure" or "## Proven
-    // Procedure Available") and a leading newline.
+    // Preserve rendering for callers that supply the legacy/manual procedure
+    // field. The automatic path leaves it empty; automatic procedure context
+    // is rendered by the unified-recall output policy instead.
     if let Some(block) = analysis.procedure_recommendation.as_ref() {
         out.push_str(block);
     }
@@ -601,6 +610,7 @@ mod fallback_analysis_tests {
 ///
 /// Returns `false` for malformed JSON, empty step lists, or any unknown
 /// action name. The check is strict (`all`), not partial.
+#[cfg(test)]
 fn procedure_is_dispatchable(steps_json: &str, known_tool_names: &[&str]) -> bool {
     let parsed: Vec<zbot_stores_domain::PatternStep> = match serde_json::from_str(steps_json) {
         Ok(v) => v,
@@ -614,128 +624,6 @@ fn procedure_is_dispatchable(steps_json: &str, known_tool_names: &[&str]) -> boo
         .all(|s| known_tool_names.iter().any(|n| *n == s.action))
 }
 
-/// Recall procedures matching the user's request and render the top hit as a
-/// markdown block destined for the root agent's system prompt.
-///
-/// Graduated three-tier surfacing — first tier whose floors are met wins:
-///   * `promoted` (dispatchable + score+sc clear `cfg.promoted` floors) —
-///     "## Recommended action: run_procedure" with a literal call template.
-///   * `advisory` (score+sc clear `cfg.advisory` floors) — "## Proven
-///     Procedure Available" with the procedure's steps as context.
-///   * `tentative` (score+sc clear `cfg.tentative` floors) — "## Possibly
-///     relevant procedure" gentle FYI for fresh / sc=1 procedures.
-///
-/// Empty `tool_inventory` disables the promoted path only; advisory and
-/// tentative still fire so tests + boot-time degraded mode work. Returns
-/// `None` when recall is unavailable, returns nothing, or no tier matches.
-/// Always emits an info-level log line for observability.
-async fn build_procedure_recommendation(
-    memory_recall: Option<&crate::recall::MemoryRecall>,
-    user_message: &str,
-    tool_inventory: &[String],
-    cfg: &gateway_memory::ProcedureRecommendationConfig,
-) -> Option<String> {
-    if !cfg.enabled {
-        return None;
-    }
-
-    let recall = memory_recall?;
-    let procedures = match recall
-        .recall_procedures(user_message, "root", None, 3)
-        .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "recall_procedures failed in intent_analysis");
-            return None;
-        }
-    };
-
-    let top_score = procedures.first().map(|(_, s)| *s).unwrap_or(0.0);
-    let known_tools_owned: Vec<&str> = tool_inventory.iter().map(|s| s.as_str()).collect();
-    let mut emitted_kind: &str = "none";
-    let mut out: Option<String> = None;
-
-    for (proc, score) in &procedures {
-        let total = (proc.success_count + proc.failure_count).max(1) as f64;
-        let success_rate = proc.success_count as f64 / total;
-
-        let dispatchable = !known_tools_owned.is_empty()
-            && procedure_is_dispatchable(&proc.steps, &known_tools_owned);
-
-        // Tier 1 — promoted (call-to-action). Requires dispatchability so the
-        // suggested run_procedure(...) call is guaranteed to resolve.
-        if dispatchable
-            && *score > cfg.promoted.score_floor
-            && proc.success_count >= cfg.promoted.success_floor
-        {
-            out = Some(format!(
-                "\n## Recommended action: run_procedure\n\
-                 A learned procedure matches this request.\n\
-                 - Name: `{}`\n\
-                 - Description: {}\n\
-                 - Success rate: {:.0}% across {} uses\n\
-                 - Parameters: {}\n\n\
-                 Suggested call:\n\
-                 ```\n\
-                 run_procedure(name=\"{}\", args={{...fill from user request...}})\n\
-                 ```\n\
-                 If the procedure doesn't fit, ignore this recommendation and proceed normally.\n",
-                proc.name,
-                proc.description,
-                success_rate * 100.0,
-                proc.success_count,
-                proc.parameters.as_deref().unwrap_or("[]"),
-                proc.name,
-            ));
-            emitted_kind = "promoted";
-            break;
-        }
-
-        // Tier 2 — advisory ("Proven Procedure"). Doesn't require dispatch
-        // validity; the agent decides whether to invoke or read for context.
-        if *score > cfg.advisory.score_floor && proc.success_count >= cfg.advisory.success_floor {
-            out = Some(format!(
-                "\n## Proven Procedure Available: {}\n{}\nSteps: {}\nSuccess rate: {:.0}% ({} uses)\n",
-                proc.name,
-                proc.description,
-                proc.steps,
-                success_rate * 100.0,
-                proc.success_count,
-            ));
-            emitted_kind = "advisory";
-            break;
-        }
-
-        // Tier 3 — tentative (gentle FYI). Bootstraps sc=1 procedures into
-        // the recommendation surface; successful invocation auto-promotes
-        // them to advisory on the next similar request.
-        if *score > cfg.tentative.score_floor && proc.success_count >= cfg.tentative.success_floor {
-            out = Some(format!(
-                "\n## Possibly relevant procedure: {}\n\
-                 A previously-recorded procedure may apply here. Treat as a hint, not a directive.\n\
-                 - Description: {}\n\
-                 - Evidence: {} successful use(s), {} failure(s)\n",
-                proc.name,
-                proc.description,
-                proc.success_count,
-                proc.failure_count,
-            ));
-            emitted_kind = "tentative";
-            break;
-        }
-    }
-
-    tracing::info!(
-        matched = procedures.len(),
-        top_score = top_score,
-        emitted = emitted_kind,
-        "Procedure recall and gate decision"
-    );
-
-    out
-}
-
 /// Analyze user intent: searches semantically for resources, calls LLM.
 ///
 /// Resource indexing must happen before this call (see `index_resources`).
@@ -743,11 +631,6 @@ async fn build_procedure_recommendation(
 /// Short/trivial messages (greetings, 1-3 word phrases) skip the LLM call
 /// entirely and return a default "simple" analysis to avoid 5-30s latency.
 ///
-/// `tool_inventory` is the live root-agent tool name list; used only to
-/// gate promotion of recalled procedures to an actionable `run_procedure`
-/// recommendation. Pass `&[]` from tests / call sites without a registry
-/// snapshot — the promotion gate stays off and the legacy advisory
-/// surfacing still fires for medium-confidence matches.
 // Established orchestration entry point: each parameter is an independent
 // input (LLM client, message, stores, prompt, tool inventory, procedure
 // config, existing wards). Bundling into a struct would obscure call sites
@@ -757,17 +640,14 @@ pub async fn analyze_intent(
     llm_client: std::sync::Arc<dyn LlmClient>,
     user_message: &str,
     fact_store: &dyn MemoryFactStore,
-    memory_recall: Option<&crate::recall::MemoryRecall>,
+    memory_recall: Option<&std::sync::Arc<crate::recall::MemoryRecall>>,
+    goal_access: Option<std::sync::Arc<dyn GoalAccess>>,
+    recall_authorization: Option<RecallAuthorizationContext>,
     system_prompt: &str,
-    tool_inventory: &[String],
-    procedure_recommendation_cfg: Option<&gateway_memory::ProcedureRecommendationConfig>,
+    _tool_inventory: &[String],
+    _procedure_recommendation_cfg: Option<&gateway_memory::ProcedureRecommendationConfig>,
     existing_wards: &[String],
 ) -> Result<IntentAnalysis, String> {
-    // Use the supplied config or fall back to defaults. Callers that don't
-    // wire settings (tests, simple invocations) get the canonical tier
-    // thresholds without ceremony.
-    let cfg_owned = gateway_memory::ProcedureRecommendationConfig::default();
-    let cfg = procedure_recommendation_cfg.unwrap_or(&cfg_owned);
     // Fast path: skip LLM for trivial messages
     if is_simple_message(user_message) {
         tracing::info!(
@@ -782,36 +662,42 @@ pub async fn analyze_intent(
     // Step 0: Query memory for relevant past context via the unified recall pool.
     // Intent analysis runs at root level before a specific agent is selected, so
     // we use "root" as the agent_id. No ward is available at this site yet.
-    let memory_context = if let Some(recall) = memory_recall {
-        match recall
-            .recall_unified("root", user_message, None, &[], 10)
+    let memory_context =
+        if let (Some(recall), Some(authorization)) = (memory_recall, recall_authorization) {
+            match crate::invoke::unified_recall_adapter::automatic_unified_recall(
+                recall.clone(),
+                goal_access,
+                authorization,
+                user_message,
+                10,
+            )
             .await
-        {
-            Ok(items) if !items.is_empty() => {
-                let formatted = crate::recall::format_scored_items_with_options(
-                    &items,
-                    crate::recall::ContextPacketBuildOptions::new(
-                        "intent-analysis-recall",
-                        "root",
-                        ContextActorKind::Root,
-                        900,
-                    ),
-                );
-                tracing::info!(
-                    count = items.len(),
-                    "Recalled unified context for intent analysis"
-                );
-                formatted
+            {
+                Ok(response) if !response.results.is_empty() => {
+                    let formatted = crate::recall::format_unified_recall_response_with_options(
+                        &response,
+                        crate::recall::ContextPacketBuildOptions::new(
+                            "intent-analysis-recall",
+                            "root",
+                            ContextActorKind::Root,
+                            900,
+                        ),
+                    );
+                    tracing::info!(
+                        count = response.count,
+                        "Recalled unified context for intent analysis"
+                    );
+                    formatted
+                }
+                Ok(_) => String::new(),
+                Err(e) => {
+                    tracing::warn!(reason = ?e.code, "Intent-analysis unified recall failed");
+                    String::new()
+                }
             }
-            Ok(_) => String::new(),
-            Err(e) => {
-                tracing::warn!("Intent-analysis unified recall failed: {}", e);
-                String::new()
-            }
-        }
-    } else {
-        String::new()
-    };
+        } else {
+            String::new()
+        };
 
     // Step 0b: Recall proven procedures that match the user's request.
     //
@@ -919,13 +805,10 @@ pub async fn analyze_intent(
         }
     };
 
-    // Step 6: Compute procedure recommendation and attach to the analysis.
-    // This block is what `format_intent_injection` will render into the root
-    // agent's system prompt downstream — the LLM that actually decides
-    // whether to call `run_procedure`. Failures here log a warning and leave
-    // the field None (request still succeeds without the surfacing).
-    analysis.procedure_recommendation =
-        build_procedure_recommendation(memory_recall, user_message, tool_inventory, cfg).await;
+    // Procedures are now present only through the scoped, sanitized unified
+    // recall context above. The old standalone recommender injected raw
+    // procedure fields outside the shared authorization and output boundary.
+    analysis.procedure_recommendation = None;
 
     tracing::info!(
         primary_intent = %analysis.primary_intent,
@@ -2141,6 +2024,8 @@ mod tests {
             "Tell me about the weather forecast for tomorrow",
             &fact_store,
             None,
+            None,
+            None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
             None,
@@ -2187,6 +2072,8 @@ mod tests {
             "Write code",
             &fact_store,
             None,
+            None,
+            None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
             None,
@@ -2220,6 +2107,8 @@ mod tests {
             std::sync::Arc::new(mock),
             "Build me a web scraper for news articles",
             &fact_store,
+            None,
+            None,
             None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
@@ -2277,6 +2166,8 @@ mod tests {
             std::sync::Arc::new(mock),
             "analyze goog",
             &MockFactStore,
+            None,
+            None,
             None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
@@ -2353,6 +2244,34 @@ mod tests {
         let injection = format_intent_injection(&analysis, None, None);
         assert!(injection.contains("Ward Rule:"));
         assert!(injection.contains("test-ward"));
+    }
+
+    #[test]
+    fn format_intent_injection_never_turns_unassigned_into_a_path() {
+        let analysis = IntentAnalysis {
+            primary_intent: "research".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::CreateNew,
+                ward_name: "unassigned".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "No validated existing ward was available".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Graph,
+                graph: None,
+                explanation: "Requires research".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: None,
+        };
+
+        let injection = format_intent_injection(&analysis, None, None);
+        assert!(injection.contains("ward(action=\"list\")"));
+        assert!(!injection.contains("ward(action=\"create\", name="));
     }
 
     #[test]

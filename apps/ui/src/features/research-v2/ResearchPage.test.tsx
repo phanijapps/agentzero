@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { ResearchPage } from "./ResearchPage";
@@ -18,6 +18,7 @@ const {
   getVaultTreeMock,
   searchVaultFilesMock,
   getVaultFileMock,
+  getSessionStateMock,
 } = vi.hoisted(() => ({
   toastErrorMock: vi.fn(),
   listArtifactsMock: vi.fn(),
@@ -26,6 +27,7 @@ const {
   getVaultTreeMock: vi.fn(),
   searchVaultFilesMock: vi.fn(),
   getVaultFileMock: vi.fn(),
+  getSessionStateMock: vi.fn(),
 }));
 
 vi.mock("@/services/transport", async () => {
@@ -40,12 +42,21 @@ vi.mock("@/services/transport", async () => {
       getVaultTree: getVaultTreeMock,
       searchVaultFiles: searchVaultFilesMock,
       getVaultFile: getVaultFileMock,
+      getSessionState: getSessionStateMock,
     }),
   };
 });
 
 vi.mock("sonner", () => ({
   toast: { error: toastErrorMock },
+}));
+
+// ResearchPage owns artifact selection; the shared viewer's content request
+// and preview states are covered in ArtifactSlideOut.test.tsx.
+vi.mock("../chat/ArtifactSlideOut", () => ({
+  ArtifactSlideOut: ({ artifact }: { artifact: { fileName: string } }) => (
+    <div data-testid="artifact-slideout">{artifact.fileName}</div>
+  ),
 }));
 
 interface MockResearchHook {
@@ -88,6 +99,7 @@ function makeIdleResearch(): MockResearchHook {
     wardName: null,
     rootExecutionId: null,
     turns: [],
+    pendingUserTurn: null,
     intentAnalyzing: false,
     intentClassification: null,
     planPath: null,
@@ -213,6 +225,8 @@ describe("<ResearchPage>", () => {
         content: "# Valuation",
       },
     });
+    getSessionStateMock.mockClear();
+    getSessionStateMock.mockResolvedValue({ success: true, data: { intentAnalysis: null } });
     // window.confirm is a browser-level primitive — force-accept so the
     // onAfterDelete code path is exercised without hitting jsdom's "confirm
     // is not implemented" stub.
@@ -265,7 +279,7 @@ describe("<ResearchPage>", () => {
     };
     renderPage();
     expect(screen.queryByRole("button", { name: /open ward in vault/i })).toBeNull();
-    expect(screen.getByLabelText("Research ward vault explorer")).toBeTruthy();
+    expect(screen.getByLabelText("Research ward filesystem")).toBeTruthy();
   });
 
   it("does not render or load the ward Vault explorer before a ward exists", () => {
@@ -275,7 +289,7 @@ describe("<ResearchPage>", () => {
     };
     renderPage();
 
-    expect(screen.queryByLabelText("Research ward vault explorer")).toBeNull();
+    expect(screen.queryByLabelText("Research ward filesystem")).toBeNull();
     expect(getVaultTreeMock).not.toHaveBeenCalled();
     expect(searchVaultFilesMock).not.toHaveBeenCalled();
     expect(getVaultFileMock).not.toHaveBeenCalled();
@@ -294,7 +308,7 @@ describe("<ResearchPage>", () => {
 
     renderPage();
 
-    expect(await screen.findByLabelText("Research ward vault explorer")).toBeTruthy();
+    expect(await screen.findByLabelText("Research ward filesystem")).toBeTruthy();
     await waitFor(() => expect(getVaultTreeMock).toHaveBeenCalledWith("stock-analysis", ""));
     expect(screen.getAllByText("stock-analysis").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("research-lab")).toBeNull();
@@ -417,9 +431,49 @@ describe("<ResearchPage>", () => {
     const search = await screen.findByRole("searchbox", { name: "Fuzzy search files in stock-analysis" });
     await user.type(search, "valuation");
     await user.click(screen.getByRole("button", { name: "Collapse vault explorer" }));
-    await user.click(screen.getByRole("button", { name: /expand ward vault explorer/i }));
+    await user.click(screen.getByRole("button", { name: /expand ward filesystem/i }));
 
     expect(screen.getByRole("searchbox", { name: "Fuzzy search files in stock-analysis" })).toHaveValue("valuation");
+  });
+
+  it("keeps collapsed ward controls, the thread, artifacts, and composer in document flow", async () => {
+    const user = userEvent.setup();
+    researchRef.current = {
+      ...makeIdleResearch(),
+      state: {
+        ...makeIdleResearch().state,
+        sessionId: "sess-1",
+        wardId: "stock-analysis",
+        wardName: "stock-analysis",
+        artifacts: [{ id: "artifact-1", fileName: "handoff.md", fileType: "md" }],
+        turns: [{
+          id: "turn-1",
+          index: 0,
+          userMessage: { id: "message-1", content: "Keep this long research thread reachable", createdAt: "2026-07-15T00:00:00.000Z" },
+          subagents: [],
+          assistantText: "The active thread remains available after the filesystem rail is collapsed.",
+          assistantStreaming: "",
+          timeline: [],
+          status: "completed",
+          startedAt: "2026-07-15T00:00:00.000Z",
+          endedAt: "2026-07-15T00:01:00.000Z",
+          durationMs: 60_000,
+        }],
+      },
+    };
+
+    const { container } = renderPage();
+    await user.click(await screen.findByRole("button", { name: "Collapse vault explorer" }));
+
+    const body = container.querySelector(".research-page__body");
+    const expand = screen.getByRole("button", { name: /expand ward filesystem/i });
+    const column = container.querySelector(".research-page__column");
+    expect(body).toBeTruthy();
+    expect(column).toBeTruthy();
+    expect(expand.compareDocumentPosition(column as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByText("Keep this long research thread reachable").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("button", { name: "Open artifact handoff.md" })).toBeTruthy();
+    expect(screen.getByPlaceholderText("Type a message...")).toBeTruthy();
   });
 
   it("shows Stop button only while running and fires stopAgent on click", () => {
@@ -502,6 +556,35 @@ describe("<ResearchPage>", () => {
     expect(screen.getByText("Running shell")).toBeTruthy();
   });
 
+  it("uses the compact active-goal masthead instead of a Research metric strip", () => {
+    researchRef.current = {
+      ...makeIdleResearch(),
+      state: {
+        ...makeIdleResearch().state,
+        sessionId: "sess-1234567890abcdef",
+        wardId: "stock-analysis",
+        wardName: "stock-analysis",
+      },
+      pillState: {
+        visible: true,
+        narration: "Reading ward files",
+        suffix: "find docs -maxdepth 2",
+        category: "read",
+        starting: false,
+        swapCounter: 1,
+      },
+    };
+
+    const { container } = renderPage();
+    const header = container.querySelector(".research-page__header");
+    expect(header).toBeTruthy();
+    expect(within(header as HTMLElement).getByText("Research / active goal")).toBeTruthy();
+    expect(within(header as HTMLElement).getByText(/Ward: stock-analysis/)).toBeTruthy();
+    expect(within(header as HTMLElement).getByTestId("status-pill")).toBeTruthy();
+    expect(container.querySelector(".research-page__pill-strip")).toBeNull();
+    expect(screen.queryByText("Your attention")).toBeNull();
+  });
+
   it("shows intent analysing muted line when intentAnalyzing=true", () => {
     researchRef.current = {
       ...makeIdleResearch(),
@@ -512,6 +595,8 @@ describe("<ResearchPage>", () => {
       },
     };
     renderPage();
+    const intentToggle = screen.getByRole("button", { name: /collapse intent analysis/i });
+    expect(intentToggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText(/analyzing intent/i)).toBeTruthy();
   });
 
@@ -526,7 +611,13 @@ describe("<ResearchPage>", () => {
       status: "completed" as const,
       wardId: "w1",
       request: "Plan this goal.",
-      timeline: [],
+      timeline: [{
+        id: "history-recall",
+        at: now + 210,
+        kind: "tool_call" as const,
+        text: "recall",
+        toolName: "recall",
+      }],
       tokenCount: 10,
       respond: "child body",
       respondStreaming: "",
@@ -579,6 +670,7 @@ describe("<ResearchPage>", () => {
     expect(planner).toBeTruthy();
     const builder = container.querySelector('.subagent-card[data-parent="child-1"]');
     expect(builder).toBeTruthy();
+    expect(container.querySelectorAll('.subagent-card[data-parent="child-1"]')).toHaveLength(1);
 
     // Root's reply is always visible on the SessionTurn's assistant block.
     expect(container.textContent).toContain("root body");
@@ -602,8 +694,98 @@ describe("<ResearchPage>", () => {
       },
     };
     renderPage();
-    expect(screen.getByText(/intent:/)).toBeTruthy();
-    expect(screen.getByText("research")).toBeTruthy();
+    expect(screen.getByText(/Intent: research/)).toBeTruthy();
+  });
+
+  it("moves intent analysis and delegated agents into the labelled Research context inspector", async () => {
+    const now = 1000;
+    const child = {
+      id: "child-1",
+      agentId: "planner-agent",
+      parentExecutionId: "root-1",
+      startedAt: now + 200,
+      completedAt: now + 300,
+      status: "completed" as const,
+      wardId: "w1",
+      request: "Plan this goal.",
+      timeline: [{
+        id: "history-recall",
+        at: now + 210,
+        kind: "tool_call" as const,
+        text: "recall",
+        toolName: "recall",
+      }],
+      tokenCount: 10,
+      respond: "child body",
+      respondStreaming: "",
+      thinkingExpanded: false,
+      errorMessage: null,
+    };
+    getSessionStateMock.mockResolvedValue({
+      success: true,
+      data: {
+        intentAnalysis: {
+          primary_intent: "research task",
+          execution_strategy: { approach: "parallel" },
+        },
+      },
+    });
+    researchRef.current = {
+      ...makeIdleResearch(),
+      state: {
+        ...makeIdleResearch().state,
+        sessionId: "sess-1",
+        rootExecutionId: "root-1",
+        intentClassification: "research",
+        turns: [{
+          id: "turn-u1",
+          index: 0,
+          userMessage: { id: "u1", content: "do the thing", createdAt: "2026-04-19T00:00:00.000Z" },
+          subagents: [child],
+          assistantText: "root body",
+          assistantStreaming: "",
+          timeline: [],
+          status: "completed",
+          startedAt: "2026-04-19T00:00:00.000Z",
+          endedAt: "2026-04-19T00:01:00.000Z",
+          durationMs: 60_000,
+        }],
+      },
+    };
+
+    const { container } = renderPage();
+    const inspector = screen.getByLabelText("Research context");
+    const thread = container.querySelector(".research-page__column");
+
+    expect(within(inspector).getByText("planner-agent")).toBeTruthy();
+    const intentToggle = within(inspector).getByRole("button", { name: /expand intent analysis/i });
+    expect(intentToggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(inspector).getByText(/intent: research/i)).toBeTruthy();
+    expect(within(inspector).queryByText("research task")).toBeNull();
+    fireEvent.click(within(inspector).getByRole("button", { name: /expand subagent/i }));
+    expect(within(inspector).getByText("recall")).toBeTruthy();
+    expect(within(thread as HTMLElement).queryByText("planner-agent")).toBeNull();
+    expect(within(thread as HTMLElement).getByText("root body")).toBeTruthy();
+    fireEvent.click(intentToggle);
+    expect(intentToggle).toHaveAttribute("aria-expanded", "true");
+    await waitFor(() => {
+      expect(within(inspector).getByText("research task")).toBeTruthy();
+    });
+    fireEvent.click(intentToggle);
+    expect(intentToggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(inspector).queryByText("research task")).toBeNull();
+    expect(getSessionStateMock).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("does not render a Research context inspector or fetch intent details for a session without confirmed context", () => {
+    researchRef.current = {
+      ...makeIdleResearch(),
+      state: { ...makeIdleResearch().state, sessionId: "sess-1" },
+    };
+    renderPage();
+
+    expect(screen.queryByLabelText("Research context")).toBeNull();
+    expect(getSessionStateMock).not.toHaveBeenCalled();
   });
 
   // ------- R14d: artifact strip + slide-out wiring -------
@@ -669,6 +851,7 @@ describe("<ResearchPage>", () => {
       fileName: "plan.md",
       fileType: "md",
       fileSize: 100,
+      isGoalArtifact: true,
       createdAt: "2026-04-19T00:00:00Z",
     };
     listArtifactsMock.mockResolvedValueOnce({ success: true, data: [remote] });
@@ -684,7 +867,10 @@ describe("<ResearchPage>", () => {
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: /Open artifact plan\.md/ }));
     await waitFor(() => {
-      expect(listArtifactsMock).toHaveBeenCalledWith("sess-1");
+      expect(listArtifactsMock).toHaveBeenCalledWith("sess-1", {
+        goalArtifactsOnly: true,
+        limit: 24,
+      });
     });
   });
 

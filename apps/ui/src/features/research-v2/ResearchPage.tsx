@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Menu, PanelLeftOpen, Plus, Square } from "lucide-react";
+import { ChevronDown, ChevronRight, Menu, PanelLeftOpen, Plus, Square } from "lucide-react";
 import { toast } from "sonner";
 import { ChatInput, type UploadedFile } from "../chat/ChatInput";
 import { HeroInput } from "../chat/HeroInput";
@@ -22,21 +22,23 @@ import { isChatSession } from "@/services/session-kind";
 
 type UploadedFileShim = UploadedFile;
 import { ArtifactSlideOut } from "../chat/ArtifactSlideOut";
-import { StatusPill } from "../shared/statusPill";
+import { StatusPill, type PillState } from "../shared/statusPill";
 import { SessionTurnBlock } from "./SessionTurnBlock";
+import { SubagentCardTree } from "./AgentTurnBlock";
 import { ArtifactStrip } from "./ArtifactStrip";
-import { IntentInfoButton } from "./IntentInfoButton";
+import { IntentInfoPanel } from "./IntentInfoButton";
 import { SessionsDrawer } from "./SessionsDrawer";
 import { useResearchSession } from "./useResearchSession";
 import { useSessionsList } from "./useSessionsList";
 import { getTransport } from "@/services/transport";
-import type { ResearchArtifactRef, ResearchSessionState } from "./types";
+import type { ResearchArtifactRef, ResearchSessionState, SessionTurn } from "./types";
 import type { Artifact } from "@/services/transport/types";
 import { WardVaultExplorer } from "../vault/WardVaultExplorer";
 import { VaultFileSlideOut } from "../vault/VaultFileSlideOut";
 import { A2uiSurfaceRenderer } from "../surfaces/A2uiSurfaceRenderer";
 import { useVaultFilePreview } from "../vault/useVaultFilePreview";
 import type { WorkSurface } from "@/services/transport/types";
+import { GOAL_ARTIFACT_LIST_OPTIONS, selectGoalArtifacts } from "./artifact-poll";
 import "./research.css";
 
 // --- Title derivation --------------------------------------------------------
@@ -65,6 +67,7 @@ function deriveTitle(state: ResearchSessionState): string {
 
 interface ResearchHeaderProps {
   state: ResearchSessionState;
+  pillState: PillState;
   onOpenDrawer(): void;
   onNew(): void;
   onStop(): void;
@@ -73,9 +76,13 @@ interface ResearchHeaderProps {
   showNewButton?: boolean;
 }
 
-function ResearchHeader({ state, onOpenDrawer, onNew, onStop, showNewButton = true }: ResearchHeaderProps) {
+function ResearchHeader({ state, pillState, onOpenDrawer, onNew, onStop, showNewButton = true }: ResearchHeaderProps) {
+  const sessionLabel = state.sessionId
+    ? `${state.sessionId.slice(0, 12)}${state.sessionId.length > 12 ? "…" : ""}`
+    : null;
+
   return (
-    <div className="research-page__header">
+    <header className="research-page__header">
       <button
         type="button"
         className="btn btn--ghost btn--sm"
@@ -86,12 +93,22 @@ function ResearchHeader({ state, onOpenDrawer, onNew, onStop, showNewButton = tr
         <Menu size={16} />
       </button>
 
-      <div className="research-page__title" title={deriveTitle(state)}>
-        {deriveTitle(state)}
-        {state.sessionId && <IntentInfoButton sessionId={state.sessionId} />}
+      <div className="research-page__header-main">
+        <p className="research-page__eyebrow">
+          Research / {state.sessionId ? "active goal" : "new goal"}
+        </p>
+        <div className="research-page__title" title={deriveTitle(state)}>
+          {deriveTitle(state)}
+        </div>
+        {sessionLabel ? (
+          <p className="research-page__header-meta">
+            {state.wardName ? `Ward: ${state.wardName}` : "No ward bound"} · Session {sessionLabel}
+          </p>
+        ) : null}
       </div>
 
       <div className="research-page__header-actions">
+        <StatusPill state={pillState} />
         {showNewButton && (
           <button type="button" className="btn btn--ghost btn--sm" onClick={onNew}>
             <Plus size={14} /> New research
@@ -108,7 +125,7 @@ function ResearchHeader({ state, onOpenDrawer, onNew, onStop, showNewButton = tr
           </button>
         )}
       </div>
-    </div>
+    </header>
   );
 }
 
@@ -130,6 +147,96 @@ function IntentLine({ state }: { state: ResearchSessionState }) {
     );
   }
   return null;
+}
+
+function hasContextInspector(state: ResearchSessionState): boolean {
+  return state.intentAnalyzing
+    || state.intentClassification !== null
+    || state.turns.some((turn) => turn.subagents.length > 0);
+}
+
+function topLevelSubagents(turn: SessionTurn) {
+  const ids = new Set(turn.subagents.map((subagent) => subagent.id));
+  return turn.subagents.filter((subagent) => !ids.has(subagent.parentExecutionId ?? ""));
+}
+
+function ResearchContextInspector({ state }: { state: ResearchSessionState }) {
+  const hasIntent = state.intentAnalyzing || state.intentClassification !== null;
+  const turnsWithSubagents = state.turns.filter((turn) => turn.subagents.length > 0);
+  // Live analysis is worth exposing immediately; durable completed analysis is
+  // compact by default so long agent histories retain the inspector's space.
+  const [intentExpanded, setIntentExpanded] = useState(state.intentAnalyzing);
+
+  useEffect(() => {
+    setIntentExpanded(state.intentAnalyzing);
+  }, [state.sessionId]);
+
+  useEffect(() => {
+    if (state.intentAnalyzing) setIntentExpanded(true);
+  }, [state.intentAnalyzing]);
+
+  if (!hasIntent && turnsWithSubagents.length === 0) return null;
+
+  return (
+    <aside className="research-page__context" aria-label="Research context">
+      <div className="research-page__context-header">
+        <p className="research-page__eyebrow">Context</p>
+        <h2>Research context</h2>
+      </div>
+
+      {hasIntent && (
+        <section className="research-page__context-section" aria-labelledby="research-intent-toggle">
+          <button
+            id="research-intent-toggle"
+            type="button"
+            className="research-page__context-disclosure"
+            aria-expanded={intentExpanded}
+            aria-controls="research-intent-details"
+            aria-label={`${intentExpanded ? "Collapse" : "Expand"} intent analysis`}
+            onClick={() => setIntentExpanded((expanded) => !expanded)}
+          >
+            <span className="research-page__context-disclosure-copy">
+              <span className="research-page__context-disclosure-title">Intent analysis</span>
+              <span className="research-page__context-disclosure-summary">
+                {state.intentAnalyzing ? "Analyzing…" : `Intent: ${state.intentClassification}`}
+              </span>
+            </span>
+            {intentExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+          {intentExpanded && (
+            <div id="research-intent-details" className="research-page__context-disclosure-details">
+              <IntentLine state={state} />
+              {state.sessionId && state.intentClassification !== null && (
+                <IntentInfoPanel key={state.sessionId} sessionId={state.sessionId} />
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {turnsWithSubagents.length > 0 && (
+        <section className="research-page__context-section" aria-labelledby="research-agent-activity-heading">
+          <h3 id="research-agent-activity-heading">Agent activity</h3>
+          <div className="research-page__context-agent-list">
+            {turnsWithSubagents.map((turn) => (
+              <div key={turn.id} className="research-page__context-turn">
+                <div className="research-page__context-turn-label">
+                  Root agent · turn {turn.index + 1} · {turn.status}
+                </div>
+                {topLevelSubagents(turn).map((subagent) => (
+                  <SubagentCardTree
+                    key={subagent.id}
+                    turn={subagent}
+                    allTurns={turn.subagents}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </aside>
+  );
 }
 
 interface EmptyHeroProps {
@@ -161,18 +268,18 @@ interface MainColumnProps {
   state: ResearchSessionState;
   surfaces: WorkSurface[];
   onSend: (message: string, attachments: UploadedFileShim[]) => void;
+  showSubagents: boolean;
 }
 
-function MainColumn({ state, surfaces, onSend }: MainColumnProps) {
+function MainColumn({ state, surfaces, onSend, showSubagents }: MainColumnProps) {
   const hasContent = state.turns.length > 0 || state.sessionId !== null;
 
   if (!hasContent) return <EmptyHero onSend={onSend} />;
 
   return (
     <>
-      <IntentLine state={state} />
       {state.turns.map((turn) => (
-        <SessionTurnBlock key={turn.id} turn={turn} />
+        <SessionTurnBlock key={turn.id} turn={turn} showSubagents={showSubagents} />
       ))}
       {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
     </>
@@ -215,9 +322,9 @@ export function ResearchPage() {
   }, [state.title, state.sessionId, refreshSessions]);
 
   // R14d — Decision B: state.artifacts holds the lightweight refs (keeps
-  // reducer tests stable); the hook caches the full Artifact records from
-  // the poll and resolves by id here. Fallback path fetches once if the
-  // user clicks before the first poll completes (edge case).
+  // reducer tests stable); the hook caches the full goal-deliverable records
+  // from the snapshot and resolves by id here. Fallback path fetches the same
+  // bounded manifest if that cache is not ready yet.
   const handleOpenArtifact = useCallback(
     async (ref: ResearchArtifactRef) => {
       const cached = getFullArtifact(ref.id);
@@ -227,12 +334,15 @@ export function ResearchPage() {
       }
       if (!state.sessionId) return;
       const transport = await getTransport();
-      const result = await transport.listSessionArtifacts(state.sessionId);
+      const result = await transport.listSessionArtifacts(
+        state.sessionId,
+        GOAL_ARTIFACT_LIST_OPTIONS,
+      );
       if (!result.success || !result.data) {
         toast.error(`Failed to open artifact: ${!result.success ? result.error : "not found"}`);
         return;
       }
-      const match = result.data.find((a) => a.id === ref.id);
+      const match = selectGoalArtifacts(result.data).find((a) => a.id === ref.id);
       if (match) setViewingArtifact(match);
       else toast.error("Artifact not found");
     },
@@ -255,22 +365,18 @@ export function ResearchPage() {
   // takes over the column; the bottom composer + the header's "New
   // research" button are hidden so the landing experience is uncluttered.
   const isLanding = state.turns.length === 0 && state.sessionId === null;
+  const showContextInspector = hasContextInspector(state);
 
   return (
     <div className={`research-page${researchWard ? " research-page--with-vault" : ""}${vaultCollapsed ? " research-page--vault-collapsed" : ""}`}>
       <ResearchHeader
         state={state}
+        pillState={pillState}
         onOpenDrawer={() => setDrawerOpen(true)}
         onNew={handleNew}
         onStop={stopAgent}
         showNewButton={!isLanding}
       />
-
-      {!isLanding && (
-        <div className="research-page__pill-strip">
-          <StatusPill state={pillState} />
-        </div>
-      )}
 
       <SessionsDrawer
         open={drawerOpen}
@@ -282,7 +388,7 @@ export function ResearchPage() {
         onDelete={deleteSession}
       />
 
-      <div className={`research-page__body${researchWard ? " research-page__body--with-vault" : ""}${vaultCollapsed ? " research-page__body--vault-collapsed" : ""}`}>
+      <div className={`research-page__body${researchWard ? " research-page__body--with-vault" : ""}${vaultCollapsed ? " research-page__body--vault-collapsed" : ""}${showContextInspector ? " research-page__body--with-context" : ""}`}>
         {researchWard ? (
           <>
             <div className={`research-page__vault-shell${vaultCollapsed ? " research-page__vault-shell--collapsed" : ""}`}>
@@ -292,7 +398,7 @@ export function ResearchPage() {
                 selectedPath={selectedVaultFile?.node.path ?? null}
                 onSelectFile={(node) => void selectVaultFile(node)}
                 onCollapse={() => setVaultCollapsed(true)}
-                ariaLabel="Research ward vault explorer"
+                ariaLabel="Research ward filesystem"
               />
             </div>
             {vaultCollapsed ? (
@@ -300,7 +406,7 @@ export function ResearchPage() {
                 type="button"
                 className="research-page__vault-toggle"
                 onClick={() => setVaultCollapsed(false)}
-                aria-label={`Expand ward vault explorer for ${researchWard.name}`}
+                aria-label={`Expand ward filesystem for ${researchWard.name}`}
               >
                 <PanelLeftOpen size={16} />
                 <span>{researchWard.name}</span>
@@ -309,8 +415,14 @@ export function ResearchPage() {
           </>
         ) : null}
         <div className="research-page__column">
-          <MainColumn state={state} surfaces={surfaces} onSend={sendMessage} />
+          <MainColumn
+            state={state}
+            surfaces={surfaces}
+            onSend={sendMessage}
+            showSubagents={!showContextInspector}
+          />
         </div>
+        {showContextInspector && <ResearchContextInspector state={state} />}
       </div>
 
       {!isLanding && (

@@ -1,0 +1,140 @@
+asyncapi: 3.0.0
+info:
+  title: zbot Mission Control Attention Radar
+  version: 0.1.0
+  description: >-
+    Explicit, summary-only Mission Control updates on zbot's existing WebSocket.
+    The stream is bounded and never carries raw messages, tool arguments, or
+    tool results.
+x-spec:
+  - docs/specs/mission-control-attention-radar/
+x-max-client-frame-bytes: 4096
+x-max-server-frame-bytes: 65536
+channels:
+  missionControl:
+    address: /ws
+    messages:
+      missionControlSubscribe:
+        $ref: '#/components/messages/MissionControlSubscribe'
+      missionControlUnsubscribe:
+        $ref: '#/components/messages/MissionControlUnsubscribe'
+      missionControlSnapshot:
+        $ref: '#/components/messages/MissionControlSnapshot'
+      missionControlDelta:
+        $ref: '#/components/messages/MissionControlDelta'
+      missionControlSubscriptionError:
+        $ref: '#/components/messages/MissionControlSubscriptionError'
+operations:
+  sendMissionControlSubscribe:
+    action: send
+    channel:
+      $ref: '#/channels/missionControl'
+    messages:
+      - $ref: '#/channels/missionControl/messages/missionControlSubscribe'
+  sendMissionControlUnsubscribe:
+    action: send
+    channel:
+      $ref: '#/channels/missionControl'
+    messages:
+      - $ref: '#/channels/missionControl/messages/missionControlUnsubscribe'
+  receiveMissionControlUpdates:
+    action: receive
+    channel:
+      $ref: '#/channels/missionControl'
+    messages:
+      - $ref: '#/channels/missionControl/messages/missionControlSnapshot'
+      - $ref: '#/channels/missionControl/messages/missionControlDelta'
+      - $ref: '#/channels/missionControl/messages/missionControlSubscriptionError'
+components:
+  messages:
+    MissionControlSubscribe:
+      name: mission_control_subscribe
+      payload:
+        type: object
+        additionalProperties: false
+        required: [type]
+        properties:
+          type: { const: mission_control_subscribe }
+    MissionControlUnsubscribe:
+      name: mission_control_unsubscribe
+      payload:
+        type: object
+        additionalProperties: false
+        required: [type]
+        properties:
+          type: { const: mission_control_unsubscribe }
+    MissionControlSnapshot:
+      name: mission_control_snapshot
+      payload:
+        type: object
+        additionalProperties: false
+        required: [type, epoch, sequence, sessions, activities]
+        properties:
+          type: { const: mission_control_snapshot }
+          epoch: { type: string, minLength: 1, maxLength: 64 }
+          sequence: { type: integer, minimum: 0 }
+          sessions:
+            type: array
+            maxItems: 50
+            items: { $ref: '#/components/schemas/MissionSummary' }
+          activities:
+            type: array
+            maxItems: 20
+            items: { $ref: '#/components/schemas/MissionActivity' }
+    MissionControlDelta:
+      name: mission_control_delta
+      payload:
+        type: object
+        additionalProperties: false
+        required: [type, epoch, sequence, kind, session, activity]
+        properties:
+          type: { const: mission_control_delta }
+          epoch: { type: string, minLength: 1, maxLength: 64 }
+          sequence: { type: integer, minimum: 1 }
+          kind:
+            enum: [started, progress, delegated, completed, failed, plan_updated]
+          session: { $ref: '#/components/schemas/MissionSummary' }
+          activity: { $ref: '#/components/schemas/MissionActivity' }
+    MissionControlSubscriptionError:
+      name: mission_control_subscription_error
+      payload:
+        type: object
+        additionalProperties: false
+        required: [type, code]
+        properties:
+          type: { const: mission_control_subscription_error }
+          code:
+            enum: [invalid_frame, frame_too_large, snapshot_unavailable, subscription_limit, resync_required, server_error]
+  schemas:
+    MissionSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [conversation_id, root_execution_id, status, root_agent_id, created_at,
+         total_tokens_in, total_tokens_out, subagent_count, last_activity_at,
+         attention_kind, plan_revision]
+      properties:
+        conversation_id: { type: string, maxLength: 64, x-max-utf8-bytes: 64 }
+        root_execution_id: { type: string, maxLength: 64, x-max-utf8-bytes: 64 }
+        status: { enum: [queued, running, paused, completed, crashed] }
+        source: { type: string, maxLength: 32, x-max-utf8-bytes: 32 }
+        root_agent_id: { type: string, maxLength: 64, x-max-utf8-bytes: 64 }
+        title: { type: string, maxLength: 80, x-max-utf8-bytes: 80 }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        total_tokens_in: { type: integer, minimum: 0 }
+        total_tokens_out: { type: integer, minimum: 0 }
+        subagent_count: { type: integer, minimum: 0 }
+        mode: { type: string, maxLength: 32, x-max-utf8-bytes: 32 }
+        last_activity_at: { type: string, format: date-time }
+        attention_kind: { enum: [none, failed] }
+        plan_revision: { type: integer, minimum: 0 }
+    MissionActivity:
+      type: object
+      additionalProperties: false
+      required: [kind, root_execution_id, occurred_at]
+      properties:
+        kind: { enum: [started, progress, delegated, completed, failed, plan_updated] }
+        root_execution_id: { type: string, maxLength: 64, x-max-utf8-bytes: 64 }
+        occurred_at: { type: string, format: date-time }

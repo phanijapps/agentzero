@@ -883,6 +883,46 @@ fn test_ward_from_sessions_row() {
     assert_eq!(ward.name, "my-ward");
 }
 
+#[test]
+fn test_intent_recommendation_is_not_an_active_ward_without_session_binding() {
+    let (builder, db, log_service, _messages, _state_service) = setup();
+    let sid = uid();
+    let agent = "root";
+
+    insert_session_row(&db, &sid, "completed", agent);
+    log_service
+        .log_session_start(&sid, &sid, agent, None)
+        .unwrap();
+    log_service
+        .log(
+            api_logs::ExecutionLog::new(
+                &sid,
+                &sid,
+                agent,
+                api_logs::LogLevel::Info,
+                api_logs::LogCategory::Intent,
+                "Intent selected financial analysis",
+            )
+            .with_metadata(serde_json::json!({
+                "ward": "financial-analysis",
+                "ward_recommendation": {
+                    "action": "use_existing",
+                    "ward_name": "financial-analysis",
+                }
+            })),
+        )
+        .unwrap();
+    log_service
+        .log_session_end(&sid, &sid, agent, api_logs::SessionStatus::Completed, None)
+        .unwrap();
+
+    let state = builder.build(&sid).unwrap().expect("session should exist");
+    assert!(
+        state.ward.is_none(),
+        "intent metadata is a recommendation, not an active workspace"
+    );
+}
+
 // ============================================================================
 // DELEGATION-SESSION ROBUSTNESS (Slice 3 redo — critical case)
 // ============================================================================

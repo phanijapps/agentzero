@@ -81,6 +81,25 @@ pub struct EmbeddingQueryIdentity {
     pub normalization: Option<String>,
 }
 
+/// Execution provenance supplied when a tool writes a durable memory fact.
+///
+/// The legacy [`MemoryFactStore::save_fact`] method predates ward-scoped
+/// memory. This additive request lets backends that support richer scope
+/// semantics persist the current session, ward, and stable writer source
+/// without breaking existing store implementations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryFactWriteRequest {
+    pub agent_id: String,
+    pub category: String,
+    pub key: String,
+    pub content: String,
+    pub confidence: f64,
+    pub session_id: Option<String>,
+    pub ward_id: Option<String>,
+    pub source_ref: Option<String>,
+    pub valid_from: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Abstract interface for durable memory fact storage.
 ///
 /// Implementations can wrap a database (SQLite via `MemoryRepository`),
@@ -113,6 +132,27 @@ pub trait MemoryFactStore: Send + Sync {
         session_id: Option<&str>,
         valid_from: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Value, String>;
+
+    /// Save a fact together with the execution scope that produced it.
+    ///
+    /// The default preserves the legacy contract for stores that have not
+    /// implemented ward/source provenance yet. Canonical semantic stores
+    /// should override this method rather than dropping the supplied context.
+    async fn save_fact_with_context(
+        &self,
+        request: MemoryFactWriteRequest,
+    ) -> Result<Value, String> {
+        self.save_fact(
+            &request.agent_id,
+            &request.category,
+            &request.key,
+            &request.content,
+            request.confidence,
+            request.session_id.as_deref(),
+            request.valid_from,
+        )
+        .await
+    }
 
     /// Recall facts relevant to a query using hybrid search.
     ///

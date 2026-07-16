@@ -25,7 +25,7 @@ pub use knowledge_graph::{
     KnowledgeGraphStore, LcaPath, RelationshipContext, StrategyCandidate, WeightedTraversalHit,
 };
 pub use memory_facts::{
-    EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFactStore, MemoryHealthMetrics,
-    SkillIndexRow, StrategyFactInsert, StrategyFactMatch,
+    EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFactStore, MemoryFactWriteRequest,
+    MemoryHealthMetrics, SkillIndexRow, StrategyFactInsert, StrategyFactMatch,
 };
 pub use types::*;

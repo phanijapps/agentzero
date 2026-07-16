@@ -19,8 +19,15 @@ export function WriteRail({ wardId, counts, onSave }: Props) {
   const [open, setOpen] = useState<CreatableMemoryCategory | null>(null);
 
   return (
-    <aside className="memory-write">
-      <div className="memory-write__title">WRITE</div>
+    <aside className="memory-write" aria-label="Memory curation">
+      <header className="memory-write__head">
+        <div>
+          <h2>Curate</h2>
+          <p>Guarded write</p>
+        </div>
+      </header>
+      <p className="memory-write__hint">Attach a ward and category before saving.</p>
+      <div className="memory-write__title">WRITE MEMORY</div>
       {CHOICES.map((c) => (
         <button
           key={c.label}

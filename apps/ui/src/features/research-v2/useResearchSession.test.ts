@@ -8,9 +8,16 @@
 // =============================================================================
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
-import { createElement, StrictMode, type PropsWithChildren } from "react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { renderHook, act, waitFor } from "@testing-library/react";
+import { createElement, StrictMode, useEffect, type PropsWithChildren } from "react";
+import {
+  MemoryRouter,
+  Routes,
+  Route,
+  useLocation,
+  useNavigate,
+  type NavigateFunction,
+} from "react-router-dom";
 import type { Transport } from "@/services/transport";
 import type {
   Artifact,
@@ -61,6 +68,18 @@ import { useResearchSession } from "./useResearchSession";
 // ---------------------------------------------------------------------------
 
 const TEST_INITIAL_PATH = "/research";
+const routeControlRef: {
+  current: { navigate: NavigateFunction; pathname: string } | null;
+} = { current: null };
+
+function RouteControl({ children }: PropsWithChildren) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  useEffect(() => {
+    routeControlRef.current = { navigate, pathname: location.pathname };
+  }, [location.pathname, navigate]);
+  return createElement("div", null, children);
+}
 
 function routerWrapper(initialPath: string) {
   return function Wrapper({ children }: PropsWithChildren) {
@@ -70,10 +89,13 @@ function routerWrapper(initialPath: string) {
       createElement(
         Routes,
         null,
-        createElement(Route, { path: "/research", element: children }),
+        createElement(Route, {
+          path: "/research",
+          element: createElement(RouteControl, null, children),
+        }),
         createElement(Route, {
           path: "/research/:sessionId",
-          element: children,
+          element: createElement(RouteControl, null, children),
         }),
       ),
     );
@@ -127,6 +149,7 @@ function makeUserMessage(sessionId: string): SessionMessage {
 }
 
 beforeEach(() => {
+  routeControlRef.current = null;
   callLog.length = 0;
   subscribeConversation.mockReset();
   executeAgent.mockReset();
@@ -357,6 +380,7 @@ describe("useResearchSession — subscription ordering (R14a)", () => {
     expect(invokeArgs[1]).toBe(convId);
     expect(invokeArgs[3]).toBe(EXISTING_SESSION);
     expect(invokeArgs[4]).toBe("deep");
+    expect(invokeArgs[5]).toMatch(/^msg-/);
   });
 
   it("error path: failed invoke dispatches ERROR but keeps the subscription", async () => {
@@ -493,12 +517,202 @@ function makeArtifact(id: string, sessionId = "sess-existing-123"): Artifact {
     fileName: `${id}.md`,
     fileType: "md",
     fileSize: 100,
+    isGoalArtifact: true,
     createdAt: "2026-04-19T00:00:00Z",
   };
 }
 
 describe("useResearchSession — snapshot flow (R14f)", () => {
   const EXISTING_SESSION = "sess-existing-123";
+
+  it("navigates a new server-bound session from the unscoped Research route", async () => {
+    const BOUND_SESSION = "sess-server-bound";
+    const { result } = renderHook(() => useResearchSession(), {
+      wrapper: routerWrapper(TEST_INITIAL_PATH),
+    });
+
+    await act(async () => {
+      await result.current.sendMessage("start a new session");
+    });
+    const onEvent = subscribeConversation.mock.calls[0][1].onEvent;
+    act(() => {
+      onEvent({
+        type: "agent_started",
+        timestamp: Date.now(),
+        session_id: BOUND_SESSION,
+        conversation_id: "research-new",
+        execution_id: "exec-server-bound",
+        agent_id: "root",
+        parent_execution_id: null,
+      } as ConversationEvent);
+    });
+
+    await waitFor(() => {
+      expect(result.current.state.sessionId).toBe(BOUND_SESSION);
+      expect(routeControlRef.current?.pathname).toBe(`/research/${BOUND_SESSION}`);
+    });
+  });
+
+  it("refreshes artifacts when a newly bound root session completes on its conversation stream", async () => {
+    const FRESH_SESSION = "sess-fresh-artifact";
+    listLogSessions.mockResolvedValue({
+      success: true,
+      data: [makeRootRow(FRESH_SESSION, { status: "running" as SessionStatus })],
+    });
+    getSessionMessages.mockResolvedValue({ success: true, data: [] });
+    listSessionArtifacts.mockResolvedValue({ success: true, data: [] });
+    getSessionState.mockResolvedValue({
+      success: true,
+      data: {
+        session: { id: FRESH_SESSION, title: null, status: "running", startedAt: "", durationMs: 0, tokenCount: 0, model: null },
+        userMessage: null,
+        phase: "executing",
+        response: null,
+        intentAnalysis: null,
+        ward: null,
+        recalledFacts: [],
+        plan: [],
+        subagents: [],
+        isLive: true,
+      },
+    });
+
+    const { result } = renderHook(() => useResearchSession(), {
+      wrapper: routerWrapper(TEST_INITIAL_PATH),
+    });
+    await act(async () => {
+      await result.current.sendMessage("produce a report");
+    });
+    const conversationOnEvent = subscribeConversation.mock.calls[0][1].onEvent;
+
+    act(() => {
+      conversationOnEvent({
+        type: "agent_started",
+        timestamp: Date.now(),
+        session_id: FRESH_SESSION,
+        conversation_id: "research-fresh-artifact",
+        execution_id: `exec-${FRESH_SESSION}`,
+        agent_id: "root",
+        parent_execution_id: null,
+      } as ConversationEvent);
+    });
+    await waitFor(() => expect(result.current.state.sessionId).toBe(FRESH_SESSION));
+
+    // This is the close-out snapshot. The real transport routes root events
+    // to the conversation subscription first, even after the session-scoped
+    // subscription exists.
+    listLogSessions.mockResolvedValue({
+      success: true,
+      data: [makeRootRow(FRESH_SESSION, { status: "completed" as SessionStatus })],
+    });
+    listSessionArtifacts.mockResolvedValue({
+      success: true,
+      data: [makeArtifact("fresh-report", FRESH_SESSION)],
+    });
+    getSessionState.mockResolvedValue({
+      success: true,
+      data: {
+        session: { id: FRESH_SESSION, title: null, status: "completed", startedAt: "", durationMs: 0, tokenCount: 0, model: null },
+        userMessage: null,
+        phase: "completed",
+        response: null,
+        intentAnalysis: null,
+        ward: null,
+        recalledFacts: [],
+        plan: [],
+        subagents: [],
+        isLive: false,
+      },
+    });
+    act(() => {
+      conversationOnEvent({
+        type: "agent_completed",
+        timestamp: Date.now(),
+        session_id: FRESH_SESSION,
+        conversation_id: "research-fresh-artifact",
+        execution_id: `exec-${FRESH_SESSION}`,
+        agent_id: "root",
+        parent_execution_id: null,
+      } as ConversationEvent);
+    });
+
+    await waitFor(() => {
+      expect(result.current.state.artifacts.map((artifact) => artifact.id)).toContain("fresh-report");
+    });
+  });
+
+  it("ignores a root completion for a session other than the active Research session", async () => {
+    const ACTIVE_SESSION = "sess-active-research";
+    const OTHER_SESSION = "sess-other-research";
+    listLogSessions.mockResolvedValue({
+      success: true,
+      data: [makeRootRow(ACTIVE_SESSION, { status: "running" as SessionStatus })],
+    });
+    getSessionMessages.mockResolvedValue({ success: true, data: [] });
+    listSessionArtifacts.mockResolvedValue({ success: true, data: [] });
+    getSessionState.mockResolvedValue({
+      success: true,
+      data: {
+        session: { id: ACTIVE_SESSION, title: null, status: "running", startedAt: "", durationMs: 0, tokenCount: 0, model: null },
+        userMessage: null,
+        phase: "executing",
+        response: null,
+        intentAnalysis: null,
+        ward: null,
+        recalledFacts: [],
+        plan: [],
+        subagents: [],
+        isLive: true,
+      },
+    });
+
+    const { result } = renderHook(() => useResearchSession(), {
+      wrapper: routerWrapper(TEST_INITIAL_PATH),
+    });
+    await act(async () => {
+      await result.current.sendMessage("keep this session selected");
+    });
+    const conversationOnEvent = subscribeConversation.mock.calls[0][1].onEvent;
+    act(() => {
+      conversationOnEvent({
+        type: "agent_started",
+        timestamp: Date.now(),
+        session_id: ACTIVE_SESSION,
+        conversation_id: "research-active",
+        execution_id: `exec-${ACTIVE_SESSION}`,
+        agent_id: "root",
+        parent_execution_id: null,
+      } as ConversationEvent);
+    });
+    await waitFor(() => expect(result.current.state.sessionId).toBe(ACTIVE_SESSION));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    listSessionArtifacts.mockClear();
+    listLogSessions.mockClear();
+
+    act(() => {
+      conversationOnEvent({
+        type: "agent_completed",
+        timestamp: Date.now(),
+        session_id: OTHER_SESSION,
+        conversation_id: "research-active",
+        execution_id: `exec-${OTHER_SESSION}`,
+        agent_id: "root",
+        parent_execution_id: null,
+      } as ConversationEvent);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.state.sessionId).toBe(ACTIVE_SESSION);
+    expect(result.current.state.artifacts).toEqual([]);
+    expect(listLogSessions).not.toHaveBeenCalled();
+    expect(listSessionArtifacts).not.toHaveBeenCalled();
+  });
 
   it("hydrates title + turns + artifacts via snapshotSession on open", async () => {
     listLogSessions.mockResolvedValueOnce({
@@ -550,6 +764,128 @@ describe("useResearchSession — snapshot flow (R14f)", () => {
     expect(result.current.state.artifacts[0].id).toBe("a1");
     // Cache populated so ArtifactSlideOut can resolve by id.
     expect(result.current.getFullArtifact("a1")?.fileName).toBe("a1.md");
+  });
+
+  it("keeps a newly selected completed-session route while its snapshot hydrates", async () => {
+    const SESSION_A = "sess-completed-a";
+    const SESSION_B = "sess-completed-b";
+    let resolveSessionBMessages: (value: {
+      success: true;
+      data: SessionMessage[];
+    }) => void;
+    const sessionBMessages = new Promise<{
+      success: true;
+      data: SessionMessage[];
+    }>((resolve) => {
+      resolveSessionBMessages = resolve;
+    });
+    listLogSessions.mockResolvedValue({
+      success: true,
+      data: [
+        makeRootRow(SESSION_A, { title: "Session A" }),
+        makeRootRow(SESSION_B, { title: "Session B" }),
+      ],
+    });
+    getSessionMessages.mockImplementation(async (sessionId: string) => {
+      if (sessionId === SESSION_B) return sessionBMessages;
+      return {
+        success: true,
+        data: [{ ...makeUserMessage(sessionId), content: "prompt A" }],
+      };
+    });
+
+    const { result } = renderHook(() => useResearchSession(), {
+      wrapper: routerWrapper(`/research/${SESSION_A}`),
+    });
+
+    await waitFor(() => {
+      expect(result.current.state.sessionId).toBe(SESSION_A);
+      expect(routeControlRef.current?.pathname).toBe(`/research/${SESSION_A}`);
+    });
+
+    act(() => {
+      routeControlRef.current?.navigate(`/research/${SESSION_B}`);
+    });
+
+    // Keep B's snapshot pending. Before the fix, the stale state for A wins
+    // this race and rewrites the selected B URL back to A.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(routeControlRef.current?.pathname).toBe(`/research/${SESSION_B}`);
+
+    await act(async () => {
+      resolveSessionBMessages!({
+        success: true,
+        data: [{ ...makeUserMessage(SESSION_B), content: "prompt B" }],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(result.current.state.sessionId).toBe(SESSION_B);
+      expect(result.current.state.turns[0]?.userMessage.content).toBe("prompt B");
+      expect(routeControlRef.current?.pathname).toBe(`/research/${SESSION_B}`);
+    });
+  });
+
+  it("ignores a snapshot that resolves after its route is no longer selected", async () => {
+    const SESSION_A = "sess-slow-a";
+    const SESSION_B = "sess-fast-b";
+    let resolveSessionAMessages: (value: {
+      success: true;
+      data: SessionMessage[];
+    }) => void;
+    const sessionAMessages = new Promise<{
+      success: true;
+      data: SessionMessage[];
+    }>((resolve) => {
+      resolveSessionAMessages = resolve;
+    });
+    listLogSessions.mockResolvedValue({
+      success: true,
+      data: [
+        makeRootRow(SESSION_A, { title: "Session A" }),
+        makeRootRow(SESSION_B, { title: "Session B" }),
+      ],
+    });
+    getSessionMessages.mockImplementation(async (sessionId: string) => {
+      if (sessionId === SESSION_A) return sessionAMessages;
+      return {
+        success: true,
+        data: [{ ...makeUserMessage(sessionId), content: "prompt B" }],
+      };
+    });
+
+    const { result } = renderHook(() => useResearchSession(), {
+      wrapper: routerWrapper(`/research/${SESSION_A}`),
+    });
+
+    await waitFor(() => {
+      expect(routeControlRef.current?.pathname).toBe(`/research/${SESSION_A}`);
+    });
+    act(() => {
+      routeControlRef.current?.navigate(`/research/${SESSION_B}`);
+    });
+    await waitFor(() => {
+      expect(result.current.state.sessionId).toBe(SESSION_B);
+      expect(result.current.state.turns[0]?.userMessage.content).toBe("prompt B");
+    });
+
+    await act(async () => {
+      resolveSessionAMessages!({
+        success: true,
+        data: [{ ...makeUserMessage(SESSION_A), content: "prompt A" }],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(routeControlRef.current?.pathname).toBe(`/research/${SESSION_B}`);
+    expect(result.current.state.sessionId).toBe(SESSION_B);
+    expect(result.current.state.turns[0]?.userMessage.content).toBe("prompt B");
   });
 
   it("re-snapshots on root agent_completed to backfill WS-dropped state", async () => {

@@ -15,7 +15,12 @@ use crate::{
     capabilities::{AdapterFeature, CapabilityReport},
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
-    governance::bootstrap::{bootstrap_governance_definitions, GovernanceBootstrapReport},
+    governance::{
+        bootstrap::{
+            bootstrap_governance_definitions, GovernanceBootstrapReport, GovernanceDefinitions,
+        },
+        SkosSchemeDefinition,
+    },
 };
 
 /// Engram provider facade plus AgentZero-specific capability gates.
@@ -23,6 +28,9 @@ pub struct EngramProvider {
     provider: UpstreamEngramProvider,
     capabilities: CapabilityReport,
     governance_bootstrap: Option<GovernanceBootstrapReport>,
+    governance_definitions: Option<GovernanceDefinitions>,
+    governance_policy: crate::governance::GovernancePolicy,
+    tenant: String,
 }
 
 impl EngramProvider {
@@ -41,7 +49,8 @@ impl EngramProvider {
             component: "provider",
             reason: "provider facade bootstrap failed".to_string(),
         })?;
-        let governance_bootstrap = bootstrap_governance_if_configured(&config, &provider)?;
+        let (governance_definitions, governance_bootstrap) =
+            bootstrap_governance_if_configured(&config, &provider)?;
         let capabilities = CapabilityReport::from_verified_features(
             &config,
             adapter_features_supported_by(provider.capabilities()),
@@ -51,6 +60,9 @@ impl EngramProvider {
             provider,
             capabilities,
             governance_bootstrap,
+            governance_definitions,
+            governance_policy: config.governance.clone(),
+            tenant: config.tenant,
         })
     }
 
@@ -95,6 +107,22 @@ impl EngramProvider {
     /// Governance bootstrap summary, if governance definitions were configured.
     pub fn governance_bootstrap(&self) -> Option<&GovernanceBootstrapReport> {
         self.governance_bootstrap.as_ref()
+    }
+
+    /// Immutable taxonomy definitions that were bootstrapped alongside this
+    /// provider. Recall expansion uses this snapshot for relation traversal
+    /// while the taxonomy repository remains the durable source of concepts.
+    pub(crate) fn taxonomy_definitions(&self) -> Option<&[SkosSchemeDefinition]> {
+        self.governance_definitions
+            .as_ref()
+            .map(|definitions| definitions.taxonomies.as_slice())
+    }
+
+    /// Confirms that an adapter-facing config is the same governance and
+    /// tenant identity that opened this provider. This prevents a caller from
+    /// combining one provider's durable definitions with another policy.
+    pub(crate) fn matches_governance_config(&self, config: &AdapterConfig) -> bool {
+        self.tenant == config.tenant && self.governance_policy == config.governance
     }
 
     /// Upstream Engram capability report.
@@ -153,9 +181,12 @@ impl EngramProvider {
 fn bootstrap_governance_if_configured(
     config: &AdapterConfig,
     provider: &UpstreamEngramProvider,
-) -> AdapterResult<Option<GovernanceBootstrapReport>> {
+) -> AdapterResult<(
+    Option<GovernanceDefinitions>,
+    Option<GovernanceBootstrapReport>,
+)> {
     if config.governance.is_inert() {
-        return Ok(None);
+        return Ok((None, None));
     }
 
     let ontology_repo = provider
@@ -168,7 +199,7 @@ fn bootstrap_governance_if_configured(
         .ok_or_else(|| unsupported_upstream_handle("governance_taxonomy"))?;
 
     let config = config.clone();
-    let report = match Handle::try_current() {
+    let result = match Handle::try_current() {
         Ok(_) => std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -202,7 +233,8 @@ fn bootstrap_governance_if_configured(
             )),
     }?;
 
-    Ok(Some(report))
+    let (definitions, report) = result;
+    Ok((Some(definitions), Some(report)))
 }
 
 fn adapter_features_supported_by(

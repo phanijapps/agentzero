@@ -1,11 +1,9 @@
 import { Code2, File, FileText, FolderOpen, Presentation } from "lucide-react";
 import type {
-  VaultOfficeFileResponse,
   VaultTextFileResponse,
   VaultWard,
 } from "@/services/transport/types";
 import { Markdown } from "../shared/markdown";
-import type { OfficePreview } from "../chat/officePreview";
 import type { SelectedVaultFileState } from "./useVaultFilePreview";
 
 export function FileIcon({ extension }: { extension: string }) {
@@ -55,7 +53,7 @@ export function VaultFilePreviewPane({
           <h2>{node.name}</h2>
           <p>{node.path}</p>
         </div>
-        {!node.previewable ? (
+        {!node.previewable || selected.content?.kind === "office" ? (
           <button className="btn btn--outline btn--sm" type="button" onClick={() => void onOpenWard()}>
             <FolderOpen size={14} />
             Open ward folder
@@ -70,7 +68,7 @@ export function VaultFilePreviewPane({
 }
 
 export function VaultFilePreviewContent({ selected }: { selected: SelectedVaultFileState }) {
-  const { node, content, officePreview } = selected;
+  const { node, content } = selected;
   if (selected.loading) return <p className="vault-state">Loading preview...</p>;
   if (selected.error) return <p className="vault-state vault-state--error">{selected.error}</p>;
   if (!node.previewable) {
@@ -78,9 +76,6 @@ export function VaultFilePreviewContent({ selected }: { selected: SelectedVaultF
   }
   if (!content) return null;
   if (content.kind === "text") return <TextPreview file={content} />;
-  if (content.kind === "office" && officePreview) {
-    return <OfficePreviewView file={content} preview={officePreview} />;
-  }
   return <p className="vault-state">Preview not available.</p>;
 }
 
@@ -102,65 +97,5 @@ function TextPreview({ file }: { file: VaultTextFileResponse }) {
     <pre className="vault-code-preview">
       <code>{file.content}</code>
     </pre>
-  );
-}
-
-function OfficePreviewView({
-  preview,
-}: {
-  file: VaultOfficeFileResponse;
-  preview: OfficePreview;
-}) {
-  if (preview.kind === "docx") {
-    return (
-      <article className="vault-office-preview">
-        {preview.blocks.map((block, index) => (
-          block.type === "table" ? (
-            <table className="vault-office-preview__table" key={index}>
-              <tbody>
-                {block.rows.map((row, rowIndex) => (
-                  <tr key={rowIndex}>
-                    {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p key={index}>{block.text}</p>
-          )
-        ))}
-      </article>
-    );
-  }
-  if (preview.kind === "pptx") {
-    return (
-      <article className="vault-office-preview">
-        {preview.slides.map((slide) => (
-          <section className="vault-office-preview__slide" key={slide.number}>
-            <h3>{slide.title}</h3>
-            {slide.lines.slice(1).map((line, index) => <p key={index}>{line}</p>)}
-          </section>
-        ))}
-      </article>
-    );
-  }
-
-  return (
-    <article className="vault-office-preview">
-      {preview.sheets.map((sheet) => (
-        <section className="vault-office-preview__slide" key={sheet.name}>
-          <h3>{sheet.name}</h3>
-          <table className="vault-office-preview__table">
-            <tbody>
-              {sheet.rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ))}
-    </article>
   );
 }

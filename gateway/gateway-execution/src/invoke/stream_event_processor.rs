@@ -5,6 +5,7 @@
 
 use agent_runtime::StreamEvent;
 use agent_surfaces::{ComponentType, SurfaceComponent, WorkSurface, ZBOT_WORK_SURFACE_CATALOG};
+use execution_state::{SessionPlanInput, SessionPlanSaveOutcome, SessionPlanSnapshot};
 use gateway_events::{EventBus, GatewayEvent};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -27,16 +28,22 @@ pub fn process_stream_event(
     handle_artifact_declarations(ctx, event);
     handle_delegation_event(ctx, event);
     handle_side_effects(ctx, event);
-    publish_projected_surface(ctx, event);
+    let plan_outcome = persist_current_plan(ctx, event);
+    publish_projected_surface(ctx, event, plan_outcome.accepted());
 
-    // Convert to gateway event (may return None for internal events)
-    let gateway_event = crate::events::convert_stream_event(
-        event.clone(),
-        &ctx.agent_id,
-        &ctx.conversation_id,
-        &ctx.session_id,
-        &ctx.execution_id,
-    );
+    // Rejected plan updates are never cloned into a gateway event. This keeps
+    // oversized model JSON out of a second allocation and off the client bus.
+    let gateway_event = if plan_outcome.suppress_gateway_event() {
+        None
+    } else {
+        crate::events::convert_stream_event(
+            event.clone(),
+            &ctx.agent_id,
+            &ctx.conversation_id,
+            &ctx.session_id,
+            &ctx.execution_id,
+        )
+    };
 
     let response_delta = extract_response_delta(&gateway_event);
     (gateway_event, response_delta)
@@ -45,51 +52,23 @@ pub fn process_stream_event(
 /// Project gateway-owned plan data into the initial native work-surface
 /// catalog. This uses the `update_plan` tool's structured payload rather than
 /// interpreting arbitrary assistant text as UI.
-fn publish_projected_surface(ctx: &StreamContext, event: &StreamEvent) {
-    let StreamEvent::ActionPlanUpdate { plan, .. } = event else {
+fn publish_projected_surface(
+    ctx: &StreamContext,
+    event: &StreamEvent,
+    accepted_plan: Option<&SessionPlanSnapshot>,
+) {
+    let Some(snapshot) = accepted_plan else {
         return;
     };
-    let surface_id = format!("plan-{}", ctx.execution_id);
+    // A plan belongs to the session, not an individual root/subagent
+    // execution. Research replaces surfaces by this stable identifier.
+    let surface_id = plan_surface_id(&ctx.session_id);
     let is_update = ctx
         .surface_ids
         .lock()
         .map(|mut ids| !ids.insert(surface_id.clone()))
         .unwrap_or(false);
-    let surface = WorkSurface {
-        surface_id,
-        catalog_id: ZBOT_WORK_SURFACE_CATALOG.to_owned(),
-        components: vec![
-            SurfaceComponent {
-                id: "plan".to_owned(),
-                component_type: ComponentType::PlanChecklist,
-                props: BTreeMap::from([
-                    (
-                        "title".to_owned(),
-                        serde_json::Value::String("Plan".to_owned()),
-                    ),
-                    (
-                        "plan_path".to_owned(),
-                        serde_json::Value::String("/plan".to_owned()),
-                    ),
-                ]),
-            },
-            SurfaceComponent {
-                id: "open-loops".to_owned(),
-                component_type: ComponentType::OpenLoops,
-                props: BTreeMap::from([
-                    (
-                        "title".to_owned(),
-                        serde_json::Value::String("Open loops".to_owned()),
-                    ),
-                    (
-                        "items_path".to_owned(),
-                        serde_json::Value::String("/open_loops".to_owned()),
-                    ),
-                ]),
-            },
-        ],
-        data: serde_json::json!({ "plan": plan, "open_loops": plan }),
-    };
+    let surface = build_plan_surface(surface_id, snapshot);
     if let Some(surface_event) = crate::events::convert_stream_event(
         if is_update {
             StreamEvent::WorkSurfaceUpdated {
@@ -109,6 +88,108 @@ fn publish_projected_surface(ctx: &StreamContext, event: &StreamEvent) {
     ) {
         ctx.event_bus.publish_sync(surface_event);
     }
+}
+
+/// Result of plan processing before generic stream-event conversion.
+enum PlanUpdateOutcome {
+    NotPlan,
+    Accepted(SessionPlanSnapshot),
+    Rejected,
+}
+
+impl PlanUpdateOutcome {
+    fn accepted(&self) -> Option<&SessionPlanSnapshot> {
+        match self {
+            Self::Accepted(snapshot) => Some(snapshot),
+            Self::NotPlan | Self::Rejected => None,
+        }
+    }
+
+    const fn suppress_gateway_event(&self) -> bool {
+        matches!(self, Self::Rejected)
+    }
+}
+
+/// Save a valid plan before publishing its native Research surface. Rejections
+/// are expected model-output outcomes and never expose model text in logs.
+fn persist_current_plan(ctx: &StreamContext, event: &StreamEvent) -> PlanUpdateOutcome {
+    let StreamEvent::ActionPlanUpdate {
+        plan,
+        explanation,
+        timestamp,
+    } = event
+    else {
+        return PlanUpdateOutcome::NotPlan;
+    };
+
+    let step_count = plan.as_array().map_or(0, Vec::len).min(1_000);
+    if let Err(reason) = SessionPlanInput::preflight_update(plan, explanation.as_deref()) {
+        log_plan_rejection(ctx, reason.code(), *timestamp, step_count);
+        return PlanUpdateOutcome::Rejected;
+    }
+    match ctx.state_service.save_session_plan(
+        &ctx.session_id,
+        &ctx.execution_id,
+        plan.clone(),
+        explanation.clone(),
+        *timestamp,
+    ) {
+        Ok(SessionPlanSaveOutcome::Accepted(snapshot)) => PlanUpdateOutcome::Accepted(snapshot),
+        Ok(SessionPlanSaveOutcome::Rejected(reason)) => {
+            log_plan_rejection(ctx, reason.code(), *timestamp, step_count);
+            PlanUpdateOutcome::Rejected
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "zbot_plan",
+                reason = "persistence_failed",
+                session_id = %ctx.session_id,
+                execution_id = %ctx.execution_id,
+                source_event_timestamp = *timestamp,
+                step_count,
+                "could not persist current plan update"
+            );
+            PlanUpdateOutcome::Rejected
+        }
+    }
+}
+
+fn log_plan_rejection(ctx: &StreamContext, reason: &str, timestamp: u64, step_count: usize) {
+    tracing::warn!(
+        target: "zbot_plan",
+        reason,
+        session_id = %ctx.session_id,
+        execution_id = %ctx.execution_id,
+        source_event_timestamp = timestamp,
+        step_count,
+        "rejected current plan update"
+    );
+}
+
+fn build_plan_surface(surface_id: String, snapshot: &SessionPlanSnapshot) -> WorkSurface {
+    WorkSurface {
+        surface_id,
+        catalog_id: ZBOT_WORK_SURFACE_CATALOG.to_owned(),
+        components: vec![SurfaceComponent {
+            id: "plan".to_owned(),
+            component_type: ComponentType::PlanChecklist,
+            props: BTreeMap::from([
+                (
+                    "title".to_owned(),
+                    serde_json::Value::String("Plan".to_owned()),
+                ),
+                (
+                    "plan_path".to_owned(),
+                    serde_json::Value::String("/plan".to_owned()),
+                ),
+            ]),
+        }],
+        data: serde_json::json!({ "plan": snapshot.plan }),
+    }
+}
+
+fn plan_surface_id(session_id: &str) -> String {
+    format!("plan-{session_id}")
 }
 
 /// Broadcast a gateway event synchronously to preserve token ordering.
@@ -338,5 +419,274 @@ fn extract_response_delta(gateway_event: &Option<GatewayEvent>) -> Option<String
             Some(format!("{}{}", TURN_COMPLETE_MARKER, message))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use api_logs::LogService;
+    use execution_state::{
+        AgentExecution, DelegationType, SessionPlanStep, SessionPlanStepStatus, StateService,
+    };
+    use gateway_events::EventBus;
+    use gateway_services::VaultPaths;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+    use zbot_runtime_sqlite::DatabaseManager;
+
+    struct Harness {
+        _temp: TempDir,
+        paths: Arc<VaultPaths>,
+        state: Arc<StateService<DatabaseManager>>,
+        logs: Arc<LogService<DatabaseManager>>,
+        bus: Arc<EventBus>,
+        session_id: String,
+        root_execution: AgentExecution,
+    }
+
+    fn setup() -> Harness {
+        let temp = TempDir::new().expect("temp vault");
+        let paths = Arc::new(VaultPaths::new(temp.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault directories");
+        let db = Arc::new(DatabaseManager::new(paths.clone()).expect("database"));
+        let state = Arc::new(StateService::new(db.clone()));
+        let logs = Arc::new(LogService::new(db));
+        let (session, root_execution) = state.create_session("root-agent").expect("session");
+        Harness {
+            _temp: temp,
+            paths,
+            state,
+            logs,
+            bus: Arc::new(EventBus::new()),
+            session_id: session.id,
+            root_execution,
+        }
+    }
+
+    fn context(harness: &Harness, execution: &AgentExecution) -> StreamContext {
+        let (delegation_tx, _delegation_rx) = mpsc::unbounded_channel();
+        StreamContext::new(
+            execution.agent_id.clone(),
+            harness.session_id.clone(),
+            harness.session_id.clone(),
+            execution.id.clone(),
+            harness.bus.clone(),
+            harness.logs.clone(),
+            harness.state.clone(),
+            delegation_tx,
+            harness.paths.vault_dir().clone(),
+        )
+    }
+
+    #[test]
+    fn projected_plan_surface_has_one_plan_checklist_and_no_open_loops() {
+        let snapshot = SessionPlanSnapshot {
+            execution_id: "exec-1".to_owned(),
+            explanation: Some("Compare the options".to_owned()),
+            plan: vec![SessionPlanStep {
+                step: "Inspect the current setup".to_owned(),
+                status: SessionPlanStepStatus::InProgress,
+            }],
+            updated_at: "2026-07-14T12:00:00Z".to_owned(),
+            source_event_timestamp: 1,
+            source_event_sequence: 1,
+        };
+
+        let surface = build_plan_surface(plan_surface_id("sess-1"), &snapshot);
+
+        assert_eq!(surface.components.len(), 1);
+        assert_eq!(
+            surface.components[0].component_type,
+            ComponentType::PlanChecklist
+        );
+        assert!(surface.data.get("open_loops").is_none());
+        assert_eq!(surface.data["plan"][0]["status"], "in_progress");
+    }
+
+    #[test]
+    fn accepted_plan_persists_before_one_session_scoped_research_surface() {
+        let harness = setup();
+        let context = context(&harness, &harness.root_execution);
+        let mut events = harness.bus.subscribe_all();
+
+        process_stream_event(
+            &context,
+            &StreamEvent::ActionPlanUpdate {
+                timestamp: 10,
+                plan: serde_json::json!([{"step": "Inspect configuration", "status": "pending"}]),
+                explanation: None,
+            },
+        );
+
+        let detail = harness
+            .state
+            .get_mission_control_session_tokens(&harness.session_id)
+            .expect("load tokens")
+            .expect("session exists");
+        assert_eq!(
+            detail.current_plan.expect("persisted plan").plan[0].step,
+            "Inspect configuration"
+        );
+
+        let GatewayEvent::SurfaceCreated { surface, .. } =
+            events.try_recv().expect("surface event")
+        else {
+            panic!("accepted plan should create a surface");
+        };
+        assert_eq!(surface.surface_id, plan_surface_id(&harness.session_id));
+        assert_eq!(surface.components.len(), 1);
+    }
+
+    #[test]
+    fn rejected_plan_keeps_prior_snapshot_and_emits_no_surface() {
+        let harness = setup();
+        let context = context(&harness, &harness.root_execution);
+        let mut events = harness.bus.subscribe_all();
+
+        let (gateway_event, _) = process_stream_event(
+            &context,
+            &StreamEvent::ActionPlanUpdate {
+                timestamp: 10,
+                plan: serde_json::json!([{"step": "not persisted", "status": "unknown"}]),
+                explanation: Some("must not be logged or stored".to_owned()),
+            },
+        );
+
+        let detail = harness
+            .state
+            .get_mission_control_session_tokens(&harness.session_id)
+            .expect("load tokens")
+            .expect("session exists");
+        assert!(detail.current_plan.is_none());
+        assert!(
+            gateway_event.is_none(),
+            "rejected plan must not be rebroadcast"
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "rejected plan must not create a surface"
+        );
+    }
+
+    #[test]
+    fn oversized_plan_is_not_cloned_or_broadcast_after_preflight_rejection() {
+        let harness = setup();
+        let context = context(&harness, &harness.root_execution);
+        let mut events = harness.bus.subscribe_all();
+        let plan = serde_json::Value::Array(
+            (0..21)
+                .map(|index| {
+                    serde_json::json!({
+                        "step": format!("Step {index}"),
+                        "status": "pending",
+                    })
+                })
+                .collect(),
+        );
+
+        let (gateway_event, _) = process_stream_event(
+            &context,
+            &StreamEvent::ActionPlanUpdate {
+                timestamp: 10,
+                plan,
+                explanation: None,
+            },
+        );
+
+        assert!(
+            gateway_event.is_none(),
+            "preflight-rejected plans must not be converted or rebroadcast"
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "preflight-rejected plans must not create a surface"
+        );
+    }
+
+    #[test]
+    fn root_and_subagent_plan_updates_share_one_research_surface_identifier() {
+        let harness = setup();
+        let child = AgentExecution::new_delegated(
+            &harness.session_id,
+            "researcher-agent",
+            &harness.root_execution.id,
+            DelegationType::Sequential,
+            "research",
+        );
+        harness
+            .state
+            .create_execution(&child)
+            .expect("child execution");
+        let root_context = context(&harness, &harness.root_execution);
+        let child_context = context(&harness, &child);
+        let mut events = harness.bus.subscribe_all();
+
+        for (ctx, timestamp, step) in [
+            (&root_context, 10, "Root plan"),
+            (&child_context, 11, "Subagent plan"),
+        ] {
+            process_stream_event(
+                ctx,
+                &StreamEvent::ActionPlanUpdate {
+                    timestamp,
+                    plan: serde_json::json!([{"step": step, "status": "in_progress"}]),
+                    explanation: None,
+                },
+            );
+        }
+
+        let mut surface_ids = Vec::new();
+        while let Ok(GatewayEvent::SurfaceCreated { surface, .. }) = events.try_recv() {
+            surface_ids.push(surface.surface_id);
+        }
+        assert_eq!(surface_ids, vec![plan_surface_id(&harness.session_id); 2]);
+    }
+
+    #[test]
+    fn artifact_declaration_uses_the_persisted_session_ward() {
+        let harness = setup();
+        let ward_id = "financial-analysis";
+        let artifact_path = harness
+            .paths
+            .wards_dir()
+            .join(ward_id)
+            .join("output/report.md");
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        std::fs::write(&artifact_path, "# Report").unwrap();
+        harness
+            .state
+            .update_session_ward(&harness.session_id, ward_id)
+            .unwrap();
+
+        let context = context(&harness, &harness.root_execution);
+        process_stream_event(
+            &context,
+            &StreamEvent::ActionRespond {
+                timestamp: 1,
+                message: "Done".to_string(),
+                format: "text".to_string(),
+                conversation_id: None,
+                session_id: None,
+                artifacts: vec![agent_primitives::event::ArtifactDeclaration {
+                    path: "output/report.md".to_string(),
+                    label: Some("Report".to_string()),
+                    is_goal_artifact: true,
+                }],
+            },
+        );
+
+        let artifacts = harness
+            .state
+            .list_artifacts_by_session(&harness.session_id)
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].ward_id.as_deref(), Some(ward_id));
+        assert_eq!(
+            artifacts[0].file_path,
+            artifact_path.to_string_lossy(),
+            "artifact path must resolve under the persisted ward, not scratch"
+        );
     }
 }

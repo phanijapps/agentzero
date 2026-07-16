@@ -8,8 +8,8 @@ use engram_domain::{
     EntityId as EngramEntityId, EntityKind, EntityRef, HierarchyMemberType, HierarchyMembership,
     HierarchyNode, HierarchyNodeId, HierarchyNodeKind, HierarchyNodeStatus, HierarchyRelation,
     KnowledgeChunk, KnowledgeChunkKind, KnowledgeEntity, KnowledgeRelationship, KnowledgeSource,
-    Metadata, Policy, Provenance, RelationshipId as EngramRelationshipId, Retention,
-    SourceDocument, SourceDocumentKind, SourceId, SourceLocation, Visibility,
+    Metadata, OntologyClassId, Policy, Provenance, RelationshipId as EngramRelationshipId,
+    Retention, SourceDocument, SourceDocumentKind, SourceId, SourceLocation, Visibility,
 };
 use knowledge_graph::types::{Entity, EntityType, Relationship};
 use serde_json::{json, Value};
@@ -17,7 +17,10 @@ use zbot_stores_domain::WikiArticle;
 
 use crate::{
     error::{AdapterError, AdapterResult},
-    governance::{classify_entity_type, ClassificationOutcome, GovernancePolicy, GovernanceScope},
+    governance::{
+        classify_entity_type, select_and_persist_governance_metadata, ClassificationOutcome,
+        GovernancePolicy, GovernanceScope,
+    },
     scope::ScopeMapper,
 };
 
@@ -79,7 +82,7 @@ pub fn entity_to_knowledge_entity_with_governance(
     metadata.insert("agentId".to_string(), json!(entity.agent_id));
     metadata.insert("entityType".to_string(), json!(entity.entity_type.as_str()));
     metadata.insert("mentionCount".to_string(), json!(entity.mention_count));
-    let concept_refs = governance
+    let (concept_refs, ontology_class_refs) = governance
         .map(|policy| {
             apply_entity_governance(
                 policy,
@@ -102,6 +105,7 @@ pub fn entity_to_knowledge_entity_with_governance(
         scope,
         source_refs: Vec::new(),
         concept_refs,
+        ontology_class_refs,
         provenance: provenance(
             &entity.agent_id,
             entity.first_seen_at,
@@ -315,26 +319,33 @@ fn apply_entity_governance(
     scope: GovernanceScope<'_>,
     entity_type: &EntityType,
     metadata: &mut Metadata,
-) -> Vec<ConceptRef> {
-    let selection = policy.select(scope);
-    apply_selection_metadata(
-        metadata,
-        &selection.ontology_ids,
-        &selection.taxonomy_scheme_ids,
-    );
+) -> (Vec<ConceptRef>, Vec<OntologyClassId>) {
+    let selection = select_and_persist_governance_metadata(policy, scope, metadata);
+    let classification = classify_entity_type(entity_type);
+    let ontology_class_refs = match (selection.ontology_ids.first(), &classification) {
+        (Some(ontology_id), ClassificationOutcome::Classified(class_id)) => {
+            vec![OntologyClassId::from(format!(
+                "{ontology_id}:class:{class_id}"
+            ))]
+        }
+        (_, ClassificationOutcome::UnclassifiedCustom(value)) => {
+            metadata.insert("governanceUnclassifiedEntityType".to_string(), json!(value));
+            Vec::new()
+        }
+        (None, ClassificationOutcome::Classified(_)) => Vec::new(),
+    };
 
     let Some(scheme_id) = selection.taxonomy_scheme_ids.first() else {
-        return Vec::new();
+        return (Vec::new(), ontology_class_refs);
     };
     let Some(concept_id) = entity_type_concept_id(entity_type) else {
-        if let ClassificationOutcome::UnclassifiedCustom(value) = classify_entity_type(entity_type)
-        {
-            metadata.insert("governanceUnclassifiedEntityType".to_string(), json!(value));
-        }
-        return Vec::new();
+        return (Vec::new(), ontology_class_refs);
     };
 
-    vec![concept_ref(scheme_id, concept_id, concept_id)]
+    (
+        vec![concept_ref(scheme_id, concept_id, concept_id)],
+        ontology_class_refs,
+    )
 }
 
 fn apply_document_governance(
@@ -342,44 +353,13 @@ fn apply_document_governance(
     scope: GovernanceScope<'_>,
     metadata: &mut Metadata,
 ) -> Vec<ConceptRef> {
-    let selection = policy.select(scope);
-    apply_selection_metadata(
-        metadata,
-        &selection.ontology_ids,
-        &selection.taxonomy_scheme_ids,
-    );
+    let selection = select_and_persist_governance_metadata(policy, scope, metadata);
 
     selection
         .taxonomy_scheme_ids
         .first()
         .map(|scheme_id| vec![concept_ref(scheme_id, "documents", "Documents")])
         .unwrap_or_default()
-}
-
-fn apply_selection_metadata(
-    metadata: &mut Metadata,
-    ontology_ids: &[String],
-    taxonomy_scheme_ids: &[String],
-) {
-    if let Some(ontology_id) = ontology_ids.first() {
-        metadata
-            .entry("ontologyId".to_string())
-            .or_insert_with(|| json!(ontology_id));
-    }
-    if let Some(taxonomy_id) = taxonomy_scheme_ids.first() {
-        metadata
-            .entry("taxonomyId".to_string())
-            .or_insert_with(|| json!(taxonomy_id));
-    }
-    if !ontology_ids.is_empty() {
-        metadata.insert("governanceOntologyIds".to_string(), json!(ontology_ids));
-    }
-    if !taxonomy_scheme_ids.is_empty() {
-        metadata.insert(
-            "governanceTaxonomySchemeIds".to_string(),
-            json!(taxonomy_scheme_ids),
-        );
-    }
 }
 
 fn entity_type_concept_id(entity_type: &EntityType) -> Option<&'static str> {
@@ -415,6 +395,18 @@ pub fn aggregate_entity_to_hierarchy_node(
     layer: i64,
     member_ids: &[zbot_stores::types::EntityId],
 ) -> AdapterResult<HierarchyNode> {
+    aggregate_entity_to_hierarchy_node_with_governance(entity, mapper, layer, member_ids, None)
+}
+
+/// Build an Engram hierarchy node and persist the configured governance
+/// selection in its canonical metadata.
+pub fn aggregate_entity_to_hierarchy_node_with_governance(
+    entity: &Entity,
+    mapper: &ScopeMapper,
+    layer: i64,
+    member_ids: &[zbot_stores::types::EntityId],
+    governance: Option<&GovernancePolicy>,
+) -> AdapterResult<HierarchyNode> {
     let ward_id = ward_id_from_properties(&entity.properties);
     let scope = mapper.ward_scope(&ward_id)?;
     let now = Utc::now();
@@ -438,6 +430,26 @@ pub fn aggregate_entity_to_hierarchy_node(
             created_at: now,
         })
         .collect();
+
+    let mut metadata = BTreeMap::from([
+        ("agentId".to_string(), json!(entity.agent_id)),
+        ("wardId".to_string(), json!(ward_id)),
+        ("entityId".to_string(), json!(entity.id)),
+        ("memberCount".to_string(), json!(member_ids.len())),
+    ]);
+    if let Some(governance) = governance {
+        let selection = select_and_persist_governance_metadata(
+            governance,
+            GovernanceScope {
+                ward_id: Some(&ward_id),
+                ..GovernanceScope::default()
+            },
+            &mut metadata,
+        );
+        if !selection.taxonomy_scheme_ids.is_empty() {
+            metadata.insert("governanceRecordKind".to_string(), json!("hierarchy_node"));
+        }
+    }
 
     Ok(HierarchyNode {
         id: HierarchyNodeId::from(entity.id.clone()),
@@ -464,12 +476,7 @@ pub fn aggregate_entity_to_hierarchy_node(
         provenance,
         created_at: entity.first_seen_at,
         updated_at: Some(entity.last_seen_at),
-        metadata: Some(BTreeMap::from([
-            ("agentId".to_string(), json!(entity.agent_id)),
-            ("wardId".to_string(), json!(ward_id)),
-            ("entityId".to_string(), json!(entity.id)),
-            ("memberCount".to_string(), json!(member_ids.len())),
-        ])),
+        metadata: Some(metadata),
     })
 }
 
@@ -750,12 +757,53 @@ mod tests {
             Some("zbot.general:v1:concept:tools")
         );
         assert_eq!(
+            record
+                .ontology_class_refs
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zbot.base:v1:class:tool"]
+        );
+        assert_eq!(
             metadata.get("ontologyId").and_then(Value::as_str),
             Some("zbot.base:v1")
         );
         assert_eq!(
             metadata.get("taxonomyId").and_then(Value::as_str),
             Some("zbot.general:v1")
+        );
+    }
+
+    #[test]
+    fn governed_entity_mapping_keeps_configured_ids_authoritative() {
+        let mut input = entity(EntityType::Tool);
+        input
+            .properties
+            .insert("ontology_id".to_string(), json!("untrusted.ontology:v1"));
+        input
+            .properties
+            .insert("taxonomy_id".to_string(), json!("untrusted.taxonomy:v1"));
+
+        let record =
+            entity_to_knowledge_entity_with_governance(&input, &mapper(), Some(&governance()))
+                .expect("entity record");
+        let metadata = record.metadata.as_ref().expect("metadata");
+
+        assert_eq!(
+            metadata.get("ontologyId").and_then(Value::as_str),
+            Some(ZBOT_BASE_ONTOLOGY_ID)
+        );
+        assert_eq!(
+            metadata.get("taxonomyId").and_then(Value::as_str),
+            Some(ZBOT_GENERAL_SCHEME_ID)
+        );
+        assert_eq!(
+            metadata.get("sourceOntologyId").and_then(Value::as_str),
+            Some("untrusted.ontology:v1")
+        );
+        assert_eq!(
+            metadata.get("sourceTaxonomyId").and_then(Value::as_str),
+            Some("untrusted.taxonomy:v1")
         );
     }
 
@@ -815,6 +863,32 @@ mod tests {
         assert_eq!(
             metadata.get("taxonomyId").and_then(Value::as_str),
             Some("zbot.general:v1")
+        );
+    }
+
+    #[test]
+    fn governed_hierarchy_node_persists_the_selected_definition_ids() {
+        let node = aggregate_entity_to_hierarchy_node_with_governance(
+            &entity(EntityType::Concept),
+            &mapper(),
+            2,
+            &[zbot_stores::types::EntityId("member-1".to_string())],
+            Some(&governance()),
+        )
+        .expect("hierarchy node");
+        let metadata = node.metadata.expect("metadata");
+
+        assert_eq!(
+            metadata.get("governanceOntologyIds"),
+            Some(&json!([ZBOT_BASE_ONTOLOGY_ID]))
+        );
+        assert_eq!(
+            metadata.get("governanceTaxonomySchemeIds"),
+            Some(&json!([ZBOT_GENERAL_SCHEME_ID]))
+        );
+        assert_eq!(
+            metadata.get("governanceRecordKind"),
+            Some(&json!("hierarchy_node"))
         );
     }
 }

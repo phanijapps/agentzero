@@ -94,6 +94,20 @@ describe("useQuickChat — bootstrap", () => {
         label: "summary",
         sessionId: "s2",
         filePath: "report.md",
+        isGoalArtifact: true,
+        createdAt: "",
+      }, {
+        id: "art-plan",
+        fileName: "working-plan.md",
+        sessionId: "s2",
+        filePath: "working-plan.md",
+        createdAt: "",
+        isGoalArtifact: false,
+      }, {
+        id: "art-legacy",
+        fileName: "legacy-output.json",
+        sessionId: "s2",
+        filePath: "legacy-output.json",
         createdAt: "",
       }],
     });
@@ -105,6 +119,10 @@ describe("useQuickChat — bootstrap", () => {
     expect(result.current.state.artifacts).toEqual([
       expect.objectContaining({ id: "art-1", fileName: "report.md" }),
     ]);
+    expect(transportMock.listSessionArtifacts).toHaveBeenCalledWith("s2", {
+      goalArtifactsOnly: true,
+      limit: 24,
+    });
   });
 
   it("falls back to empty messages when getSessionMessages fails", async () => {

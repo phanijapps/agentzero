@@ -5,12 +5,18 @@
 //! contracts without pushing zbot-only schema into Engram.
 
 use std::{
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
+use engram_domain::{
+    Actor, ActorKind, AllowedUse, DeleteMode, MemoryContent, MemoryContentFormat, MemoryId,
+    MemoryKind, MemoryRecord, MemoryStatus, Policy, Provenance, Retention, Visibility,
+};
+use engram_memory::MemoryService;
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -22,8 +28,12 @@ use zbot_stores_traits::{
 };
 
 use crate::{
+    bootstrap::EngramProvider,
+    capabilities::AdapterFeature,
     config::{AdapterConfig, ProviderMode},
     error::{AdapterError, AdapterResult},
+    governance::{select_and_persist_governance_metadata, GovernancePolicy, GovernanceScope},
+    scope::ScopeMapper,
 };
 
 const SIDECAR_COMPONENT: &str = "zbot_sidecars";
@@ -33,6 +43,11 @@ const SIDECAR_COMPONENT: &str = "zbot_sidecars";
 pub struct EngramSidecarStores {
     connection: Arc<Mutex<Connection>>,
     embedding_identity: EmbeddingQueryIdentity,
+    /// Canonical semantic mirror. The SQLite sidecar remains only for zbot's
+    /// product-specific query and lifecycle DTOs.
+    memory: Arc<dyn MemoryService>,
+    mapper: ScopeMapper,
+    governance: GovernancePolicy,
 }
 
 impl EngramSidecarStores {
@@ -44,15 +59,41 @@ impl EngramSidecarStores {
                 reason: "provider mode is not engram".to_string(),
             });
         }
+        let provider = EngramProvider::open(config.clone())?;
+        Self::from_provider(config, &provider)
+    }
+
+    /// Build sidecars from the shared provider used by the composition root.
+    /// This avoids creating a second provider while still giving semantic
+    /// sidecar producers the canonical Engram memory service.
+    pub fn from_provider(config: AdapterConfig, provider: &EngramProvider) -> AdapterResult<Self> {
+        if config.provider_mode != ProviderMode::Engram {
+            return Err(AdapterError::UnsupportedFeature {
+                feature: "sidecars",
+                reason: "provider mode is not engram".to_string(),
+            });
+        }
 
         config.validate()?;
+        provider.require_feature(AdapterFeature::MemoryFacts)?;
+        let memory = provider.memory()?;
+        let mapper = config.scope_mapper()?;
         Self::open_path(
             &config.compatibility_store_path("zbot-sidecars.sqlite")?,
             embedding_identity_from_config(&config),
+            memory,
+            mapper,
+            config.governance.clone(),
         )
     }
 
-    fn open_path(path: &Path, embedding_identity: EmbeddingQueryIdentity) -> AdapterResult<Self> {
+    fn open_path(
+        path: &Path,
+        embedding_identity: EmbeddingQueryIdentity,
+        memory: Arc<dyn MemoryService>,
+        mapper: ScopeMapper,
+        governance: GovernancePolicy,
+    ) -> AdapterResult<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| AdapterError::Storage {
                 component: SIDECAR_COMPONENT,
@@ -201,6 +242,194 @@ impl EngramSidecarStores {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             embedding_identity,
+            memory,
+            mapper,
+            governance,
+        })
+    }
+
+    async fn mirror_procedure(&self, procedure: &Procedure) -> Result<(), String> {
+        let summary = procedure
+            .trigger_pattern
+            .as_ref()
+            .map(|trigger| format!("trigger: {trigger}"));
+        let content = if procedure.description.trim().is_empty() {
+            procedure.name.clone()
+        } else {
+            procedure.description.clone()
+        };
+        let record = self.governed_semantic_memory_record(
+            &format!("zbot-sidecar:procedure:{}", procedure.id),
+            MemoryKind::Procedure,
+            content,
+            summary,
+            procedure.ward_id.as_deref().unwrap_or("__global__"),
+            None,
+            &procedure.agent_id,
+            &format!("procedure:{}", procedure.id),
+            &procedure.created_at,
+            Some(&procedure.updated_at),
+            "procedure",
+        )?;
+        self.memory
+            .put_memory(record)
+            .await
+            .map(|_| ())
+            .map_err(|_| "canonical procedure mirror failed".to_string())
+    }
+
+    async fn mirror_episode(&self, episode: &SessionEpisode) -> Result<(), String> {
+        let record = self.governed_semantic_memory_record(
+            &format!("zbot-sidecar:episode:{}", episode.id),
+            MemoryKind::Episode,
+            episode.task_summary.clone(),
+            episode.key_learnings.clone(),
+            &episode.ward_id,
+            Some(&episode.session_id),
+            &episode.agent_id,
+            &format!("episode:{}", episode.id),
+            &episode.created_at,
+            None,
+            "episode",
+        )?;
+        self.memory
+            .put_memory(record)
+            .await
+            .map(|_| ())
+            .map_err(|_| "canonical episode mirror failed".to_string())
+    }
+
+    async fn mirror_evidence_payload(&self, payload: &str) -> Result<(), String> {
+        let Ok(value) = serde_json::from_str::<Value>(payload) else {
+            // Normal ingestion chunks are arbitrary text. Only the structured
+            // evidence-intake envelope is a durable semantic producer here.
+            return Ok(());
+        };
+        let Some(evidence_id) = json_string(&value, "evidence_id") else {
+            return Ok(());
+        };
+        let Some(agent_id) = json_string(&value, "agent_id") else {
+            return Ok(());
+        };
+        let Some(source_id) = json_string(&value, "source_id") else {
+            return Ok(());
+        };
+        let source_type =
+            json_string(&value, "source_type").unwrap_or_else(|| "evidence_intake".to_string());
+        let session_id = json_string(&value, "session_id");
+        let ward_id = json_string(&value, "ward_id").unwrap_or_else(|| "__global__".to_string());
+        let created_at = Utc::now().to_rfc3339();
+        let record = self.governed_semantic_memory_record(
+            &format!("zbot-sidecar:evidence:{evidence_id}"),
+            MemoryKind::Artifact,
+            format!("Evidence intake from {source_type}"),
+            Some(format!("source: {source_id}")),
+            &ward_id,
+            session_id.as_deref(),
+            &agent_id,
+            &source_id,
+            &created_at,
+            None,
+            "evidence",
+        )?;
+        self.memory
+            .put_memory(record)
+            .await
+            .map(|_| ())
+            .map_err(|_| "canonical evidence mirror failed".to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn governed_semantic_memory_record(
+        &self,
+        id: &str,
+        kind: MemoryKind,
+        content: String,
+        summary: Option<String>,
+        ward_id: &str,
+        session_id: Option<&str>,
+        agent_id: &str,
+        source_id: &str,
+        created_at: &str,
+        updated_at: Option<&str>,
+        record_kind: &str,
+    ) -> Result<MemoryRecord, String> {
+        let created_at = parse_sidecar_timestamp(created_at)?;
+        let updated_at = updated_at.map(parse_sidecar_timestamp).transpose()?;
+        let scope = self
+            .mapper
+            .memory_fact_scope(ward_id, session_id)
+            .map_err(AdapterError::into_trait_error)?;
+        let mut metadata = BTreeMap::new();
+        let selection = select_and_persist_governance_metadata(
+            &self.governance,
+            GovernanceScope {
+                ward_id: Some(ward_id),
+                session_id,
+                source_id: Some(source_id),
+                ..GovernanceScope::default()
+            },
+            &mut metadata,
+        );
+        let concept_ids = selection
+            .taxonomy_scheme_ids
+            .iter()
+            // These records are canonical Engram memory records. `memory` is
+            // the stable starter-SKOS classification shared by facts and
+            // sidecar mirrors; the more specific record kind remains explicit
+            // alongside it without inventing a concept in user taxonomies.
+            .map(|scheme_id| format!("{scheme_id}:concept:memory"))
+            .collect::<Vec<_>>();
+        if !concept_ids.is_empty() {
+            metadata.insert(
+                "governanceTaxonomyConceptIds".to_string(),
+                json!(concept_ids),
+            );
+        }
+        metadata.insert("governanceRecordKind".to_string(), json!(record_kind));
+        metadata.insert("zbotSidecarSourceId".to_string(), json!(source_id));
+
+        Ok(MemoryRecord {
+            id: MemoryId::from(id),
+            kind,
+            content: MemoryContent {
+                text: content,
+                summary,
+                entities: Vec::new(),
+                language: None,
+                format: Some(MemoryContentFormat::Text),
+                structured: None,
+                hash: None,
+            },
+            scope,
+            provenance: Provenance {
+                source: "agentzero.sidecar_adapter".to_string(),
+                actor: Actor {
+                    id: agent_id.into(),
+                    kind: ActorKind::Agent,
+                    display_name: None,
+                    metadata: None,
+                },
+                observed_at: created_at,
+                evidence: Vec::new(),
+                derivations: Vec::new(),
+                confidence: Some(1.0),
+                method: Some("agentzero.sidecar_semantic_mirror".to_string()),
+            },
+            policy: Policy {
+                visibility: Visibility::Workspace,
+                retention: Retention::Durable,
+                sensitivity: None,
+                allowed_uses: vec![AllowedUse::Retrieval, AllowedUse::Consolidation],
+                expires_at: None,
+                delete_mode: Some(DeleteMode::Archive),
+            },
+            status: MemoryStatus::Active,
+            links: Vec::new(),
+            assertions: Vec::new(),
+            created_at,
+            updated_at,
+            metadata: Some(metadata),
         })
     }
 
@@ -340,6 +569,7 @@ impl ProcedureStore for EngramSidecarStores {
         let mut procedure: Procedure = serde_json::from_value(procedure)
             .map_err(|error| format!("decode Procedure: {error}"))?;
         procedure.embedding = None;
+        self.mirror_procedure(&procedure).await?;
         self.upsert_procedure_record(&procedure, embedding.as_deref())
     }
 
@@ -428,6 +658,7 @@ impl ProcedureStore for EngramSidecarStores {
         procedure.avg_token_cost = token_cost.or(procedure.avg_token_cost);
         procedure.last_used = Some(now());
         procedure.updated_at = now();
+        self.mirror_procedure(&procedure).await?;
         self.upsert_procedure_record(&procedure, None)
     }
 
@@ -437,6 +668,7 @@ impl ProcedureStore for EngramSidecarStores {
         };
         procedure.failure_count += 1;
         procedure.updated_at = now();
+        self.mirror_procedure(&procedure).await?;
         self.upsert_procedure_record(&procedure, None)
     }
 
@@ -557,6 +789,7 @@ impl ProcedureStore for EngramSidecarStores {
             created_at: timestamp.clone(),
             updated_at: timestamp,
         };
+        self.mirror_procedure(&procedure).await?;
         self.upsert_procedure_record(&procedure, req.embedding.as_deref())?;
         Ok(id)
     }
@@ -589,6 +822,7 @@ impl EpisodeStore for EngramSidecarStores {
         }
         let id = episode.id.clone();
         episode.embedding = None;
+        self.mirror_episode(&episode).await?;
         let record_json = serde_json::to_string(&episode).map_err(|error| error.to_string())?;
         let embedding_json = embedding
             .as_deref()
@@ -1026,6 +1260,7 @@ impl KgEpisodeStore for EngramSidecarStores {
     }
 
     async fn set_payload(&self, id: &str, text: &str) -> Result<(), String> {
+        self.mirror_evidence_payload(text).await?;
         self.connection()?
             .execute(
                 "UPDATE kg_episodes SET payload = ?1 WHERE id = ?2",
@@ -1683,10 +1918,198 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+fn parse_sidecar_timestamp(value: &str) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .map_err(|_| "sidecar semantic record has an invalid timestamp".to_string())
+}
+
 fn storage_error(error: rusqlite::Error) -> String {
     AdapterError::Storage {
         component: SIDECAR_COMPONENT,
         reason: error.to_string(),
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID};
+
+    fn governed_config(root: &tempfile::TempDir) -> AdapterConfig {
+        let mut config = AdapterConfig::engram_for_data_root(root.path(), "engram");
+        config.embedding_provider.dimensions = 2;
+        config.governance.default_selection = GovernanceSelection {
+            ontology_ids: vec![ZBOT_BASE_ONTOLOGY_ID.to_string()],
+            taxonomy_scheme_ids: vec![ZBOT_GENERAL_SCHEME_ID.to_string()],
+        };
+        config
+    }
+
+    fn procedure() -> Procedure {
+        Procedure {
+            id: "proc-governed".to_string(),
+            agent_id: "agent-a".to_string(),
+            ward_id: Some("ward-a".to_string()),
+            name: "build".to_string(),
+            description: "Build and verify the application.".to_string(),
+            trigger_pattern: None,
+            steps: "[]".to_string(),
+            parameters: None,
+            success_count: 1,
+            failure_count: 0,
+            avg_duration_ms: None,
+            avg_token_cost: None,
+            last_used: None,
+            embedding: None,
+            created_at: "2026-07-13T00:00:00Z".to_string(),
+            updated_at: "2026-07-13T00:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn semantic_sidecars_are_mirrored_with_governance_metadata() {
+        let root = tempfile::tempdir().expect("root");
+        let store = EngramSidecarStores::open(governed_config(&root)).expect("store");
+        let procedure = procedure();
+
+        ProcedureStore::upsert_procedure(
+            &store,
+            serde_json::to_value(&procedure).expect("procedure json"),
+            None,
+        )
+        .await
+        .expect("procedure write");
+
+        let scope = store
+            .mapper
+            .memory_fact_scope("ward-a", None)
+            .expect("procedure scope");
+        let procedure_record = store
+            .memory
+            .get_memory(
+                &MemoryId::from("zbot-sidecar:procedure:proc-governed"),
+                &scope,
+            )
+            .await
+            .expect("procedure lookup")
+            .expect("canonical procedure");
+        let metadata = procedure_record.metadata.expect("procedure metadata");
+        assert_eq!(
+            metadata.get("governanceOntologyIds"),
+            Some(&json!([ZBOT_BASE_ONTOLOGY_ID]))
+        );
+        assert_eq!(
+            metadata.get("governanceTaxonomySchemeIds"),
+            Some(&json!([ZBOT_GENERAL_SCHEME_ID]))
+        );
+        assert_eq!(
+            metadata.get("governanceTaxonomyConceptIds"),
+            Some(&json!([format!("{ZBOT_GENERAL_SCHEME_ID}:concept:memory")]))
+        );
+        assert_eq!(
+            metadata.get("governanceRecordKind"),
+            Some(&json!("procedure"))
+        );
+
+        let episode = SessionEpisode {
+            id: "episode-governed".to_string(),
+            session_id: "sess-a".to_string(),
+            agent_id: "agent-a".to_string(),
+            ward_id: "ward-a".to_string(),
+            task_summary: "Implemented the governed sidecar mirror.".to_string(),
+            outcome: "success".to_string(),
+            strategy_used: None,
+            key_learnings: Some("Use Engram for canonical semantics.".to_string()),
+            token_cost: None,
+            embedding: None,
+            created_at: "2026-07-13T00:00:00Z".to_string(),
+        };
+        EpisodeStore::insert_episode(
+            &store,
+            serde_json::to_value(&episode).expect("episode json"),
+            None,
+        )
+        .await
+        .expect("episode write");
+        let episode_scope = store
+            .mapper
+            .memory_fact_scope("ward-a", Some("sess-a"))
+            .expect("episode scope");
+        let episode_record = store
+            .memory
+            .get_memory(
+                &MemoryId::from("zbot-sidecar:episode:episode-governed"),
+                &episode_scope,
+            )
+            .await
+            .expect("episode lookup")
+            .expect("canonical episode");
+        assert_eq!(episode_record.kind, MemoryKind::Episode);
+        assert_eq!(
+            episode_record
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("governanceRecordKind")),
+            Some(&json!("episode"))
+        );
+        assert_eq!(
+            episode_record
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("governanceTaxonomyConceptIds")),
+            Some(&json!([format!("{ZBOT_GENERAL_SCHEME_ID}:concept:memory")]))
+        );
+
+        let evidence_id = KgEpisodeStore::upsert_pending(
+            &store,
+            "evidence_intake",
+            "source-a",
+            "content-hash-a",
+            Some("sess-a"),
+            "agent-a",
+        )
+        .await
+        .expect("evidence pending");
+        KgEpisodeStore::set_payload(
+            &store,
+            &evidence_id,
+            &json!({
+                "evidence_id": "evidence-governed",
+                "agent_id": "agent-a",
+                "source_id": "source-a",
+                "source_type": "connector",
+                "session_id": "sess-a",
+                "ward_id": "ward-a",
+            })
+            .to_string(),
+        )
+        .await
+        .expect("evidence payload");
+        let evidence_record = store
+            .memory
+            .get_memory(
+                &MemoryId::from("zbot-sidecar:evidence:evidence-governed"),
+                &episode_scope,
+            )
+            .await
+            .expect("evidence lookup")
+            .expect("canonical evidence");
+        assert_eq!(evidence_record.kind, MemoryKind::Artifact);
+        assert_eq!(
+            evidence_record
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("governanceRecordKind")),
+            Some(&json!("evidence"))
+        );
+        assert_eq!(
+            evidence_record
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("governanceTaxonomyConceptIds")),
+            Some(&json!([format!("{ZBOT_GENERAL_SCHEME_ID}:concept:memory")]))
+        );
+    }
 }

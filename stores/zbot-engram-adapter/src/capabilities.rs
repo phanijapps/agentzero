@@ -394,6 +394,8 @@ mod tests {
             ..AdapterConfig::default()
         };
         let bootstrap = GovernanceBootstrapReport {
+            ontology_ids: vec!["zbot.base:v1".to_string()],
+            taxonomy_scheme_ids: vec!["zbot.general:v1".to_string()],
             ontology_id: "zbot.base:v1".to_string(),
             taxonomy_scheme_id: "zbot.general:v1".to_string(),
             class_count: 3,

@@ -286,6 +286,7 @@ fn tool_result_evidence_record(
         source_id: tool_call_id.to_string(),
         source_type: format!("tool_result:{tool_name}"),
         session_id: (!session_id.is_empty()).then(|| session_id.to_string()),
+        ward_id: None,
         agent_id: agent_id.to_string(),
         retention_policy: "durable".to_string(),
         ontology_labels: Vec::new(),

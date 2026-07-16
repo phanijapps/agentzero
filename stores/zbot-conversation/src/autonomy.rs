@@ -7,6 +7,7 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::domain::{
     AutonomyApprovalPolicy, AutonomyEvidence, AutonomyItem, AutonomyRun, AutonomyState,
+    LedgerResumePacket,
 };
 
 pub trait AutonomyStore: Send + Sync {
@@ -15,6 +16,9 @@ pub trait AutonomyStore: Send + Sync {
     fn list_open(&self, limit: usize) -> Result<Vec<AutonomyItem>>;
     fn evidence(&self, item_id: &str) -> Result<Vec<AutonomyEvidence>>;
     fn runs(&self, item_id: &str) -> Result<Vec<AutonomyRun>>;
+    /// Atomically verifies that an item is approved, builds its bounded packet,
+    /// and records the user-requested resume attempt before execution starts.
+    fn prepare_resume(&self, item_id: &str) -> Result<LedgerResumePacket>;
     fn transition(
         &self,
         item_id: &str,
@@ -140,6 +144,30 @@ impl AutonomyStore for SqliteAutonomyStore {
             .map_err(Into::into)
     }
 
+    fn prepare_resume(&self, item_id: &str) -> Result<LedgerResumePacket> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+        let item =
+            load_item(&tx, item_id)?.ok_or_else(|| anyhow::anyhow!("autonomy item not found"))?;
+        let evidence = load_evidence(&tx, item_id)?;
+        let packet = LedgerResumePacket::from_approved_item(&item, &evidence)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO autonomy_runs (id, item_id, kind, from_state, to_state, outcome, created_at)
+             VALUES (?, ?, 'resume_requested', ?, ?, 'user_requested', ?)",
+            params![
+                format!("run-{}", uuid::Uuid::now_v7()),
+                item_id,
+                AutonomyState::Approved.as_str(),
+                AutonomyState::Approved.as_str(),
+                now,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(packet)
+    }
+
     fn transition(
         &self,
         item_id: &str,
@@ -184,6 +212,25 @@ fn load_item(conn: &rusqlite::Connection, item_id: &str) -> Result<Option<Autono
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn load_evidence(conn: &rusqlite::Connection, item_id: &str) -> Result<Vec<AutonomyEvidence>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, item_id, kind, reference_id, label, created_at
+         FROM autonomy_evidence WHERE item_id = ? ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([item_id], |row| {
+        Ok(AutonomyEvidence {
+            id: row.get(0)?,
+            item_id: row.get(1)?,
+            kind: row.get(2)?,
+            reference_id: row.get(3)?,
+            label: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomyItem> {

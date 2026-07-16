@@ -421,10 +421,26 @@ impl AppState {
             let taxonomy_expander: Option<Arc<dyn zbot_stores_traits::RecallTaxonomyExpander>> =
                 engram_store_bundle
                     .as_ref()
-                    .map(|bundle| bundle.taxonomy_expander.clone());
+                    .and_then(|bundle| bundle.taxonomy_expander.clone());
+            // A configured Engram provider proves the tenant/workspace
+            // boundary. The optional expander independently determines
+            // whether a taxonomy source is configured; this lets unified
+            // recall report `not_configured` instead of treating an absent
+            // optional source as a scope failure.
+            let taxonomy_scope_proven = engram_store_bundle.is_some();
             if let Some(taxonomy_expander) = taxonomy_expander {
                 recall.set_taxonomy_expander(taxonomy_expander);
             }
+            // This comes from the exact provider configuration used to open
+            // the stores above, not from executor or model request state.
+            // A non-workspace ward mapping intentionally leaves runtime
+            // workspace unset; the adapter then proves tenant scope only.
+            recall.set_provider_scope(gateway_memory::RecallProviderScope::new(
+                memory_provider_settings.tenant.clone(),
+                memory_provider_settings.ward_scope_target
+                    == gateway_memory::MemoryScopeTarget::Workspace,
+                taxonomy_scope_proven,
+            ));
             if let Ok(settings) = gateway_services::SettingsService::new(paths.clone()).load() {
                 let limits = settings.execution.memory.provider.governance.skos_expansion;
                 recall.set_taxonomy_expansion_limits(gateway_memory::RecallSkosExpansionLimits {

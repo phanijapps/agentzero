@@ -4,15 +4,18 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
-| [Autonomy Ledger](autonomy-ledger/spec.md) | Implementing | Adds durable, approved cross-session decision threads with bounded resume context and Mission Control visibility. |
+| [Autonomy Ledger](autonomy-ledger/spec.md) | Shipped | Adds durable, approved cross-session decision threads with bounded resume context, Mission Control visibility, and read-only trigger eligibility. |
 | [Agent-Driven Surfaces](agent-driven-surfaces/spec.md) | Draft | Adds capability-gated, catalog-constrained agent work surfaces with channel-neutral results and server-owned actions. |
 | [Agent Commissioning](agent-commissioning/spec.md) | Shipped | Replaces the legacy setup wizard with durable, personalized model commissioning and a portable semantic profile. |
 | [Vault Layout Standardization](vault-layout-standardization/spec.md) | Shipped | Makes vault paths, configuration names, runtime directories, and prompt loading consistent while retiring dormant OKF material. |
 | [SQLite Runtime Store Split](sqlite-runtime-store-split/spec.md) | Shipped | Separates unchanged runtime conversation persistence from quarantined legacy semantic SQLite as Engram owns the active memory layer. |
 | [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Implementing | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
+| [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Implementing | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |
+| [Research Context Inspector](research-context-inspector/spec.md) | Implementing | Moves existing intent analysis and delegated-agent context into Research's real right inspector without adding dashboard metrics. |
 | [YFinance Market Analysis Skill Consolidation](yfinance-market-analysis-skill/spec.md) | Shipped | Consolidates bundled yfinance workflows into one primary skill while keeping old `yf-*` IDs as compatibility wrappers. |
 | [Tool Waste Visibility](tool-waste-visibility/spec.md) | Done | Makes blocked hooks, invalid tool arguments, planner skill drift, and tool durations visible in existing session telemetry. |
 | [Mission Control Performance](mission-control-performance/spec.md) | Shipped | Makes Mission Control load bounded summary data first, then lazy-load selected-session detail as the database grows. |
+| [Mission Control Attention Radar](mission-control-attention-radar/spec.md) | Implementing | Replaces Mission Control polling with a bounded live Attention Radar and focused, on-demand observability. |
 | [GitHub Release Installer](github-release-installer/spec.md) | Closed | Defines GitHub Release installers and artifact packaging for Linux, macOS, and Windows. |
 | [Release On Main](release-on-main/spec.md) | Done for now | Automates the daily CalVer release bump and tag when changes land on `main`, while preserving the manual release script. |
 | [Agent Handoff Notes](agent-handoff-notes/spec.md) | Done | Adds current-session agent discovery and one-way handoff notes over existing steering without implementing full Pattern 4 peer messaging. |
@@ -23,6 +26,15 @@ Active feature specs for AgentZero.
 | [Engram Memory Engine Cutover](engram-memory-engine-cutover/spec.md) | Shipped | Switches durable memory, knowledge, graph, belief, hierarchy, and recall backing to Engram through a fail-closed AgentZero adapter while preserving gateway/UI/sleep-cycle contracts. |
 | [Dynamic Ontology and SKOS Taxonomy](dynamic-ontology-skos-taxonomy/spec.md) | Implementing | Adds zbot-owned dynamic ontology policy and durable SKOS-style taxonomy classification over Engram without changing gateway/UI contracts. |
 | [Context Capability Registry](context-capability-registry/spec.md) | Implementing | Implements RFC-0014 with an actor-filtered capability catalog, bounded context packets, structured recall/micro-recall, and staged tool-surface cleanup. |
+| [Unified Recall Default](unified-recall-default/spec.md) | Shipped | Makes a bounded model-visible recall surface use unified semantic retrieval, dynamic taxonomy expansion, and a quality gate before ontology-aware ranking. |
+| [Research Submit Visibility](research-submit-visibility/spec.md) | Shipped | Keeps submitted Research requests visible across intent analysis, snapshots, and delegation. |
+| [Research Live Artifact Refresh](research-live-artifact-refresh/spec.md) | Shipped | Makes newly completed Research artifacts appear in the open session without a page reload. |
+| [Research Goal Deliverables](research-goal-deliverables/spec.md) | Shipped | Shows only explicitly designated goal deliverables in Research attachments while leaving working files in the ward explorer. |
+| [Memory Command Deck Density](memory-command-deck-density/spec.md) | Shipped | Makes Memory's gallery-aligned scope, evidence, and curation panes remain compact and independently scrollable with large datasets. |
+| [Intent Ward Execution Binding](intent-ward-execution-binding/spec.md) | Shipped | Makes intent-selected existing wards actual session and tool workspaces rather than display-only recommendations. |
+| [Research Session Switching](research-session-switching/spec.md) | Shipped | Prevents stale Research state from overwriting a selected completed-session route. |
+| [Goal Artifacts](goal-artifacts/spec.md) | Shipped | Makes Quick Chat show only explicitly designated, safely served goal deliverables. |
+| [Session Plan Monitoring](session-plan-monitoring/spec.md) | Shipped | Separates live session plans from durable decision threads in Research and Mission Control. |
 | [Connector Resource Invoke Split](connector-resource-invoke-split/spec.md) | Shipped | Splits broad connector resource querying from side-effecting connector invocation in the model-visible tool surface. |
 | [Conversation Store Revamp](conversation-store-revamp/spec.md) | Complete | Splits conversations.db into zbot-conversation (messages/checkpoints/thread_summaries) + zbot-trace (slim execution_logs + streamed .jsonl.zst + DuckDB analytics); promotes a real versioned checkpoint (replay→O(1)); clean cutover + dead-code deletion. |
 | [Conversation Compatibility Retirement](conversation-compat-retirement/spec.md) | Complete | Retires the legacy `ConversationRepository`/`ConversationStore` compatibility layer now that Engram owns semantic memory and `zbot-conversation` owns transcripts. |

@@ -9,8 +9,10 @@ pub mod bootstrap;
 
 use std::{collections::BTreeSet, path::PathBuf};
 
+use engram_domain::Metadata;
 use knowledge_graph::{EntityType, RelationshipType};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 /// Built-in ontology ID used when no local ontology overlay is selected.
 pub const ZBOT_BASE_ONTOLOGY_ID: &str = "zbot.base:v1";
@@ -616,6 +618,29 @@ impl GovernancePolicy {
             && self.skos_expansion == SkosExpansionPolicy::default()
     }
 
+    /// Returns true when any configured scope can select a taxonomy scheme.
+    ///
+    /// Runtime composition uses this to avoid advertising a taxonomy source
+    /// when governance is enabled only for ontology validation or durable
+    /// write metadata.
+    pub fn has_taxonomy_selection(&self) -> bool {
+        !self.default_selection.taxonomy_scheme_ids.is_empty()
+            || self
+                .overlays
+                .iter()
+                .any(|overlay| !overlay.selection.taxonomy_scheme_ids.is_empty())
+    }
+
+    /// Returns true when an overlay needs project/source/task identity, which
+    /// unified recall does not currently receive from a trusted gateway seam.
+    /// Recall disables taxonomy expansion in that case rather than silently
+    /// falling back to a potentially different selection.
+    pub fn has_unsupported_recall_overlays(&self) -> bool {
+        self.overlays.iter().any(|overlay| {
+            overlay.project_id.is_some() || overlay.source_id.is_some() || overlay.task_id.is_some()
+        })
+    }
+
     /// Select the active governance IDs for a scope.
     pub fn select(&self, scope: GovernanceScope<'_>) -> GovernanceSelection {
         self.overlays
@@ -629,6 +654,61 @@ impl GovernancePolicy {
             .max_by_key(|(rank, idx, _)| (*rank, *idx))
             .map(|(_, _, selection)| selection)
             .unwrap_or_else(|| self.default_selection.clone())
+    }
+}
+
+/// Select governance for a durable record and persist the selected definition
+/// IDs as Engram metadata. Metadata-bearing canonical writers use this helper
+/// so selection precedence cannot drift between memory, wiki, and graph
+/// entity paths.
+pub(crate) fn select_and_persist_governance_metadata(
+    policy: &GovernancePolicy,
+    scope: GovernanceScope<'_>,
+    metadata: &mut Metadata,
+) -> GovernanceSelection {
+    let selection = policy.select(scope);
+    if let Some(ontology_id) = selection.ontology_ids.first() {
+        persist_authoritative_governance_id(
+            metadata,
+            "ontologyId",
+            "sourceOntologyId",
+            ontology_id,
+        );
+    }
+    if let Some(taxonomy_id) = selection.taxonomy_scheme_ids.first() {
+        persist_authoritative_governance_id(
+            metadata,
+            "taxonomyId",
+            "sourceTaxonomyId",
+            taxonomy_id,
+        );
+    }
+    if !selection.ontology_ids.is_empty() {
+        metadata.insert(
+            "governanceOntologyIds".to_string(),
+            json!(selection.ontology_ids),
+        );
+    }
+    if !selection.taxonomy_scheme_ids.is_empty() {
+        metadata.insert(
+            "governanceTaxonomySchemeIds".to_string(),
+            json!(selection.taxonomy_scheme_ids),
+        );
+    }
+    selection
+}
+
+fn persist_authoritative_governance_id(
+    metadata: &mut Metadata,
+    key: &str,
+    source_key: &str,
+    configured_id: &str,
+) {
+    let configured = json!(configured_id);
+    if let Some(supplied) = metadata.insert(key.to_string(), configured.clone()) {
+        if supplied != configured {
+            metadata.insert(source_key.to_string(), supplied);
+        }
     }
 }
 

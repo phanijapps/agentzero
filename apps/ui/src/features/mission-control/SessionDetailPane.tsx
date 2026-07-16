@@ -15,24 +15,34 @@ import { TokenPair } from "./SessionListPanel";
 import type { SessionTokenIndex } from "./useSessionTokens";
 import { useSessionDetailBundle } from "./useSessionDetailBundle";
 import { useSelectedSessionTokens } from "./useSelectedSessionTokens";
+import type { CurrentSessionPlan } from "@/services/transport/types";
 
 interface SessionDetailPaneProps {
   session: LogSession | null;
   /** Optional — when supplied, header shows in/out tokens, ToolsPane shows
    *  per-execution tokens in each agent group header. */
   tokenIndex?: SessionTokenIndex;
+  /** Successful Mission Control list-load generation for the running-session
+   *  selected-token refresh. */
+  refreshGeneration?: number;
+  /** The Radar already supplies the mission title and controls. Keep the
+   * trace/plan body without duplicating that command surface. */
+  embedded?: boolean;
 }
 
-export function SessionDetailPane({ session, tokenIndex }: SessionDetailPaneProps) {
+export function SessionDetailPane({ session, tokenIndex, refreshGeneration, embedded = false }: SessionDetailPaneProps) {
   const navigate = useNavigate();
   const sessionId = session?.session_id ?? null;
   const conversationId = session?.conversation_id ?? null;
   const isRunning = session?.status === "running";
   const detail = useSessionDetailBundle(sessionId, isRunning);
-  const selectedTokenIndex = useSelectedSessionTokens(conversationId);
+  const selectedTokenState = useSelectedSessionTokens(
+    conversationId,
+    isRunning ? refreshGeneration : undefined,
+  );
   const detailTokenIndex = useMemo(
-    () => mergeTokenIndexes(tokenIndex, selectedTokenIndex),
-    [tokenIndex, selectedTokenIndex],
+    () => mergeTokenIndexes(tokenIndex, selectedTokenState),
+    [tokenIndex, selectedTokenState],
   );
 
   if (!session) {
@@ -51,8 +61,8 @@ export function SessionDetailPane({ session, tokenIndex }: SessionDetailPaneProp
   const sessionTokens = detailTokenIndex?.byRootExecId.get(session.session_id);
 
   return (
-    <section className="session-detail-pane">
-      <header className="session-detail-pane__head">
+    <section className={`session-detail-pane${embedded ? " session-detail-pane--embedded" : ""}`}>
+      {!embedded && <header className="session-detail-pane__head">
         <div className="session-detail-pane__title">
           #{shortId(session.session_id)} · {title}
         </div>
@@ -108,14 +118,19 @@ export function SessionDetailPane({ session, tokenIndex }: SessionDetailPaneProp
             <ExternalLink size={14} /> Open in Research
           </button>
         </div>
-      </header>
+      </header>}
+      {(!embedded || selectedTokenState.currentPlan) && (
+        <CurrentPlanCard currentPlan={selectedTokenState.currentPlan} />
+      )}
       <div className="session-detail-pane__panes">
-        <MessagesPane
-          session={session}
-          detailBundle={detail.bundle}
-          detailLoading={detail.loading}
-          detailError={detail.error}
-        />
+        {!embedded && (
+          <MessagesPane
+            session={session}
+            detailBundle={detail.bundle}
+            detailLoading={detail.loading}
+            detailError={detail.error}
+          />
+        )}
         <ToolsPane
           session={session}
           tokenIndex={detailTokenIndex}
@@ -124,6 +139,28 @@ export function SessionDetailPane({ session, tokenIndex }: SessionDetailPaneProp
           onDetailEvent={detail.refetch}
         />
       </div>
+    </section>
+  );
+}
+
+function CurrentPlanCard({ currentPlan }: { currentPlan?: CurrentSessionPlan }) {
+  return (
+    <section className="session-current-plan" aria-label="Current plan">
+      <h2>Current plan</h2>
+      {!currentPlan && <p>No plan recorded for this session.</p>}
+      {currentPlan && (
+        <>
+          {currentPlan.explanation && <p className="session-current-plan__explanation">{currentPlan.explanation}</p>}
+          <ol>
+            {currentPlan.plan.map((item, index) => (
+              <li key={`${index}-${item.step}`}>
+                <span>{item.step}</span>
+                <small data-status={item.status}>{item.status.replace("_", " ")}</small>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
     </section>
   );
 }

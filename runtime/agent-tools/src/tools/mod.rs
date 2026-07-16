@@ -11,6 +11,7 @@ pub mod guards;
 mod ingest;
 mod memory;
 mod multimodal;
+mod recall;
 mod search;
 mod ward;
 
@@ -37,6 +38,14 @@ pub use ingest::{
 };
 pub use memory::{MemoryEntry, MemoryStore, MemoryTool, MemoryWriteTool};
 pub use multimodal::MultimodalAnalyzeTool;
+pub use recall::{
+    RecallAuthorizationAccess, RecallAuthorizationContext, RecallContentVisibility, RecallFailure,
+    RecallItemKind, RecallLogicalSource, RecallMode, RecallOutputPolicy, RecallProvenance,
+    RecallReasonCode, RecallSourceState, RecallSourceStatus, RecallSourceSummary,
+    RecallTaxonomyCandidate, RecallTaxonomyExpansion, RecallTool, RecallVisibilityScope,
+    TaxonomyRelation, UnifiedRecallAccess, UnifiedRecallBinding, UnifiedRecallItem,
+    UnifiedRecallRequest, UnifiedRecallResponse, recall_parameters_schema,
+};
 pub use search::GlobTool;
 pub use ward::{WardTool, WardUsageAccess};
 

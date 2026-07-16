@@ -39,6 +39,14 @@ vi.mock("./useQuickChat", () => ({
   useQuickChat: () => mockHookRef.current,
 }));
 
+// Keep this page-level test focused on opening behavior. The shared viewer's
+// network and preview behavior is covered independently.
+vi.mock("../chat/ArtifactSlideOut", () => ({
+  ArtifactSlideOut: ({ artifact }: { artifact: { fileName: string } }) => (
+    <div data-testid="artifact-slideout">{artifact.fileName}</div>
+  ),
+}));
+
 // jsdom lacks scrollIntoView; polyfill as a no-op so the auto-scroll effect
 // doesn't throw during render.
 beforeAll(() => {
@@ -186,6 +194,7 @@ describe("<QuickChat>", () => {
       },
     };
     renderPage();
+    expect(screen.getByRole("heading", { name: "Deliverables" })).toBeTruthy();
     expect(screen.getByText("report.md")).toBeTruthy();
     expect(screen.getByText("summary")).toBeTruthy();
     expect(screen.getByText("data.csv")).toBeTruthy();
@@ -203,11 +212,8 @@ describe("<QuickChat>", () => {
     };
     const { container } = renderPage();
     fireEvent.click(screen.getByTestId("quick-chat-artifact"));
-    // ArtifactSlideOut renders a header that mirrors the file name; the
-    // component is a portal so the easiest signal is the second occurrence
-    // of the file name in the DOM (card + slideout).
     expect(container.querySelectorAll("[data-testid='quick-chat-artifact']").length).toBe(1);
-    expect(screen.getAllByText("open.md").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByTestId("artifact-slideout")).toBeTruthy();
   });
 
   it("does NOT open a slide-out when sessionId is null (defensive guard)", () => {

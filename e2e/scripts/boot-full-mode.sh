@@ -37,8 +37,8 @@ echo "$RUN_DIR" > /tmp/zbot-e2e-latest-run-dir
 # to keep the copy cheap; zerod recreates anything it needs).
 cp "$HOST_DATA_DIR/config/"*.json "$DATA_DIR/config/" 2>/dev/null || true
 cp "$HOST_DATA_DIR/config/"*.md "$DATA_DIR/config/" 2>/dev/null || true
-# shards + wards are required — copy them too.
-for sub in shards wards; do
+# Nested configuration used by runtime composition must travel with the seed.
+for sub in shards wards governance; do
   if [[ -d "$HOST_DATA_DIR/config/$sub" ]]; then
     cp -r "$HOST_DATA_DIR/config/$sub" "$DATA_DIR/config/"
   fi

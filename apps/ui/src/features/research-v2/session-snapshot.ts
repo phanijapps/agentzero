@@ -17,8 +17,9 @@
 //   parallel `toolCalls` (camel) or `tool_calls` (snake) column whose JSON
 //   entries use `tool_name: "respond"`.
 //
-// Subagents do NOT spawn subagents (hard 2-level tree), so the child list can
-// be built flat from the log rows + sorted by `started_at`.
+// Delegated executions can themselves delegate. The snapshot keeps the flat
+// log rows and their recorded `parent_session_id`, while the UI rebuilds the
+// nested card tree from that durable relationship.
 // =============================================================================
 
 import type { Transport } from "@/services/transport";
@@ -34,7 +35,11 @@ import type {
   ResearchStatus,
   SessionTurn,
 } from "./types";
-import { toArtifactRef } from "./artifact-poll";
+import {
+  GOAL_ARTIFACT_LIST_OPTIONS,
+  selectGoalArtifacts,
+  toArtifactRef,
+} from "./artifact-poll";
 import { buildSessionTurns } from "./turns";
 
 // -----------------------------------------------------------------------------
@@ -42,8 +47,6 @@ import { buildSessionTurns } from "./turns";
 // -----------------------------------------------------------------------------
 
 const DEFAULT_AGENT_ID = "root";
-const RESPOND_TOOL_NAME = "respond";
-const ASSISTANT_ROLE = "assistant";
 const USER_ROLE = "user";
 
 const SYSTEM_INJECTED_MARKERS = ["<ward_snapshot", "[Delegation "];
@@ -75,6 +78,10 @@ export interface ResearchSnapshot {
    * blocker for live sessions.
    */
   conversationId: string | null;
+  /** Lightweight intent state so the right inspector can be conditional. */
+  intentAnalyzing: boolean;
+  /** Recorded primary intent, when the session completed intent analysis. */
+  intentClassification: string | null;
 }
 
 /**
@@ -89,9 +96,15 @@ export async function snapshotSession(
   sessionId: string,
 ): Promise<ResearchSnapshot | null> {
   const [logsRes, msgsRes, artifactsRes, stateRes] = await Promise.all([
-    transport.listLogSessions(),
+    // Do not fetch the default, globally-limited execution list and filter it
+    // locally. That loses child executions from older sessions once unrelated
+    // agent work has filled the global page, so a reopened Research thread no
+    // longer shows the agents it actually ran.
+    transport.listLogSessions({ conversation_id: sessionId }),
     transport.getSessionMessages(sessionId, { scope: "all" }),
-    transport.listSessionArtifacts(sessionId).catch(() => ({ success: false } as const)),
+    transport
+      .listSessionArtifacts(sessionId, GOAL_ARTIFACT_LIST_OPTIONS)
+      .catch(() => ({ success: false } as const)),
     // /api/sessions/:id/state carries ward info so a reopened session
     // re-populates the header ward chip + clickable folder link. Soft
     // fail: older backends without the endpoint just leave ward null.
@@ -106,7 +119,7 @@ export async function snapshotSession(
   if (!rootRow) return null;
 
   const messages = msgsRes.data;
-  const artifacts = buildArtifacts(artifactsRes, messages);
+  const artifacts = buildArtifacts(artifactsRes);
   const title = pickTitle(sessionRows);
   // Session-level truth wins over per-execution status on reopen.
   //
@@ -132,6 +145,13 @@ export async function snapshotSession(
   const wardName = stateRes.success && stateRes.data?.ward?.name
     ? stateRes.data.ward.name
     : null;
+  const primaryIntent = stateRes.success && stateRes.data
+    ? stateRes.data.intentAnalysis?.["primary_intent"]
+    : null;
+  const intentClassification = typeof primaryIntent === "string" && primaryIntent.trim().length > 0
+    ? primaryIntent.trim()
+    : null;
+  const intentAnalyzing = stateRes.success && stateRes.data?.phase === "intent";
 
   // Build per-turn rollup using only root-execution messages (subagent
   // executions carry their own user-role rows from delegation context).
@@ -148,6 +168,7 @@ export async function snapshotSession(
     rootEndedAt: rootRow.ended_at ?? null,
     rootStatus: researchStatusToTurnStatus(status),
     rootMessages,
+    allMessages: messages,
     childRows,
   });
 
@@ -163,6 +184,8 @@ export async function snapshotSession(
     wardName,
     rootExecutionId: rootRow.session_id,
     conversationId: null,
+    intentAnalyzing,
+    intentClassification,
   };
 }
 
@@ -264,90 +287,19 @@ function pickTitle(rows: LogSession[]): string {
 }
 
 // -----------------------------------------------------------------------------
-// tool_calls parsing (shared between respond-extraction and delegation)
-// -----------------------------------------------------------------------------
-
-interface ToolCall {
-  tool_name?: string;
-  args?: Record<string, unknown>;
-}
-
-/**
- * Accepts both camelCase `toolCalls` (current wire) and snake_case `tool_calls`
- * (legacy). Backend emits the parallel column as either a JSON string or an
- * already-decoded array — handle both.
- */
-function parseToolCalls(m: SessionMessage): ToolCall[] {
-  const camel = (m as unknown as { toolCalls?: unknown }).toolCalls;
-  const candidate = camel ?? m.tool_calls;
-  if (candidate == null) return [];
-  try {
-    const raw = typeof candidate === "string" ? candidate : JSON.stringify(candidate);
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as ToolCall[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Artifact refs from respond tool calls (used as fallback when /artifacts
-// endpoint returned nothing — the file was written but not yet indexed).
-// -----------------------------------------------------------------------------
-
-interface ArtifactHint {
-  path: string;
-  label?: string;
-}
-
-function extractArtifactHints(messages: SessionMessage[]): ArtifactHint[] {
-  const out: ArtifactHint[] = [];
-  for (const m of messages) {
-    if (m.role !== ASSISTANT_ROLE) continue;
-    for (const call of parseToolCalls(m)) {
-      if (call?.tool_name !== RESPOND_TOOL_NAME) continue;
-      const artifacts = call.args?.["artifacts"];
-      if (!Array.isArray(artifacts)) continue;
-      for (const art of artifacts) {
-        if (art && typeof art === "object") {
-          const path = (art as Record<string, unknown>)["path"];
-          const label = (art as Record<string, unknown>)["label"];
-          if (typeof path === "string" && path.length > 0) {
-            out.push({ path, label: typeof label === "string" ? label : undefined });
-          }
-        }
-      }
-    }
-  }
-  return out;
-}
-// -----------------------------------------------------------------------------
-// Artifacts — /artifacts endpoint wins; respond hints fill in on empty.
+// Artifacts — only persisted manifest rows have a safe, previewable ID.
 // -----------------------------------------------------------------------------
 
 type ArtifactsResult = { success: boolean; data?: Artifact[] };
 
-function buildArtifacts(
-  res: ArtifactsResult,
-  messages: SessionMessage[],
-): ResearchArtifactRef[] {
+function buildArtifacts(res: ArtifactsResult): ResearchArtifactRef[] {
   if (res.success && res.data && res.data.length > 0) {
-    return dedupeRefs(res.data.map(toArtifactRef));
+    return dedupeRefs(selectGoalArtifacts(res.data).map(toArtifactRef));
   }
-  // Fallback: synthesize refs from respond.args.artifacts. Path acts as the
-  // stable id since these records don't have a DB id yet.
-  const hints = extractArtifactHints(messages);
-  const refs: ResearchArtifactRef[] = hints.map((h) => ({
-    id: h.path,
-    fileName: fileNameFromPath(h.path),
-    label: h.label,
-  }));
-  return dedupeRefs(refs);
-}
-
-function fileNameFromPath(path: string): string {
-  const slash = path.lastIndexOf("/");
-  return slash >= 0 ? path.slice(slash + 1) : path;
+  // A respond declaration carries an untrusted ward-relative path, not a
+  // persisted artifact ID. Rendering it as a clickable artifact would produce
+  // a guaranteed content-route 404 and bypass the manifest boundary.
+  return [];
 }
 
 function dedupeRefs(refs: ResearchArtifactRef[]): ResearchArtifactRef[] {

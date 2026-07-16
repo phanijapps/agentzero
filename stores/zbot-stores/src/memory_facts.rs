@@ -9,6 +9,6 @@
 //! callers that import `zbot_stores::MemoryFactStore` continue to work.
 
 pub use zbot_stores_traits::{
-    EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFactStore, MemoryHealthMetrics,
-    SkillIndexRow, StrategyFactInsert, StrategyFactMatch,
+    EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFactStore, MemoryFactWriteRequest,
+    MemoryHealthMetrics, SkillIndexRow, StrategyFactInsert, StrategyFactMatch,
 };

@@ -6,7 +6,7 @@
 use rusqlite::{Connection, Result};
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 22;
+const SCHEMA_VERSION: i32 = 24;
 
 /// Run migrations for existing databases.
 ///
@@ -350,6 +350,53 @@ fn migrate_database(conn: &Connection) -> Result<()> {
         // orphaned and will be ignored; the repository layer routes to KnowledgeDatabase.
     }
 
+    // v22 → v23: Mark user-facing goal artifacts explicitly. Existing rows
+    // remain hidden from Quick Chat until an agent opts in on a new declaration.
+    if version < 23 {
+        let has_artifacts_table: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'artifacts'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? > 0;
+        if has_artifacts_table {
+            let mut columns = conn.prepare("PRAGMA table_info(artifacts)")?;
+            let has_goal_column = columns
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>>>()?
+                .iter()
+                .any(|column| column == "is_goal_artifact");
+            if !has_goal_column {
+                conn.execute(
+                    "ALTER TABLE artifacts ADD COLUMN is_goal_artifact INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+        }
+    }
+
+    // v23 → v24: persist the selected-session current-plan snapshot and its
+    // durable per-session acceptance counter.
+    if version < 24 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_plan_counters (
+                session_id TEXT PRIMARY KEY,
+                last_issued_sequence INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS session_plans (
+                session_id TEXT PRIMARY KEY,
+                execution_id TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                explanation TEXT,
+                source_event_timestamp INTEGER NOT NULL,
+                source_event_sequence INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
+            );",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -466,6 +513,34 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_started ON agent_executions(started_at)",
+        [],
+    )?;
+
+    // =========================================================================
+    // CURRENT SESSION PLANS
+    // Latest validated operational plan for one selected Mission Control session
+    // =========================================================================
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS session_plan_counters (
+            session_id TEXT PRIMARY KEY,
+            last_issued_sequence INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS session_plans (
+            session_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            explanation TEXT,
+            source_event_timestamp INTEGER NOT NULL,
+            source_event_sequence INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
+        )",
         [],
     )?;
 
@@ -641,6 +716,7 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
             file_type TEXT,
             file_size INTEGER,
             label TEXT,
+            is_goal_artifact INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
         )",
@@ -705,7 +781,69 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 22, "schema version should be 22");
+        assert_eq!(version, 24, "schema version should be 24");
+    }
+
+    #[test]
+    fn migrates_v23_to_current_plan_tables() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        initialize_database(&conn).expect("create current schema for v23 fixture");
+        conn.execute_batch(
+            "DROP TABLE session_plans;
+             DROP TABLE session_plan_counters;
+             DELETE FROM schema_version;
+             INSERT INTO schema_version (version) VALUES (23);",
+        )
+        .expect("seed v23 schema");
+
+        initialize_database(&conn).expect("migrate v23 database");
+
+        for table in ["session_plan_counters", "session_plans"] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("read migrated table");
+            assert_eq!(exists, 1, "{table} should exist after migration");
+        }
+    }
+
+    #[test]
+    fn migrates_v22_artifacts_to_hidden_goal_default() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             INSERT INTO schema_version (version) VALUES (22);
+             CREATE TABLE artifacts (
+                 id TEXT PRIMARY KEY,
+                 session_id TEXT NOT NULL,
+                 ward_id TEXT,
+                 execution_id TEXT,
+                 agent_id TEXT,
+                 file_path TEXT NOT NULL,
+                 file_name TEXT NOT NULL,
+                 file_type TEXT,
+                 file_size INTEGER,
+                 label TEXT,
+                 created_at TEXT NOT NULL
+             );
+             INSERT INTO artifacts (id, session_id, file_path, file_name, created_at)
+             VALUES ('art-old', 'sess-old', '/ward/old.md', 'old.md', '2026-01-01T00:00:00Z');",
+        )
+        .expect("seed v22 schema");
+
+        initialize_database(&conn).expect("migrate v22 database");
+
+        let goal_flag: i64 = conn
+            .query_row(
+                "SELECT is_goal_artifact FROM artifacts WHERE id = 'art-old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated goal flag");
+        assert_eq!(goal_flag, 0);
     }
 
     #[test]

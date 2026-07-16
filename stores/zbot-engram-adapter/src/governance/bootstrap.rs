@@ -1,6 +1,6 @@
 //! Bootstrap zbot-owned governance definitions into Engram.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, path::Path, sync::Arc};
 
 use chrono::Utc;
 use engram_domain::{
@@ -10,6 +10,8 @@ use engram_domain::{
     Sensitivity, Visibility,
 };
 use engram_knowledge::{OntologyRepository, TaxonomyRepository};
+
+use serde::Deserialize;
 
 use crate::{
     config::AdapterConfig,
@@ -23,7 +25,13 @@ use crate::{
 /// Result summary for a governance bootstrap run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GovernanceBootstrapReport {
+    /// All ontology definitions persisted during this bootstrap.
+    pub ontology_ids: Vec<String>,
+    /// All taxonomy scheme definitions persisted during this bootstrap.
+    pub taxonomy_scheme_ids: Vec<String>,
+    /// First ontology ID, retained for the existing additive health DTO.
     pub ontology_id: String,
+    /// First taxonomy scheme ID, retained for the existing additive health DTO.
     pub taxonomy_scheme_id: String,
     pub class_count: usize,
     pub property_count: usize,
@@ -31,19 +39,83 @@ pub struct GovernanceBootstrapReport {
     pub relation_count: usize,
 }
 
+/// Definitions loaded once from the configured, confined local files.
+///
+/// The provider holds this exact snapshot for the lifetime of its stores. That
+/// keeps bootstrap and query expansion deterministic even if an operator edits
+/// a definition file while the daemon is running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GovernanceDefinitions {
+    pub(crate) ontologies: Vec<OntologyDefinition>,
+    pub(crate) taxonomies: Vec<SkosSchemeDefinition>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DefinitionDocument<T> {
+    kind: String,
+    schema_version: u32,
+    #[serde(flatten)]
+    definition: T,
+}
+
 /// Bootstrap active built-in governance definitions into Engram.
-pub async fn bootstrap_governance_definitions(
+pub(crate) async fn bootstrap_governance_definitions(
     config: &AdapterConfig,
     ontology_repo: Arc<dyn OntologyRepository>,
     taxonomy_repo: Arc<dyn TaxonomyRepository>,
-) -> AdapterResult<GovernanceBootstrapReport> {
+) -> AdapterResult<(GovernanceDefinitions, GovernanceBootstrapReport)> {
+    let definitions = load_governance_definitions(config)?;
     let scope = governance_scope(config);
-    let ontology = builtin_base_ontology();
-    let taxonomy = builtin_starter_skos_scheme();
     let now = Utc::now();
 
+    let mut class_count = 0;
+    let mut property_count = 0;
+    for ontology in &definitions.ontologies {
+        bootstrap_ontology(ontology_repo.as_ref(), ontology, &scope, now).await?;
+        class_count += ontology.entity_classes.len();
+        property_count += ontology.relationship_properties.len();
+    }
+
+    let mut concept_count = 0;
+    let mut relation_count = 0;
+    for taxonomy in &definitions.taxonomies {
+        relation_count += bootstrap_taxonomy(taxonomy_repo.as_ref(), taxonomy, &scope, now).await?;
+        concept_count += taxonomy.concepts.len();
+    }
+
+    let ontology_ids = definitions
+        .ontologies
+        .iter()
+        .map(|ontology| ontology.ontology_id.clone())
+        .collect::<Vec<_>>();
+    let taxonomy_scheme_ids = definitions
+        .taxonomies
+        .iter()
+        .map(|taxonomy| taxonomy.scheme_id.clone())
+        .collect::<Vec<_>>();
+    let report = GovernanceBootstrapReport {
+        ontology_id: ontology_ids.first().cloned().unwrap_or_default(),
+        taxonomy_scheme_id: taxonomy_scheme_ids.first().cloned().unwrap_or_default(),
+        ontology_ids,
+        taxonomy_scheme_ids,
+        class_count,
+        property_count,
+        concept_count,
+        relation_count,
+    };
+
+    Ok((definitions, report))
+}
+
+async fn bootstrap_ontology(
+    ontology_repo: &dyn OntologyRepository,
+    ontology: &OntologyDefinition,
+    scope: &Scope,
+    now: chrono::DateTime<Utc>,
+) -> AdapterResult<()> {
     ontology_repo
-        .put_ontology(to_engram_ontology(&ontology, &scope, now))
+        .put_ontology(to_engram_ontology(ontology, scope, now))
         .await
         .map_err(|_| bootstrap_error("put_ontology"))?;
 
@@ -72,19 +144,28 @@ pub async fn bootstrap_governance_definitions(
 
     for property in &ontology.relationship_properties {
         ontology_repo
-            .put_property(to_engram_property(&ontology, property, now))
+            .put_property(to_engram_property(ontology, property, now))
             .await
             .map_err(|_| bootstrap_error("put_property"))?;
     }
 
+    Ok(())
+}
+
+async fn bootstrap_taxonomy(
+    taxonomy_repo: &dyn TaxonomyRepository,
+    taxonomy: &SkosSchemeDefinition,
+    scope: &Scope,
+    now: chrono::DateTime<Utc>,
+) -> AdapterResult<usize> {
     taxonomy_repo
-        .put_concept_scheme(to_engram_scheme(&taxonomy, &scope, now))
+        .put_concept_scheme(to_engram_scheme(taxonomy, scope, now))
         .await
         .map_err(|_| bootstrap_error("put_concept_scheme"))?;
 
     for concept in &taxonomy.concepts {
         taxonomy_repo
-            .put_concept(to_engram_concept(&taxonomy, concept, now))
+            .put_concept(to_engram_concept(taxonomy, concept, now))
             .await
             .map_err(|_| bootstrap_error("put_concept"))?;
     }
@@ -93,7 +174,7 @@ pub async fn bootstrap_governance_definitions(
     for concept in &taxonomy.concepts {
         for target in &concept.broader {
             put_relation(
-                taxonomy_repo.as_ref(),
+                taxonomy_repo,
                 &taxonomy.scheme_id,
                 &concept.id,
                 ConceptRelationKind::Broader,
@@ -105,7 +186,7 @@ pub async fn bootstrap_governance_definitions(
         }
         for target in &concept.narrower {
             put_relation(
-                taxonomy_repo.as_ref(),
+                taxonomy_repo,
                 &taxonomy.scheme_id,
                 &concept.id,
                 ConceptRelationKind::Narrower,
@@ -117,7 +198,7 @@ pub async fn bootstrap_governance_definitions(
         }
         for target in &concept.related {
             put_relation(
-                taxonomy_repo.as_ref(),
+                taxonomy_repo,
                 &taxonomy.scheme_id,
                 &concept.id,
                 ConceptRelationKind::Related,
@@ -129,14 +210,198 @@ pub async fn bootstrap_governance_definitions(
         }
     }
 
-    Ok(GovernanceBootstrapReport {
-        ontology_id: ontology.ontology_id,
-        taxonomy_scheme_id: taxonomy.scheme_id,
-        class_count: ontology.entity_classes.len(),
-        property_count: ontology.relationship_properties.len(),
-        concept_count: taxonomy.concepts.len(),
-        relation_count,
+    Ok(relation_count)
+}
+
+pub(crate) fn load_governance_definitions(
+    config: &AdapterConfig,
+) -> AdapterResult<GovernanceDefinitions> {
+    let paths = config.resolve_governance_definition_paths()?;
+    let ontologies = if paths.ontology_definition_paths.is_empty() {
+        vec![builtin_base_ontology()]
+    } else {
+        load_definition_documents(
+            &paths.ontology_definition_paths,
+            "zbot.ontology",
+            "governance_ontology_definition",
+        )?
+    };
+    let taxonomies = if paths.taxonomy_definition_paths.is_empty() {
+        vec![builtin_starter_skos_scheme()]
+    } else {
+        load_definition_documents(
+            &paths.taxonomy_definition_paths,
+            "zbot.skos_taxonomy",
+            "governance_taxonomy_definition",
+        )?
+    };
+
+    validate_definitions(config, &ontologies, &taxonomies)?;
+    Ok(GovernanceDefinitions {
+        ontologies,
+        taxonomies,
     })
+}
+
+fn load_definition_documents<T>(
+    paths: &[std::path::PathBuf],
+    expected_kind: &str,
+    component: &'static str,
+) -> AdapterResult<Vec<T>>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    paths
+        .iter()
+        .map(|path| load_definition_document(path, expected_kind, component))
+        .collect()
+}
+
+fn load_definition_document<T>(
+    path: &Path,
+    expected_kind: &str,
+    component: &'static str,
+) -> AdapterResult<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let contents = std::fs::read_to_string(path).map_err(|_| AdapterError::Bootstrap {
+        component,
+        reason: "configured definition file cannot be read".to_string(),
+    })?;
+    let document = serde_json::from_str::<DefinitionDocument<T>>(&contents).map_err(|_| {
+        AdapterError::Bootstrap {
+            component,
+            reason: "configured definition file is invalid".to_string(),
+        }
+    })?;
+    if document.kind != expected_kind || document.schema_version != 1 {
+        return Err(AdapterError::Bootstrap {
+            component,
+            reason: "configured definition kind or schema version is unsupported".to_string(),
+        });
+    }
+    Ok(document.definition)
+}
+
+fn validate_definitions(
+    config: &AdapterConfig,
+    ontologies: &[OntologyDefinition],
+    taxonomies: &[SkosSchemeDefinition],
+) -> AdapterResult<()> {
+    validate_ontology_definitions(ontologies)?;
+    validate_taxonomy_definitions(taxonomies)?;
+
+    let ontology_ids = ontologies
+        .iter()
+        .map(|definition| definition.ontology_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let taxonomy_scheme_ids = taxonomies
+        .iter()
+        .map(|definition| definition.scheme_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for selection in std::iter::once(&config.governance.default_selection).chain(
+        config
+            .governance
+            .overlays
+            .iter()
+            .map(|overlay| &overlay.selection),
+    ) {
+        if selection
+            .ontology_ids
+            .iter()
+            .any(|id| !ontology_ids.contains(id.as_str()))
+        {
+            return Err(AdapterError::Bootstrap {
+                component: "governance_selection",
+                reason: "selected ontology definition is unavailable".to_string(),
+            });
+        }
+        if selection
+            .taxonomy_scheme_ids
+            .iter()
+            .any(|id| !taxonomy_scheme_ids.contains(id.as_str()))
+        {
+            return Err(AdapterError::Bootstrap {
+                component: "governance_selection",
+                reason: "selected taxonomy definition is unavailable".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_ontology_definitions(definitions: &[OntologyDefinition]) -> AdapterResult<()> {
+    let ids = definitions
+        .iter()
+        .map(|definition| definition.ontology_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if ids.len() != definitions.len()
+        || definitions.iter().any(|definition| {
+            definition.ontology_id.trim().is_empty() || definition.label.trim().is_empty()
+        })
+    {
+        return Err(AdapterError::Bootstrap {
+            component: "governance_ontology_definition",
+            reason: "configured ontology definitions are invalid".to_string(),
+        });
+    }
+
+    for definition in definitions {
+        let class_ids = definition
+            .entity_classes
+            .iter()
+            .map(|class| class.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let property_ids = definition
+            .relationship_properties
+            .iter()
+            .map(|property| property.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if class_ids.len() != definition.entity_classes.len()
+            || property_ids.len() != definition.relationship_properties.len()
+            || definition
+                .entity_classes
+                .iter()
+                .any(|class| class.id.trim().is_empty() || class.label.trim().is_empty())
+            || definition
+                .relationship_properties
+                .iter()
+                .any(|property| property.id.trim().is_empty() || property.label.trim().is_empty())
+        {
+            return Err(AdapterError::Bootstrap {
+                component: "governance_ontology_definition",
+                reason: "configured ontology definitions are invalid".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_taxonomy_definitions(definitions: &[SkosSchemeDefinition]) -> AdapterResult<()> {
+    let ids = definitions
+        .iter()
+        .map(|definition| definition.scheme_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if ids.len() != definitions.len()
+        || definitions.iter().any(|definition| {
+            definition.scheme_id.trim().is_empty() || definition.label.trim().is_empty()
+        })
+    {
+        return Err(AdapterError::Bootstrap {
+            component: "governance_taxonomy_definition",
+            reason: "configured taxonomy definitions are invalid".to_string(),
+        });
+    }
+    for definition in definitions {
+        crate::governance::validate_skos_scheme(definition).map_err(|_| {
+            AdapterError::Bootstrap {
+                component: "governance_taxonomy_definition",
+                reason: "configured taxonomy definitions are invalid".to_string(),
+            }
+        })?;
+    }
+    Ok(())
 }
 
 fn to_engram_ontology(

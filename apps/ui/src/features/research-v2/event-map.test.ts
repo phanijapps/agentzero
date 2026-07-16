@@ -94,6 +94,22 @@ describe("mapGatewayEventToResearchAction", () => {
     } as any)).toEqual({ type: "SESSION_BOUND", sessionId: "sess-x", conversationId: "conv-x" });
   });
 
+  it("agent_started retains the server session identity when invoke_accepted is absent", () => {
+    expect(mapGatewayEventToResearchAction({
+      type: "agent_started",
+      execution_id: "exec-root",
+      agent_id: "root",
+      parent_execution_id: null,
+      session_id: "sess-root",
+      conversation_id: "research-client",
+    } as any)).toMatchObject({
+      type: "AGENT_STARTED",
+      turnId: "exec-root",
+      sessionId: "sess-root",
+      conversationId: "research-client",
+    });
+  });
+
   it("session_initialized maps to SESSION_BOUND (forward-compat)", () => {
     expect(mapGatewayEventToResearchAction({
       type: "session_initialized", session_id: "sess-y", conversation_id: "conv-y",

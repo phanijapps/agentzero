@@ -39,6 +39,7 @@ function makeArtifact(id: string, overrides: Partial<Artifact> = {}): Artifact {
     fileName: `${id}.md`,
     fileType: "md",
     fileSize: 100,
+    isGoalArtifact: true,
     createdAt: "2026-04-19T00:00:00Z",
     ...overrides,
   };
@@ -84,11 +85,33 @@ describe("fetchArtifactsOnce", () => {
 
     await fetchArtifactsOnce("sess-1", [], dispatch, latest);
 
+    expect(listSessionArtifacts).toHaveBeenCalledWith("sess-1", {
+      goalArtifactsOnly: true,
+      limit: 24,
+    });
     expect(dispatch).toHaveBeenCalledTimes(1);
     const call = dispatch.mock.calls[0][0];
     expect(call.type).toBe("SET_ARTIFACTS");
     expect(call.artifacts.map((a: ResearchArtifactRef) => a.id)).toEqual(["a1", "a2"]);
     expect(latest.current).toEqual(next);
+  });
+
+  it("defensively discards an undesignated row returned by the server", async () => {
+    const dispatch = vi.fn();
+    const latest = { current: [] as Artifact[] };
+    listSessionArtifacts.mockResolvedValueOnce({
+      success: true,
+      data: [
+        makeArtifact("deliverable", { isGoalArtifact: true }),
+        makeArtifact("scratch", { isGoalArtifact: false }),
+      ],
+    });
+
+    await fetchArtifactsOnce("sess-1", [], dispatch, latest);
+
+    expect(latest.current.map((artifact) => artifact.id)).toEqual(["deliverable"]);
+    expect(dispatch.mock.calls[0][0].artifacts.map((artifact: ResearchArtifactRef) => artifact.id))
+      .toEqual(["deliverable"]);
   });
 
   it("no-op on a failed transport call; no dispatch, no toast", async () => {

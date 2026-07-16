@@ -115,9 +115,59 @@ describe("SessionDetailPane", () => {
       expect(screen.getByText(/Loaded from shared detail/)).toBeInTheDocument();
     });
 
+    expect(screen.getByText("No plan recorded for this session.")).toBeInTheDocument();
+
     expect(mockGetLogSession).toHaveBeenCalledTimes(1);
     expect(mockGetLogSession).toHaveBeenCalledWith("exec-root-1");
     expect(mockGetMissionControlSessionTokens).toHaveBeenCalledTimes(1);
     expect(mockGetMissionControlSessionTokens).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("renders the persisted current plan returned for the selected session", async () => {
+    mockGetLogSession.mockResolvedValue({ success: true, data: makeDetail() });
+    mockGetMissionControlSessionTokens.mockResolvedValue({
+      success: true,
+      data: {
+        conversation_id: "sess-1",
+        root_execution_id: "exec-root-1",
+        total_tokens_in: 1000,
+        total_tokens_out: 200,
+        executions: [],
+        current_plan: {
+          execution_id: "exec-root-1",
+          explanation: "Compare the operational tradeoffs.",
+          plan: [{ step: "Inspect the current configuration", status: "in_progress" }],
+          updated_at: "2026-07-14T12:00:00Z",
+        },
+      },
+    });
+
+    render(<SessionDetailPane session={makeSession()} />);
+
+    expect(await screen.findByText("Inspect the current configuration")).toBeInTheDocument();
+    expect(screen.getByText("Compare the operational tradeoffs.")).toBeInTheDocument();
+    expect(screen.getByText("in progress")).toBeInTheDocument();
+  });
+
+  it("keeps only useful operational detail when embedded in the Radar inspector", async () => {
+    mockGetLogSession.mockResolvedValue({ success: true, data: makeDetail() });
+    mockGetMissionControlSessionTokens.mockResolvedValue({
+      success: true,
+      data: {
+        conversation_id: "sess-1",
+        root_execution_id: "exec-root-1",
+        total_tokens_in: 0,
+        total_tokens_out: 0,
+        executions: [],
+      },
+    });
+
+    render(<SessionDetailPane session={makeSession()} embedded />);
+
+    await waitFor(() => expect(mockGetLogSession).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTitle("Pause session")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Open in Research")).not.toBeInTheDocument();
+    expect(screen.queryByText("No plan recorded for this session.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Loaded from shared detail/)).not.toBeInTheDocument();
   });
 });

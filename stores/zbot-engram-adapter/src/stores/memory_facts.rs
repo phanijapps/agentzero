@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 use zbot_stores_traits::{
-    EmbeddingQueryIdentity, MemoryFact, MemoryFactStore, SkillIndexRow, StrategyFactInsert,
-    StrategyFactMatch,
+    EmbeddingQueryIdentity, MemoryFact, MemoryFactStore, MemoryFactWriteRequest, SkillIndexRow,
+    StrategyFactInsert, StrategyFactMatch,
 };
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     capabilities::AdapterFeature,
     config::{AdapterConfig, AdapterEmbeddingProviderConfig, EmbeddingMode, ProviderMode},
     error::{AdapterError, AdapterResult},
-    mapping::memory::{memory_fact_to_record, memory_record_to_fact},
+    mapping::memory::{memory_fact_to_record_with_governance, memory_record_to_fact},
     scope::ScopeMapper,
 };
 
@@ -52,6 +52,7 @@ pub struct EngramMemoryFactStore {
     memory: Arc<dyn MemoryService>,
     mapper: ScopeMapper,
     sidecar: MemoryFactSidecar,
+    governance: crate::governance::GovernancePolicy,
     embedding_mode: EmbeddingMode,
     embedding_client: Option<Arc<dyn EmbeddingClient>>,
 }
@@ -108,6 +109,7 @@ impl EngramMemoryFactStore {
             memory,
             mapper,
             sidecar,
+            governance: config.governance.clone(),
             embedding_mode: config.embedding_mode,
             embedding_client,
         })
@@ -209,8 +211,13 @@ impl EngramMemoryFactStore {
         }
         validate_fact_content(&fact.category, &fact.content)?;
 
-        let record = memory_fact_to_record(&fact, &self.mapper, self.embedding_mode)
-            .map_err(AdapterError::into_trait_error)?;
+        let record = memory_fact_to_record_with_governance(
+            &fact,
+            &self.mapper,
+            self.embedding_mode,
+            Some(&self.governance),
+        )
+        .map_err(AdapterError::into_trait_error)?;
         self.memory
             .put_memory(record)
             .await
@@ -288,48 +295,79 @@ impl MemoryFactStore for EngramMemoryFactStore {
         session_id: Option<&str>,
         valid_from: Option<DateTime<Utc>>,
     ) -> Result<Value, String> {
-        validate_fact_content(category, content)?;
+        self.save_fact_with_context(MemoryFactWriteRequest {
+            agent_id: agent_id.to_string(),
+            category: category.to_string(),
+            key: key.to_string(),
+            content: content.to_string(),
+            confidence,
+            session_id: session_id.map(ToOwned::to_owned),
+            ward_id: None,
+            source_ref: None,
+            valid_from,
+        })
+        .await
+    }
 
-        let scope = default_scope_for_category(category).to_string();
+    async fn save_fact_with_context(
+        &self,
+        request: MemoryFactWriteRequest,
+    ) -> Result<Value, String> {
+        validate_fact_content(&request.category, &request.content)?;
+
+        let scope = default_scope_for_category(&request.category).to_string();
+        let ward_id = request
+            .ward_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|ward_id| !ward_id.is_empty())
+            .unwrap_or("__global__");
         let now = Utc::now();
-        let existing =
-            self.sidecar
-                .find_active_by_key(agent_id, &scope, "__global__", key, Some(category))?;
+        let existing = self.sidecar.find_active_by_key_with_session(
+            &request.agent_id,
+            &scope,
+            ward_id,
+            &request.key,
+            Some(&request.category),
+            request.session_id.as_deref(),
+        )?;
 
         let fact = if let Some(entry) = existing {
             let mut fact = entry.fact;
-            fact.content = content.to_string();
-            fact.confidence = confidence;
+            fact.content = request.content.clone();
+            fact.confidence = request.confidence;
             fact.mention_count = fact.mention_count.saturating_add(1);
-            fact.session_id = session_id.map(ToOwned::to_owned);
+            fact.session_id = request.session_id.clone();
+            fact.ward_id = ward_id.to_string();
+            fact.source_ref = request.source_ref.clone();
             fact.updated_at = now.to_rfc3339();
-            fact.valid_from = Some(valid_from.unwrap_or(now).to_rfc3339());
+            fact.valid_from = Some(request.valid_from.unwrap_or(now).to_rfc3339());
             fact
         } else {
             MemoryFact {
                 id: format!("fact-{}", Uuid::new_v4()),
-                session_id: session_id.map(ToOwned::to_owned),
-                agent_id: agent_id.to_string(),
+                session_id: request.session_id.clone(),
+                agent_id: request.agent_id.clone(),
                 scope,
-                category: category.to_string(),
-                key: key.to_string(),
-                content: content.to_string(),
-                confidence,
+                category: request.category.clone(),
+                key: request.key.clone(),
+                content: request.content.clone(),
+                confidence: request.confidence,
                 mention_count: 1,
                 source_summary: None,
                 embedding: None,
-                ward_id: "__global__".to_string(),
+                ward_id: ward_id.to_string(),
                 contradicted_by: None,
                 created_at: now.to_rfc3339(),
                 updated_at: now.to_rfc3339(),
                 expires_at: None,
-                valid_from: Some(valid_from.unwrap_or(now).to_rfc3339()),
+                valid_from: Some(request.valid_from.unwrap_or(now).to_rfc3339()),
                 valid_until: None,
                 superseded_by: None,
                 pinned: false,
                 epistemic_class: Some("current".to_string()),
                 source_episode_id: None,
-                source_ref: None,
+                source_ref: request.source_ref.clone(),
             }
         };
 
@@ -338,10 +376,10 @@ impl MemoryFactStore for EngramMemoryFactStore {
         Ok(json!({
             "success": true,
             "action": "save_fact",
-            "key": key,
-            "category": category,
-            "confidence": confidence,
-            "message": format!("Fact saved: [{}] {}", category, content),
+            "key": request.key,
+            "category": request.category,
+            "confidence": request.confidence,
+            "message": format!("Fact saved: [{}] {}", request.category, request.content),
         }))
     }
 
@@ -1307,6 +1345,48 @@ impl MemoryFactSidecar {
             SqlValue::Text(ward_id.to_string()),
             SqlValue::Text(key.to_string()),
         ];
+        push_optional_clause(&mut where_clauses, &mut values, "category", category);
+        let sql = format!(
+            "SELECT fact_json, embedding_json, archived, embedding_identity_json FROM memory_facts \
+             WHERE {} ORDER BY updated_at DESC LIMIT 1",
+            where_clauses.join(" AND ")
+        );
+        Ok(self.query_entries(&sql, values)?.into_iter().next())
+    }
+
+    /// Exact active-fact lookup that treats an execution session as part of
+    /// the write identity. Model-originated writes are session-scoped in
+    /// Engram, so allowing the same key in another session to overwrite this
+    /// row would silently cross that boundary.
+    fn find_active_by_key_with_session(
+        &self,
+        agent_id: &str,
+        scope: &str,
+        ward_id: &str,
+        key: &str,
+        category: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<Option<SidecarEntry>, String> {
+        let mut where_clauses = vec![
+            "archived = 0".to_string(),
+            "agent_id = ?1".to_string(),
+            "scope = ?2".to_string(),
+            "ward_id = ?3".to_string(),
+            "key = ?4".to_string(),
+        ];
+        let mut values = vec![
+            SqlValue::Text(agent_id.to_string()),
+            SqlValue::Text(scope.to_string()),
+            SqlValue::Text(ward_id.to_string()),
+            SqlValue::Text(key.to_string()),
+        ];
+        match session_id {
+            Some(session_id) => {
+                values.push(SqlValue::Text(session_id.to_string()));
+                where_clauses.push(format!("session_id = ?{}", values.len()));
+            }
+            None => where_clauses.push("session_id IS NULL".to_string()),
+        }
         push_optional_clause(&mut where_clauses, &mut values, "category", category);
         let sql = format!(
             "SELECT fact_json, embedding_json, archived, embedding_identity_json FROM memory_facts \

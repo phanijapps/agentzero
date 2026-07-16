@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@/test/utils";
 import userEvent from "@testing-library/user-event";
-import JSZip from "jszip";
 import { VaultPage } from "./VaultPage";
 
 const listVaultWards = vi.fn();
@@ -146,7 +145,7 @@ describe("VaultPage", () => {
             path,
             extension: "docx",
             contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            data: await docxBuffer("Quarterly Proposal"),
+            data: new ArrayBuffer(8),
           },
         };
       }
@@ -159,7 +158,7 @@ describe("VaultPage", () => {
             path,
             extension: "docx",
             contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            data: await docxWithTooManyEntries(),
+            data: new ArrayBuffer(8),
           },
         };
       }
@@ -393,7 +392,7 @@ describe("VaultPage", () => {
     expect(screen.queryByText("<script>alert('x')</script>")).not.toBeInTheDocument();
   });
 
-  it("uses the Office preview handoff for docx files", async () => {
+  it("keeps Office files out of the browser previewer", async () => {
     const user = userEvent.setup();
     render(<VaultPage />);
 
@@ -402,10 +401,10 @@ describe("VaultPage", () => {
     await user.click(await screen.findByRole("button", { name: /reports/i }));
     await user.click(await screen.findByRole("button", { name: /proposal\.docx/i }));
 
-    expect(await screen.findByText("Quarterly Proposal")).toBeInTheDocument();
+    expect(await screen.findByText(/Office previews are disabled for safety/)).toBeInTheDocument();
   });
 
-  it("renders oversized and parser-limit preview errors", async () => {
+  it("renders oversized and Office safety messages", async () => {
     const user = userEvent.setup();
     render(<VaultPage />);
 
@@ -417,7 +416,7 @@ describe("VaultPage", () => {
     expect(await screen.findByText("HTTP 413: Payload Too Large")).toBeInTheDocument();
 
     await user.click(await screen.findByRole("button", { name: /huge\.docx/i }));
-    expect(await screen.findByText(/Office preview has too many zip entries/)).toBeInTheDocument();
+    expect(await screen.findByText(/Office previews are disabled for safety/)).toBeInTheDocument();
   });
 
   it("ignores stale ward tree responses after switching wards", async () => {
@@ -557,23 +556,4 @@ function textContentFor(path: string): string {
   if (path.endsWith("app.py")) return "print('vault')";
   if (path.endsWith("index.html")) return "<script>alert('x')</script>";
   return "";
-}
-
-async function docxBuffer(text: string): Promise<ArrayBuffer> {
-  const zip = new JSZip();
-  zip.file("word/document.xml", `
-    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-      <w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body>
-    </w:document>
-  `);
-  return zip.generateAsync({ type: "arraybuffer" });
-}
-
-async function docxWithTooManyEntries(): Promise<ArrayBuffer> {
-  const zip = new JSZip();
-  zip.file("word/document.xml", "<document />");
-  for (let i = 0; i < 257; i += 1) {
-    zip.file(`extra-${i}.xml`, "<x />");
-  }
-  return zip.generateAsync({ type: "arraybuffer" });
 }

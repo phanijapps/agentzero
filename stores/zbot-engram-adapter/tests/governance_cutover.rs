@@ -106,6 +106,7 @@ async fn configured_governance_fixture_covers_cutover_surfaces() {
         .expand_recall_query(RecallTaxonomyExpansionRequest {
             query: "kg recall".to_string(),
             ward_id: None,
+            session_id: None,
             max_depth: 1,
             max_fan_out: 8,
             max_candidates: 8,

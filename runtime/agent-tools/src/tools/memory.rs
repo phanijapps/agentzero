@@ -16,9 +16,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use agent_primitives::{AgentError, FileSystemContext, Result, Tool, ToolContext, ToolPermissions};
-use zbot_stores_traits::{BeliefContradictionStore, BeliefStore, MemoryFactStore};
+use zbot_stores_traits::{
+    BeliefContradictionStore, BeliefStore, MemoryFactStore, MemoryFactWriteRequest,
+};
 
 use super::ingest::{EvidenceRecord, IngestionAccess};
+use super::{
+    RecallFailure, RecallMode, RecallOutputPolicy, RecallReasonCode, UnifiedRecallBinding,
+    UnifiedRecallRequest,
+};
 
 // ============================================================================
 // CONFIGURATION
@@ -85,6 +91,7 @@ pub struct MemoryTool {
     /// `contradictions` action surfaces detected contradictions for a
     /// belief or partition. Phase B-2 of the Belief Network.
     contradiction_store: Option<Arc<dyn BeliefContradictionStore>>,
+    unified_recall: Option<UnifiedRecallBinding>,
 }
 
 impl MemoryTool {
@@ -100,7 +107,14 @@ impl MemoryTool {
             evidence_intake: None,
             belief_store: None,
             contradiction_store: None,
+            unified_recall: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_unified_recall(mut self, binding: UnifiedRecallBinding) -> Self {
+        self.unified_recall = Some(binding);
+        self
     }
 
     /// Wire the shared evidence-intake boundary used by durable
@@ -135,6 +149,7 @@ impl MemoryTool {
             evidence_intake: None,
             belief_store,
             contradiction_store: None,
+            unified_recall: None,
         }
     }
 
@@ -154,6 +169,7 @@ impl MemoryTool {
             evidence_intake: None,
             belief_store,
             contradiction_store,
+            unified_recall: None,
         }
     }
 
@@ -349,6 +365,11 @@ impl Tool for MemoryTool {
                     "type": "string",
                     "format": "date-time",
                     "description": "ISO-8601 timestamp (for recall action). When set, returns facts that were valid at this time. When omitted, returns currently-valid facts."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["unified", "facts"],
+                    "description": "Recall mode. Omit for unified recall when configured; use facts for fact-only or historical lookup."
                 },
                 "retention_policy": {
                     "type": "string",
@@ -755,8 +776,29 @@ impl MemoryTool {
             Some(store) => store
                 // valid_from=None ⇒ store defaults to Utc::now(). A
                 // first-class JSON parameter for valid_from is deferred
-                // to bi-temporal phase 2 (point-in-time recall API).
-                .save_fact(agent_id, category, key, content, confidence, None, None)
+                // to bi-temporal phase 2 (point-in-time recall API). Keep the
+                // executing session and ward attached so canonical backends
+                // do not widen model-originated facts to global scope.
+                .save_fact_with_context(MemoryFactWriteRequest {
+                    agent_id: agent_id.to_string(),
+                    category: category.to_string(),
+                    key: key.to_string(),
+                    content: content.to_string(),
+                    confidence,
+                    session_id: {
+                        let session_id = ctx.session_id().trim();
+                        (!session_id.is_empty()).then(|| session_id.to_string())
+                    },
+                    ward_id: ctx.get_state("ward_id").and_then(|value| {
+                        value
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|ward_id| !ward_id.is_empty())
+                            .map(str::to_string)
+                    }),
+                    source_ref: Some("agentzero.memory_tool".to_string()),
+                    valid_from: None,
+                })
                 .await
                 .map_err(AgentError::Tool),
             None => {
@@ -830,14 +872,62 @@ impl MemoryTool {
             None => None,
         };
 
+        let mode = match args.get("mode").and_then(Value::as_str) {
+            Some("unified") => Some(RecallMode::Unified),
+            Some("facts") => Some(RecallMode::Facts),
+            Some(_) => {
+                return Err(AgentError::Tool(
+                    "recall mode must be unified or facts".to_string(),
+                ));
+            }
+            None => None,
+        };
+        let use_unified = mode.is_none_or(|mode| mode == RecallMode::Unified) && as_of.is_none();
+        if mode == Some(RecallMode::Unified) && as_of.is_some() {
+            return Err(AgentError::Tool(
+                RecallFailure::new(super::RecallReasonCode::HistoricalUnifiedUnsupported)
+                    .safe_message()
+                    .to_string(),
+            ));
+        }
+        if use_unified {
+            if let Some(binding) = &self.unified_recall {
+                let authorization = binding
+                    .authorization
+                    .authorize(ctx)
+                    .await
+                    .map_err(|failure| AgentError::Tool(failure.safe_message().to_string()))?;
+                let mut response = binding
+                    .access
+                    .recall(
+                        authorization,
+                        UnifiedRecallRequest {
+                            query: query.clone(),
+                            limit,
+                        },
+                    )
+                    .await
+                    .map_err(|failure| AgentError::Tool(failure.safe_message().to_string()))?;
+                response.recalled = Some(response.results.clone());
+                response.prioritized = Some(true);
+                return serde_json::to_value(RecallOutputPolicy::apply(response)).map_err(|_| {
+                    AgentError::Tool("Unable to prepare recall response.".to_string())
+                });
+            }
+            if mode == Some(RecallMode::Unified) {
+                return Err(AgentError::Tool("Recall is not configured.".to_string()));
+            }
+        }
+
         let ward_id = ctx.get_state("ward_id").and_then(|v| {
             v.as_str()
                 .filter(|ward_id| !ward_id.is_empty())
                 .map(str::to_string)
         });
+        let legacy_fallback = use_unified && self.unified_recall.is_none();
 
         // Use DB-backed fact store if available — prioritized recall
-        match &self.fact_store {
+        let fact_result = match &self.fact_store {
             Some(store) => match store
                 .recall_facts_prioritized_scoped(agent_id, &query, ward_id.as_deref(), limit, as_of)
                 .await
@@ -914,7 +1004,9 @@ impl MemoryTool {
                     "prioritized": true,
                 }))
             }
-        }
+        }?;
+
+        Ok(mark_fact_recall_mode(fact_result, legacy_fallback))
     }
 
     /// Save a ctx-namespaced fact (session state).
@@ -1302,6 +1394,13 @@ fn memory_evidence_record(
         source_id: key.to_string(),
         source_type: format!("memory_fact:{category}"),
         session_id: (!session_id.is_empty()).then(|| session_id.to_string()),
+        ward_id: ctx.get_state("ward_id").and_then(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|ward_id| !ward_id.is_empty())
+                .map(str::to_string)
+        }),
         agent_id: agent_id.to_string(),
         retention_policy: args
             .get("retention_policy")
@@ -1356,6 +1455,23 @@ fn degraded_recall_result(query: &str, reason: &str) -> Value {
     })
 }
 
+fn mark_fact_recall_mode(mut value: Value, legacy_fallback: bool) -> Value {
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+
+    object.insert("mode".to_string(), json!("facts"));
+    if legacy_fallback {
+        object.insert("degraded".to_string(), Value::Bool(true));
+        object.insert(
+            "reason".to_string(),
+            json!(RecallReasonCode::LegacyFallback.safe_message()),
+        );
+        object.insert("reason_code".to_string(), json!("legacy_fallback"));
+    }
+    value
+}
+
 fn normalize_agent_recall_result(query: &str, value: Value) -> Value {
     let mut results = if let Some(results) = value.get("results").and_then(Value::as_array) {
         results.clone()
@@ -1394,6 +1510,7 @@ fn normalize_agent_recall_result(query: &str, value: Value) -> Value {
         "prioritized": true,
         "recalled": recalled,
         "degraded": degraded,
+        "mode": "facts",
     });
 
     if let Some(reason) = value.get("reason").or_else(|| value.get("degraded_reason"))
@@ -1694,6 +1811,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_fact_forwards_session_ward_and_writer_provenance() {
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct CapturingStore {
+            writes: Mutex<Vec<MemoryFactWriteRequest>>,
+        }
+
+        #[async_trait]
+        impl MemoryFactStore for CapturingStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> std::result::Result<Value, String> {
+                Err("legacy write path must not be used".to_string())
+            }
+
+            async fn save_fact_with_context(
+                &self,
+                request: MemoryFactWriteRequest,
+            ) -> std::result::Result<Value, String> {
+                self.writes.lock().unwrap().push(request);
+                Ok(json!({ "success": true }))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _limit: usize,
+            ) -> std::result::Result<Value, String> {
+                Ok(json!([]))
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let fs = Arc::new(TestFileSystem::new(dir.path().to_path_buf()));
+        let store = Arc::new(CapturingStore::default());
+        let tool = MemoryTool::new(fs, Some(store.clone()));
+        let ctx = TestToolCtx {
+            session_id: "sess-current".to_string(),
+            state: HashMap::from([("ward_id".to_string(), json!("ward-alpha"))]),
+        };
+
+        tool.action_save_fact(
+            &ctx,
+            "root",
+            &json!({
+                "category": "domain",
+                "key": "architecture.memory",
+                "content": "Memory writes retain the active execution scope.",
+                "confidence": 0.9,
+            }),
+        )
+        .await
+        .expect("scoped fact write");
+
+        let writes = store.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let write = &writes[0];
+        assert_eq!(write.session_id.as_deref(), Some("sess-current"));
+        assert_eq!(write.ward_id.as_deref(), Some("ward-alpha"));
+        assert_eq!(write.source_ref.as_deref(), Some("agentzero.memory_tool"));
+    }
+
+    #[tokio::test]
     async fn save_fact_records_evidence_intake_before_db_write() {
         use crate::tools::ingest::{StructuredCounts, StructuredEntity, StructuredRelationship};
         use async_trait::async_trait;
@@ -1893,6 +2083,262 @@ mod tests {
         let path = dir.path().join("nonexistent").join("memory.json");
         let store = tool.load_store_at_path(&path).unwrap();
         assert!(store.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn action_recall_defaults_to_unified_and_preserves_historical_fact_modes() {
+        use crate::tools::{
+            RecallAuthorizationAccess, RecallAuthorizationContext, RecallContentVisibility,
+            RecallItemKind, RecallLogicalSource, RecallProvenance, RecallSourceSummary,
+            RecallVisibilityScope, UnifiedRecallAccess, UnifiedRecallItem, UnifiedRecallResponse,
+        };
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct RecordingUnifiedRecall {
+            requests: Mutex<Vec<UnifiedRecallRequest>>,
+        }
+
+        #[async_trait]
+        impl UnifiedRecallAccess for RecordingUnifiedRecall {
+            async fn recall(
+                &self,
+                _authorization: RecallAuthorizationContext,
+                request: UnifiedRecallRequest,
+            ) -> std::result::Result<UnifiedRecallResponse, RecallFailure> {
+                self.requests.lock().unwrap().push(request.clone());
+                let primary = UnifiedRecallItem {
+                    id: "unified-fact".to_string(),
+                    kind: RecallItemKind::Fact,
+                    content: "Unified result sk-abcdefghijklmnopqrst at /home/test/private.txt"
+                        .to_string(),
+                    score: 0.9,
+                    provenance: RecallProvenance {
+                        source: RecallLogicalSource::MemoryFacts,
+                        source_id: "fact-1".to_string(),
+                        session_id: Some("sess-current".to_string()),
+                        ward_id: Some("ward-current".to_string()),
+                    },
+                    visibility: RecallContentVisibility::Recallable,
+                };
+                let mut transcript = primary.clone();
+                transcript.id = "transcript-only".to_string();
+                transcript.content = "private transcript body".to_string();
+                transcript.visibility = RecallContentVisibility::TranscriptOnly;
+                let mut unclassified = primary.clone();
+                unclassified.id = "unclassified-cross-scope".to_string();
+                unclassified.visibility = RecallContentVisibility::Unclassified;
+                let mut results = vec![primary, transcript, unclassified];
+                for index in 0..20 {
+                    let mut bounded = results[0].clone();
+                    bounded.id = format!("bounded-{index}");
+                    bounded.content = "safe durable context ".repeat(80);
+                    bounded.score = 0.8 - (index as f64 * 0.01);
+                    results.push(bounded);
+                }
+                Ok(UnifiedRecallResponse {
+                    query: request.query,
+                    mode: RecallMode::Unified,
+                    count: results.len(),
+                    results,
+                    source_summary: RecallSourceSummary::default(),
+                    taxonomy_expansion: None,
+                    degraded: false,
+                    degraded_reason_codes: Vec::new(),
+                    source: Some("unified_recall".to_string()),
+                    prioritized: None,
+                    recalled: None,
+                    reason: None,
+                    reason_code: None,
+                    trust_boundary: "untrusted_reference_data".to_string(),
+                    truncated: false,
+                })
+            }
+        }
+
+        struct FixedRecallAuthorization;
+
+        #[async_trait]
+        impl RecallAuthorizationAccess for FixedRecallAuthorization {
+            async fn authorize(
+                &self,
+                _ctx: &dyn ToolContext,
+            ) -> std::result::Result<RecallAuthorizationContext, RecallFailure> {
+                Ok(RecallAuthorizationContext {
+                    user_id: "test-user".to_string(),
+                    agent_id: "root".to_string(),
+                    actor_kind: "root".to_string(),
+                    session_id: Some("sess-current".to_string()),
+                    ward_id: Some("ward-current".to_string()),
+                    visibility: RecallVisibilityScope {
+                        tenant_id: None,
+                        workspace_id: None,
+                        allowed_ward_ids: vec!["ward-current".to_string()],
+                        allowed_session_ids: vec!["sess-current".to_string()],
+                        allowed_global_sources: Vec::new(),
+                    },
+                })
+            }
+        }
+
+        struct RecordingFactStore {
+            as_of_calls: Mutex<Vec<Option<chrono::DateTime<chrono::Utc>>>>,
+        }
+
+        #[async_trait]
+        impl MemoryFactStore for RecordingFactStore {
+            async fn save_fact(
+                &self,
+                _agent_id: &str,
+                _category: &str,
+                _key: &str,
+                _content: &str,
+                _confidence: f64,
+                _session_id: Option<&str>,
+                _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> std::result::Result<Value, String> {
+                Ok(json!({"success": true}))
+            }
+
+            async fn recall_facts(
+                &self,
+                _agent_id: &str,
+                query: &str,
+                _limit: usize,
+            ) -> std::result::Result<Value, String> {
+                Ok(json!({"query": query, "results": []}))
+            }
+
+            async fn recall_facts_prioritized(
+                &self,
+                _agent_id: &str,
+                query: &str,
+                _limit: usize,
+                as_of: Option<chrono::DateTime<chrono::Utc>>,
+            ) -> std::result::Result<Value, String> {
+                self.as_of_calls.lock().unwrap().push(as_of);
+                Ok(json!({"query": query, "results": [], "source": "memory_db"}))
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let fs = Arc::new(TestFileSystem::new(dir.path().to_path_buf()));
+        let unified = Arc::new(RecordingUnifiedRecall::default());
+        let facts = Arc::new(RecordingFactStore {
+            as_of_calls: Mutex::new(Vec::new()),
+        });
+        let tool =
+            MemoryTool::new(fs, Some(facts.clone())).with_unified_recall(UnifiedRecallBinding {
+                access: unified.clone(),
+                authorization: Arc::new(FixedRecallAuthorization),
+            });
+        let ctx = TestToolCtx::new("sess-current");
+
+        let default_output = tool
+            .action_recall(&ctx, "root", &json!({"query": "architecture"}))
+            .await
+            .expect("default unified recall");
+        assert_eq!(default_output["mode"], "unified");
+        assert_eq!(default_output["source"], "unified_recall");
+        assert_eq!(default_output["prioritized"], true);
+        assert_eq!(default_output["recalled"], default_output["results"]);
+        assert!(default_output["truncated"].as_bool().unwrap_or(false));
+        assert!(serde_json::to_vec(&default_output).unwrap().len() <= 16 * 1024);
+        assert!(
+            default_output["results"]
+                .as_array()
+                .expect("unified results")
+                .iter()
+                .all(|item| item["id"] != "transcript-only")
+        );
+        assert!(
+            default_output["results"]
+                .as_array()
+                .expect("unified results")
+                .iter()
+                .all(|item| item["id"] != "unclassified-cross-scope")
+        );
+        assert!(
+            default_output["results"][0]["content"]
+                .as_str()
+                .expect("unified content")
+                .contains("[REDACTED_SECRET]")
+        );
+        assert!(
+            default_output["results"][0]["content"]
+                .as_str()
+                .expect("unified content")
+                .contains("[REDACTED_PATH]")
+        );
+        assert_eq!(unified.requests.lock().unwrap().len(), 1);
+        assert!(facts.as_of_calls.lock().unwrap().is_empty());
+
+        let explicit_facts = tool
+            .action_recall(
+                &ctx,
+                "root",
+                &json!({"query": "architecture", "mode": "facts"}),
+            )
+            .await
+            .expect("explicit fact recall");
+        assert_eq!(explicit_facts["mode"], "facts");
+        assert_eq!(unified.requests.lock().unwrap().len(), 1);
+        assert_eq!(facts.as_of_calls.lock().unwrap().len(), 1);
+
+        let historical = tool
+            .action_recall(
+                &ctx,
+                "root",
+                &json!({
+                    "query": "architecture",
+                    "as_of": "2026-03-01T12:34:56Z"
+                }),
+            )
+            .await
+            .expect("historical fact recall");
+        assert_eq!(historical["mode"], "facts");
+        assert_eq!(unified.requests.lock().unwrap().len(), 1);
+        assert_eq!(facts.as_of_calls.lock().unwrap().len(), 2);
+        assert!(facts.as_of_calls.lock().unwrap()[1].is_some());
+
+        let error = tool
+            .action_recall(
+                &ctx,
+                "root",
+                &json!({
+                    "query": "architecture",
+                    "mode": "unified",
+                    "as_of": "2026-03-01T12:34:56Z"
+                }),
+            )
+            .await
+            .expect_err("historical unified recall must be rejected");
+        assert!(error.to_string().contains("Historical unified recall"));
+
+        let schema = tool.parameters_schema().expect("memory schema");
+        assert_eq!(
+            schema["properties"]["mode"]["enum"],
+            json!(["unified", "facts"])
+        );
+    }
+
+    #[tokio::test]
+    async fn action_recall_without_adapter_marks_legacy_fact_fallback() {
+        let dir = TempDir::new().unwrap();
+        let fs = Arc::new(TestFileSystem::new(dir.path().to_path_buf()));
+        let tool = MemoryTool::new(fs, None);
+        let output = tool
+            .action_recall(
+                &TestToolCtx::new("sess-current"),
+                "root",
+                &json!({"query": "architecture"}),
+            )
+            .await
+            .expect("legacy fact fallback");
+
+        assert_eq!(output["mode"], "facts");
+        assert_eq!(output["degraded"], true);
+        assert_eq!(output["reason_code"], "legacy_fallback");
     }
 
     /// Phase 2 (test E): the agent-callable `recall` action accepts an

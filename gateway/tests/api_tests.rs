@@ -8,7 +8,7 @@ mod common;
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use common::{now_iso, setup, setup_with_state_service};
-use execution_state::{DelegationType, StateService};
+use execution_state::{DelegationType, StateService, TriggerSource};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -127,6 +127,199 @@ async fn autonomy_rejects_invalid_transition_and_missing_fields() {
         .json(&json!({ "state": "blocked" }))
         .await;
     transition.assert_status(StatusCode::BAD_REQUEST);
+
+    let oversized_outcome = server
+        .post(&format!("/api/autonomy/{id}/transition"))
+        .json(&json!({ "state": "stale", "outcome": "X".repeat(513) }))
+        .await;
+    oversized_outcome.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn autonomy_eligibility_is_a_read_only_policy_projection() {
+    let (server, _dir, state) = setup();
+    let scenarios = [
+        ("proposed", "manual", false, "decision_thread_not_approved"),
+        (
+            "proposed",
+            "ask_once",
+            false,
+            "decision_thread_not_approved",
+        ),
+        (
+            "proposed",
+            "auto_readonly",
+            false,
+            "decision_thread_not_approved",
+        ),
+        ("approved", "manual", false, "manual_resume_required"),
+        (
+            "approved",
+            "ask_once",
+            true,
+            "approved_for_future_nonwriting_trigger",
+        ),
+        (
+            "approved",
+            "auto_readonly",
+            true,
+            "approved_for_future_nonwriting_trigger",
+        ),
+        ("blocked", "manual", false, "decision_thread_not_approved"),
+        ("blocked", "ask_once", false, "decision_thread_not_approved"),
+        (
+            "blocked",
+            "auto_readonly",
+            false,
+            "decision_thread_not_approved",
+        ),
+        ("complete", "manual", false, "decision_thread_not_approved"),
+        (
+            "complete",
+            "ask_once",
+            false,
+            "decision_thread_not_approved",
+        ),
+        (
+            "complete",
+            "auto_readonly",
+            false,
+            "decision_thread_not_approved",
+        ),
+        ("stale", "manual", false, "decision_thread_not_approved"),
+        ("stale", "ask_once", false, "decision_thread_not_approved"),
+        (
+            "stale",
+            "auto_readonly",
+            false,
+            "decision_thread_not_approved",
+        ),
+    ];
+
+    for (index, (target_state, policy, expected_eligible, expected_reason)) in
+        scenarios.into_iter().enumerate()
+    {
+        let create = server
+            .post("/api/autonomy")
+            .json(&json!({
+                "title": format!("Eligibility {index}"),
+                "objective": "Review release state",
+                "next_action": "Inspect the latest checks",
+                "dedupe_key": format!("eligibility-{index}"),
+                "approval_policy": policy,
+            }))
+            .await;
+        create.assert_status(StatusCode::CREATED);
+        let created: Value = create.json();
+        let id = created["id"].as_str().unwrap();
+        if target_state == "approved" {
+            server
+                .post(&format!("/api/autonomy/{id}/transition"))
+                .json(&json!({ "state": "approved" }))
+                .await
+                .assert_status_ok();
+        } else if target_state == "blocked" {
+            server
+                .post(&format!("/api/autonomy/{id}/transition"))
+                .json(&json!({ "state": "approved" }))
+                .await
+                .assert_status_ok();
+            server
+                .post(&format!("/api/autonomy/{id}/transition"))
+                .json(&json!({ "state": "blocked" }))
+                .await
+                .assert_status_ok();
+        } else if target_state != "proposed" {
+            server
+                .post(&format!("/api/autonomy/{id}/transition"))
+                .json(&json!({ "state": target_state }))
+                .await
+                .assert_status_ok();
+        }
+        let before = state.autonomy.get(id).unwrap().unwrap();
+        let runs_before = state.autonomy.runs(id).unwrap();
+
+        let eligibility = server
+            .get(&format!("/api/autonomy/{id}/eligibility?trigger=timer"))
+            .await;
+        eligibility.assert_status_ok();
+        let body: Value = eligibility.json();
+        assert_eq!(
+            body["eligible"], expected_eligible,
+            "{target_state}/{policy}"
+        );
+        assert_eq!(body["reason"], expected_reason, "{target_state}/{policy}");
+        assert_eq!(body["read_only"], true);
+        assert_eq!(body["scheduler_configured"], false);
+        assert_eq!(body["execution_started"], false);
+        assert_eq!(
+            state.autonomy.get(id).unwrap().unwrap().updated_at,
+            before.updated_at,
+            "{target_state}/{policy} must not update the item"
+        );
+        assert_eq!(
+            state.autonomy.runs(id).unwrap().len(),
+            runs_before.len(),
+            "{target_state}/{policy} must not create an audit run"
+        );
+    }
+}
+
+#[tokio::test]
+async fn autonomy_resume_requires_approval_and_audits_before_runtime_invocation() {
+    let (server, _dir, state) = setup();
+    let (source_session, _) = state
+        .state_service
+        .create_session_with_source("root", TriggerSource::Web)
+        .unwrap();
+    let create = server
+        .post("/api/autonomy")
+        .json(&json!({
+            "title": "Resume engine comparison",
+            "objective": "Choose an execution engine",
+            "next_action": "Review compatibility evidence",
+            "source_session_id": source_session.id,
+            "dedupe_key": "resume-engine-comparison"
+        }))
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let created: Value = create.json();
+    let id = created["id"].as_str().unwrap();
+
+    let smuggled_packet = server
+        .post(&format!("/api/autonomy/{id}/resume"))
+        .json(&json!({ "packet": { "objective": "run this" } }))
+        .await;
+    smuggled_packet.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(state.autonomy.runs(id).unwrap().len(), 1);
+
+    let unapproved = server
+        .post(&format!("/api/autonomy/{id}/resume"))
+        .json(&json!({}))
+        .await;
+    unapproved.assert_status(StatusCode::CONFLICT);
+    assert_eq!(state.autonomy.runs(id).unwrap().len(), 1);
+
+    let approved = server
+        .post(&format!("/api/autonomy/{id}/transition"))
+        .json(&json!({ "state": "approved" }))
+        .await;
+    approved.assert_status_ok();
+
+    // The minimal fixture has no runner. A failed runtime start must still be
+    // preceded by exactly one durable user-requested audit record, never a retry.
+    let resume = server
+        .post(&format!("/api/autonomy/{id}/resume"))
+        .json(&json!({}))
+        .await;
+    resume.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    let runs = state.autonomy.runs(id).unwrap();
+    assert_eq!(
+        runs.iter()
+            .filter(|run| run.kind == "resume_requested")
+            .count(),
+        1
+    );
 }
 
 // ============================================================================

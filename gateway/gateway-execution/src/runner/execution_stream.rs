@@ -327,9 +327,6 @@ impl ExecutionStream {
         let tool_result_context =
             super::prompt_safe_tool_result_config(&tool_settings, self.paths.vault_dir());
 
-        // Append user message to session stream BEFORE execution
-        batch_writer.session_message(&session_id, &execution_id, "user", &message, None, None);
-
         // Per-turn mutable state — kept in one struct so the event
         // handlers take `&mut EventAccumulator` instead of 10 parameters.
         let mut acc = EventAccumulator {

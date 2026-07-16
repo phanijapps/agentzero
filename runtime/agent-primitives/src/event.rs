@@ -139,12 +139,15 @@ pub struct EventActions {
 }
 
 /// A file artifact declared by an agent in its response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ArtifactDeclaration {
-    /// File path (relative to ward or absolute)
+    /// File path relative to the active ward.
     pub path: String,
     /// Human-readable label
     pub label: Option<String>,
+    /// Whether this is a final, user-facing output of the current goal.
+    #[serde(default)]
+    pub is_goal_artifact: bool,
 }
 
 /// Action for the respond tool.

@@ -237,7 +237,8 @@ impl AdapterConfig {
                 field: "configRoot",
             });
         }
-        let _ = self.resolve_governance_definition_paths()?;
+        let resolved_governance_paths = self.resolve_governance_definition_paths()?;
+        validate_governance_definition_files(&resolved_governance_paths)?;
         Ok(())
     }
 
@@ -383,6 +384,34 @@ impl AdapterConfig {
             }
         }
     }
+}
+
+fn validate_governance_definition_files(
+    paths: &ResolvedGovernanceDefinitionPaths,
+) -> AdapterResult<()> {
+    for path in paths
+        .ontology_definition_paths
+        .iter()
+        .chain(paths.taxonomy_definition_paths.iter())
+    {
+        let metadata = std::fs::symlink_metadata(path).map_err(|_| AdapterError::Bootstrap {
+            component: "governance_definition",
+            reason: "configured definition file is unavailable".to_string(),
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(AdapterError::PathNotConfined {
+                field: "governanceDefinitionPaths",
+                reason: "definition file symlinks are not allowed".to_string(),
+            });
+        }
+        if !metadata.is_file() {
+            return Err(AdapterError::Bootstrap {
+                component: "governance_definition",
+                reason: "configured definition path is not a file".to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn default_single_file_name() -> String {
@@ -680,6 +709,10 @@ mod tests {
         let root = tempfile::tempdir().expect("root");
         let config_root = root.path().join("config");
         std::fs::create_dir_all(config_root.join("governance")).expect("config");
+        std::fs::write(config_root.join("governance/base-ontology.json"), "{}")
+            .expect("ontology definition");
+        std::fs::write(config_root.join("governance/base-taxonomy.json"), "{}")
+            .expect("taxonomy definition");
         let mut config = AdapterConfig::engram_for_data_root(root.path(), "engram")
             .with_trusted_config_root(&config_root);
         config.governance.ontology_definition_paths =
@@ -700,6 +733,24 @@ mod tests {
             vec![config_root.join("governance").join("base-taxonomy.json")]
         );
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn governance_definition_paths_require_existing_regular_files() {
+        let root = tempfile::tempdir().expect("root");
+        let config_root = root.path().join("config");
+        std::fs::create_dir_all(config_root.join("governance")).expect("config");
+        let mut config = AdapterConfig::engram_for_data_root(root.path(), "engram")
+            .with_trusted_config_root(&config_root);
+        config.governance.ontology_definition_paths =
+            vec![PathBuf::from("governance/missing-ontology.json")];
+
+        let err = config
+            .validate()
+            .expect_err("configured definition must exist before startup");
+
+        assert_eq!(err.kind(), AdapterErrorKind::Bootstrap);
+        assert!(!err.to_string().contains("missing-ontology.json"));
     }
 
     #[test]

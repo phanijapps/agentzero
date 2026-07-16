@@ -129,6 +129,8 @@ pub fn create_http_router(
             "/api/autonomy/:id/transition",
             post(autonomy::transition_item),
         )
+        .route("/api/autonomy/:id/resume", post(autonomy::resume_item))
+        .route("/api/autonomy/:id/eligibility", get(autonomy::eligibility))
         // Tool endpoints
         .route("/api/tools", get(tools::list_tools))
         .route("/api/tools/:name", get(tools::get_tool))

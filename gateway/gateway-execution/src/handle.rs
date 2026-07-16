@@ -35,6 +35,13 @@ impl ExecutionHandle {
         }
     }
 
+    /// Whether two handle values refer to the same live execution. Used by
+    /// setup-failure cleanup so an older failed invocation cannot remove a
+    /// handle that a newer invocation installed for the same conversation.
+    pub(crate) fn is_same_execution(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.stop_flag, &other.stop_flag)
+    }
+
     /// Request the execution to stop.
     pub fn stop(&self) {
         self.stop_flag.store(true, Ordering::SeqCst);

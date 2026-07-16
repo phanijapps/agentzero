@@ -89,4 +89,17 @@ describe("useSelectedSessionTokens", () => {
     });
     expect(getMissionControlSessionTokens).toHaveBeenCalledTimes(1);
   });
+
+  it("reloads the selected running session after a Mission Control refresh", async () => {
+    getMissionControlSessionTokens.mockResolvedValue({ success: true, data: makeTokens() });
+    const { result, rerender } = renderHook(
+      ({ refreshGeneration }) => useSelectedSessionTokens("sess-1", refreshGeneration),
+      { initialProps: { refreshGeneration: 1 } },
+    );
+
+    await waitFor(() => expect(result.current.byRootExecId.size).toBe(1));
+    rerender({ refreshGeneration: 2 });
+
+    await waitFor(() => expect(getMissionControlSessionTokens).toHaveBeenCalledTimes(2));
+  });
 });

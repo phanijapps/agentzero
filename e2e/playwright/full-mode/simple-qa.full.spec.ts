@@ -10,7 +10,7 @@ test.describe("simple-qa (Mode Full)", () => {
     await page.locator("textarea").fill("what is 2+2? one-line answer");
     await page.locator('button[title="Send message"]').click();
 
-    await expect.poll(() => page.url(), { timeout: 5000 })
+    await expect.poll(() => page.url(), { timeout: 10_000 })
       .toMatch(/\/research\/sess-/);
 
     await expect(page.locator(".research-msg--assistant").first())

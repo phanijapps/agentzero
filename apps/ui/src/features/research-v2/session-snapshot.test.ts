@@ -7,7 +7,7 @@
 // - running session: status + conversationId:null documented limitation
 // - turnFromLogRow status mapping (still emits AgentTurn for subagent rows)
 // - children sorted by startedAt; leftover children get request:null
-// - /artifacts endpoint wins over respond.args.artifacts fallback
+// - only persisted /artifacts records become clickable artifact refs
 // - isRootRow ignores empty/undefined parent_session_id
 //
 // The old `extractRespondByExecId` / `extractDelegationTasks` helpers were
@@ -125,6 +125,7 @@ function makeArtifact(id: string, overrides: Partial<Artifact> = {}): Artifact {
     fileName: `${id}.md`,
     fileType: "md",
     fileSize: 100,
+    isGoalArtifact: true,
     createdAt: "2026-04-19T00:00:00Z",
     ...overrides,
   };
@@ -174,6 +175,143 @@ describe("snapshotSession — null returns", () => {
 // -----------------------------------------------------------------------------
 
 describe("snapshotSession — completed session", () => {
+  it("carries the recorded primary intent into the hydrated snapshot", async () => {
+    const rootRow = makeRow({ parent_session_id: undefined });
+    listLogSessions.mockResolvedValueOnce({ success: true, data: [rootRow] });
+    getSessionMessages.mockResolvedValueOnce({ success: true, data: [] });
+    listSessionArtifacts.mockResolvedValueOnce({ success: true, data: [] });
+
+    const transport = makeTransport();
+    getSessionState.mockResolvedValueOnce({
+      success: true,
+      data: {
+        session: { id: SESSION_ID, title: null, status: "completed", startedAt: "", durationMs: 0, tokenCount: 0, model: null },
+        userMessage: null,
+        phase: "completed",
+        response: null,
+        intentAnalysis: { primary_intent: "architecture review" },
+        ward: null,
+        recalledFacts: [],
+        plan: [],
+        subagents: [],
+        isLive: false,
+      },
+    });
+
+    const snap = await snapshotSession(transport, SESSION_ID);
+
+    expect(snap).not.toBeNull();
+    expect(snap!.intentClassification).toBe("architecture review");
+    expect(snap!.intentAnalyzing).toBe(false);
+  });
+
+  it("rehydrates nested delegated executions with their safe tool activity", async () => {
+    const rootRow = makeRow({
+      session_id: ROOT_EXEC,
+      parent_session_id: undefined,
+    });
+    const parent = makeRow({
+      session_id: CHILD_EXEC_1,
+      agent_id: "planner-agent",
+      parent_session_id: ROOT_EXEC,
+      started_at: "2026-04-19T00:00:10.000Z",
+    });
+    const grandchild = makeRow({
+      session_id: CHILD_EXEC_2,
+      agent_id: "builder-agent",
+      parent_session_id: CHILD_EXEC_1,
+      started_at: "2026-04-19T00:00:20.000Z",
+    });
+    const user = makeMessage({
+      role: "user",
+      content: "Plan this work.",
+      created_at: "2026-04-19T00:00:00.000Z",
+    });
+    const rootDelegation = makeToolCallMessage(
+      ROOT_EXEC,
+      [{ tool_name: "delegate_to_agent", args: { task: "Make the plan." } }],
+      "2026-04-19T00:00:05.000Z",
+    );
+    const parentRecall = makeToolCallMessage(
+      CHILD_EXEC_1,
+      [{ tool_name: "recall", args: {} }],
+      "2026-04-19T00:00:15.000Z",
+    );
+    const parentReply = makeMessage({
+      execution_id: CHILD_EXEC_1,
+      role: "assistant",
+      content: "Plan complete.",
+      created_at: "2026-04-19T00:00:30.000Z",
+    });
+    const grandchildWrite = makeToolCallMessage(
+      CHILD_EXEC_2,
+      [{ tool_name: "write_file", args: {} }],
+      "2026-04-19T00:00:25.000Z",
+    );
+    const grandchildReply = makeMessage({
+      execution_id: CHILD_EXEC_2,
+      role: "assistant",
+      content: "File written.",
+      created_at: "2026-04-19T00:00:35.000Z",
+    });
+
+    listLogSessions.mockResolvedValueOnce({ success: true, data: [rootRow, parent, grandchild] });
+    getSessionMessages.mockResolvedValueOnce({
+      success: true,
+      data: [user, rootDelegation, parentRecall, parentReply, grandchildWrite, grandchildReply],
+    });
+    listSessionArtifacts.mockResolvedValueOnce({ success: true, data: [] });
+
+    const snap = await snapshotSession(makeTransport(), SESSION_ID);
+    const agents = snap!.turns[0].subagents;
+    const hydratedParent = agents.find((agent) => agent.id === CHILD_EXEC_1)!;
+    const hydratedGrandchild = agents.find((agent) => agent.id === CHILD_EXEC_2)!;
+
+    expect(hydratedParent.respond).toBe("Plan complete.");
+    expect(hydratedParent.timeline.map((entry) => entry.toolName)).toEqual(["recall"]);
+    expect(hydratedGrandchild.parentExecutionId).toBe(CHILD_EXEC_1);
+    expect(hydratedGrandchild.respond).toBe("File written.");
+    expect(hydratedGrandchild.timeline.map((entry) => entry.toolName)).toEqual(["write_file"]);
+  });
+
+  it("recovers delegated agents from a conversation-scoped history query", async () => {
+    const rootRow = makeRow({ session_id: ROOT_EXEC, parent_session_id: undefined });
+    const child = makeRow({
+      session_id: CHILD_EXEC_1,
+      agent_id: "research-agent",
+      parent_session_id: ROOT_EXEC,
+      started_at: "2026-04-19T00:00:10.000Z",
+    });
+    const user = makeMessage({ role: "user", content: "Research this." });
+    const delegate = makeToolCallMessage(
+      ROOT_EXEC,
+      [{ tool_name: "delegate_to_agent", args: { task: "Find the evidence." } }],
+      "2026-04-19T00:00:05.000Z",
+    );
+
+    // The logs endpoint normally returns only the newest global executions.
+    // A session snapshot must scope its request so a session's child execution
+    // is not dropped merely because unrelated sessions ran after it.
+    listLogSessions.mockImplementation(async (filter) => ({
+      success: true,
+      data: filter?.conversation_id === SESSION_ID ? [rootRow, child] : [rootRow],
+    }));
+    getSessionMessages.mockResolvedValueOnce({ success: true, data: [user, delegate] });
+    listSessionArtifacts.mockResolvedValueOnce({ success: true, data: [] });
+
+    const snapshot = await snapshotSession(makeTransport(), SESSION_ID);
+
+    expect(snapshot?.turns[0].subagents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: CHILD_EXEC_1,
+          agentId: "research-agent",
+          request: "Find the evidence.",
+        }),
+      ]),
+    );
+  });
+
   it("builds a SessionTurn carrying user message + subagents + assistant reply", async () => {
     const rootRow = makeRow({
       session_id: ROOT_EXEC,
@@ -406,6 +544,37 @@ describe("snapshotSession — children zip + sort", () => {
 // -----------------------------------------------------------------------------
 
 describe("snapshotSession — artifacts", () => {
+  it("keeps only explicitly designated goal deliverables from a mixed manifest", async () => {
+    const rootRow = makeRow({ session_id: ROOT_EXEC, parent_session_id: undefined });
+    const workingScript = makeArtifact("scratch", {
+      fileName: "scratch.py",
+      fileType: "py",
+      isGoalArtifact: false,
+    });
+    const requestedDeliverable = makeArtifact("report", {
+      fileName: "research-report.py",
+      fileType: "py",
+      isGoalArtifact: true,
+    });
+
+    listLogSessions.mockResolvedValueOnce({ success: true, data: [rootRow] });
+    getSessionMessages.mockResolvedValueOnce({ success: true, data: [] });
+    listSessionArtifacts.mockResolvedValueOnce({
+      success: true,
+      data: [workingScript, requestedDeliverable],
+    });
+
+    const snap = await snapshotSession(makeTransport(), SESSION_ID);
+
+    expect(listSessionArtifacts).toHaveBeenCalledWith(SESSION_ID, {
+      goalArtifactsOnly: true,
+      limit: 24,
+    });
+    expect(snap!.artifacts).toEqual([
+      expect.objectContaining({ id: "report", fileName: "research-report.py" }),
+    ]);
+  });
+
   it("/artifacts endpoint wins when it returns data", async () => {
     const rootRow = makeRow({ session_id: ROOT_EXEC, parent_session_id: undefined });
     const respondWithHints = makeToolCallMessage(ROOT_EXEC, [
@@ -414,7 +583,10 @@ describe("snapshotSession — artifacts", () => {
         args: { message: "done", artifacts: [{ path: "/tmp/hint.md", label: "Hint" }] },
       },
     ]);
-    const realArtifact = makeArtifact("real-1", { fileName: "real.md" });
+    const realArtifact = makeArtifact("real-1", {
+      fileName: "real.md",
+      isGoalArtifact: true,
+    });
 
     listLogSessions.mockResolvedValueOnce({ success: true, data: [rootRow] });
     getSessionMessages.mockResolvedValueOnce({ success: true, data: [respondWithHints] });
@@ -426,7 +598,7 @@ describe("snapshotSession — artifacts", () => {
     expect(snap!.artifacts[0].fileName).toBe("real.md");
   });
 
-  it("falls back to respond.args.artifacts when /artifacts endpoint is empty", async () => {
+  it("does not turn an unpersisted respond artifact path into a broken clickable ref", async () => {
     const rootRow = makeRow({ session_id: ROOT_EXEC, parent_session_id: undefined });
     const respondWithHints = makeToolCallMessage(ROOT_EXEC, [
       {
@@ -440,10 +612,7 @@ describe("snapshotSession — artifacts", () => {
     listSessionArtifacts.mockResolvedValueOnce({ success: true, data: [] });
 
     const snap = await snapshotSession(makeTransport(), SESSION_ID);
-    expect(snap!.artifacts).toHaveLength(1);
-    expect(snap!.artifacts[0].id).toBe("/tmp/hint.md");
-    expect(snap!.artifacts[0].fileName).toBe("hint.md");
-    expect(snap!.artifacts[0].label).toBe("Plan");
+    expect(snap!.artifacts).toEqual([]);
   });
 });
 

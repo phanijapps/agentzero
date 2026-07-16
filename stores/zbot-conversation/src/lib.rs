@@ -14,7 +14,7 @@ pub use autonomy::{AutonomyStore, SqliteAutonomyStore};
 pub use checkpoints::{CheckpointStore, SqliteCheckpointStore};
 pub use domain::{
     AutonomyApprovalPolicy, AutonomyEvidence, AutonomyItem, AutonomyRun, AutonomyState, Checkpoint,
-    Message,
+    LedgerResumePacket, LedgerResumePacketError, Message,
 };
 pub use messages::{MessageStore, SqliteMessageStore};
 pub use pool::open_conversation_pool;

@@ -12,7 +12,7 @@ vi.mock("@/services/transport", () => ({
   getTransport: async () => ({ getSessionState }),
 }));
 
-import { IntentInfoButton } from "./IntentInfoButton";
+import { IntentInfoButton, IntentInfoPanel } from "./IntentInfoButton";
 
 describe("IntentInfoButton", () => {
   beforeEach(() => {
@@ -191,6 +191,35 @@ describe("IntentInfoButton", () => {
     // Change session — popover should close
     rerender(<IntentInfoButton sessionId="sess-2" />);
     expect(screen.queryByText("Intent analysis")).toBeNull();
+  });
+
+  it("keeps a late response for the previous session out of the persistent panel", async () => {
+    let resolveFirst: (value: never) => void;
+    const first = new Promise<never>((resolve) => {
+      resolveFirst = resolve;
+    });
+    getSessionState.mockImplementation((sessionId) => {
+      if (sessionId === "sess-a") return first;
+      return Promise.resolve({
+        success: true,
+        data: { intentAnalysis: { primary_intent: "second session" } } as never,
+      });
+    });
+
+    const { rerender } = render(<IntentInfoPanel sessionId="sess-a" />);
+    await waitFor(() => expect(getSessionState).toHaveBeenCalledWith("sess-a"));
+
+    rerender(<IntentInfoPanel sessionId="sess-b" />);
+    await waitFor(() => expect(screen.getByText("second session")).toBeInTheDocument());
+
+    resolveFirst({
+      success: true,
+      data: { intentAnalysis: { primary_intent: "first session" } } as never,
+    } as never);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.queryByText("first session")).toBeNull();
+    expect(screen.getByText("second session")).toBeInTheDocument();
   });
 
   it("handles transport exception gracefully", async () => {

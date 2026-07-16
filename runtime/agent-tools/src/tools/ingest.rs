@@ -61,6 +61,10 @@ pub struct EvidenceRecord {
     pub source_id: String,
     pub source_type: String,
     pub session_id: Option<String>,
+    /// Active ward supplied by the trusted execution context when available.
+    /// The adapter uses it to select the configured governance overlay.
+    #[serde(default)]
+    pub ward_id: Option<String>,
     pub agent_id: String,
     pub retention_policy: String,
     #[serde(default)]
@@ -280,6 +284,13 @@ impl Tool for IngestTool {
         } else {
             Some(session_id.as_str())
         };
+        let ward_id = ctx.get_state("ward_id").and_then(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|ward_id| !ward_id.is_empty())
+                .map(str::to_string)
+        });
         let ontology_labels = string_array_arg(&args, "ontology_labels");
         let taxonomy_labels = string_array_arg(&args, "taxonomy_labels");
         let retention_policy = args
@@ -294,6 +305,7 @@ impl Tool for IngestTool {
             source_id: source_id.to_string(),
             source_type: source_type.to_string(),
             session_id: session_id_opt.map(str::to_string),
+            ward_id,
             agent_id: agent_id.clone(),
             retention_policy,
             ontology_labels,

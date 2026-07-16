@@ -333,6 +333,7 @@ mod tests {
             source_id: "valuation.aapl".into(),
             source_type: "memory_fact:domain".into(),
             session_id: Some("sess-1".into()),
+            ward_id: Some("ward-1".into()),
             agent_id: "root".into(),
             retention_policy: "durable".into(),
             ontology_labels: vec!["financial_metric".into()],

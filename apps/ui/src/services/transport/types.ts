@@ -632,12 +632,22 @@ export interface Artifact {
   wardId?: string;
   executionId?: string;
   agentId?: string;
-  filePath: string;
+  /** Server-internal path; never returned by the artifact manifest. */
+  filePath?: string;
   fileName: string;
   fileType?: string;
   fileSize?: number;
   label?: string;
+  /** Explicit opt-in for a final user-facing goal deliverable. */
+  isGoalArtifact?: boolean;
   createdAt: string;
+}
+
+export interface ArtifactListOptions {
+  /** Request only explicitly marked final goal deliverables. */
+  goalArtifactsOnly?: boolean;
+  /** Bounded by the server to 1 through 24. */
+  limit?: number;
 }
 
 // ============================================================================
@@ -733,6 +743,8 @@ export interface SessionDetail {
 /** Filter for querying logs */
 export interface LogFilter {
   agent_id?: string;
+  /** Restrict results to one durable conversation/session. */
+  conversation_id?: string;
   level?: LogLevel;
   from_time?: string;
   to_time?: string;
@@ -841,6 +853,16 @@ export interface MissionControlSessionSummary {
   mode?: string | null;
 }
 
+export type SessionPlanStepStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/** Latest validated operational plan for one selected session. */
+export interface CurrentSessionPlan {
+  execution_id: string;
+  explanation?: string;
+  plan: Array<{ step: string; status: SessionPlanStepStatus }>;
+  updated_at: string;
+}
+
 /** Per-execution token slices for one selected Mission Control session */
 export interface MissionControlSessionTokens {
   conversation_id: string;
@@ -848,6 +870,7 @@ export interface MissionControlSessionTokens {
   total_tokens_in: number;
   total_tokens_out: number;
   executions: MissionControlExecutionSummary[];
+  current_plan?: CurrentSessionPlan;
 }
 
 /** Durable, user-controlled operational thread. This is not semantic memory. */
@@ -878,6 +901,12 @@ export interface AutonomyItem {
 
 export interface AutonomyItemDetail extends AutonomyItem {
   evidence: AutonomyEvidence[];
+}
+
+/** Result of an explicit, server-validated decision-thread resume. */
+export interface AutonomyResumeResult {
+  item_id: string;
+  session_id: string;
 }
 
 /** Filter for querying sessions */

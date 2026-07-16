@@ -237,14 +237,14 @@ describe('HttpTransport — additional methods', () => {
 
   it('getArtifactContentUrl returns correct URL', () => {
     const t = newTransport();
-    const url = t.getArtifactContentUrl('artifact-123');
-    expect(url).toBe(`${HTTP}/api/artifacts/artifact-123/content`);
+    const url = t.getArtifactContentUrl('artifact-123', 'sess-123');
+    expect(url).toBe(`${HTTP}/api/artifacts/artifact-123/content?session_id=sess-123`);
   });
 
   it('getArtifactContentUrl URL-encodes the artifact id', () => {
     const t = newTransport();
-    const url = t.getArtifactContentUrl('artifact with spaces');
-    expect(url).toBe(`${HTTP}/api/artifacts/artifact%20with%20spaces/content`);
+    const url = t.getArtifactContentUrl('artifact with spaces', 'session with spaces');
+    expect(url).toBe(`${HTTP}/api/artifacts/artifact%20with%20spaces/content?session_id=session%20with%20spaces`);
   });
 
   it('isConnected returns false when no WebSocket', () => {
@@ -545,6 +545,15 @@ describe('HttpTransport — additional methods', () => {
     await t.listSessionArtifacts('sess-1');
     const [url] = fetchMock.mock.calls[0];
     expect(url).toContain('/api/sessions/sess-1/artifacts');
+  });
+
+  it('listSessionArtifacts sends bounded goal-artifact query options', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => [] });
+    const t = newTransport();
+    await t.listSessionArtifacts('sess-1', { goalArtifactsOnly: true, limit: 24 });
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toContain('goal_artifacts_only=true');
+    expect(url).toContain('limit=24');
   });
 
   it('listBridgeWorkers calls /api/bridge/workers', async () => {

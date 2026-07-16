@@ -39,7 +39,6 @@
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",
     "d3-zoom": "^3.0.0",
-    "jszip": "^3.10.1",
     "katex": "^0.16.45",
     "lucide-react": "^0.562.0",
     "qrcode.react": "^4.2.0",

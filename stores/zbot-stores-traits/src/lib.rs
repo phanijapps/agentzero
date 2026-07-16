@@ -28,8 +28,9 @@ pub use compaction::{CompactionRunSummary, CompactionStore};
 pub use episodes::{EpisodeStats, EpisodeStore, SessionEpisode, SuccessfulEpisode};
 pub use kg_episodes::{KgEpisodeStatusCounts, KgEpisodeStore};
 pub use memory_facts::{
-    EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFact, MemoryFactStore, MemoryHealthMetrics,
-    SkillIndexRow, StrategyFactInsert, StrategyFactMatch,
+    EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFact, MemoryFactStore,
+    MemoryFactWriteRequest, MemoryHealthMetrics, SkillIndexRow, StrategyFactInsert,
+    StrategyFactMatch,
 };
 pub use outbox::OutboxStore;
 pub use procedures::{

@@ -11,6 +11,7 @@ import type { ExecutionTokenEntry, SessionTokenIndex } from "./useSessionTokens"
 interface UseMissionControlSessionsResult {
   sessions: LogSession[];
   tokenIndex: SessionTokenIndex;
+  refreshGeneration: number;
   loading: boolean;
   error: string | null;
   refetch: () => void;
@@ -27,6 +28,7 @@ export function useMissionControlSessions(limit = 50): UseMissionControlSessions
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
   const loadInFlightRef = useRef<Promise<MissionControlSessionSummary[]> | null>(null);
   const loadingKeyRef = useRef<string | null>(null);
 
@@ -69,6 +71,7 @@ export function useMissionControlSessions(limit = 50): UseMissionControlSessions
         if (cancelled) return;
         setSessions(summariesToLogSessions(summaries));
         setTokenIndex(buildTokenIndexFromSummaries(summaries));
+        setRefreshGeneration((generation) => generation + 1);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -84,7 +87,7 @@ export function useMissionControlSessions(limit = 50): UseMissionControlSessions
     };
   }, [limit, tick]);
 
-  return { sessions, tokenIndex, loading, error, refetch };
+  return { sessions, tokenIndex, refreshGeneration, loading, error, refetch };
 }
 
 export function summariesToLogSessions(summaries: MissionControlSessionSummary[]): LogSession[] {

@@ -11,6 +11,11 @@ small set of layouts: conversation canvas, operational split pane, canvas-first
 inspector, file-workbench, and configuration shell. This keeps the redesign
 coherent while leaving gateway and UI data contracts unchanged.
 
+The [Attention Radar UI Rollout](../attention-radar-ui-rollout/spec.md) is the
+successor visual contract for subsequent route composition and art direction.
+This plan's shared-token, behavior-preservation, and accessibility constraints
+remain the baseline; it no longer competes as visual implementation authority.
+
 ## Constraints
 
 - Preserve the existing React, Tailwind, Radix, and shared UI component stack.

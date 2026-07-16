@@ -8,6 +8,18 @@ A chat transcript is not memory. A transcript captures what was said in order; i
 
 The metaphor that holds together across the whole subsystem is **daily log vs. reference book**. Every conversation is a page in the log: exhaustive but inert. What gets distilled from those pages — corrections, schemas, user facts, relationships, beliefs — is the reference book the agent actually consults. The log is large and grows monotonically; the reference book stays small, opinionated, and re-read constantly.
 
+### Current semantic boundary
+
+zbot owns the agent experience and its durable conversation record; it does
+not own a second authoritative semantic database. `conversations.db` remains
+zbot's local transcript/checkpoint store. Durable semantic records (facts,
+wiki, entities, relationships, beliefs, hierarchy, taxonomy evidence, and
+governance findings) cross the `zbot-engram-adapter` boundary into Engram.
+The adapter may maintain narrow compatibility sidecars for existing zbot
+read-models, but those sidecars are projections, not a graph-memory system to
+manage independently. Changing Engram's backing database therefore does not
+change the zbot recall contract.
+
 ### What ships today
 
 The reference book is split across four layers, each implemented and live:
@@ -29,7 +41,7 @@ An **hourly sleep cycle** runs maintenance: compaction, synthesis, pattern extra
 |---|---|---|
 | **Capture** | New facts written to `memory_facts`; entities + relationships into the graph; embeddings indexed; FTS5 triggers fire | During and after conversations |
 | **Distill** | Facts → beliefs (B-1 synthesis); 3+ corrections → schemas; recurring tool sequences → patterns; near-duplicate entities → merges | Sleep cycle, default hourly |
-| **Retrieve** | Hybrid search + RRF + rescore + graph expansion + belief surfacing | Session bootstrap, mid-session every 5 turns, explicit `memory(action="recall")` |
+| **Retrieve** | Unified hybrid search + RRF + rescore + graph expansion + belief and taxonomy surfacing | Session bootstrap, mid-session refresh, and explicit `recall(query, limit)` |
 | **Maintain** | Decay, supersede, retract, mark stale, archive, prune; propagate confidence changes through the belief network | Sleep cycle + inline on fact lifecycle events |
 
 The rest of this document describes how each layer is built, how the agent interacts with it, and what knobs the operator has to tune it.
@@ -42,14 +54,17 @@ This section is the agent's-eye view: what enters the prompt, what the agent can
 
 ### What the agent reads at session start
 
-When a session starts, the bootstrap reads memory in a specific order. The order matters — the LLM weights earlier context more strongly, so the most authoritative material goes first:
+Session bootstrap and refresh use one provider-scoped **unified recall** path.
+The handoff/first-message query is evaluated against the configured sources —
+facts, graph, wiki, procedures, episodes, beliefs, hierarchy, active goals,
+and taxonomy expansion — then bounded and deduplicated before it becomes prompt
+context. zbot no longer separately injects raw goals, corrections, handoffs, or
+procedures ahead of recall. This keeps automatic context and an on-demand
+lookup on the same semantic and authorization path.
 
-1. **`## Last Session`** — the handoff fragment from the previous session in the same ward, formatted as a compact summary. Ward-scoped on purpose: a maritime-tracking handoff shouldn't bleed into a finance session.
-2. **`## Active Goals`** — every goal with `state == "active"`, pulled directly from the goal tracker. Always injected; no recall filter.
-3. **`## Active Corrections`** — every `correction`-category fragment for this agent, fetched unconditionally. Recall can miss; corrections must not.
-4. **`## Active Beliefs`** *(when Belief Network is enabled)* — high-confidence beliefs surfaced by the recall pipeline for the user's query, formatted as a separate block ahead of raw facts.
-5. **`## Context from Last Session`** — a separate recall pass using the handoff summary as the query string. Captures topical context from last time even when the user's first message is short or generic.
-6. **`## Recalled Context`** — the standard recall pass against the actual user message, blending facts, wiki, procedures, and graph-expanded entities.
+Each outcome carries source status rather than pretending every source is
+available. A missing taxonomy is `not_configured`; a failed source is
+`unavailable` while the remaining authorized evidence can still be used.
 
 ### What the agent sees mid-session
 
@@ -57,27 +72,28 @@ Every `mid_session_recall.every_n_turns = 5` turns, recall re-runs with the late
 
 When the session ends, a handoff writer summarises the conversation via LLM (with tool-call names included, so the next session knows what was *attempted*, not just what was said) and writes a fresh `handoff.latest` fragment. The loop closes.
 
-### What the agent can ask for explicitly: the `memory` tool
+### What the agent can ask for explicitly: the `recall` tool
 
-A single `memory` tool is exposed to every agent. Its `action` parameter routes to one of:
+Actors authorized for memory reading receive a narrow, read-only
+`recall(query, limit)` tool. It returns one bounded unified result bundle with
+safe provenance, source statuses, and (when selected) taxonomy label/relation
+diagnostics. Recalled text is reference data, not instructions or authority.
 
-| Action | Purpose |
-|---|---|
-| `get` | Look up a fragment by exact `key` |
-| `set` | Write or update a fragment by `key` (durable; bypasses session-only state) |
-| `save_fact` | Write a category-tagged fact with confidence, source episode, and optional embedding |
-| `recall` | Run the hybrid search pipeline against a query string; optional `as_of` for point-in-time, optional `ward` filter |
-| `belief` | Look up a belief by subject (returns content + confidence + source facts) — Belief Network only |
-| `contradictions` | List unresolved contradictions, optionally filtered by `belief_id` — Belief Network only |
-
-`as_of` accepts an ISO-8601 timestamp. When omitted, recall uses `Utc::now()` — so default queries correctly exclude facts whose bi-temporal interval has ended.
+The broad `memory` wrapper is deliberately hidden from model-visible tool
+schemas. It remains an internal compatibility path: `memory(action="recall")`
+without a mode returns the same unified envelope; an explicit historical
+`as_of` lookup is facts-only because zbot does not claim to reconstruct a
+historical graph/taxonomy snapshot. Exact and write operations retain their
+separate capability-gated paths.
 
 ### Write paths
 
 Three paths write to memory:
 
 - **Implicit (post-session distillation)** — when a session ends, a distiller walks the transcript and writes any new fragments, entities, and relationships. This is the bulk path; the agent doesn't have to do anything for it to happen.
-- **Explicit (agent-driven)** — the agent can call `memory(action="set"|"save_fact")` mid-session to durably store something it wants to remember. Used sparingly; most useful for facts the user gave directly ("call me Phani").
+- **Explicit (agent-driven)** — a capability-gated memory-write path can
+  durably preserve a fact the agent needs to remember. It is used sparingly;
+  user-provided facts such as a preferred name are the typical case.
 - **Human-curated (UI)** — the `/memory` tab in the desktop UI lets a human inspect, edit, supersede, or delete fragments and resolve contradictions. The `/observatory` tab visualises the knowledge graph and surfaces health metrics (belief counts, contradiction counts, distillation progress).
 
 ### Ward scoping
@@ -96,9 +112,24 @@ The Belief Network sits a layer above: beliefs are aggregates of facts about the
 
 ### Storage layout
 
-Two SQLite databases live under the agent's data directory (`$XDG_DATA_HOME/agentzero/` on Linux, equivalent paths on macOS / Windows):
+The current ownership boundary is important: `conversations.db` is zbot's
+local conversation data, while semantic records are owned through the Engram
+adapter. The SQLite structures below describe compatibility/read-model
+projections and legacy operational detail; they are not a second zbot-owned
+semantic source of truth.
 
-**`knowledge.db`** — the live memory store. Schema version **30**. Tables:
+The current data boundary has two layers:
+
+- **`conversations.db`** — zbot's local transcript, checkpoint, and execution
+  record under its data directory (normally `~/Documents/zbot/`).
+- **Engram's selected provider** — the durable semantic store. Its backing
+  database is intentionally an Engram choice, not a zbot contract.
+
+The following SQLite names remain useful as a compatibility/projection and
+migration reference; they are not a second authoritative semantic database:
+
+**`knowledge.db`** — legacy/compatibility semantic projection. Schema version
+**30**. Tables:
 
 | Table | Purpose |
 |---|---|
@@ -113,7 +144,9 @@ Two SQLite databases live under the agent's data directory (`$XDG_DATA_HOME/agen
 | `compaction_log` | Audit trail for KG merges |
 | `goals`, `goal_progress` | Session-level goal tracker |
 
-**`conversations.db`** — the daily log: chat history, separate file, separate concerns. The memory subsystem never touches it directly — it goes through the `ConversationStore` trait, which decouples memory from any specific chat backend.
+**`conversations.db`** — the daily log: chat history, checkpoints, and
+execution records. Semantic code reaches it only through the conversation
+trait boundary; it is not a substitute for Engram semantic retrieval.
 
 ### Schema migration history
 

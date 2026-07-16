@@ -1,16 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { getTransport } from "@/services/transport";
-import type { MissionControlSessionTokens } from "@/services/transport/types";
+import type { CurrentSessionPlan, MissionControlSessionTokens } from "@/services/transport/types";
 import type { ExecutionTokenEntry, SessionTokenIndex } from "./useSessionTokens";
 
-const EMPTY_INDEX: SessionTokenIndex = {
+export type SelectedSessionTokenState = SessionTokenIndex & {
+  currentPlan?: CurrentSessionPlan;
+};
+
+const EMPTY_INDEX: SelectedSessionTokenState = {
   byRootExecId: new Map(),
   executionsByRootExecId: new Map(),
 };
 
-export function useSelectedSessionTokens(sessionId: string | null): SessionTokenIndex {
-  const [tokenIndex, setTokenIndex] = useState<SessionTokenIndex>(EMPTY_INDEX);
-  const loadInFlightRef = useRef<Promise<SessionTokenIndex> | null>(null);
+export function useSelectedSessionTokens(
+  sessionId: string | null,
+  refreshGeneration?: number,
+): SelectedSessionTokenState {
+  const [tokenIndex, setTokenIndex] = useState<SelectedSessionTokenState>(EMPTY_INDEX);
+  const loadInFlightRef = useRef<Promise<SelectedSessionTokenState> | null>(null);
   const loadingSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -20,24 +27,25 @@ export function useSelectedSessionTokens(sessionId: string | null): SessionToken
     }
 
     let cancelled = false;
+    const loadKey = `${sessionId}:${refreshGeneration ?? "initial"}`;
     const load = async () => {
-      if (loadInFlightRef.current && loadingSessionRef.current === sessionId) {
+      if (loadInFlightRef.current && loadingSessionRef.current === loadKey) {
         return loadInFlightRef.current;
       }
 
-      loadingSessionRef.current = sessionId;
+      loadingSessionRef.current = loadKey;
       const loadPromise = (async () => {
         const transport = await getTransport();
         const result = await transport.getMissionControlSessionTokens(sessionId);
         if (result.success && result.data) {
-          return tokenIndexFromSessionTokens(result.data);
+          return selectedStateFromSessionTokens(result.data);
         }
         return EMPTY_INDEX;
       })();
 
       loadInFlightRef.current = loadPromise;
       const clearInFlight = () => {
-        if (loadingSessionRef.current === sessionId) {
+        if (loadingSessionRef.current === loadKey) {
           loadingSessionRef.current = null;
           loadInFlightRef.current = null;
         }
@@ -58,7 +66,7 @@ export function useSelectedSessionTokens(sessionId: string | null): SessionToken
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, refreshGeneration]);
 
   return tokenIndex;
 }
@@ -84,4 +92,13 @@ export function tokenIndexFromSessionTokens(tokens: MissionControlSessionTokens)
   );
 
   return { byRootExecId, executionsByRootExecId };
+}
+
+function selectedStateFromSessionTokens(
+  tokens: MissionControlSessionTokens,
+): SelectedSessionTokenState {
+  return {
+    ...tokenIndexFromSessionTokens(tokens),
+    currentPlan: tokens.current_plan,
+  };
 }

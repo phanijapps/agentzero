@@ -43,7 +43,7 @@ function toolNameOf(e: Record<string, unknown>, fallback: string): string {
 // -------------------------------------------------------------------------
 
 function mapAgentStarted(e: Record<string, unknown>, now: number): ResearchAction {
-  return {
+  const action: Extract<ResearchAction, { type: "AGENT_STARTED" }> = {
     type: "AGENT_STARTED",
     turnId: turnIdOf(e),
     agentId: (e["agent_id"] as string) ?? "root",
@@ -51,6 +51,15 @@ function mapAgentStarted(e: Record<string, unknown>, now: number): ResearchActio
     wardId: (e["ward_id"] as string | null) ?? null,
     startedAt: now,
   };
+  const sessionId = e["session_id"];
+  if (typeof sessionId === "string" && sessionId.length > 0) {
+    action.sessionId = sessionId;
+  }
+  const conversationId = e["conversation_id"];
+  if (typeof conversationId === "string" && conversationId.length > 0) {
+    action.conversationId = conversationId;
+  }
+  return action;
 }
 
 /**

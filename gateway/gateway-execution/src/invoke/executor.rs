@@ -27,6 +27,7 @@ use agent_tools::{
     QueryResourceTool,
     // Optional file reading tools
     ReadTool,
+    RecallAuthorizationContext,
     // Subagent tools
     ShellTool,
     ToolSettings,
@@ -422,6 +423,40 @@ pub fn build_context_capability_catalog(
     }
 }
 
+fn recall_catalog_capability(
+    actor: RuntimeActorKind,
+    health: ContextCapabilityHealth,
+) -> ContextCapability {
+    let capabilities = [ToolCapability::MemoryRead];
+    let available = health == ContextCapabilityHealth::Available;
+    ContextCapability {
+        id: "recall".to_string(),
+        kind: ContextCapabilityKind::Tool,
+        display_name: display_name("recall"),
+        description: "Retrieve bounded untrusted reference data from configured unified recall."
+            .to_string(),
+        actor_policy: actor_policy_for_capabilities(actor, &capabilities),
+        risk_level: risk_level_for_tool("recall", &capabilities),
+        side_effects: side_effects_for_tool("recall", &capabilities),
+        input_schema: Some(agent_tools::recall_parameters_schema()),
+        output_schema: None,
+        resource_uri_template: None,
+        cost_hint: Some(cost_hint_for_tool("recall", &capabilities)),
+        latency_hint: Some(latency_hint_for_tool("recall", &capabilities)),
+        token_hint: token_hint_for_tool("recall"),
+        health,
+        owner_crate: Some(owner_crate_for_tool("recall").to_string()),
+        audit_policy: Some(audit_policy_for_tool("recall", &capabilities).to_string()),
+        default_visible: available,
+        visibility_policy: if available {
+            "default_visible_unified_recall_exception".to_string()
+        } else {
+            "catalog_only_unavailable".to_string()
+        },
+        split_target: split_target_for_tool("recall").map(str::to_string),
+    }
+}
+
 fn context_actor_kind(actor: RuntimeActorKind) -> ContextActorKind {
     match actor {
         RuntimeActorKind::Root => ContextActorKind::Root,
@@ -483,6 +518,7 @@ fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
         "ingest" => vec![ToolCapability::IngestWrite],
         "load_skill" => vec![ToolCapability::SkillLoad],
         "memory" => vec![ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
+        "recall" => vec![ToolCapability::MemoryRead],
         "memory_write" => vec![ToolCapability::MemoryWrite],
         "multimodal_analyze" => vec![ToolCapability::MultimodalAnalyze],
         "query_resource" => vec![ToolCapability::ConnectorQuery],
@@ -585,7 +621,7 @@ fn latency_hint_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
 fn token_hint_for_tool(name: &str) -> Option<u32> {
     match name {
         "load_skill" => Some(1200),
-        "memory" | "graph_query" | "query_resource" | "connector_resource" => Some(800),
+        "memory" | "recall" | "graph_query" | "query_resource" | "connector_resource" => Some(800),
         "connector_invoke" => Some(300),
         "shell" | "read" => Some(400),
         "wait_agent" => Some(120),
@@ -632,6 +668,7 @@ fn visibility_policy_for_tool(name: &str, _actor: RuntimeActorKind) -> &'static 
         "wait_agent" => "visible_when_parallel_children_active",
         "edit" | "write" => "legacy_alias_hidden",
         "memory" | "graph_query" => "hidden_from_model_use_context_resources",
+        "recall" => "default_visible_unified_recall_exception",
         "query_resource" => "hidden_from_model_use_connector_split",
         "memory_write" => "default_visible_memory_write_action",
         "connector_resource" => "default_visible_connector_resource_read",
@@ -645,6 +682,7 @@ fn visibility_policy_for_tool(name: &str, _actor: RuntimeActorKind) -> &'static 
 fn split_target_for_tool(name: &str) -> Option<&'static str> {
     match name {
         "memory" => Some("action:memory_write; resources:memory_recall/context_atoms"),
+        "recall" => Some("resources:memory_recall/context_atoms"),
         "memory_write" => Some("action:memory_write"),
         "query_resource" => Some("action:connector_invoke; resources:connector_resource"),
         "connector_resource" => Some("resources:connector_resource"),
@@ -757,6 +795,7 @@ pub struct ExecutorBuilder {
     messages: Option<Arc<dyn MessageStore>>,
     /// Trait-routed procedure store for the `run_procedure` tool.
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
+    memory_recall: Option<Arc<gateway_memory::MemoryRecall>>,
     extra_initial_state: Option<Vec<(String, serde_json::Value)>>,
     chat_mode: bool,
 }
@@ -782,6 +821,7 @@ impl ExecutorBuilder {
             state_service: None,
             messages: None,
             procedure_store: None,
+            memory_recall: None,
             extra_initial_state: None,
             chat_mode: false,
         }
@@ -799,6 +839,13 @@ impl ExecutorBuilder {
         procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore>,
     ) -> Self {
         self.procedure_store = Some(procedure_store);
+        self
+    }
+
+    /// Wire model-visible unified recall for this executor when memory recall
+    /// is available in the gateway composition root.
+    pub fn with_memory_recall(mut self, memory_recall: Arc<gateway_memory::MemoryRecall>) -> Self {
+        self.memory_recall = Some(memory_recall);
         self
     }
 
@@ -931,7 +978,32 @@ impl ExecutorBuilder {
             Arc::new(GatewayFileSystem::new(self.vault_dir.clone()));
         let registry = self.build_tool_registry(fs_context);
 
-        build_context_capability_catalog(self.actor_kind, registry.as_ref(), session_id, agent_id)
+        let mut catalog = build_context_capability_catalog(
+            self.actor_kind,
+            registry.as_ref(),
+            session_id,
+            agent_id,
+        );
+        if actor_allows(self.actor_kind, ToolCapability::MemoryRead)
+            && !catalog
+                .capabilities
+                .iter()
+                .any(|capability| capability.id == "recall")
+        {
+            let health = if self
+                .memory_recall
+                .as_ref()
+                .is_some_and(|recall| recall.provider_scope().is_some())
+            {
+                ContextCapabilityHealth::Available
+            } else {
+                ContextCapabilityHealth::Unavailable
+            };
+            catalog
+                .capabilities
+                .push(recall_catalog_capability(self.actor_kind, health));
+        }
+        catalog
     }
 
     /// Build an executor for the given agent and provider.
@@ -1130,8 +1202,18 @@ impl ExecutorBuilder {
         let fs_context: Arc<dyn FileSystemContext> =
             Arc::new(GatewayFileSystem::new(self.vault_dir.clone()));
 
-        // Build tool registry
-        let tool_registry = self.build_tool_registry(fs_context);
+        // Build tool registry. The authorization context is constructed from
+        // immutable executor/session inputs, not model-controlled tool state.
+        let recall_authorization = self.memory_recall.as_ref().and_then(|recall| {
+            crate::invoke::unified_recall_adapter::recall_authorization_context(
+                recall,
+                agent.id.clone(),
+                self.actor_kind.as_state_value(),
+                session_id,
+                ward_id,
+            )
+        });
+        let tool_registry = self.build_tool_registry_with_recall(fs_context, recall_authorization);
 
         // Build MCP manager
         let mcp_manager = self.build_mcp_manager(agent, mcp_service).await;
@@ -1220,8 +1302,17 @@ impl ExecutorBuilder {
         .map_err(|e| format!("Failed to create executor: {}", e))
     }
 
-    /// Build the tool registry with core and optional tools.
+    /// Build a registry without session-scoped model recall (catalog/tests).
     fn build_tool_registry(&self, fs_context: Arc<dyn FileSystemContext>) -> Arc<ToolRegistry> {
+        self.build_tool_registry_with_recall(fs_context, None)
+    }
+
+    /// Build the tool registry with core and optional tools.
+    fn build_tool_registry_with_recall(
+        &self,
+        fs_context: Arc<dyn FileSystemContext>,
+        recall_authorization: Option<RecallAuthorizationContext>,
+    ) -> Arc<ToolRegistry> {
         let mut tool_registry = ToolRegistry::new();
         let actor = self.actor_kind;
 
@@ -1236,6 +1327,11 @@ impl ExecutorBuilder {
             }
         }
 
+        let unified_recall_binding = self
+            .memory_recall
+            .clone()
+            .zip(recall_authorization)
+            .filter(|(recall, _)| recall.provider_scope().is_some());
         register_if_allowed(
             &mut tool_registry,
             actor,
@@ -1292,11 +1388,35 @@ impl ExecutorBuilder {
             &mut tool_registry,
             actor,
             &[ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
-            Arc::new(
-                MemoryTool::new(fs_context.clone(), self.fact_store.clone())
-                    .with_optional_evidence_intake(self.ingestion_adapter.clone()),
-            ),
+            Arc::new({
+                let tool = MemoryTool::new(fs_context.clone(), self.fact_store.clone())
+                    .with_optional_evidence_intake(self.ingestion_adapter.clone());
+                match &unified_recall_binding {
+                    Some((recall, authorization)) => tool.with_unified_recall(
+                        crate::invoke::unified_recall_adapter::unified_recall_binding_with_goals(
+                            recall.clone(),
+                            self.goal_adapter.clone(),
+                            authorization.clone(),
+                        ),
+                    ),
+                    None => tool,
+                }
+            }),
         );
+        if let Some((recall, authorization)) = unified_recall_binding {
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::MemoryRead],
+                Arc::new(
+                    crate::invoke::unified_recall_adapter::unified_recall_tool_with_goals(
+                        recall,
+                        self.goal_adapter.clone(),
+                        authorization,
+                    ),
+                ),
+            );
+        }
         register_if_allowed(
             &mut tool_registry,
             actor,
@@ -1505,6 +1625,7 @@ mod tests {
     use super::*;
     use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
     use agent_runtime::llm::{ChatResponse, LlmError, StreamCallback};
+    use agent_tools::RecallVisibilityScope;
     use async_trait::async_trait;
     use serde_json::Value;
     use std::collections::{BTreeSet, HashMap};
@@ -1663,6 +1784,38 @@ mod tests {
                 },
             )])),
         }
+    }
+
+    #[tokio::test]
+    async fn root_executor_uses_the_effective_active_ward_as_tool_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("financial-analysis"),
+            )
+            .await
+            .expect("executor build");
+
+        assert_eq!(
+            executor.config().initial_state.get("ward_id"),
+            Some(&serde_json::Value::String("financial-analysis".to_string()))
+        );
     }
 
     #[test]
@@ -1898,6 +2051,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn builder_exposes_narrow_recall_when_memory_recall_is_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+        let mut recall = gateway_memory::MemoryRecall::new(
+            None,
+            Arc::new(gateway_memory::RecallConfig::default()),
+        );
+        recall.set_provider_scope(gateway_memory::RecallProviderScope::new(
+            "tenant-a".to_string(),
+            true,
+            false,
+        ));
+        let recall = Arc::new(recall);
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_memory_recall(recall)
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        let visible_names = executor
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(visible_names.contains("recall"));
+        assert!(!visible_names.contains("memory"));
+        assert!(!visible_names.contains("graph_query"));
+        assert!(!visible_names.contains("query_resource"));
+    }
+
+    #[tokio::test]
     async fn builder_exposes_connector_split_and_hides_query_resource_from_model_schema() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
@@ -1948,6 +2149,88 @@ mod tests {
             .iter()
             .map(|tool| tool.name().to_string())
             .collect()
+    }
+
+    #[test]
+    fn session_scoped_registry_exposes_recall_but_keeps_memory_hidden() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let mut recall = gateway_memory::MemoryRecall::new(
+            None,
+            Arc::new(gateway_memory::RecallConfig::default()),
+        );
+        recall.set_provider_scope(gateway_memory::RecallProviderScope::new(
+            "tenant-a".to_string(),
+            true,
+            false,
+        ));
+        let recall = Arc::new(recall);
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_memory_recall(recall)
+            .build_tool_registry_with_recall(
+                fs_context,
+                Some(RecallAuthorizationContext {
+                    user_id: "default".to_string(),
+                    agent_id: "root".to_string(),
+                    actor_kind: "root".to_string(),
+                    session_id: Some("sess-a".to_string()),
+                    ward_id: Some("ward-a".to_string()),
+                    visibility: RecallVisibilityScope {
+                        tenant_id: None,
+                        workspace_id: None,
+                        allowed_ward_ids: vec!["ward-a".to_string()],
+                        allowed_session_ids: vec!["sess-a".to_string()],
+                        allowed_global_sources: Vec::new(),
+                    },
+                }),
+            );
+        assert!(registry.contains("recall"));
+        assert!(registry.contains("memory"));
+    }
+
+    #[test]
+    fn recall_catalog_is_available_only_when_the_adapter_is_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let unavailable = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build_context_capability_catalog(
+                Some("session-1".to_string()),
+                Some("root".to_string()),
+            );
+        let unavailable_recall = catalog_capability(&unavailable, "recall");
+        assert_eq!(
+            unavailable_recall.health,
+            ContextCapabilityHealth::Unavailable
+        );
+        assert!(!unavailable_recall.default_visible);
+        assert_eq!(
+            unavailable_recall.visibility_policy,
+            "catalog_only_unavailable"
+        );
+        assert!(unavailable_recall.input_schema.is_some());
+
+        let mut recall = gateway_memory::MemoryRecall::new(
+            None,
+            Arc::new(gateway_memory::RecallConfig::default()),
+        );
+        recall.set_provider_scope(gateway_memory::RecallProviderScope::new(
+            "tenant-a".to_string(),
+            true,
+            false,
+        ));
+        let recall = Arc::new(recall);
+        let available = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_memory_recall(recall)
+            .build_context_capability_catalog(
+                Some("session-1".to_string()),
+                Some("root".to_string()),
+            );
+        let available_recall = catalog_capability(&available, "recall");
+        assert_eq!(available_recall.health, ContextCapabilityHealth::Available);
+        assert!(available_recall.default_visible);
+        assert_eq!(
+            available_recall.visibility_policy,
+            "default_visible_unified_recall_exception"
+        );
     }
 
     fn registry_names_with_agent_control_deps(actor_kind: RuntimeActorKind) -> BTreeSet<String> {

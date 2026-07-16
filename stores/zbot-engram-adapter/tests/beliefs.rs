@@ -1,8 +1,11 @@
 use chrono::{DateTime, TimeZone, Utc};
 use engram_domain::BeliefStatus;
 use zbot_engram_adapter::{
-    mapping::belief::{belief_record_to_belief, belief_to_belief_record},
-    AdapterConfig, AdapterFeature, CapabilityReport, EngramBeliefStore,
+    mapping::belief::{
+        belief_record_to_belief, belief_to_belief_record, belief_to_belief_record_with_governance,
+    },
+    AdapterConfig, AdapterFeature, CapabilityReport, EngramBeliefStore, GovernancePolicy,
+    GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID,
 };
 use zbot_stores_traits::{
     Belief, BeliefContradiction, BeliefContradictionStore, BeliefStore, ContradictionType,
@@ -113,6 +116,44 @@ fn belief_mapping_preserves_valid_time_sources_and_metadata() {
     historical.valid_until = Some(ts(2026, 6, 1));
     let historical_record = belief_to_belief_record(&historical, &mapper).expect("historical");
     assert_eq!(historical_record.status, BeliefStatus::Active);
+}
+
+#[test]
+fn belief_mapping_persists_governance_selection() {
+    let config = AdapterConfig::engram_for_data_root(std::env::temp_dir(), "engram.db");
+    let mapper = config.scope_mapper().expect("scope mapper");
+    let governance = GovernancePolicy {
+        default_selection: GovernanceSelection {
+            ontology_ids: vec![ZBOT_BASE_ONTOLOGY_ID.to_string()],
+            taxonomy_scheme_ids: vec![ZBOT_GENERAL_SCHEME_ID.to_string()],
+        },
+        ..GovernancePolicy::default()
+    };
+    let record = belief_to_belief_record_with_governance(
+        &belief(
+            "belief-governed",
+            "user.language",
+            "User prefers Rust",
+            ts(2026, 1, 1),
+        ),
+        &mapper,
+        Some(&governance),
+    )
+    .expect("governed belief");
+    let metadata = record.metadata.expect("metadata");
+
+    assert_eq!(
+        metadata.get("governanceOntologyIds"),
+        Some(&serde_json::json!([ZBOT_BASE_ONTOLOGY_ID]))
+    );
+    assert_eq!(
+        metadata.get("governanceTaxonomySchemeIds"),
+        Some(&serde_json::json!([ZBOT_GENERAL_SCHEME_ID]))
+    );
+    assert_eq!(
+        metadata.get("governanceRecordKind"),
+        Some(&serde_json::json!("belief"))
+    );
 }
 
 #[tokio::test]

@@ -9,11 +9,16 @@ use chrono::{TimeZone, Utc};
 use rusqlite::params;
 use serde_json::json;
 use zbot_engram_adapter::{
-    mapping::memory::{memory_fact_to_record, memory_record_to_fact},
+    mapping::memory::{
+        memory_fact_to_record, memory_fact_to_record_with_governance, memory_record_to_fact,
+    },
     AdapterConfig, AdapterErrorKind, AdapterFeature, CapabilityReport, EmbeddingMode,
-    EngramMemoryFactStore, EngramProvider,
+    EngramMemoryFactStore, EngramProvider, GovernanceOverlay, GovernancePolicy,
+    GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID,
 };
-use zbot_stores_traits::{EmbeddingQueryIdentity, MemoryFact, MemoryFactStore};
+use zbot_stores_traits::{
+    EmbeddingQueryIdentity, MemoryFact, MemoryFactStore, MemoryFactWriteRequest,
+};
 
 fn engram_config(root: &tempfile::TempDir) -> AdapterConfig {
     AdapterConfig::engram_for_data_root(root.path(), "engram.db")
@@ -169,6 +174,50 @@ fn memory_fact_maps_to_engram_record_losslessly() {
     assert_eq!(round_trip.embedding, None);
 }
 
+#[test]
+fn memory_fact_mapping_persists_the_scoped_governance_classification() {
+    let config = AdapterConfig::engram_for_data_root(std::env::temp_dir(), "engram.db");
+    let mapper = config.scope_mapper().expect("scope mapper");
+    let fact = sample_fact();
+    let governance = GovernancePolicy {
+        default_selection: GovernanceSelection {
+            ontology_ids: vec!["ontology.default:v1".to_string()],
+            taxonomy_scheme_ids: vec!["taxonomy.default:v1".to_string()],
+        },
+        overlays: vec![GovernanceOverlay {
+            session_id: Some("sess-1".to_string()),
+            selection: GovernanceSelection {
+                ontology_ids: vec![ZBOT_BASE_ONTOLOGY_ID.to_string()],
+                taxonomy_scheme_ids: vec![ZBOT_GENERAL_SCHEME_ID.to_string()],
+            },
+            ..GovernanceOverlay::default()
+        }],
+        ..GovernancePolicy::default()
+    };
+
+    let record = memory_fact_to_record_with_governance(
+        &fact,
+        &mapper,
+        EmbeddingMode::PreserveBytes,
+        Some(&governance),
+    )
+    .expect("record mapping");
+    let metadata = record.metadata.expect("governance metadata");
+
+    assert_eq!(
+        metadata.get("governanceOntologyIds"),
+        Some(&json!([ZBOT_BASE_ONTOLOGY_ID]))
+    );
+    assert_eq!(
+        metadata.get("governanceTaxonomySchemeIds"),
+        Some(&json!([ZBOT_GENERAL_SCHEME_ID]))
+    );
+    assert_eq!(
+        metadata.get("governanceTaxonomyConceptIds"),
+        Some(&json!([format!("{ZBOT_GENERAL_SCHEME_ID}:concept:memory")]))
+    );
+}
+
 #[tokio::test]
 async fn save_count_list_get_delete_and_archive_round_trip() {
     let root = tempfile::tempdir().expect("root");
@@ -225,6 +274,74 @@ async fn save_count_list_get_delete_and_archive_round_trip() {
         .await
         .expect("get deleted")
         .is_none());
+}
+
+#[tokio::test]
+async fn context_aware_save_keeps_ward_session_and_writer_provenance() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramMemoryFactStore::open(engram_config(&root)).expect("store");
+
+    store
+        .save_fact_with_context(MemoryFactWriteRequest {
+            agent_id: "agent-a".to_string(),
+            category: "domain".to_string(),
+            key: "architecture.memory".to_string(),
+            content: "Memory writes retain the active execution scope.".to_string(),
+            confidence: 0.9,
+            session_id: Some("sess-scoped".to_string()),
+            ward_id: Some("ward-scoped".to_string()),
+            source_ref: Some("agentzero.memory_tool".to_string()),
+            valid_from: None,
+        })
+        .await
+        .expect("scoped save");
+
+    let facts = store
+        .get_memory_facts("agent-a", Some("global"), 10)
+        .await
+        .expect("facts");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].session_id.as_deref(), Some("sess-scoped"));
+    assert_eq!(facts[0].ward_id, "ward-scoped");
+    assert_eq!(
+        facts[0].source_ref.as_deref(),
+        Some("agentzero.memory_tool")
+    );
+}
+
+#[tokio::test]
+async fn context_aware_save_does_not_overwrite_a_matching_key_in_another_session() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramMemoryFactStore::open(engram_config(&root)).expect("store");
+
+    for session_id in ["sess-one", "sess-two"] {
+        store
+            .save_fact_with_context(MemoryFactWriteRequest {
+                agent_id: "agent-a".to_string(),
+                category: "domain".to_string(),
+                key: "architecture.memory".to_string(),
+                content: format!("Scoped write from {session_id}."),
+                confidence: 0.9,
+                session_id: Some(session_id.to_string()),
+                ward_id: Some("ward-scoped".to_string()),
+                source_ref: Some("agentzero.memory_tool".to_string()),
+                valid_from: None,
+            })
+            .await
+            .expect("scoped save");
+    }
+
+    let facts = store
+        .get_memory_facts("agent-a", Some("global"), 10)
+        .await
+        .expect("facts");
+    assert_eq!(facts.len(), 2);
+    let mut session_ids = facts
+        .iter()
+        .filter_map(|fact| fact.session_id.clone())
+        .collect::<Vec<_>>();
+    session_ids.sort();
+    assert_eq!(session_ids, vec!["sess-one", "sess-two"]);
 }
 
 #[tokio::test]

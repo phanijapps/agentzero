@@ -1,32 +1,38 @@
 # Plan: Autonomy Ledger
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Complete
 
 ## Approach
 
 Add a small zbot-owned operational store under `zbot-conversation`, then expose
-it through the gateway and Mission Control. Existing intent analysis emits
-relation metadata but cannot select or mutate a ledger item. Existing runtime
-context middleware accepts a single resolved packet; existing execution remains
-the only executor. The first release is manually initiated and uses timer
-eligibility only as observable state.
+it through the gateway and Mission Control. A dedicated, typed ledger-resume
+path—not intent text, generic metadata, or a caller packet—carries a server
+constructed packet into the existing executor's transient system context.
+Existing execution remains the only executor. The first release is manually
+initiated and exposes timer eligibility only as observable state.
 
 ## Constraints
 
 - No new dependency, top-level crate, worker, model call, or event transport.
 - Engram is not the ledger backend; its facts and graph entities may be linked
   as evidence later through stable references.
-- No automatic write-capable execution or semantic auto-attachment.
+- No automatic write-capable execution, semantic auto-attachment, cron wiring,
+  or retry loop.
+- `POST /api/autonomy/:id/resume` is an explicit user-selection boundary. It
+  must load its own item and source session, verify `approved`, and never trust
+  a packet, source agent, or item id from model output or generic metadata.
 
 ## Construction tests
 
-**Integration tests:** SQLite schema/store round trip, gateway HTTP contract,
-Mission Control actions, and context-packet selection.
+**Integration tests:** SQLite schema/store round trip, strict gateway request
+validation, approved-only server-built resume packet handoff, Mission Control
+detail/actions, and a no-side-effect eligibility matrix.
 
 **Manual verification:** in two separate browser sessions, create/approve an
-item in one, resume it by explicit title in the other, inspect evidence and
-close it. Confirm a similar new request does not resume it automatically.
+item in one, select Resume in Mission Control in the other, inspect its
+reference-only evidence and close it. Confirm the resulting session is new and
+a similar ordinary request receives no ledger context.
 
 ## Design (LLD)
 
@@ -43,32 +49,58 @@ owns transitions. Traces to: AC1-AC3, AC6.
 `conversations.db`. Items store a normalized title, objective, next action,
 state, approval policy, source session, bounded evidence references, and
 timestamps. Evidence rows link to sessions, artifacts, and future semantic ids
-without copying their payloads. Traces to: AC1, AC2.
+without copying their payloads. `autonomy_runs` adds a fixed
+`resume_requested` audit outcome before an execution can start. Traces to:
+AC1, AC2, AC4.
+
+`LedgerResumePacket` is a typed, immutable DTO constructed only from an
+already-loaded `approved` item and its reference-only evidence. It contains
+`item_id`, `title` (<= 200 UTF-8 bytes), `objective` (<= 2,048 bytes),
+`next_action` (<= 1,024 bytes), and <= 8 evidence entries of `kind` (<= 64
+bytes) plus `reference_id` (<= 256 bytes). Its serialized form is <= 8 KiB.
+Labels and all source transcript/evidence payload are excluded. Invalid UTF-8
+sizes, missing rows, serialization errors, and any non-approved state fail
+before execution and emit only a redacted diagnostic. Traces to: AC4.
+Packet fields are opaque outside `zbot-conversation` and packet JSON escapes
+tag delimiters before its system-context wrapper is rendered. Lifecycle audit
+outcomes are trimmed, non-blank when supplied, and capped at 512 UTF-8 bytes.
 
 ### Interfaces & contracts
 
-Gateway HTTP endpoints list/read/create/update ledger items and produce a
-single resume-context packet. The existing session/execution API is not
-changed. Mission Control consumes the new endpoints. Traces to: AC4, AC5.
+Gateway HTTP endpoints list/read/create/update ledger items, provide an
+explicit `POST /api/autonomy/:id/resume`, and provide
+`GET /api/autonomy/:id/eligibility?trigger=timer`. Resume accepts no packet
+body: the handler parameter-loads the exact item/evidence, verifies the state,
+resolves the source session's root agent, writes the audit record, and calls a
+ledger-specific runtime method. The runtime starts a *new* session and passes
+the packet through a dedicated `ExecutionConfig` field into transient system
+instructions. The generic session-resume endpoint and persisted handle are
+not reused. Strict request DTOs deny unknown fields and retain current field
+bounds. Traces to: AC4, AC5, AC6.
 
 ### Component / module decomposition
 
-`zbot-conversation` owns domain/store/schema. Gateway owns service, HTTP
-handlers, and intent/context adapters. Mission Control owns a compact Open
-Loops panel. Traces to: AC1-AC5.
+`zbot-conversation` owns domain/store/schema and packet validation. Gateway
+owns HTTP handlers and the sole trusted resume handoff; `gateway-execution`
+renders the typed packet as non-persisted system context. Mission Control owns
+a compact Decision Threads panel. Traces to: AC1-AC5.
 
 ### State & control flow
 
 An explicit proposal is persisted as `proposed`; user approval transitions it
-to `approved`; a terminal execution can record `blocked` or `complete`. A
-resolver returns `new`, `related`, `resume`, `review`, or `ambiguous`; only an
-explicit `resume` with one item yields a context packet. Traces to: AC2-AC4.
+to `approved`; a terminal execution can record `blocked` or `complete`.
+Ordinary requests have no ledger resolution or packet path. A click on one
+approved item calls the resume endpoint; that endpoint builds the packet and
+starts a new session. Review only reads the item. Traces to: AC2-AC5.
 
 ### Failure, edge cases & resilience
 
-No match, multiple match, invalid transition, missing evidence, and unapproved
-timer eligibility fail closed. The normal request path proceeds without a ledger
-context when resolution is uncertain. Traces to: AC3, AC4, AC6.
+No match, multiple match, invalid transition, missing source session, packet
+bound/serialization failure, or non-approved item fails closed. In every such
+case the normal request path remains unchanged, no packet is injected, no
+executor state is mutated, and no retry is attempted. Eligibility is a query,
+not a trigger: it creates no run and performs no executor, tool, filesystem,
+or external-service action. Traces to: AC3, AC4, AC6.
 
 ## Tasks
 
@@ -115,71 +147,103 @@ append-only audit runs are covered by focused tests.
 **Progress:** Complete. `AppState` wires one conversation-db-backed store and
 the lifecycle endpoints are covered by gateway integration tests.
 
-### T3: Intent relation and bounded resume context
+### T3: Server-built bounded resume context
 
 **Depends on:** T1, T2
 
-**Touches:** `gateway/gateway-execution/src/middleware/intent_analysis.rs`,
-`runtime/agent-runtime/src/middleware/plan_block.rs`, gateway execution tests
+**Touches:** `stores/zbot-conversation/src/{domain,autonomy,lib}.rs`,
+`gateway/src/{http/autonomy.rs,services/runtime.rs}`,
+`gateway/gateway-execution/src/{config.rs,runner/invoke_bootstrap.rs}`, gateway
+and gateway-execution tests
 
 **Tests:**
-- TDD: similar requests return `related`/`ambiguous` and no item id (AC3).
-- TDD: explicit unique resume yields exactly one bounded context packet (AC4).
-- TDD: uncertain lookup leaves normal execution context unchanged (AC3, AC4).
+- TDD: the ordinary execution configuration contains no ledger packet, and no
+  model output or generic request metadata can select an item id (AC3).
+- TDD: explicit resume of one approved item yields exactly one immutable,
+  reference-only packet; duplicate, non-approved, missing-source, unknown,
+  oversized, and SQL-shaped inputs cause no injection (AC4).
+- Goal-based: an audit/store/serialization failure occurs before runtime
+  invocation, creates no executor state, and has no retry (AC4).
+- Goal-based: source transcript and evidence labels/payload are absent from
+  rendered system context (AC4).
 
 **Approach:**
-- Extend existing structured intent output with relation semantics and add a
-  deterministic resolver/context adapter; do not add an LLM call.
+- Add the typed `LedgerResumePacket` and a ledger-specific runtime entry point.
+  The HTTP handler is the trust boundary: it parameter-loads the URL-selected
+  item/evidence, rechecks `approved`, records `resume_requested`, resolves the
+  source session root agent, and creates a new execution. `ExecutionConfig`
+  gets one additive typed field; invoke bootstrap renders it as delimited,
+  non-persisted system data with an instruction that packet values are data,
+  never instructions. Do not change generic resume, plan middleware, model
+  output, or arbitrary caller messages.
 
-**Done when:** the executor can receive one approved item's packet without
-conversation replay or silent attachment.
+**Done when:** only a user-selected approved item can reach one new executor
+session with a bounded packet, and all other paths leave execution unchanged.
 
-**Progress:** Pending. This must use a trusted execution-context handoff; it
-must not be implemented by concatenating an item into a caller-controlled
-message or by allowing the intent model to choose an item id.
+**Progress:** Complete. The store atomically rechecks approval, bounds and
+serializes a reference-only packet, and writes `resume_requested` before the
+ledger-specific runtime entry point creates a fresh session. Ordinary execution
+configuration has no packet path; focused store, gateway, and execution tests
+cover the fail-closed cases.
 
-### T4: Mission Control Open Loops surface
+### T4: Mission Control Decision Threads detail and resume surface
 
-**Depends on:** T2
+**Depends on:** T2, T3
 
 **Touches:** `apps/ui/src/features/mission-control/`, transport types/client,
 UI tests
 
 **Tests:**
-- Visual/integration: an item shows its state, evidence count, and next action
-  and exposes approved transitions (AC5).
-- Visual/integration: no unrelated session is changed by an item action (AC5).
+- Visual/integration: an item shows its state, evidence count/detail, source
+  session, and next action and exposes valid lifecycle transitions (AC5).
+- Visual/integration: Resume is available only for an approved item with a
+  source session, calls only its item endpoint, and reports its new session
+  result without touching another item/session (AC5).
 
 **Approach:**
-- Add a compact panel and detail inspector using existing Mission Control
-  layout and transport conventions.
+- Extend the existing compact panel and detail inspector using existing Mission
+  Control transport conventions. Review remains a read-only detail fetch;
+  Resume is its own explicit action and never reuses the generic session-resume
+  control.
 
-**Done when:** a user can inspect and transition one item from Mission Control.
+**Done when:** a user can inspect evidence and explicitly start one approved
+item in a new session from Mission Control.
 
-**Progress:** Complete for inspection and explicit lifecycle transitions. The
-first panel intentionally does not provide a resume control until T3 provides
-the trusted context handoff.
+**Progress:** Complete. The Decision Threads panel fetches evidence detail on
+explicit inspection and exposes Resume only for an approved item with a source
+session; its transport calls only that item-specific resume endpoint.
 
-### T5: Eligibility, tests, and manual cross-session verification
+### T5: Read-only eligibility, gates, and manual cross-session verification
 
 **Depends on:** T1-T4
 
 **Touches:** ledger service/tests, `docs/specs/autonomy-ledger/`
 
 **Tests:**
-- TDD: unapproved items are ineligible; approved timer items are observable but
-  do not execute (AC6).
+- TDD: `GET .../eligibility?trigger=timer` applies this fixed projection with
+  no stateful side effect: every `proposed`, `blocked`, `complete`, and `stale`
+  item is ineligible; `approved/manual` is ineligible
+  (`manual_resume_required`); `approved/ask_once` and
+  `approved/auto_readonly` are eligible for a future non-writing timer
+  integration (AC6).
+- TDD: all eligibility reads leave timestamps/state/runs unchanged and invoke
+  no runner/session spawn/tool/external/filesystem operation (AC6).
 - Goal-based: workspace lint, typecheck, and focused test suites pass (AC7).
 - Visual/manual QA: two-session create, approve, explicit resume, and close
   journey (AC3-AC5).
 
 **Approach:**
-- Implement eligibility calculation only, run gates, and record manual QA.
+- Implement the pure eligibility projection only; do not add schedule columns,
+  cron hooks, workers, enqueueing, execution, or retries. Run gates and record
+  the manual QA journey.
 
-**Done when:** the feature is usable and cannot autonomously write or execute.
+**Done when:** the feature is usable and its eligibility query cannot start,
+enqueue, mutate, or retry an execution.
 
-**Progress:** Pending after T3. No trigger or executor wiring has been added,
-so unapproved or approved items cannot run autonomously.
+**Progress:** Complete. The eligibility endpoint is a pure timer-policy
+projection with no scheduler/cron wiring. Gateway tests assert it preserves
+item timestamps and audit-run count; no execution path is reachable from the
+endpoint.
 
 ## Rollout
 
@@ -200,3 +264,5 @@ so unapproved or approved items cannot run autonomously.
 ## Changelog
 
 - 2026-07-09: initial implementation plan.
+- 2026-07-15: completed the explicit approved-only resume path, Mission
+  Control evidence/resume controls, and read-only timer eligibility projection.

@@ -35,6 +35,8 @@ const CHAT_MODE = "fast";
 
 /** How many root-scoped messages to fetch on hydrate. */
 const HISTORY_TAIL_LIMIT = 50;
+/** Maximum final user deliverables retained for one Quick Chat session. */
+const GOAL_ARTIFACT_LIMIT = 24;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -78,9 +80,17 @@ async function fetchArtifacts(
   transport: Transport,
   sessionId: string
 ): Promise<QuickChatArtifactRef[]> {
-  const result = await transport.listSessionArtifacts(sessionId);
+  const result = await transport.listSessionArtifacts(sessionId, {
+    goalArtifactsOnly: true,
+    limit: GOAL_ARTIFACT_LIMIT,
+  });
   if (!result.success || !result.data) return [];
-  return result.data.map(artifactToRef);
+  // Treat omitted fields from an older server as false. The local filter is
+  // defense in depth if an intermediary ignores the goal-only query.
+  return result.data
+    .filter((artifact) => artifact.isGoalArtifact === true)
+    .slice(0, GOAL_ARTIFACT_LIMIT)
+    .map(artifactToRef);
 }
 
 /** Idempotent bootstrap: init the reserved session, pull history + artifacts. */
@@ -213,7 +223,7 @@ export function useQuickChat() {
 
   // --- Refresh artifacts on turn completion ---
   // When a turn finishes the agent may have written new files; pull the
-  // artifact manifest so cards appear in the assistant bubble.
+  // bounded deliverable manifest so cards appear in the assistant bubble.
   useEffect(() => {
     if (state.status !== "idle" || !state.sessionId) return;
     let cancelled = false;

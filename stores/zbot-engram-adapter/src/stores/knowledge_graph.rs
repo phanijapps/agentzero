@@ -36,14 +36,20 @@ use crate::{
         GovernanceValidationFinding, ValidationMode,
     },
     mapping::knowledge::{
-        aggregate_entity_to_hierarchy_node, entity_to_knowledge_entity_with_governance,
-        relationship_to_hierarchy_relation, relationship_to_knowledge_relationship,
+        aggregate_entity_to_hierarchy_node_with_governance,
+        entity_to_knowledge_entity_with_governance, relationship_to_hierarchy_relation,
+        relationship_to_knowledge_relationship,
     },
     scope::ScopeMapper,
 };
 
 const SIDECAR_COMPONENT: &str = "knowledge_graph_sidecar";
 const DEFAULT_WARD_ID: &str = "__global__";
+const RELATIONSHIP_GOVERNANCE_PROPERTY_KEYS: [&str; 3] = [
+    "governance_ontology_ids",
+    "governance_taxonomy_scheme_ids",
+    "governance_record_kind",
+];
 
 /// Engram-backed implementation of AgentZero's knowledge graph store trait.
 #[derive(Clone)]
@@ -132,6 +138,10 @@ impl EngramKnowledgeGraphStore {
     ) -> StoreResult<RelationshipId> {
         relationship.agent_id = agent_id.to_string();
         relationship = self.sidecar.canonicalize_relationship(relationship)?;
+        // Deduplication merges durable sidecar properties. Apply the current
+        // configured selection afterwards so stale or caller-supplied reserved
+        // governance values cannot survive that merge.
+        self.persist_relationship_governance_selection(&mut relationship)?;
         let id = RelationshipId(relationship.id.clone());
         let findings = self.validate_relationship(&relationship)?;
         self.knowledge
@@ -148,6 +158,49 @@ impl EngramKnowledgeGraphStore {
             &findings,
         )?;
         Ok(id)
+    }
+
+    /// Persist the selected policy on the zbot relationship sidecar after
+    /// canonicalization. Engram's relationship contract has no metadata field,
+    /// so this compatibility record carries the authoritative selection.
+    fn persist_relationship_governance_selection(
+        &self,
+        relationship: &mut Relationship,
+    ) -> StoreResult<()> {
+        for key in RELATIONSHIP_GOVERNANCE_PROPERTY_KEYS {
+            relationship.properties.remove(key);
+        }
+        let ward_id = relationship_property_string(relationship, "ward_id")
+            .or_else(|| {
+                self.sidecar
+                    .get_entity(&EntityId(relationship.source_entity_id.clone()))
+                    .ok()
+                    .flatten()
+                    .and_then(|entity| property_string(&entity, "ward_id"))
+            })
+            .unwrap_or_else(|| DEFAULT_WARD_ID.to_string());
+        let selection = self.governance.select(GovernanceScope {
+            ward_id: Some(&ward_id),
+            ..GovernanceScope::default()
+        });
+        if !selection.ontology_ids.is_empty() {
+            relationship.properties.insert(
+                "governance_ontology_ids".to_string(),
+                json!(selection.ontology_ids),
+            );
+        }
+        if !selection.taxonomy_scheme_ids.is_empty() {
+            relationship.properties.insert(
+                "governance_taxonomy_scheme_ids".to_string(),
+                json!(selection.taxonomy_scheme_ids),
+            );
+        }
+        if !selection.ontology_ids.is_empty() || !selection.taxonomy_scheme_ids.is_empty() {
+            relationship
+                .properties
+                .insert("governance_record_kind".to_string(), json!("relationship"));
+        }
+        Ok(())
     }
 
     fn validate_relationship(
@@ -617,8 +670,14 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
 
         let id = self.upsert_entity_record(agent_id, entity.clone()).await?;
         self.sidecar.set_members_parent(members, &id)?;
-        let node = aggregate_entity_to_hierarchy_node(&entity, &self.mapper, layer, members)
-            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let node = aggregate_entity_to_hierarchy_node_with_governance(
+            &entity,
+            &self.mapper,
+            layer,
+            members,
+            Some(&self.governance),
+        )
+        .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.hierarchy
             .put_node(node)
             .await

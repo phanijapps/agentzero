@@ -80,7 +80,7 @@ function ArtifactCard({ artifact, onOpen }: ArtifactCardProps) {
 
 /**
  * Lightweight ref → full Artifact shim. `ArtifactSlideOut` expects the
- * full shape (sessionId + filePath + createdAt) but for the preview we
+ * full shape (sessionId + createdAt) but for the preview we
  * only need id / fileName / fileType; the slide-out re-fetches via the
  * /artifacts/:id/content URL so the stub fields are never read.
  */
@@ -160,11 +160,17 @@ export function QuickChat() {
             {state.messages.map((m) => <MessageRow key={m.id} message={m} />)}
             {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
             {hasArtifacts && (
-              <div className="quick-chat__artifacts" data-testid="quick-chat-artifacts">
-                {state.artifacts.map((a) => (
-                  <ArtifactCard key={a.id} artifact={a} onOpen={openArtifact} />
-                ))}
-              </div>
+              <section className="quick-chat__deliverables" aria-labelledby="quick-chat-deliverables-heading">
+                <div className="quick-chat__deliverables-heading">
+                  <h2 id="quick-chat-deliverables-heading">Deliverables</h2>
+                  <span>Up to 24 final outputs per chat session</span>
+                </div>
+                <div className="quick-chat__artifacts" data-testid="quick-chat-artifacts">
+                  {state.artifacts.map((a) => (
+                    <ArtifactCard key={a.id} artifact={a} onOpen={openArtifact} />
+                  ))}
+                </div>
+              </section>
             )}
             <div ref={endRef} />
           </div>

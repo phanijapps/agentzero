@@ -4,7 +4,7 @@ use serde_json::json;
 use zbot_engram_adapter::{
     mapping::knowledge::{entity_to_knowledge_entity, knowledge_entity_to_entity},
     AdapterConfig, AdapterFeature, CapabilityReport, EngramKnowledgeGraphStore, EngramWikiStore,
-    GovernancePolicy, GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID,
+    GovernancePolicy, GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID,
 };
 use zbot_stores::{types::Direction, KnowledgeGraphStore};
 use zbot_stores_domain::WikiArticle;
@@ -24,11 +24,63 @@ fn engram_config_with_embedding_dimensions(
 }
 
 fn governed_engram_config(root: &tempfile::TempDir) -> AdapterConfig {
+    governed_engram_config_with_ids(root, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID)
+}
+
+fn governed_engram_config_with_ids(
+    root: &tempfile::TempDir,
+    ontology_id: &str,
+    taxonomy_scheme_id: &str,
+) -> AdapterConfig {
     let mut config = engram_config(root);
+    if ontology_id != ZBOT_BASE_ONTOLOGY_ID || taxonomy_scheme_id != ZBOT_GENERAL_SCHEME_ID {
+        let config_root = root.path().join("config");
+        let governance_dir = config_root.join("governance");
+        std::fs::create_dir_all(&governance_dir).expect("governance directory");
+        std::fs::write(
+            governance_dir.join("changed-ontology.json"),
+            format!(
+                r#"{{
+                  "kind": "zbot.ontology",
+                  "schemaVersion": 1,
+                  "ontologyId": "{ontology_id}",
+                  "label": "Changed Ontology",
+                  "entityClasses": [
+                    {{ "id": "person", "label": "Person" }},
+                    {{ "id": "project", "label": "Project" }}
+                  ],
+                  "relationshipProperties": [
+                    {{ "id": "created", "label": "Created" }}
+                  ]
+                }}"#
+            ),
+        )
+        .expect("ontology definition");
+        std::fs::write(
+            governance_dir.join("changed-taxonomy.json"),
+            format!(
+                r#"{{
+                  "kind": "zbot.skos_taxonomy",
+                  "schemaVersion": 1,
+                  "schemeId": "{taxonomy_scheme_id}",
+                  "label": "Changed Taxonomy",
+                  "concepts": [{{ "id": "memory", "prefLabel": "Memory" }}]
+                }}"#
+            ),
+        )
+        .expect("taxonomy definition");
+        config = config.with_trusted_config_root(config_root);
+        config.governance.ontology_definition_paths =
+            vec!["governance/changed-ontology.json".into()];
+        config.governance.taxonomy_definition_paths =
+            vec!["governance/changed-taxonomy.json".into()];
+    }
     config.governance = GovernancePolicy {
+        ontology_definition_paths: config.governance.ontology_definition_paths,
+        taxonomy_definition_paths: config.governance.taxonomy_definition_paths,
         default_selection: GovernanceSelection {
-            ontology_ids: vec![ZBOT_BASE_ONTOLOGY_ID.to_string()],
-            taxonomy_scheme_ids: Vec::new(),
+            ontology_ids: vec![ontology_id.to_string()],
+            taxonomy_scheme_ids: vec![taxonomy_scheme_id.to_string()],
         },
         ..GovernancePolicy::default()
     };
@@ -526,19 +578,34 @@ async fn advisory_governance_findings_do_not_block_relationship_writes() {
         "raw_context".to_string(),
         json!("absolute path /home/example/Documents/zbot/providers.json with placeholder TOKEN_VALUE"),
     );
+    relationship.properties.insert(
+        "governance_ontology_ids".to_string(),
+        json!(["untrusted.ontology:v1"]),
+    );
 
     let relationship_id = store
         .upsert_relationship("agent-a", relationship)
         .await
         .expect("advisory write succeeds");
 
+    let relationships = store
+        .list_relationships("agent-a", None, 10, 0)
+        .await
+        .expect("relationships");
+    assert_eq!(relationships.len(), 1);
     assert_eq!(
-        store
-            .list_relationships("agent-a", None, 10, 0)
-            .await
-            .expect("relationships")
-            .len(),
-        1
+        relationships[0].properties.get("governance_ontology_ids"),
+        Some(&json!([ZBOT_BASE_ONTOLOGY_ID]))
+    );
+    assert_eq!(
+        relationships[0]
+            .properties
+            .get("governance_taxonomy_scheme_ids"),
+        Some(&json!([ZBOT_GENERAL_SCHEME_ID]))
+    );
+    assert_eq!(
+        relationships[0].properties.get("governance_record_kind"),
+        Some(&json!("relationship"))
     );
     let findings = store
         .list_governance_findings(Some("agent-a"), 10)
@@ -590,6 +657,145 @@ async fn advisory_governance_records_domain_and_range_mismatches() {
         .collect::<Vec<_>>();
     codes.sort();
     assert_eq!(codes, vec!["domain_mismatch", "range_mismatch"]);
+}
+
+#[tokio::test]
+async fn duplicate_relationship_replaces_stale_governance_with_the_active_selection() {
+    let root = tempfile::tempdir().expect("root");
+    let mut source = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    source.id = "entity-stale-governance-source".to_string();
+    source
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
+    let mut target = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
+    target.id = "entity-stale-governance-target".to_string();
+    target
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
+
+    {
+        let store = EngramKnowledgeGraphStore::open(governed_engram_config(&root)).expect("A");
+        store
+            .upsert_entity("agent-a", source)
+            .await
+            .expect("source");
+        store
+            .upsert_entity("agent-a", target)
+            .await
+            .expect("target");
+        let mut relationship = Relationship::new(
+            "agent-a".into(),
+            "entity-stale-governance-source".into(),
+            "entity-stale-governance-target".into(),
+            RelationshipType::Created,
+        );
+        relationship.id = "rel-governance-a".to_string();
+        relationship
+            .properties
+            .insert("ward_id".to_string(), json!("ward-a"));
+        store
+            .upsert_relationship("agent-a", relationship)
+            .await
+            .expect("first relationship");
+    }
+
+    let store = EngramKnowledgeGraphStore::open(governed_engram_config_with_ids(
+        &root,
+        "ontology.changed:v1",
+        "taxonomy.changed:v1",
+    ))
+    .expect("B");
+    let mut duplicate = Relationship::new(
+        "agent-a".into(),
+        "entity-stale-governance-source".into(),
+        "entity-stale-governance-target".into(),
+        RelationshipType::Created,
+    );
+    duplicate.id = "rel-governance-b".to_string();
+    duplicate
+        .properties
+        .insert("ward_id".to_string(), json!("ward-a"));
+    duplicate.properties.insert(
+        "governance_ontology_ids".to_string(),
+        json!(["untrusted.ontology:v1"]),
+    );
+    store
+        .upsert_relationship("agent-a", duplicate)
+        .await
+        .expect("duplicate relationship");
+
+    let relationships = store
+        .list_relationships("agent-a", None, 10, 0)
+        .await
+        .expect("relationships");
+    assert_eq!(relationships.len(), 1);
+    assert_eq!(
+        relationships[0].properties.get("governance_ontology_ids"),
+        Some(&json!(["ontology.changed:v1"]))
+    );
+    assert_eq!(
+        relationships[0]
+            .properties
+            .get("governance_taxonomy_scheme_ids"),
+        Some(&json!(["taxonomy.changed:v1"]))
+    );
+}
+
+#[tokio::test]
+async fn unconfigured_relationship_governance_removes_reserved_input_properties() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(engram_config(&root)).expect("store");
+    let mut source = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    source.id = "entity-unconfigured-source".to_string();
+    let mut target = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
+    target.id = "entity-unconfigured-target".to_string();
+    let source_id = store
+        .upsert_entity("agent-a", source)
+        .await
+        .expect("source");
+    let target_id = store
+        .upsert_entity("agent-a", target)
+        .await
+        .expect("target");
+    let mut relationship = Relationship::new(
+        "agent-a".into(),
+        source_id.0,
+        target_id.0,
+        RelationshipType::Created,
+    );
+    relationship.id = "rel-unconfigured".to_string();
+    relationship.properties.insert(
+        "governance_ontology_ids".to_string(),
+        json!(["untrusted.ontology:v1"]),
+    );
+    relationship.properties.insert(
+        "governance_taxonomy_scheme_ids".to_string(),
+        json!(["untrusted.taxonomy:v1"]),
+    );
+    relationship
+        .properties
+        .insert("governance_record_kind".to_string(), json!("relationship"));
+
+    store
+        .upsert_relationship("agent-a", relationship)
+        .await
+        .expect("relationship");
+    let relationship = store
+        .list_relationships("agent-a", None, 10, 0)
+        .await
+        .expect("relationships")
+        .pop()
+        .expect("relationship row");
+    for key in [
+        "governance_ontology_ids",
+        "governance_taxonomy_scheme_ids",
+        "governance_record_kind",
+    ] {
+        assert!(
+            !relationship.properties.contains_key(key),
+            "{key} must be removed without a configured selection"
+        );
+    }
 }
 
 #[tokio::test]

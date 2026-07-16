@@ -44,6 +44,7 @@ export interface MockTransportCalls {
   deleteSession: ReturnType<typeof vi.fn>;
   subscribeConversation: ReturnType<typeof vi.fn>;
   listLogSessions: ReturnType<typeof vi.fn>;
+  getSessionState: ReturnType<typeof vi.fn>;
   onConnectionStateChange: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
 }
@@ -63,6 +64,7 @@ export interface MockTransport {
   deleteSession: MockTransportCalls["deleteSession"];
   subscribeConversation: MockTransportCalls["subscribeConversation"];
   listLogSessions: MockTransportCalls["listLogSessions"];
+  getSessionState: MockTransportCalls["getSessionState"];
   onConnectionStateChange: MockTransportCalls["onConnectionStateChange"];
   getConnectionState: () => { status: "connected" };
   getArtifactContentUrl: (id: string) => string;
@@ -128,6 +130,9 @@ export function makeMockTransport(
     listLogSessions: vi
       .fn()
       .mockResolvedValue({ success: true, data: opts.logSessions ?? [] }),
+    getSessionState: vi
+      .fn()
+      .mockResolvedValue({ success: false, error: "not available" }),
     onConnectionStateChange: vi.fn(() => () => undefined),
     unsubscribe,
   };
@@ -143,6 +148,7 @@ export function makeMockTransport(
     deleteSession: calls.deleteSession,
     subscribeConversation: calls.subscribeConversation,
     listLogSessions: calls.listLogSessions,
+    getSessionState: calls.getSessionState,
     onConnectionStateChange: calls.onConnectionStateChange,
     getConnectionState: () => ({ status: "connected" }),
     getArtifactContentUrl: (id: string) => `/api/artifacts/${id}`,

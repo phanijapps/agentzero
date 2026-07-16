@@ -30,13 +30,14 @@ impl PreviousEpisodesAdapter {
     ///
     /// The per-item score is `1.0 / (rank + 1)` — i.e. `1.0, 0.5, 0.333…`
     /// for 3 results. RRF later re-ranks these against the other pools.
-    pub async fn fetch(&self, ward_id: &str) -> Result<Vec<ScoredItem>, String> {
+    pub async fn fetch(&self, agent_id: &str, ward_id: &str) -> Result<Vec<ScoredItem>, String> {
         let episodes = self
             .store
             .fetch_recent_successful_by_ward(ward_id, 3)
             .await?;
         Ok(episodes
             .iter()
+            .filter(|episode| episode.agent_id == agent_id)
             .enumerate()
             .map(|(rank, ep)| episode_to_item(ep, rank))
             .collect())
@@ -62,7 +63,10 @@ pub fn episode_to_item(ep: &SessionEpisode, rank: usize) -> ScoredItem {
         provenance: Provenance {
             source: "session_episodes".to_string(),
             source_id: ep.id.clone(),
-            session_id: Some(ep.session_id.clone()),
+            // This adapter has already selected a record by authenticated
+            // agent and ward. The originating session is audit provenance,
+            // not a permission boundary for a durable episode summary.
+            session_id: Some("__global__".to_string()),
             ward_id: Some(ep.ward_id.clone()),
         },
         route_hint: Some(
@@ -144,7 +148,7 @@ mod tests {
         assert!((item.score - 0.5).abs() < 1e-9, "rank 0 → 1/2");
         assert_eq!(item.provenance.source, "session_episodes");
         assert_eq!(item.provenance.ward_id.as_deref(), Some("finance"));
-        assert_eq!(item.provenance.session_id.as_deref(), Some("s-x"));
+        assert_eq!(item.provenance.session_id.as_deref(), Some("__global__"));
     }
 
     #[tokio::test]
@@ -168,7 +172,7 @@ mod tests {
         insert_ep(&repo, "ep-fail", "finance", "failed", &now_offset_days(1));
 
         let adapter = PreviousEpisodesAdapter::new(store);
-        let items = adapter.fetch("finance").await.expect("fetch");
+        let items = adapter.fetch("agent-a", "finance").await.expect("fetch");
 
         assert_eq!(items.len(), 3, "exactly 3 in-window finance ep/partial");
         assert_eq!(items[0].id, "ep-new", "newest first");
@@ -188,7 +192,7 @@ mod tests {
     async fn fetch_empty_when_ward_has_no_episodes() {
         let (_tmp, _repo, store) = setup();
         let adapter = PreviousEpisodesAdapter::new(store);
-        let items = adapter.fetch("ghost-ward").await.expect("fetch");
+        let items = adapter.fetch("agent-a", "ghost-ward").await.expect("fetch");
         assert!(items.is_empty());
     }
 }

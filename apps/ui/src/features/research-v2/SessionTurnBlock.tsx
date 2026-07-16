@@ -14,6 +14,7 @@ import { Markdown } from "../shared/markdown";
 import { describeTool } from "../shared/statusPill/tool-phrase";
 import { SubagentCardTree } from "./AgentTurnBlock";
 import { AgentAvatar, CopyButton } from "./ResearchMessages";
+import { ToolActivity } from "./ToolActivity";
 import type { SessionTurn, TimelineEntry } from "./types";
 
 const TICKER_MAX_LEN = 60;
@@ -92,6 +93,8 @@ function isStreaming(turn: SessionTurn): boolean {
 
 interface Props {
   turn: SessionTurn;
+  /** The Research context inspector owns delegated-agent cards when present. */
+  showSubagents?: boolean;
 }
 
 /**
@@ -100,7 +103,7 @@ interface Props {
  * the assistant text reply at the bottom. Visual divider above is
  * applied via `.session-turn + .session-turn` CSS in `research.css`.
  */
-export function SessionTurnBlock({ turn }: Props) {
+export function SessionTurnBlock({ turn, showSubagents = true }: Props) {
   const reply = copyableReply(turn);
   return (
     <section
@@ -128,7 +131,7 @@ export function SessionTurnBlock({ turn }: Props) {
             <LiveTicker turn={turn} />
           </div>
           <div className="research-msg__body">
-            {turn.subagents.length > 0 && (
+            {showSubagents && turn.subagents.length > 0 && (
               <div className="root-turn__subagents">
                 {turn.subagents.map((sub) => (
                   <SubagentCardTree
@@ -142,6 +145,7 @@ export function SessionTurnBlock({ turn }: Props) {
             <div className="research-page__assistant">
               <RespondBody turn={turn} />
             </div>
+            {turn.status !== "running" && <ToolActivity entries={turn.timeline} />}
           </div>
         </div>
         {reply !== null && <CopyButton text={reply} label="Copy response" />}

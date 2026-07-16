@@ -28,8 +28,11 @@ Each fixture bundle contains four files:
 
 ## Synthetic fixtures
 
-`e2e/fixtures/simple-qa/` is generated programmatically by
-`e2e/fixtures/seed_synthetic.py`. It's a placeholder for early harness
-work, not a real recording. Regenerate with:
+`e2e/fixtures/simple-qa/` and `e2e/fixtures/unified-recall/` are synthetic
+fixtures. The latter deliberately leaves `tool-results.jsonl` empty: full mode
+runs the real, read-only recall tool while the mock LLM deterministically
+forces the call. `ZBOT_REPLAY_STRICT=0` permits that real tool execution.
+
+Regenerate the simple fixture with:
 
     PYTHONPATH=. python3 e2e/fixtures/seed_synthetic.py

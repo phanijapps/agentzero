@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, SecondsFormat, Utc};
 use engram_domain::{
     Actor, ActorKind, AllowedUse, DeleteMode, MemoryContent, MemoryContentFormat, MemoryId,
-    MemoryKind, MemoryRecord, MemoryStatus, Policy, Provenance, Retention, Visibility,
+    MemoryKind, MemoryRecord, MemoryStatus, Metadata, Policy, Provenance, Retention, Visibility,
 };
 use serde_json::{json, Value};
 use zbot_stores_traits::MemoryFact;
@@ -13,6 +13,7 @@ use zbot_stores_traits::MemoryFact;
 use crate::{
     config::EmbeddingMode,
     error::{AdapterError, AdapterResult},
+    governance::{select_and_persist_governance_metadata, GovernancePolicy, GovernanceScope},
     scope::ScopeMapper,
 };
 
@@ -28,6 +29,17 @@ pub fn memory_fact_to_record(
     fact: &MemoryFact,
     mapper: &ScopeMapper,
     embedding_mode: EmbeddingMode,
+) -> AdapterResult<MemoryRecord> {
+    memory_fact_to_record_with_governance(fact, mapper, embedding_mode, None)
+}
+
+/// Map a zbot `MemoryFact` and persist the selected governance classification
+/// on the canonical Engram memory record.
+pub fn memory_fact_to_record_with_governance(
+    fact: &MemoryFact,
+    mapper: &ScopeMapper,
+    embedding_mode: EmbeddingMode,
+    governance: Option<&GovernancePolicy>,
 ) -> AdapterResult<MemoryRecord> {
     let created_at = parse_timestamp("created_at", &fact.created_at)?;
     let updated_at = parse_timestamp("updated_at", &fact.updated_at)?;
@@ -62,6 +74,7 @@ pub fn memory_fact_to_record(
         "embeddingMode".to_string(),
         json!(embedding_mode_wire_value(embedding_mode)),
     );
+    apply_memory_governance(governance, fact, &mut metadata);
 
     Ok(MemoryRecord {
         id: MemoryId::from(fact.id.clone()),
@@ -116,6 +129,37 @@ pub fn memory_fact_to_record(
         updated_at: Some(updated_at),
         metadata: Some(metadata),
     })
+}
+
+fn apply_memory_governance(
+    governance: Option<&GovernancePolicy>,
+    fact: &MemoryFact,
+    metadata: &mut Metadata,
+) {
+    let Some(governance) = governance else {
+        return;
+    };
+    let selection = select_and_persist_governance_metadata(
+        governance,
+        GovernanceScope {
+            ward_id: Some(&fact.ward_id),
+            session_id: fact.session_id.as_deref(),
+            source_id: fact.source_ref.as_deref(),
+            ..GovernanceScope::default()
+        },
+        metadata,
+    );
+    let concept_ids = selection
+        .taxonomy_scheme_ids
+        .iter()
+        .map(|scheme_id| format!("{scheme_id}:concept:memory"))
+        .collect::<Vec<_>>();
+    if !concept_ids.is_empty() {
+        metadata.insert(
+            "governanceTaxonomyConceptIds".to_string(),
+            json!(concept_ids),
+        );
+    }
 }
 
 /// Reconstruct a zbot `MemoryFact` from an Engram `MemoryRecord`.

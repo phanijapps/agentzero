@@ -1,6 +1,6 @@
 # Spec: Autonomy Ledger
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** zbot maintainers
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none
@@ -14,11 +14,11 @@
 ## Objective
 
 Give zbot a durable, evidence-backed decision-thread record that users can
-approve, resume, inspect, and close from any session. A ledger item represents
-an explicit commitment or approved research follow-up, not a memory fact. It
-preserves the current decision, bounded next action, source evidence, and
-lifecycle without changing the existing execution, Engram semantic-memory, or
-gateway event contracts.
+approve, explicitly resume, inspect, and close from any session. A ledger item
+represents an explicit commitment or approved research follow-up, not a memory
+fact. It preserves the current decision, bounded next action, source evidence,
+and lifecycle without changing Engram semantic memory or creating a second
+executor.
 
 ## Boundaries
 
@@ -29,6 +29,11 @@ gateway event contracts.
 - Require explicit user approval before an item becomes runnable or scheduled.
 - Treat semantic similarity as a candidate only; never silently attach a new
   request to an existing item.
+- Construct a resume packet on the server only after parameterized lookup of
+  the user-selected, `approved` item. Its fixed fields and evidence-reference
+  limits are the only ledger data visible to the resumed executor.
+- Treat review and eligibility as read-only operations. A resume starts a new
+  execution only after the ledger audit record and packet construction succeed.
 - Preserve existing gateway, execution, tool, and UI contracts.
 
 ### Ask first
@@ -43,9 +48,13 @@ gateway event contracts.
 - Do not create active items from ordinary recalled facts or casual topic
   mentions.
 - Do not let model output select an item id or bypass approval policy.
+- Do not accept a ledger packet, item selection, or executable context from a
+  model response, generic client metadata, or caller-supplied packet body.
 - Do not store raw conversation replay as item context or create a second agent
   executor.
 - Do not introduce a new top-level crate or persistence backend.
+- Do not add a cron/worker integration, retry loop, automatic execution, or
+  implicit external/filesystem write in this release.
 
 ## Testing Strategy
 
@@ -65,20 +74,29 @@ gateway event contracts.
   state, policy, source-session evidence, and timestamps in `conversations.db`.
 - [ ] Given a decision thread in `proposed`, `approved`, `blocked`, `complete`,
   or `stale` state, when a user acts on it, only valid lifecycle transitions are
-  accepted and every transition retains an auditable outcome.
-- [ ] Given a new request that is merely similar to an active item, when intent
-  analysis resolves the request, zbot returns it as related or ambiguous rather
-  than silently resuming or attaching the old item.
-- [ ] Given an explicit resume or review request with one high-confidence active
-  match, when zbot begins execution, it injects one bounded decision packet
-  containing the item objective, current state, next action, and linked
-  evidence references rather than replaying its source conversation.
+  accepted and every transition retains an auditable outcome. Optional outcome
+  text is trimmed, non-blank, and bounded to 512 UTF-8 bytes.
+- [ ] Given a new request that is merely similar to an active item, normal
+  execution receives no item id, packet, or attachment. The user must inspect
+  and explicitly select a decision thread in Mission Control; model output
+  cannot select an item or cause a resume.
+- [ ] Given an explicit user selection of one item for resume, when the server
+  loads that exact item and verifies `state == approved`, zbot records one
+  audit attempt and starts a new execution with one immutable, bounded
+  `LedgerResumePacket`. The packet contains only item id, title, objective,
+  next action, and at most eight kind/reference evidence pairs—never labels,
+  transcript content, or caller-supplied packet data. `review` is read-only;
+  a missing, non-approved, ambiguous, oversized, or unreadable item fails
+  closed without executor-state mutation or retry.
 - [ ] Given an approved item, when it is viewed in Mission Control, the user can
-  inspect state, evidence, and next action, then approve, block, complete, or
-  resume it without changing any unrelated session.
-- [ ] Given an item that is not approved, when a timer or future trigger sees
-  it, zbot does not autonomously run it; first release exposes eligibility only
-  and performs no external or filesystem write.
+  inspect state, evidence count/detail, and next action, then approve, block,
+  complete, or explicitly resume it. Resume targets a new session for the
+  source agent and changes no unrelated or source session.
+- [ ] Given any ledger state and approval policy, when a caller asks for
+  `timer` eligibility, zbot returns a pure eligibility projection. It neither
+  invokes/enqueues an executor, creates a run, changes lifecycle/timestamps,
+  retries, nor performs external or filesystem writes; schedules and workers
+  are deliberately out of scope.
 - [ ] Given the feature branch, when workspace lint, type checking, and focused
   tests run, the existing execution, memory, conversation, and UI contracts
   remain valid.
@@ -94,8 +112,8 @@ gateway event contracts.
   `gateway/gateway-hooks/src/cron.rs`,
   `runtime/agent-runtime/src/middleware/plan_block.rs`).
 - Product: first release is manual continuation plus approved time-trigger
-  eligibility only; no autonomous write actions (source: user confirmation
-  2026-07-09).
+  eligibility only; it has no scheduler, worker, or autonomous write action
+  (source: user confirmation 2026-07-09).
 - Product: only explicit commitments or approved research outcomes may create
   proposed items; similarity never creates or attaches an item automatically
   (source: user confirmation 2026-07-09).

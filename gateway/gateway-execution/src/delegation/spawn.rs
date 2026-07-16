@@ -316,8 +316,12 @@ pub async fn spawn_delegated_agent(
     if let Some(a) = ingestion_adapter {
         builder = builder.with_ingestion_adapter(a);
     }
+    let goal_adapter_for_recall = goal_adapter.clone();
     if let Some(a) = goal_adapter {
         builder = builder.with_goal_adapter(a);
+    }
+    if let Some(recall) = memory_recall.clone() {
+        builder = builder.with_memory_recall(recall);
     }
     builder = builder
         .with_state_service(state_service.clone())
@@ -356,42 +360,58 @@ pub async fn spawn_delegated_agent(
     // facts, wiki, procedures, graph nodes, episodes, and goals.
     let initial_history = if let Some(recall) = &memory_recall {
         let ward_id = session_ward_id.as_deref();
-        match recall
-            .recall_unified(&request.child_agent_id, &request.task, ward_id, &[], 10)
+        let authorization = crate::invoke::unified_recall_adapter::recall_authorization_context(
+            recall,
+            request.child_agent_id.clone(),
+            "delegated_executor",
+            &request.session_id,
+            ward_id,
+        );
+        if let Some(authorization) = authorization {
+            match crate::invoke::unified_recall_adapter::automatic_unified_recall(
+                recall.clone(),
+                goal_adapter_for_recall,
+                authorization,
+                &request.task,
+                10,
+            )
             .await
-        {
-            Ok(items) if !items.is_empty() => {
-                let formatted = crate::recall::format_scored_items_with_options(
-                    &items,
-                    crate::recall::ContextPacketBuildOptions::new(
-                        format!("{execution_id}:delegation-recall"),
-                        request.child_agent_id.clone(),
-                        context_actor_kind(actor_kind),
-                        1_200,
-                    )
-                    .with_conversation_id(Some(child_conversation_id.clone()))
-                    .with_ward_id(session_ward_id.clone()),
-                );
-                if formatted.is_empty() {
-                    Vec::new()
-                } else {
-                    tracing::info!(
-                        agent = %request.child_agent_id,
-                        count = items.len(),
-                        "Primed subagent with unified recalled context"
+            {
+                Ok(response) if !response.results.is_empty() => {
+                    let formatted = crate::recall::format_unified_recall_response_with_options(
+                        &response,
+                        crate::recall::ContextPacketBuildOptions::new(
+                            format!("{execution_id}:delegation-recall"),
+                            request.child_agent_id.clone(),
+                            context_actor_kind(actor_kind),
+                            1_200,
+                        )
+                        .with_conversation_id(Some(child_conversation_id.clone()))
+                        .with_ward_id(session_ward_id.clone()),
                     );
-                    vec![ChatMessage::system(formatted)]
+                    if formatted.is_empty() {
+                        Vec::new()
+                    } else {
+                        tracing::info!(
+                            agent = %request.child_agent_id,
+                            count = response.count,
+                            "Primed subagent with unified recalled context"
+                        );
+                        vec![ChatMessage::system(formatted)]
+                    }
+                }
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!(
+                        agent = %request.child_agent_id,
+                        reason = ?e.code,
+                        "Delegation recall failed, proceeding without priming"
+                    );
+                    Vec::new()
                 }
             }
-            Ok(_) => Vec::new(),
-            Err(e) => {
-                tracing::warn!(
-                    agent = %request.child_agent_id,
-                    error = %e,
-                    "Delegation recall failed, proceeding without priming"
-                );
-                Vec::new()
-            }
+        } else {
+            Vec::new()
         }
     } else {
         Vec::new()

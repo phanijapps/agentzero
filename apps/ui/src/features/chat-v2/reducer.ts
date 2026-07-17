@@ -6,6 +6,7 @@ export type QuickChatAction =
   | { type: "APPEND_USER"; message: QuickChatMessage }
   | { type: "SESSION_BOUND"; sessionId: string }
   | { type: "AGENT_STARTED"; agentId: string }
+  | { type: "AGENT_COMPLETED"; result?: string }
   | { type: "TOKEN"; text: string }
   | { type: "RESPOND"; text: string }
   | { type: "ADD_CHIP"; chip: QuickChatInlineChip }
@@ -75,6 +76,21 @@ export function reduceQuickChat(state: QuickChatState, action: QuickChatAction):
       return { ...state, sessionId: action.sessionId };
     case "AGENT_STARTED":
       return { ...state, status: "running" };
+    case "AGENT_COMPLETED": {
+      const lastMessage = state.messages[state.messages.length - 1];
+      // `agent_completed.result` is recovery-only. A preceding
+      // `turn_complete.final_message` has already rendered the final bubble,
+      // so applying the same terminal response again would duplicate it.
+      const alreadyHasFinalResponse =
+        lastMessage?.role === "assistant" && !lastMessage.streaming;
+      return {
+        ...state,
+        messages: action.result && !alreadyHasFinalResponse
+          ? upsertStreamingAssistant(state.messages, action.result, true)
+          : state.messages,
+        status: "idle",
+      };
+    }
     case "TOKEN":
       return { ...state, messages: upsertStreamingAssistant(state.messages, action.text, false) };
     case "RESPOND":

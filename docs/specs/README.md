@@ -10,6 +10,7 @@ Active feature specs for AgentZero.
 | [Vault Layout Standardization](vault-layout-standardization/spec.md) | Shipped | Makes vault paths, configuration names, runtime directories, and prompt loading consistent while retiring dormant OKF material. |
 | [SQLite Runtime Store Split](sqlite-runtime-store-split/spec.md) | Shipped | Separates unchanged runtime conversation persistence from quarantined legacy semantic SQLite as Engram owns the active memory layer. |
 | [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Implementing | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
+| [Quick Chat Terminal Response Deduplication](quick-chat-terminal-response-dedup/spec.md) | Shipped | Prevents a root terminal fallback from rendering a second Quick Chat answer. |
 | [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Implementing | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |
 | [Research Context Inspector](research-context-inspector/spec.md) | Implementing | Moves existing intent analysis and delegated-agent context into Research's real right inspector without adding dashboard metrics. |
 | [YFinance Market Analysis Skill Consolidation](yfinance-market-analysis-skill/spec.md) | Shipped | Consolidates bundled yfinance workflows into one primary skill while keeping old `yf-*` IDs as compatibility wrappers. |

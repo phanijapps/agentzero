@@ -197,7 +197,20 @@ export function mapGatewayEventToResearchAction(ev: ConversationEvent): Research
   const now = Date.now();
   switch (type) {
     case "agent_started":            return mapAgentStarted(e, now);
-    case "agent_completed":          return { type: "AGENT_COMPLETED", turnId: turnIdOf(e), completedAt: now };
+    case "agent_completed": {
+      // The lifecycle event is the recovery path when the preceding
+      // turn_complete websocket frame was missed. Keep its final response so
+      // the reducer can render it before closing the turn.
+      const result = e["result"];
+      return {
+        type: "AGENT_COMPLETED",
+        turnId: turnIdOf(e),
+        completedAt: now,
+        ...(typeof result === "string" && result.trim().length > 0
+          ? { result: result.trim() }
+          : {}),
+      };
+    }
     case "agent_stopped":            return { type: "AGENT_STOPPED",   turnId: turnIdOf(e), completedAt: now };
     case "delegation_started":       return mapDelegationStarted(e, now);
     case "delegation_completed":     return mapDelegationCompleted(e, now);

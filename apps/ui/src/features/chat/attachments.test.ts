@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { composeMessageWithAttachments } from "./attachments";
+import {
+  composeMessageWithAttachments,
+  displayAttachments,
+  splitMessageAttachments,
+} from "./attachments";
 import type { UploadedFile } from "./ChatInput";
 
 const upload = (overrides: Partial<UploadedFile> = {}): UploadedFile => ({
@@ -14,6 +18,20 @@ const upload = (overrides: Partial<UploadedFile> = {}): UploadedFile => ({
 describe("composeMessageWithAttachments", () => {
   it("returns the trimmed text unchanged when there are no attachments", () => {
     expect(composeMessageWithAttachments("  hello  ", [])).toBe("hello");
+  });
+
+  it("splits persisted attachment metadata into safe display chips", () => {
+    const message = composeMessageWithAttachments("analyze this", [upload({
+      name: "interview.txt",
+      path: "/private/vault/temp/interview.txt",
+    })]);
+    expect(splitMessageAttachments(message)).toEqual({
+      content: "analyze this",
+      attachments: [{ name: "interview.txt", mimeType: "text/markdown", sizeLabel: "512 B" }],
+    });
+    expect(displayAttachments([upload({ name: "notes.md", size: 42 })])).toEqual([
+      { name: "notes.md", mimeType: "text/markdown", sizeLabel: "42 B" },
+    ]);
   });
 
   it("splices the absolute server path into the prompt so the agent can read it", () => {

@@ -65,6 +65,11 @@ pub fn mmr_select(candidates: Vec<MmrInput<'_>>, lambda: f64, target_count: usiz
 
     let mut selected: Vec<usize> = Vec::with_capacity(k);
     let mut chosen = vec![false; candidates.len()];
+    let relevance_scale = candidates
+        .iter()
+        .map(|candidate| candidate.item.score)
+        .filter(|score| score.is_finite() && *score > 0.0)
+        .fold(0.0_f64, f64::max);
 
     while selected.len() < k {
         let mut best_idx: Option<usize> = None;
@@ -74,7 +79,15 @@ pub fn mmr_select(candidates: Vec<MmrInput<'_>>, lambda: f64, target_count: usiz
             if chosen[idx] {
                 continue;
             }
-            let relevance = cand.item.score;
+            // RRF emits scores around 0.01 while cosine similarity is in
+            // [0, 1]. Normalize relevance per candidate set so lambda keeps
+            // the same relevance/diversity trade-off regardless of score
+            // representation or number of fused sources.
+            let relevance = if relevance_scale > 0.0 {
+                cand.item.score / relevance_scale
+            } else {
+                0.0
+            };
             let diversity_penalty = if selected.is_empty() {
                 0.0
             } else {
@@ -229,6 +242,58 @@ mod tests {
             out[1], 2,
             "orthogonal item beats near-duplicate due to diversity penalty"
         );
+    }
+
+    #[test]
+    fn selection_is_invariant_to_positive_relevance_scale() {
+        let low_high = mk_item("high", 0.020);
+        let low_near = mk_item("near", 0.019);
+        let low_distant = mk_item("distant", 0.001);
+        let scaled_high = mk_item("high", 2.0);
+        let scaled_near = mk_item("near", 1.9);
+        let scaled_distant = mk_item("distant", 0.1);
+        let high = vec![1.0_f32, 0.0];
+        let distant = vec![0.0_f32, 1.0];
+
+        let low = mmr_select(
+            vec![
+                MmrInput {
+                    item: &low_high,
+                    embedding: Some(&high),
+                },
+                MmrInput {
+                    item: &low_near,
+                    embedding: Some(&high),
+                },
+                MmrInput {
+                    item: &low_distant,
+                    embedding: Some(&distant),
+                },
+            ],
+            0.6,
+            2,
+        );
+        let scaled = mmr_select(
+            vec![
+                MmrInput {
+                    item: &scaled_high,
+                    embedding: Some(&high),
+                },
+                MmrInput {
+                    item: &scaled_near,
+                    embedding: Some(&high),
+                },
+                MmrInput {
+                    item: &scaled_distant,
+                    embedding: Some(&distant),
+                },
+            ],
+            0.6,
+            2,
+        );
+
+        assert_eq!(low, scaled, "MMR selection must be score-scale invariant");
+        assert_eq!(low, vec![0, 1]);
     }
 
     #[test]

@@ -4,8 +4,10 @@ use engram_integration::{
 };
 use zbot_engram_adapter::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterErrorKind, AdapterFeature,
-    AdapterSqliteStorageLayout, EngramProvider, GovernancePolicy, GovernanceSelection,
+    AdapterSqliteStorageLayout, EngramMemoryFactStore, EngramProvider, GovernancePolicy,
+    GovernanceSelection,
 };
+use zbot_stores_traits::MemoryFactStore;
 
 // STUB: AC1/AC2/AC3 - adapter config maps to Engram's provider facade config.
 #[test]
@@ -98,9 +100,21 @@ fn bootstrap_uses_engram_provider_facade_and_preserves_adapter_gates() {
     assert!(opened.contains(&"knowledge"));
     assert!(opened.contains(&"beliefs"));
     assert!(opened.contains(&"hierarchy"));
+    assert!(opened.contains(&"migration"));
+    assert!(opened.contains(&"provenance"));
+    assert!(opened.contains(&"batch"));
+    assert!(opened.contains(&"engram_unified_recall"));
+    assert!(opened.contains(&"observability"));
     assert!(provider.upstream_capabilities().memory_supported());
     assert!(provider.upstream_capabilities().knowledge_supported());
     assert!(provider.upstream_capabilities().beliefs_supported());
+    assert!(provider.upstream_capabilities().migration_supported());
+    assert!(provider
+        .upstream_capabilities()
+        .episodes_evidence_supported());
+    assert!(provider.upstream_capabilities().atomic_batch_supported());
+    assert!(provider.upstream_capabilities().unified_recall_supported());
+    assert!(provider.upstream_capabilities().observability_supported());
     assert!(!provider.upstream_capabilities().retrieval_supported());
 
     assert!(provider
@@ -339,4 +353,49 @@ fn current_sqlite_mode_does_not_open_engram_provider() {
         panic!("current sqlite mode must not open Engram provider");
     };
     assert_eq!(err.kind(), AdapterErrorKind::UnsupportedFeature);
+}
+
+#[tokio::test]
+async fn pre_facade_fixture_is_readable_through_supported_adapter_stores() {
+    let root = tempfile::tempdir().expect("root");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/pre-facade-engram-data.db");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/pre-facade-engram-data.manifest.json");
+    assert!(fixture.is_file(), "fixture must be committed");
+    assert!(manifest.is_file(), "fixture manifest must be committed");
+
+    let storage_dir = root.path().join("engram");
+    std::fs::create_dir_all(&storage_dir).expect("storage directory");
+    std::fs::copy(&fixture, storage_dir.join("engram_data.db")).expect("install fixture");
+
+    let config = AdapterConfig::engram_for_data_root(root.path(), "engram");
+    let memory = EngramMemoryFactStore::open(config.clone()).expect("memory store");
+    let facts = memory
+        .list_memory_facts(Some("fixture-agent"), Some("pre-facade"), None, 10, 0)
+        .await
+        .expect("list fixture facts");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0]["key"], "compatibility");
+    assert_eq!(facts[0]["content"], "Synthetic pre-facade memory fact");
+    let context = memory
+        .get_ctx_fact("fixture-ward", "ctx.fixture.intent")
+        .await
+        .expect("get fixture context")
+        .expect("fixture context");
+    assert_eq!(context["content"], "Synthetic pre-facade sidecar");
+
+    drop(memory);
+    let database = root.path().join("engram").join("engram_data.db");
+    let connection = rusqlite::Connection::open(&database).expect("fixture database");
+    let integrity = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .expect("integrity check");
+    assert_eq!(integrity, "ok");
+    let database_files = std::fs::read_dir(storage_dir)
+        .expect("storage files")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".db"))
+        .count();
+    assert_eq!(database_files, 1, "fixture must remain single-file SQLite");
 }

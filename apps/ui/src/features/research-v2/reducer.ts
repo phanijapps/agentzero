@@ -24,6 +24,7 @@ import type {
   SessionTurn,
   TimelineEntry,
 } from "./types";
+import type { MessageAttachment } from "../chat/attachments";
 import { EMPTY_RESEARCH_STATE } from "./types";
 
 const SILENT_CRASH_MESSAGE =
@@ -32,6 +33,7 @@ const SILENT_CRASH_MESSAGE =
 export interface UserMessagePayload {
   id: string;
   content: string;
+  attachments?: MessageAttachment[];
   /** ISO timestamp from the gateway, or `now` when the UI mints it. */
   createdAt: string;
 }
@@ -68,7 +70,7 @@ export type ResearchAction =
       /** Optional — populated when this event came from delegation_started. */
       request?: string | null;
     }
-  | { type: "AGENT_COMPLETED"; turnId: string; completedAt: number }
+  | { type: "AGENT_COMPLETED"; turnId: string; completedAt: number; result?: string }
   | { type: "AGENT_STOPPED"; turnId: string; completedAt: number }
   | { type: "THINKING_DELTA"; turnId: string; entry: TimelineEntry }
   | { type: "TOOL_CALL"; turnId: string; entry: TimelineEntry }
@@ -98,6 +100,7 @@ function newOpenTurn(payload: UserMessagePayload, prior: number): SessionTurn {
       id: payload.id,
       content: payload.content,
       createdAt: payload.createdAt,
+      ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
     },
     subagents: [],
     assistantText: null,
@@ -115,8 +118,12 @@ function setLastTurn(
   fn: (t: SessionTurn) => SessionTurn,
 ): ResearchSessionState {
   if (state.turns.length === 0) return state;
+  const lastIndex = state.turns.length - 1;
+  const current = state.turns[lastIndex];
+  const updated = fn(current);
+  if (updated === current) return state;
   const next = state.turns.slice();
-  next[next.length - 1] = fn(next[next.length - 1]);
+  next[lastIndex] = updated;
   return { ...state, turns: next };
 }
 
@@ -350,12 +357,25 @@ function handleAgentCompleted(
   action: Extract<ResearchAction, { type: "AGENT_COMPLETED" }>,
 ): ResearchSessionState {
   if (action.turnId === state.rootExecutionId) {
-    return setLastTurn(state, (t) => closeTurn(t, action.completedAt));
+    return setLastTurn(state, (t) => {
+      const withResult =
+        action.result &&
+        (t.assistantText !== action.result || t.assistantStreaming !== "")
+          ? { ...t, assistantText: action.result, assistantStreaming: "" }
+          : t;
+      return closeTurn(withResult, action.completedAt);
+    });
   }
-  return updateSubagent(state, action.turnId, (s) => closeSubagent(s, action.completedAt));
+  return updateSubagent(state, action.turnId, (s) => closeSubagent(
+    action.result
+      ? { ...s, respond: action.result, respondStreaming: "" }
+      : s,
+    action.completedAt,
+  ));
 }
 
 function closeTurn(t: SessionTurn, completedAt: number): SessionTurn {
+  if (t.status === "completed") return t;
   if (turnHasMeaningfulContent(t)) {
     const promotedReply =
       t.assistantText ??
@@ -456,11 +476,19 @@ function handleRespond(
   action: Extract<ResearchAction, { type: "RESPOND" }>,
 ): ResearchSessionState {
   if (action.turnId === state.rootExecutionId) {
-    return setLastTurn(state, (t) => ({
-      ...t,
-      assistantText: action.text,
-      assistantStreaming: "",
-    }));
+    return setLastTurn(state, (t) => {
+      if (
+        t.status !== "running" ||
+        (t.assistantText === action.text && t.assistantStreaming === "")
+      ) {
+        return t;
+      }
+      return {
+        ...t,
+        assistantText: action.text,
+        assistantStreaming: "",
+      };
+    });
   }
   return updateSubagent(state, action.turnId, (s) => ({
     ...s,

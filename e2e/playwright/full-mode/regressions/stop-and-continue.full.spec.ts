@@ -45,6 +45,14 @@ test.describe("regression: stop mid-session, continue, root completes", () => {
     const sessionId = page.url().match(/sess-[a-zA-Z0-9-]+/)?.[0];
     expect(sessionId).toBeTruthy();
 
+    // Consume the fixture's first response before the best-effort stop. If
+    // cancel wins the race with mock-llm, the continuation would consume this
+    // first FIFO response and the test could not prove persistence of the
+    // second continuation response.
+    await expect(
+      page.locator(".session-turn").first().locator(".research-msg--assistant"),
+    ).toContainText("First response before stop.", { timeout: 15_000 });
+
     // Best-effort stop: attempt via HTTP cancel. This succeeds when the session
     // is still RUNNING; it fails gracefully when already COMPLETED (which is
     // expected since mock-llm responds instantly). Either outcome is fine —
@@ -126,5 +134,20 @@ test.describe("regression: stop mid-session, continue, root completes", () => {
     expect(root, "root execution not found").toBeTruthy();
     expect(root.status).toBe("completed");
     expect(root.ended_at).not.toBeNull();
+
+    // Reload from durable storage rather than relying on the live WS
+    // TurnComplete event. The continuation runner must have persisted its
+    // `respond()` argument, and snapshot recovery must prefer this later
+    // terminal answer over the earlier progress response. A single message
+    // also guards against duplicate terminal delivery rendering twice.
+    // The API continuation does not own navigation, so explicitly open the
+    // durable session URL. This is equivalent to a browser refresh while
+    // avoiding any incidental landing-page navigation from the stop flow.
+    await page.goto(handle.uiUrl(`/research/${sessionId}`));
+    const finalResponses = page
+      .locator(".research-msg--assistant")
+      .filter({ hasText: "Done after continuation." });
+    await expect(finalResponses).toHaveCount(1, { timeout: 15_000 });
+    await expect(finalResponses.first()).toContainText("Done after continuation.");
   });
 });

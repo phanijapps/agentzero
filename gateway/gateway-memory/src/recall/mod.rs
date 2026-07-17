@@ -46,6 +46,14 @@ const RETRY_RECALL_EMBED_QUERY_CHARS: usize = 384;
 const MAX_OUTCOME_SOURCE_COUNT: usize = 20;
 const MAX_OUTCOME_TAXONOMY_FIELD_CHARS: usize = 256;
 const GLOBAL_SESSION_SCOPE: &str = "__global__";
+const GLOBAL_MEMORY_WARD: &str = "__global__";
+const PROFILE_MEMORY_SCOPES: &[&str] = &["agent", "global"];
+const IDENTITY_PROFILE_KEYS: &[&str] = &["user.name", "user.identity"];
+const LOCATION_PROFILE_KEYS: &[&str] = &[
+    "user.location.home_base",
+    "user.location.home",
+    "user.location",
+];
 
 /// Finite public state for one logical source in a unified recall outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -733,6 +741,7 @@ impl MemoryRecall {
             .as_ref()
             .and_then(|_| self.embedding_query_identity());
         let mut source_failures = UnifiedRecallSourceFailures::default();
+        let mut profile_items = self.profile_context_items(agent_id, query, budget).await;
 
         // 1. Facts via hybrid search. Phase E8: prefer the trait
         // `memory_store` (wired by AppState), fall back to the
@@ -1191,6 +1200,7 @@ impl MemoryRecall {
         if let Some(scope) = scope.as_ref() {
             let visible = scope.candidate_visible;
             for items in [
+                &mut profile_items,
                 &mut fact_items,
                 &mut wiki_items,
                 &mut procedure_items,
@@ -1230,7 +1240,8 @@ impl MemoryRecall {
                     }
                     _ => (Vec::new(), None),
                 };
-            let surfaced_item_count = (fact_items.len()
+            let surfaced_item_count = (profile_items.len()
+                + fact_items.len()
                 + wiki_items.len()
                 + procedure_items.len()
                 + graph_items.len()
@@ -1240,7 +1251,7 @@ impl MemoryRecall {
                 + hier_relation_items.len()) as u32;
             let mut match_sources = Vec::new();
             for (source, count) in [
-                ("memory_facts", fact_items.len()),
+                ("memory_facts", profile_items.len() + fact_items.len()),
                 ("wiki", wiki_items.len()),
                 ("procedures", procedure_items.len()),
                 ("graph", graph_items.len() + traversal_items.len()),
@@ -1313,19 +1324,29 @@ impl MemoryRecall {
         // MMR has a wider candidate pool to diversify over. When disabled,
         // pass `budget` straight through so behavior is byte-for-byte
         // identical to pre-MMR.
+        let generic_budget = budget.saturating_sub(profile_items.len());
         let (fusion_budget, run_mmr) = match self.mmr_config.as_ref() {
-            Some(cfg) if cfg.enabled => (cfg.candidate_pool.max(budget), true),
-            _ => (budget, false),
+            Some(cfg) if cfg.enabled => (cfg.candidate_pool.max(generic_budget), true),
+            _ => (generic_budget, false),
         };
 
         let fused = rrf_merge(all_lists, 60.0, fusion_budget);
 
-        let items = if run_mmr {
+        let generic_items = if run_mmr {
             let lambda = self.mmr_config.as_ref().map(|c| c.lambda).unwrap_or(0.6);
-            self.mmr_rerank(fused, lambda, budget).await
+            self.mmr_rerank(fused, lambda, generic_budget).await
         } else {
             fused
         };
+        let mut items = profile_items;
+        for item in generic_items {
+            if items.iter().all(|existing| existing.id != item.id) {
+                items.push(item);
+            }
+            if items.len() >= budget {
+                break;
+            }
+        }
         let source_summary = self.unified_source_summary(
             &items,
             query_emb.is_some(),
@@ -1337,6 +1358,57 @@ impl MemoryRecall {
             source_summary,
             taxonomy_expansion: taxonomy_outcome_trace,
         })
+    }
+
+    /// Return the durable profile facts that a request explicitly needs.
+    ///
+    /// These lookups deliberately use canonical fact keys instead of a broad
+    /// semantic query: identity and local context are correctness-sensitive,
+    /// and a generic vector query can be crowded out before unified reranking.
+    /// The resulting items still pass the caller's scoped-visibility filter.
+    async fn profile_context_items(
+        &self,
+        agent_id: &str,
+        query: &str,
+        budget: usize,
+    ) -> Vec<ScoredItem> {
+        if budget == 0 {
+            return Vec::new();
+        }
+
+        let Some(store) = self.memory_store.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut items = Vec::new();
+        for keys in profile_fact_key_sets_for_query(query) {
+            let mut fact = None;
+            for scope in PROFILE_MEMORY_SCOPES {
+                for key in keys {
+                    if let Ok(Some(candidate)) = store
+                        .get_fact_by_key(agent_id, scope, GLOBAL_MEMORY_WARD, key)
+                        .await
+                    {
+                        if candidate.superseded_by.is_none() {
+                            fact = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+                if fact.is_some() {
+                    break;
+                }
+            }
+            if let Some(fact) = fact {
+                let mut item = adapters::fact_to_item(&fact, 1.0);
+                item.provenance.session_id = Some(GLOBAL_SESSION_SCOPE.to_string());
+                items.push(item);
+            }
+            if items.len() >= budget {
+                break;
+            }
+        }
+        items
     }
 
     fn unified_source_summary(
@@ -1696,6 +1768,34 @@ fn recall_embedding_queries(text: &str) -> Vec<String> {
     } else {
         vec![primary, retry]
     }
+}
+
+fn profile_fact_key_sets_for_query(query: &str) -> Vec<&'static [&'static str]> {
+    let normalized = query.to_ascii_lowercase();
+    let mut key_sets = Vec::new();
+    if ["my name", "who am i", "who i am", "my identity", "call me"]
+        .iter()
+        .any(|cue| normalized.contains(cue))
+    {
+        key_sets.push(IDENTITY_PROFILE_KEYS);
+    }
+    if [
+        "weather",
+        "forecast",
+        "temperature",
+        "air quality",
+        "aqi",
+        "near me",
+        "nearby",
+        "where am i",
+        "where i live",
+    ]
+    .iter()
+    .any(|cue| normalized.contains(cue))
+    {
+        key_sets.push(LOCATION_PROFILE_KEYS);
+    }
+    key_sets
 }
 
 fn apply_scoped_candidate_visibility(
@@ -2945,6 +3045,26 @@ mod tests {
         async fn get_fact_embedding(&self, fact_id: &str) -> Result<Option<Vec<f32>>, String> {
             self.inner.get_fact_embedding(fact_id).await
         }
+
+        async fn get_fact_by_key(
+            &self,
+            agent_id: &str,
+            scope: &str,
+            ward_id: &str,
+            key: &str,
+        ) -> Result<Option<MemoryFact>, String> {
+            self.inner
+                .get_fact_by_key(agent_id, scope, ward_id, key)
+                .await
+        }
+
+        async fn upsert_typed_fact(
+            &self,
+            fact: serde_json::Value,
+            embedding: Option<Vec<f32>>,
+        ) -> Result<(), String> {
+            self.inner.upsert_typed_fact(fact, embedding).await
+        }
     }
 
     /// RecallConfig with min_score relaxed to 0 — the hybrid scorer
@@ -2956,6 +3076,156 @@ mod tests {
             min_score: 0.0,
             ..RecallConfig::default()
         })
+    }
+
+    #[tokio::test]
+    async fn location_dependent_recall_reserves_canonical_location_fact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let embed: Arc<dyn EmbeddingClient> = Arc::new(DirectionalEmbed);
+        let store = make_memory_store_with_embedder(&tmp, embed.clone()).await;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        store
+            .upsert_typed_fact(
+                serde_json::json!({
+                    "id": "agent-scoped-home-base",
+                    "session_id": null,
+                    "agent_id": "agent",
+                    "scope": "agent",
+                    "category": "user",
+                    "key": "user.location.home_base",
+                    "content": "canonical home location",
+                    "confidence": 0.95,
+                    "mention_count": 1,
+                    "source_summary": null,
+                    "ward_id": "__global__",
+                    "contradicted_by": null,
+                    "created_at": now,
+                    "updated_at": now,
+                    "expires_at": null,
+                    "valid_from": null,
+                    "valid_until": null,
+                    "superseded_by": null,
+                    "pinned": false,
+                    "epistemic_class": "current",
+                    "source_episode_id": null,
+                    "source_ref": null,
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .save_fact(
+                "agent",
+                "user",
+                "user.location.unknown",
+                "unknown location",
+                0.99,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .save_fact(
+                "agent",
+                "user",
+                "user.name",
+                "canonical profile name",
+                0.95,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .save_fact(
+                "agent",
+                "domain",
+                "domain.weather",
+                "weather reference material",
+                0.9,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .save_fact(
+                "agent",
+                "domain",
+                "domain.apple",
+                "apple is a fruit",
+                0.9,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut recall = MemoryRecall::new(Some(embed), relaxed_recall_config());
+        recall.set_memory_store(store);
+
+        let local = recall
+            .recall_unified("agent", "what is the weather near me", None, &[], 1)
+            .await
+            .unwrap();
+        assert_eq!(local.len(), 1);
+        assert!(
+            local[0].content.contains("user.location.home_base"),
+            "local-context recall must select the canonical location first: {:?}",
+            local.iter().map(|item| &item.content).collect::<Vec<_>>()
+        );
+
+        let identity = recall
+            .recall_unified("agent", "what is my name", None, &[], 1)
+            .await
+            .unwrap();
+        assert_eq!(identity.len(), 1);
+        assert!(
+            identity[0].content.contains("user.name"),
+            "identity recall must select the canonical name first: {:?}",
+            identity
+                .iter()
+                .map(|item| &item.content)
+                .collect::<Vec<_>>()
+        );
+
+        let unrelated = recall
+            .recall_unified("agent", "apple fruit", None, &[], 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            unrelated.len(),
+            1,
+            "unrelated recall must preserve its generic result budget"
+        );
+        assert!(
+            unrelated[0].content.contains("domain.apple"),
+            "unrelated recall must not reserve profile context: {:?}",
+            unrelated
+                .iter()
+                .map(|item| &item.content)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn profile_query_cues_select_only_requested_slots() {
+        assert_eq!(
+            profile_fact_key_sets_for_query("what is my name?"),
+            vec![IDENTITY_PROFILE_KEYS]
+        );
+        assert_eq!(
+            profile_fact_key_sets_for_query("what is the weather near me?"),
+            vec![LOCATION_PROFILE_KEYS]
+        );
+        assert_eq!(
+            profile_fact_key_sets_for_query("where am I?"),
+            vec![LOCATION_PROFILE_KEYS]
+        );
+        assert!(profile_fact_key_sets_for_query("tell me about apples").is_empty());
     }
 
     /// MMR disabled → recall_unified output identical to no-MMR.

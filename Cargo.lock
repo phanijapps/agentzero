@@ -1786,31 +1786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "engram-conformance"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "engram-belief",
- "engram-domain",
- "engram-hierarchy",
- "engram-integration",
- "engram-knowledge",
- "engram-memory",
- "engram-retrieval",
- "engram-runtime",
- "engram-store-belief-sqlite",
- "engram-store-hierarchy-sqlite",
- "engram-store-knowledge-sqlite",
- "engram-store-lexical",
- "engram-store-sql",
- "engram-store-vector",
- "futures",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "engram-consolidation"
 version = "0.1.0"
 dependencies = [
@@ -1832,6 +1807,17 @@ dependencies = [
  "engram-knowledge",
  "engram-memory",
  "engram-retrieval",
+ "engram-runtime",
+]
+
+[[package]]
+name = "engram-decay"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "engram-consolidation",
+ "engram-domain",
  "engram-runtime",
 ]
 
@@ -1907,21 +1893,21 @@ dependencies = [
  "async-trait",
  "chrono",
  "engram-belief",
+ "engram-consolidation",
+ "engram-decay",
  "engram-domain",
+ "engram-eval",
  "engram-hierarchy",
  "engram-ingest",
  "engram-knowledge",
  "engram-memory",
+ "engram-reflection",
  "engram-retrieval",
  "engram-runtime",
  "engram-store-associative-graph",
- "engram-store-belief-sqlite",
  "engram-store-community-summary",
- "engram-store-hierarchy-sqlite",
- "engram-store-knowledge-sqlite",
  "engram-store-lexical",
- "engram-store-sql",
- "engram-store-vector",
+ "engram-store-sqlite",
  "futures",
  "serde",
  "serde_json",
@@ -1943,6 +1929,17 @@ name = "engram-memory"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "engram-domain",
+ "engram-runtime",
+]
+
+[[package]]
+name = "engram-reflection"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engram-belief",
+ "engram-consolidation",
  "engram-domain",
  "engram-runtime",
 ]
@@ -1980,20 +1977,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "engram-store-belief-sqlite"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "engram-core",
- "engram-domain",
- "engram-runtime",
- "rusqlite",
- "serde_json",
- "sha2 0.11.0",
-]
-
-[[package]]
 name = "engram-store-community-summary"
 version = "0.1.0"
 dependencies = [
@@ -2004,33 +1987,6 @@ dependencies = [
  "engram-runtime",
  "engram-store-associative-graph",
  "futures",
-]
-
-[[package]]
-name = "engram-store-hierarchy-sqlite"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "engram-domain",
- "engram-hierarchy",
- "engram-runtime",
- "rusqlite",
- "serde_json",
-]
-
-[[package]]
-name = "engram-store-knowledge-sqlite"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "engram-domain",
- "engram-knowledge",
- "engram-retrieval",
- "engram-runtime",
- "futures",
- "rusqlite",
- "serde_json",
 ]
 
 [[package]]
@@ -2045,27 +2001,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "engram-store-sql"
+name = "engram-store-sqlite"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "engram-core",
  "engram-domain",
+ "engram-hierarchy",
+ "engram-knowledge",
  "engram-memory",
- "engram-runtime",
- "rusqlite",
- "serde_json",
-]
-
-[[package]]
-name = "engram-store-vector"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "engram-domain",
  "engram-retrieval",
  "engram-runtime",
+ "futures",
  "rusqlite",
+ "serde_json",
  "sha2 0.11.0",
  "sqlite-vec",
 ]
@@ -7459,7 +7409,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "engram-belief",
- "engram-conformance",
  "engram-domain",
  "engram-hierarchy",
  "engram-integration",

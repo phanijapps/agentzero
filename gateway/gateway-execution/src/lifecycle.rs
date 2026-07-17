@@ -214,10 +214,43 @@ pub async fn complete_execution(ctx: CompleteExecution<'_>) {
     }
 
     // Try to complete session if no other executions are running
-    match state_service.try_complete_session(session_id) {
-        Ok(true) => tracing::debug!("Session completed"),
-        Ok(false) => tracing::debug!("Session still has running executions"),
-        Err(e) => tracing::warn!("Failed to check/complete session: {}", e),
+    let session_completed = match state_service.try_complete_session(session_id) {
+        Ok(true) => {
+            tracing::debug!("Session completed");
+            true
+        }
+        Ok(false) => {
+            tracing::debug!("Session still has running executions");
+            false
+        }
+        Err(e) => {
+            tracing::warn!("Failed to check/complete session: {}", e);
+            false
+        }
+    };
+
+    // Completion is a trusted lifecycle transition, not a model instruction.
+    // Reconcile any remaining actionable steps and publish that replacement
+    // surface before AgentCompleted closes the Research subscription.
+    if session_completed {
+        match state_service.complete_session_plan(session_id, execution_id) {
+            Ok(Some(snapshot)) => {
+                event_bus
+                    .publish(GatewayEvent::SurfaceUpdated {
+                        session_id: session_id.to_string(),
+                        execution_id: execution_id.to_string(),
+                        surface: crate::invoke::build_session_plan_surface(session_id, &snapshot),
+                    })
+                    .await;
+            }
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                session_id,
+                execution_id,
+                %error,
+                "Failed to reconcile terminal session plan"
+            ),
+        }
     }
 
     // Log session end
@@ -555,6 +588,11 @@ pub async fn emit_delegation_completed(ctx: DelegationCompletedEvent<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use execution_state::{SessionPlanStepStatus, StateService};
+    use gateway_services::VaultPaths;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use zbot_runtime_sqlite::DatabaseManager;
 
     #[test]
     fn test_session_setup_struct() {
@@ -566,6 +604,76 @@ mod tests {
         assert_eq!(setup.session_id, "session-123");
         assert_eq!(setup.execution_id, "exec-456");
         assert_eq!(setup.ward_id, Some("my-project".to_string()));
+    }
+
+    #[tokio::test]
+    async fn terminal_completion_updates_the_plan_surface_before_agent_completed() {
+        let temp = TempDir::new().expect("temp vault");
+        let paths = Arc::new(VaultPaths::new(temp.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault directories");
+        let db = Arc::new(DatabaseManager::new(paths).expect("database"));
+        let state = StateService::new(db.clone());
+        let logs = LogService::new(db);
+        let (session, execution) = state.create_session("root-agent").expect("session");
+        state
+            .start_execution(&execution.id)
+            .expect("start execution");
+        state
+            .save_session_plan(
+                &session.id,
+                &execution.id,
+                serde_json::json!([
+                    {"step": "Research", "status": "completed"},
+                    {"step": "Synthesize", "status": "in_progress"},
+                    {"step": "Respond", "status": "pending"}
+                ]),
+                None,
+                1,
+            )
+            .expect("save plan");
+
+        let bus = EventBus::new();
+        let mut events = bus.subscribe_all();
+        complete_execution(CompleteExecution {
+            state_service: &state,
+            log_service: &logs,
+            event_bus: &bus,
+            execution_id: &execution.id,
+            session_id: &session.id,
+            agent_id: "root-agent",
+            conversation_id: "research-client",
+            response: Some("final answer".to_owned()),
+            connector_registry: None,
+            respond_to: None,
+            thread_id: None,
+            bridge_registry: None,
+            bridge_outbox: None,
+        })
+        .await;
+
+        let surface_event = events.recv().await.expect("terminal plan surface");
+        match surface_event {
+            GatewayEvent::SurfaceUpdated { surface, .. } => {
+                let plan = surface.data["plan"].as_array().expect("plan data");
+                assert!(plan.iter().all(|step| step["status"] == "completed"));
+            }
+            other => panic!("expected SurfaceUpdated, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv().await.expect("agent completed"),
+            GatewayEvent::AgentCompleted { result: Some(result), .. } if result == "final answer"
+        ));
+
+        let plan = state
+            .get_mission_control_session_tokens(&session.id)
+            .expect("session state")
+            .expect("session tokens")
+            .current_plan
+            .expect("terminal plan");
+        assert!(plan
+            .plan
+            .iter()
+            .all(|step| step.status == SessionPlanStepStatus::Completed));
     }
 
     /// Regression: `emit_delegation_started` must populate `parent_conversation_id`

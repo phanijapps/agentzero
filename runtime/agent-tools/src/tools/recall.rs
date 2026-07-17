@@ -1112,9 +1112,11 @@ mod tests {
     fn output_policy_redacts_common_credentials_and_private_paths() {
         let sensitive = concat!(
             "ghp_abcdefghijklmnopqrstuvwxyz1234567890 ",
-            "xoxb-", "redaction-fixture-token ",
+            "xoxb-",
+            "redaction-fixture-token ",
             "AIzaabcdefghijklmnopqrstuvwx123456 ",
-            "sk_live_", "redactionfixturetoken ",
+            "sk_live_",
+            "redactionfixturetoken ",
             "postgres://user:password@db.internal:5432/zbot ",
             "/root/.ssh/id_rsa /private/data/profile.json /var/lib/zbot/conversations.db ",
             "/mnt/private/token.txt D:\\secure\\profile.json"

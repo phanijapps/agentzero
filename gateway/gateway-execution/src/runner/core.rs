@@ -12,7 +12,7 @@ use agent_runtime::{
     AgentExecutor, BoxedAgentEngine, ChatMessage, ContextActorKind, ContextCapabilityCatalog,
 };
 use api_logs::LogService;
-use execution_state::StateService;
+use execution_state::{SessionPlanSnapshot, StateService};
 use gateway_events::{EventBus, GatewayEvent};
 use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths};
 use serde_json::Value;
@@ -34,9 +34,9 @@ pub use crate::config::ExecutionConfig;
 use crate::delegation::{spawn_delegated_agent, DelegationRegistry, DelegationRequest};
 pub use crate::handle::ExecutionHandle;
 use crate::invoke::{
-    broadcast_event, collect_agents_summary, collect_skills_summary, process_stream_event,
-    select_engine, spawn_batch_writer_with_traces, AgentLoader, ExecutorBuilder,
-    ResponseAccumulator, RuntimeActorKind, StreamContext, ToolCallAccumulator,
+    assistant_turn_content, broadcast_event, collect_agents_summary, collect_skills_summary,
+    process_stream_event, select_engine, spawn_batch_writer_with_traces, AgentLoader,
+    ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext, ToolCallAccumulator,
 };
 use crate::lifecycle::{
     complete_execution, crash_execution, emit_agent_started, stop_execution, CompleteExecution,
@@ -308,10 +308,9 @@ async fn prepend_continuation_recall(
 
 /// Build the system-message prompt that seeds a continuation turn.
 ///
-/// If the session has a ward and `specs/{topic}/plan.md` exists, inject the
-/// plan's full text so the continuation agent can compare it with the child
-/// result already in context. Otherwise emit a terse nudge to either finish or
-/// continue based on the delegate callback.
+/// Prefer the persisted session plan, which is the plan the current execution
+/// actually owns. A ward `specs/**/plan.md` is only a legacy fallback because
+/// it can belong to an unrelated earlier task in the same ward.
 ///
 /// Side effect: when a plan is found and a fact store is available, the plan
 /// text is written to `ctx.<session_id>.plan` so subagents can fetch it via
@@ -320,12 +319,17 @@ async fn build_continuation_message(
     paths: &SharedVaultPaths,
     session_id: &str,
     ward_id: Option<&str>,
+    session_plan: Option<&SessionPlanSnapshot>,
     fact_store: Option<&Arc<dyn zbot_stores::MemoryFactStore>>,
 ) -> String {
-    let plan_hint = ward_id.and_then(|wid| {
-        let specs_dir = paths.vault_dir().join("wards").join(wid).join("specs");
-        find_latest_plan(&specs_dir)
-    });
+    let plan_hint = session_plan
+        .map(render_session_plan_for_continuation)
+        .or_else(|| {
+            ward_id.and_then(|wid| {
+                let specs_dir = paths.vault_dir().join("wards").join(wid).join("specs");
+                find_latest_plan(&specs_dir)
+            })
+        });
 
     let Some(plan) = plan_hint else {
         return "[Delegation completed. Review the delegate result already in context. \
@@ -349,6 +353,21 @@ async fn build_continuation_message(
          Avoid re-reading files unless the delegate result is insufficient.]\n\n{}",
         plan
     )
+}
+
+fn render_session_plan_for_continuation(snapshot: &SessionPlanSnapshot) -> String {
+    let explanation = snapshot
+        .explanation
+        .as_deref()
+        .map(|text| format!("\n\n{text}"))
+        .unwrap_or_default();
+    let steps = snapshot
+        .plan
+        .iter()
+        .map(|step| format!("- [{:?}] {}", step.status, step.step))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("## Current session plan\n\n{steps}{explanation}")
 }
 
 /// Wire the mid-session recall hook onto an [`AgentExecutor`] if the owning
@@ -1397,6 +1416,11 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         .ok()
         .flatten()
         .and_then(|s| s.ward_id);
+    let session_plan = state_service
+        .get_mission_control_session_tokens(session_id)
+        .ok()
+        .flatten()
+        .and_then(|tokens| tokens.current_plan);
 
     // Prepend scoped unified recall (if any) to history as a bounded system
     // message at position 0. No-op when recall is unavailable, fails closed,
@@ -1501,6 +1525,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         &paths,
         session_id,
         session_ward_id.as_deref(),
+        session_plan.as_ref(),
         fact_store_for_ctx.as_ref(),
     )
     .await;
@@ -1593,11 +1618,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
                     // Emit assistant message for this turn
                     if !turn_tool_calls.is_empty() {
                         let tc_json = serde_json::to_string(&turn_tool_calls).unwrap_or_default();
-                        let content = if turn_text.is_empty() {
-                            "[tool calls]".to_string()
-                        } else {
-                            std::mem::take(&mut turn_text)
-                        };
+                        let content = assistant_turn_content(&mut turn_text, &turn_tool_calls);
                         batch_writer_inner.session_message(
                             &session_id_inner,
                             &execution_id_inner,
@@ -1703,6 +1724,12 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
             handle.current_iteration(),
             &accumulated_response,
         );
+
+        // A terminal completion event is also a client snapshot boundary.
+        // Flush the queued final assistant message before publishing it.
+        if result.is_ok() {
+            batch_writer.flush().await;
+        }
 
         match result {
             Ok(()) => {
@@ -2085,6 +2112,7 @@ mod continuation_message_tests {
         RecallContentVisibility, RecallItemKind, RecallLogicalSource, RecallProvenance,
         UnifiedRecallItem, UnifiedRecallResponse,
     };
+    use execution_state::{SessionPlanStep, SessionPlanStepStatus};
     use gateway_services::VaultPaths;
     use std::sync::Arc;
 
@@ -2148,7 +2176,7 @@ mod continuation_message_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths: SharedVaultPaths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
 
-        let message = build_continuation_message(&paths, "session-1", None, None).await;
+        let message = build_continuation_message(&paths, "session-1", None, None, None).await;
 
         assert!(message.contains("If the user's goal is satisfied"));
         assert!(message.contains("respond with the final answer"));
@@ -2167,7 +2195,8 @@ mod continuation_message_tests {
         std::fs::write(plan_dir.join("plan.md"), "- Write report\n").expect("plan");
 
         let message =
-            build_continuation_message(&paths, "session-1", Some("political-analysis"), None).await;
+            build_continuation_message(&paths, "session-1", Some("political-analysis"), None, None)
+                .await;
 
         assert!(message.contains("- Write report"));
         assert!(message.contains("respond with the final answer"));
@@ -2175,6 +2204,38 @@ mod continuation_message_tests {
             !message.contains("One action only: delegate_to_agent"),
             "plan continuations must be able to finish instead of re-delegating"
         );
+    }
+
+    #[tokio::test]
+    async fn continuation_uses_the_current_session_plan_not_an_unrelated_ward_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths: SharedVaultPaths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+        let plan_dir = tmp.path().join("wards/financial-analysis/specs/old-task");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("plan.md"), "- Unrelated ward plan\n").expect("plan");
+        let session_plan = SessionPlanSnapshot {
+            execution_id: "exec-current".to_owned(),
+            explanation: Some("Finish the active research".to_owned()),
+            plan: vec![SessionPlanStep {
+                step: "Synthesize the Uber and Lyft research".to_owned(),
+                status: SessionPlanStepStatus::InProgress,
+            }],
+            updated_at: "2026-07-17T00:00:00Z".to_owned(),
+            source_event_timestamp: 1,
+            source_event_sequence: 1,
+        };
+
+        let message = build_continuation_message(
+            &paths,
+            "session-1",
+            Some("financial-analysis"),
+            Some(&session_plan),
+            None,
+        )
+        .await;
+
+        assert!(message.contains("Synthesize the Uber and Lyft research"));
+        assert!(!message.contains("Unrelated ward plan"));
     }
 }
 

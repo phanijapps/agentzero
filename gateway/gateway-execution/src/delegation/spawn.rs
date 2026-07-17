@@ -817,6 +817,10 @@ fn spawn_execution_task(ctx: SpawnContext) {
 
         match result {
             Ok(()) => {
+                // Child completion can be observed independently by Research;
+                // do not let it overtake the final child-session message.
+                batch_writer.flush().await;
+
                 // Unblock any wait_agent before firing callbacks.
                 agent_result_bus.resolve(&execution_id, &agent_id, &accumulated_response);
 

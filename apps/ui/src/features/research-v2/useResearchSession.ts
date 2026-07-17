@@ -10,7 +10,7 @@ import type {
 import { randomId } from "@/shared/utils/randomId";
 import { useStatusPill, type PillEventSink } from "../shared/statusPill";
 import type { UploadedFile } from "../chat/ChatInput";
-import { composeMessageWithAttachments } from "../chat/attachments";
+import { composeMessageWithAttachments, displayAttachments } from "../chat/attachments";
 import { EMPTY_RESEARCH_STATE, type ResearchSessionState } from "./types";
 import { reduceResearch, type ResearchAction } from "./reducer";
 import { mapGatewayEventToResearchAction, mapGatewayEventToPillEvent } from "./event-map";
@@ -575,7 +575,8 @@ export function useResearchSession() {
         type: "APPEND_USER",
         message: {
           id: messageId,
-          content: promptText,
+          content: trimmed,
+          attachments: displayAttachments(attachments),
           createdAt: new Date(sendAt).toISOString(),
         },
       });

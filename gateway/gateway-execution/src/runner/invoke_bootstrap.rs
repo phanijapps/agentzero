@@ -216,6 +216,29 @@ fn canonical_use_existing_ward_id(
         .flatten()
 }
 
+/// A `create_new` recommendation has no directory to canonicalize yet, but
+/// its name must still be safe before it is included in the root agent's ward
+/// tool instruction. Keep this in lockstep with `WardTool`'s accepted name
+/// shape and reserve `scratch` for the fast Quick Chat surface.
+fn safe_new_ward_name(candidate: &str) -> Option<String> {
+    if candidate.is_empty()
+        || candidate.len() > 64
+        || candidate.eq_ignore_ascii_case("scratch")
+        || !candidate
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+
+    let mut components = Path::new(candidate).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return None;
+    }
+
+    Some(candidate.to_string())
+}
+
 /// A safe, deliberately non-routable recommendation when the model's ward
 /// value cannot be used. The executor receives no model-derived path in this
 /// case and can ask the ward tool to list/create an appropriate workspace.
@@ -1299,7 +1322,7 @@ impl InvokeBootstrap {
                     session_id,
                     execution_id,
                     &config.agent_id,
-                    "LLM client creation failed — using scratch ward",
+                    "LLM client creation failed — workspace selection unavailable",
                     "Intent analysis unavailable (no LLM client)",
                 )
                 .await;
@@ -1343,7 +1366,7 @@ impl InvokeBootstrap {
                     session_id,
                     execution_id,
                     &config.agent_id,
-                    "Intent analysis failed — using scratch ward",
+                    "Intent analysis failed — workspace selection unavailable",
                     "Intent analysis unavailable",
                 )
                 .await;
@@ -1352,9 +1375,10 @@ impl InvokeBootstrap {
         };
 
         // Intent is allowed to bind only an explicit `use_existing` result.
-        // A filesystem match does not upgrade a `create_new` result: that
-        // flow remains an explicit ward-tool action, never an automatic
-        // session binding.
+        // A filesystem match does not upgrade a `create_new` result. A valid
+        // new-ward name is nevertheless retained so the root's mandatory
+        // first ward-tool call can create and enter that workspace before it
+        // delegates or runs a procedure.
         //
         // Graduation gate: a selected ward is warm-routable — delegated to as a
         // ward-agent — only once it has GRADUATED. Graduation requires BOTH
@@ -1383,22 +1407,16 @@ impl InvokeBootstrap {
         } else {
             None
         };
-        let authoritative_action = if existing_ward_id.is_some() {
-            WardAction::UseExisting
-        } else {
-            WardAction::CreateNew
-        };
-        if analysis.ward_recommendation.action != authoritative_action {
-            tracing::info!(
-                classifier_action = %analysis.ward_recommendation.action,
-                corrected = %authoritative_action,
-                validated_existing_ward = existing_ward_id.is_some(),
-                "Correcting ward action from validated filesystem ground truth"
-            );
-        }
         if let Some(ward_id) = existing_ward_id.as_ref() {
             analysis.ward_recommendation.action = WardAction::UseExisting;
             analysis.ward_recommendation.ward_name = ward_id.clone();
+        } else if analysis.ward_recommendation.action == WardAction::CreateNew
+            && safe_new_ward_name(&analysis.ward_recommendation.ward_name).is_some()
+        {
+            tracing::info!(
+                ward_name = %analysis.ward_recommendation.ward_name,
+                "Preserving validated new ward recommendation for explicit creation"
+            );
         } else {
             analysis.ward_recommendation = unassigned_ward_recommendation();
         }
@@ -1517,7 +1535,7 @@ impl InvokeBootstrap {
     /// never appears as if intent analysis was skipped. Without this, a model
     /// that returns truncated/non-JSON (e.g. glm-5.2 intermittently cutting
     /// off mid-string) leaves no intent log even though analysis ran and
-    /// deliberately fell back to a scratch ward — which looked identical to
+    /// deliberately left workspace selection unassigned — which looked identical to
     /// "intent analysis off" on the /research info icon and in replay.
     async fn emit_intent_fallback_complete(
         &self,
@@ -1534,7 +1552,7 @@ impl InvokeBootstrap {
             "fallback": true,
             "ward_recommendation": {
                 "action": "create_new",
-                "ward_name": "scratch",
+                "ward_name": "unassigned",
                 "subdirectory": null,
                 "reason": ward_reason,
             },
@@ -1564,7 +1582,7 @@ impl InvokeBootstrap {
                 recommended_agents: vec![],
                 ward_recommendation: serde_json::json!({
                     "action": "create_new",
-                    "ward_name": "scratch",
+                    "ward_name": "unassigned",
                     "subdirectory": null,
                     "reason": ward_reason,
                 }),
@@ -1871,6 +1889,16 @@ mod tests {
             std::os::unix::fs::symlink(&real_wards, &wards).unwrap();
             assert_eq!(canonical_existing_ward_id(&paths, "safe"), None);
         }
+    }
+
+    #[test]
+    fn safe_new_ward_name_preserves_a_domain_name_but_never_scratch() {
+        assert_eq!(
+            safe_new_ward_name("hiring-analysis").as_deref(),
+            Some("hiring-analysis")
+        );
+        assert_eq!(safe_new_ward_name("scratch"), None);
+        assert_eq!(safe_new_ward_name("../escape"), None);
     }
 
     #[test]

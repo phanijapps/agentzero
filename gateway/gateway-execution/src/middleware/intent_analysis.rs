@@ -2275,6 +2275,42 @@ mod tests {
     }
 
     #[test]
+    fn format_intent_injection_requires_the_named_new_ward_before_procedures() {
+        let analysis = IntentAnalysis {
+            primary_intent: "interview candidate analysis".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::CreateNew,
+                ward_name: "hiring-analysis".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "Reusable hiring domain".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Graph,
+                graph: None,
+                explanation: "Requires structured analysis".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: Some(
+                "\n## Recommended action: run_procedure\nrun_procedure(name=\"candidate_analysis\")\n"
+                    .to_string(),
+            ),
+        };
+
+        let injection = format_intent_injection(&analysis, None, Some("Analyze this interview"));
+        let create_at = injection
+            .find("ward(action=\"create\", name=\"hiring-analysis\")")
+            .expect("named ward creation must be required");
+        let procedure_at = injection
+            .find("run_procedure(name=\"candidate_analysis\")")
+            .expect("procedure recommendation should remain visible");
+        assert!(create_at < procedure_at);
+    }
+
+    #[test]
     fn test_format_intent_injection_spec_guidance_ignored() {
         // spec_guidance is no longer injected — root decides its own approach
         let analysis = IntentAnalysis {

@@ -11,6 +11,7 @@
 
 import type { LogSession, SessionMessage } from "@/services/transport/types";
 import type { AgentTurn, AgentTurnStatus, SessionTurn, TimelineEntry } from "./types";
+import { splitMessageAttachments, type MessageAttachment } from "../chat/attachments";
 import { turnFromLogRow } from "./session-snapshot";
 
 const TOOL_CALLS_PLACEHOLDER = "[tool calls]";
@@ -22,7 +23,12 @@ const DELEGATE_TOOL_NAME = "delegate_to_agent";
 // -----------------------------------------------------------------------------
 
 export interface TurnBoundary {
-  userMessage: { id: string; content: string; createdAt: string };
+  userMessage: {
+    id: string;
+    content: string;
+    createdAt: string;
+    attachments?: MessageAttachment[];
+  };
   startedAt: string;
   endedAt: string | null;
 }
@@ -48,8 +54,14 @@ export function findTurnBoundaries(
   const userMessages = sorted.filter((m) => m.role === "user");
   return userMessages.map((m, i) => {
     const nextStart = userMessages[i + 1]?.created_at ?? null;
+    const parsed = splitMessageAttachments(m.content);
     return {
-      userMessage: { id: m.id, content: m.content, createdAt: m.created_at },
+      userMessage: {
+        id: m.id,
+        content: parsed.content,
+        createdAt: m.created_at,
+        ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
+      },
       startedAt: m.created_at,
       endedAt: nextStart,
     };
@@ -103,26 +115,29 @@ export function extractAssistantReplyForTurn(
   const sorted = [...windowMessages].sort((a, b) =>
     a.created_at.localeCompare(b.created_at),
   );
-  let plain: string | null = null;
-  let respondText: string | null = null;
+  let answer: string | null = null;
   for (const m of sorted) {
     if (m.role !== "assistant") continue;
+    let respondText: string | null = null;
     for (const call of parseToolCalls(m)) {
       if (call?.tool_name !== RESPOND_TOOL_NAME) continue;
-      const message = call.args?.["message"];
+      const message = call.args?.["message"] ?? call.args?.["text"];
       if (typeof message === "string" && message.length > 0) {
         respondText = message;
       }
     }
-    if (
+    const plainText =
       typeof m.content === "string" &&
       m.content.length > 0 &&
       m.content !== TOOL_CALLS_PLACEHOLDER
-    ) {
-      plain = m.content;
-    }
+        ? m.content
+        : null;
+    // Persisted rows are chronological. A later `respond()` result is the
+    // terminal answer and must supersede earlier progress prose; plain text
+    // still wins when both are carried by the same assistant row.
+    answer = plainText ?? respondText ?? answer;
   }
-  return plain ?? respondText;
+  return answer;
 }
 
 interface ToolCall {

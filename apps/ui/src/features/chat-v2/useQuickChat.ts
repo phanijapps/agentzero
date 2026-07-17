@@ -10,7 +10,11 @@ import type {
 import { randomId } from "@/shared/utils/randomId";
 import { useStatusPill, type PillEventSink } from "../shared/statusPill";
 import type { UploadedFile } from "../chat/ChatInput";
-import { composeMessageWithAttachments } from "../chat/attachments";
+import {
+  composeMessageWithAttachments,
+  displayAttachments,
+  splitMessageAttachments,
+} from "../chat/attachments";
 import {
   type QuickChatArtifactRef,
   type QuickChatMessage,
@@ -57,11 +61,15 @@ function isVisibleChatMessage(m: SessionMessage): boolean {
 }
 
 function sessionMessageToQuickChat(m: SessionMessage): QuickChatMessage {
+  const parsed = m.role === "user"
+    ? splitMessageAttachments(m.content)
+    : { content: m.content, attachments: [] };
   return {
     id: m.id,
     role: m.role === "user" ? "user" : "assistant",
-    content: m.content,
+    content: parsed.content,
     timestamp: new Date(m.created_at).getTime(),
+    attachments: parsed.attachments,
   };
 }
 
@@ -251,8 +259,9 @@ export function useQuickChat() {
         message: {
           id: randomId(),
           role: "user",
-          content: promptText,
+          content: trimmed,
           timestamp: Date.now(),
+          attachments: displayAttachments(attachments),
         },
       });
       const transport = await getTransport();

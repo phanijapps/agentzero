@@ -12,11 +12,12 @@
 
 ## Objective
 
-When intent analysis selects an existing ward for a new Research session, the
-session, root executor, delegated executors, file tools, artifacts, and
-session-state response must all use that same ward. A recommendation must no
-longer be rendered as an active workspace while execution silently falls back
-to `scratch`.
+When intent analysis selects an existing ward or names a new domain ward for a
+new Research session, work must use that named workspace rather than silently
+falling back to `scratch`. Existing wards are bound during bootstrap; a safe
+new-ward recommendation is retained as the root agent's mandatory first
+`ward(action="create")` call. That call persists the binding for subsequent
+delegation and procedure execution.
 
 ## Boundaries
 
@@ -44,6 +45,10 @@ to `scratch`.
   explicitly creates or enters its workspace; its durable execution log and
   prompt history remain the intent source rather than writing a speculative
   ward-scoped duplicate.
+- Preserve a safe, non-`scratch` `create_new` ward name in intent metadata and
+  the root prompt. The required explicit ward-tool call must precede any
+  `run_procedure` or delegation instruction in that prompt, so the root has
+  the correct workspace setup sequence.
 - Prove the binding and no-false-ward behavior with focused Rust tests.
 
 ### Ask first
@@ -103,6 +108,10 @@ to `scratch`.
   database schema, or dependency is added.
 - [x] Focused tests and stated mechanical checks pass without changing
   unrelated working-tree edits.
+- [x] Given a safe `create_new` Research recommendation, the exact named ward
+  reaches the root's mandatory create instruction; `scratch` is reserved for
+  the fast Quick Chat surface and the procedure recommendation follows the
+  ward setup instruction.
 
 ## Assumptions
 

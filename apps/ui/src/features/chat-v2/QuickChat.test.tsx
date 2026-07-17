@@ -119,6 +119,29 @@ describe("<QuickChat>", () => {
     expect(screen.getByText("recalled 1")).toBeTruthy();
   });
 
+  it("renders attached files as chips without their server paths", () => {
+    mockHookRef.current = {
+      ...makeIdleHook(),
+      state: {
+        ...makeIdleHook().state,
+        messages: [{
+          id: "u1",
+          role: "user",
+          content: "Analyze this transcript",
+          timestamp: 1,
+          attachments: [{
+            name: "interview.txt",
+            mimeType: "text/plain",
+            sizeLabel: "44.7 KB",
+          }],
+        }],
+      },
+    };
+    renderPage();
+    expect(screen.getByTestId("quick-chat-attachment")).toHaveTextContent("interview.txt");
+    expect(screen.queryByText(/Documents\/zbot\/temp/)).toBeNull();
+  });
+
   it("shows a Stop button while running and fires stopAgent on click", () => {
     const stopSpy = vi.fn();
     mockHookRef.current = {

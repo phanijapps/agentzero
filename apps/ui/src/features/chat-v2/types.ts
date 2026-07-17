@@ -7,11 +7,19 @@ export interface QuickChatInlineChip {
   detail?: string; // expanded tooltip / panel content
 }
 
+/** A persisted upload rendered without exposing its server-side path. */
+export interface QuickChatAttachment {
+  name: string;
+  mimeType: string;
+  sizeLabel: string;
+}
+
 export interface QuickChatMessage {
   id: string;
   role: QuickChatMessageRole;
   content: string;                       // markdown for assistant, plain for user
   timestamp: number;
+  attachments?: QuickChatAttachment[];   // user-only
   chips?: QuickChatInlineChip[];         // assistant-only
   streaming?: boolean;                   // true while Token events still arriving
 }

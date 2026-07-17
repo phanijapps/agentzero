@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use engram_belief::BeliefRepository;
-use engram_conformance::bootstrap_provider;
 use engram_domain::CapabilityState;
 use engram_hierarchy::HierarchyRepository;
 use engram_integration::EngramProvider as UpstreamEngramProvider;
@@ -21,11 +20,12 @@ use crate::{
         },
         SkosSchemeDefinition,
     },
+    semantic_services::{EngramSemanticService, EngramSemanticServices},
 };
 
 /// Engram provider facade plus AgentZero-specific capability gates.
 pub struct EngramProvider {
-    provider: UpstreamEngramProvider,
+    pub(crate) provider: UpstreamEngramProvider,
     capabilities: CapabilityReport,
     governance_bootstrap: Option<GovernanceBootstrapReport>,
     governance_definitions: Option<GovernanceDefinitions>,
@@ -45,10 +45,11 @@ impl EngramProvider {
 
         config.validate()?;
         let engram_config = config.to_engram_config()?;
-        let provider = bootstrap_provider(&engram_config).map_err(|_| AdapterError::Bootstrap {
-            component: "provider",
-            reason: "provider facade bootstrap failed".to_string(),
-        })?;
+        let provider =
+            UpstreamEngramProvider::open(&engram_config).map_err(|_| AdapterError::Bootstrap {
+                component: "provider",
+                reason: "provider facade bootstrap failed".to_string(),
+            })?;
         let (governance_definitions, governance_bootstrap) =
             bootstrap_governance_if_configured(&config, &provider)?;
         let capabilities = CapabilityReport::from_verified_features(
@@ -96,6 +97,18 @@ impl EngramProvider {
         if self.provider.migration().is_some() {
             components.push("migration");
         }
+        if self.provider.provenance().is_some() {
+            components.push("provenance");
+        }
+        if self.provider.batch().is_some() {
+            components.push("batch");
+        }
+        if self.provider.recall().is_some() {
+            components.push("engram_unified_recall");
+        }
+        if self.provider.observability().is_some() {
+            components.push("observability");
+        }
         components
     }
 
@@ -128,6 +141,54 @@ impl EngramProvider {
     /// Upstream Engram capability report.
     pub fn upstream_capabilities(&self) -> &engram_integration::CapabilityReport {
         self.provider.capabilities()
+    }
+
+    /// Returns adapter-private semantic services that are independently gated
+    /// by both an upstream capability state and a concrete provider handle.
+    #[allow(dead_code)] // Prepared here; separately approved callers adopt it later.
+    pub(crate) fn semantic_services(&self) -> EngramSemanticServices<'_> {
+        EngramSemanticServices::new(self)
+    }
+
+    #[allow(dead_code)] // Prepared here; separately approved callers adopt it later.
+    pub(crate) fn semantic_service_ready(&self, service: EngramSemanticService) -> bool {
+        match service {
+            EngramSemanticService::UnifiedRecall => semantic_handle_ready(
+                &self.provider.capabilities().unified_recall,
+                self.provider.recall().is_some(),
+            ),
+            EngramSemanticService::BatchIngest => semantic_handle_ready(
+                &self.provider.capabilities().atomic_batch,
+                self.provider.batch().is_some(),
+            ),
+            EngramSemanticService::Provenance => semantic_handle_ready(
+                &self.provider.capabilities().episodes_evidence,
+                self.provider.provenance().is_some(),
+            ),
+            EngramSemanticService::Migration => semantic_handle_ready(
+                &self.provider.capabilities().migration,
+                self.provider.migration().is_some(),
+            ),
+            EngramSemanticService::Observability => semantic_handle_ready(
+                &self.provider.capabilities().observability,
+                self.provider.observability().is_some(),
+            ),
+        }
+    }
+
+    #[allow(dead_code)] // Prepared here; separately approved callers adopt it later.
+    pub(crate) fn require_semantic_service(
+        &self,
+        service: EngramSemanticService,
+    ) -> AdapterResult<()> {
+        if self.semantic_service_ready(service) {
+            return Ok(());
+        }
+
+        Err(AdapterError::UnsupportedFeature {
+            feature: service.as_str(),
+            reason: "Engram capability or provider handle is unavailable".to_string(),
+        })
     }
 
     /// Require a feature before side effects are attempted.
@@ -264,6 +325,10 @@ fn supported(state: &CapabilityState) -> bool {
     state.is_supported()
 }
 
+fn semantic_handle_ready(state: &CapabilityState, handle_present: bool) -> bool {
+    state.is_supported() && handle_present
+}
+
 fn unsupported_upstream_handle(feature: &'static str) -> AdapterError {
     AdapterError::UnsupportedFeature {
         feature,
@@ -298,5 +363,17 @@ mod tests {
         assert!(features.contains(&AdapterFeature::Contradictions));
         assert!(!features.contains(&AdapterFeature::KnowledgeGraph));
         assert!(!features.contains(&AdapterFeature::Hierarchy));
+    }
+
+    #[test]
+    fn semantic_services_require_capability_and_handle() {
+        assert!(semantic_handle_ready(&CapabilityState::Supported, true));
+        assert!(!semantic_handle_ready(&CapabilityState::Supported, false));
+        assert!(!semantic_handle_ready(
+            &CapabilityState::Unsupported {
+                reason: CapabilityReason::ProviderUnavailable,
+            },
+            true,
+        ));
     }
 }

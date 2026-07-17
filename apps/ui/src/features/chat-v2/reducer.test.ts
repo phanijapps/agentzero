@@ -43,6 +43,39 @@ describe("reduceQuickChat", () => {
     expect(s.status).toBe("idle");
   });
 
+  it("AGENT_COMPLETED recovers a missed root turn_complete result and closes the turn", () => {
+    const s = reduceQuickChat(
+      { ...EMPTY_QUICK_CHAT_STATE, status: "running" },
+      { type: "AGENT_COMPLETED", result: "durable final answer" } as any,
+    );
+    expect(s).toMatchObject({ status: "idle" });
+    expect(s.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "durable final answer",
+      streaming: false,
+    });
+  });
+
+  it("keeps one final bubble when turn_complete and agent_completed carry the same response", () => {
+    let s = reduceQuickChat(
+      { ...EMPTY_QUICK_CHAT_STATE, status: "running" },
+      { type: "RESPOND", text: "The air quality is moderate." },
+    );
+    s = reduceQuickChat(s, { type: "TURN_COMPLETE" });
+    s = reduceQuickChat(s, {
+      type: "AGENT_COMPLETED",
+      result: "The air quality is moderate.",
+    });
+
+    expect(s.status).toBe("idle");
+    expect(s.messages).toHaveLength(1);
+    expect(s.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "The air quality is moderate.",
+      streaming: false,
+    });
+  });
+
   it("ADD_CHIP attaches chip to latest assistant message", () => {
     let s = reduceQuickChat(EMPTY_QUICK_CHAT_STATE, { type: "TOKEN", text: "foo" });
     s = reduceQuickChat(s, {

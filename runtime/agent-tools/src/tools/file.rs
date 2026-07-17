@@ -39,7 +39,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read contents of a file. Supports optional offset and limit for line-by-line reading. Relative paths fall back to the current ward when direct reads fail."
+        "Read UTF-8 or BOM-marked UTF-16 text file contents. Supports optional offset and limit for line-by-line reading. Relative paths fall back to the current ward when direct reads fail."
     }
 
     fn parameters_schema(&self) -> Option<Value> {
@@ -111,7 +111,7 @@ fn read_with_ward_fallback(
     ctx: &Arc<dyn ToolContext>,
     path: &str,
 ) -> Result<String> {
-    match std::fs::read_to_string(path) {
+    match read_text_file(path) {
         Ok(content) => Ok(content),
         Err(direct_err) => {
             if !can_try_ward_relative(path) {
@@ -134,7 +134,7 @@ fn read_with_ward_fallback(
 
             let ward_relative = path.trim_start_matches("./");
             let ward_path = ward_dir.join(ward_relative);
-            std::fs::read_to_string(&ward_path).map_err(|ward_err| {
+            read_text_file(&ward_path).map_err(|ward_err| {
                 agent_primitives::AgentError::Tool(format!(
                     "Failed to read file: {}; ward fallback {} failed: {}",
                     direct_err,
@@ -144,6 +144,48 @@ fn read_with_ward_fallback(
             })
         }
     }
+}
+
+/// Decode normal UTF-8 text and the BOM-marked UTF-16 files commonly
+/// produced by voice-transcription exports. Other binary or unknown-encoding
+/// files remain a clear read error rather than being lossy-decoded.
+fn read_text_file(path: impl AsRef<Path>) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    if let Ok(text) = String::from_utf8(bytes.clone()) {
+        return Ok(text);
+    }
+
+    let (encoding, body) = match bytes.as_slice() {
+        [0xFE, 0xFF, rest @ ..] => ("UTF-16BE", rest),
+        [0xFF, 0xFE, rest @ ..] => ("UTF-16LE", rest),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "file is neither valid UTF-8 nor BOM-marked UTF-16",
+            ));
+        }
+    };
+    if body.len() % 2 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{encoding} file has an odd number of data bytes"),
+        ));
+    }
+
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|pair| match encoding {
+            "UTF-16BE" => u16::from_be_bytes([pair[0], pair[1]]),
+            "UTF-16LE" => u16::from_le_bytes([pair[0], pair[1]]),
+            _ => unreachable!("encoding is selected above"),
+        })
+        .collect();
+    String::from_utf16(&units).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid {encoding} text: {error}"),
+        )
+    })
 }
 
 fn can_try_ward_relative(path: &str) -> bool {
@@ -319,5 +361,18 @@ mod tests {
             .expect("absolute path should read directly");
 
         assert_eq!(result["content"], "absolute content");
+    }
+
+    #[test]
+    fn reads_bom_marked_utf16be_text() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("transcript.txt");
+        std::fs::write(
+            &path,
+            [0xFE, 0xFF, 0x00, b'H', 0x00, b'i', 0x00, b'!', 0x00, b'\n'],
+        )
+        .expect("write UTF-16BE fixture");
+
+        assert_eq!(read_text_file(path).expect("decode UTF-16BE"), "Hi!\n");
     }
 }

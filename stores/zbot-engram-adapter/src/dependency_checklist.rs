@@ -121,7 +121,7 @@ impl DependencyChecklist {
                 DependencyChecklistItem::new(
                     "provider_facade",
                     DependencyItemStatus::Implemented,
-                    "adapter opens Engram through EngramConfig/bootstrap_provider",
+                    "adapter opens Engram through EngramConfig/EngramProvider::open",
                     true,
                 ),
                 DependencyChecklistItem::new(

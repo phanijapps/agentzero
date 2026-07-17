@@ -240,6 +240,28 @@ describe("useResearchSession — subscription ordering (R14a)", () => {
     expect(executeAgent.mock.calls[0][4]).toBe("deep");
   });
 
+  it("shows uploaded files as safe attachment data while sending their path to the agent", async () => {
+    const { result } = renderHook(() => useResearchSession(), {
+      wrapper: routerWrapper(TEST_INITIAL_PATH),
+    });
+
+    await act(async () => {
+      await result.current.sendMessage("Analyze this transcript", [{
+        id: "upload-1",
+        name: "interview.txt",
+        mimeType: "text/plain",
+        size: 44_700,
+        path: "/private/vault/interview.txt",
+      }]);
+    });
+
+    expect(result.current.state.turns[0].userMessage).toMatchObject({
+      content: "Analyze this transcript",
+      attachments: [{ name: "interview.txt", mimeType: "text/plain", sizeLabel: "43.7 KB" }],
+    });
+    expect(executeAgent.mock.calls[0][2]).toContain("/private/vault/interview.txt");
+  });
+
   it("second sendMessage on same session does NOT re-subscribe", async () => {
     const { result } = renderHook(() => useResearchSession(), {
       wrapper: routerWrapper(TEST_INITIAL_PATH),

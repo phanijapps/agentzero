@@ -10,6 +10,8 @@
 
 import { CopyButton } from "../shared/copyButton";
 import { Markdown } from "../shared/markdown";
+import { Paperclip } from "lucide-react";
+import type { MessageAttachment } from "../chat/attachments";
 
 export { CopyButton } from "../shared/copyButton";
 
@@ -29,13 +31,29 @@ export function AgentAvatar() {
 
 interface UserMessageProps {
   content: string;
+  attachments?: MessageAttachment[];
 }
 
-export function UserMessage({ content }: UserMessageProps) {
+export function UserMessage({ content, attachments }: UserMessageProps) {
   return (
     <div className="research-msg research-msg--user" data-copy-host="true">
       <div className="research-msg__bubble research-page__user-bubble">
-        {content}
+        <div>{content}</div>
+        {attachments && attachments.length > 0 && (
+          <div className="research-msg__attachments" aria-label="Attachments">
+            {attachments.map((attachment) => (
+              <span
+                className="research-msg__attachment"
+                data-testid="research-attachment"
+                key={`${attachment.name}-${attachment.sizeLabel}`}
+                title={`${attachment.mimeType} · ${attachment.sizeLabel}`}
+              >
+                <Paperclip size={12} aria-hidden="true" />
+                {attachment.name}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
       <CopyButton text={content} label="Copy question" />
     </div>

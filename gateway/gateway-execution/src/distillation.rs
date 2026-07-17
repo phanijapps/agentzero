@@ -116,6 +116,12 @@ struct ExtractedProcedure {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct ProcedureStep {
     action: String,
+    /// Concrete arguments for the tool invocation. Earlier distillation
+    /// dropped this field while deserializing, leaving learned procedures
+    /// with only natural-language task templates that `run_procedure` cannot
+    /// dispatch.
+    #[serde(default)]
+    args: serde_json::Map<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -2718,6 +2724,7 @@ mod tests {
                 description: "investigate the thing then summarise it".to_string(),
                 steps: vec![ProcedureStep {
                     action: "do_something".to_string(),
+                    args: serde_json::Map::new(),
                     agent: None,
                     task_template: None,
                     note: None,
@@ -2744,6 +2751,11 @@ mod tests {
             assert_eq!(upserts.len(), 1, "exactly one upsert expected");
             let (value, embedding) = &upserts[0];
             assert_eq!(value["name"].as_str(), Some("expected_name"));
+            let serialized_steps = value["steps"]
+                .as_str()
+                .expect("procedure steps should be persisted as JSON text");
+            let stored_steps: serde_json::Value = serde_json::from_str(serialized_steps).unwrap();
+            assert!(stored_steps[0]["args"].is_object());
             assert!(
                 embedding.is_some(),
                 "procedure was upserted without embedding"

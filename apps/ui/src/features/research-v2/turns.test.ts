@@ -119,6 +119,21 @@ describe("findTurnBoundaries", () => {
     const boundaries = findTurnBoundaries(msgs, null);
     expect(boundaries.map((b) => b.userMessage.id)).toEqual(["u1", "u2"]);
   });
+
+  it("turns persisted attachment metadata into safe display data", () => {
+    const [boundary] = findTurnBoundaries([
+      userMsg(
+        "u1",
+        "2026-05-03T13:05:34Z",
+        "Analyze this\n\n**Attached files:**\n| File | Type | Size | Path |\n|------|------|------|------|\n| interview.txt | text/plain | 44.7 KB | /private/transcript.txt |",
+      ),
+    ], null);
+
+    expect(boundary.userMessage.content).toBe("Analyze this");
+    expect(boundary.userMessage.attachments).toEqual([
+      { name: "interview.txt", mimeType: "text/plain", sizeLabel: "44.7 KB" },
+    ]);
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -211,6 +226,19 @@ describe("extractAssistantReplyForTurn", () => {
       asstMsg("a2", "2026-05-03T13:12:50Z", "plain text reply"),
     ];
     expect(extractAssistantReplyForTurn(win)).toBe("plain text reply");
+  });
+
+  it("uses a later respond() result over earlier progress text", () => {
+    const win = [
+      asstMsg("a1", "2026-05-03T13:06:00Z", "I'll research that now."),
+      asstMsg(
+        "a2",
+        "2026-05-03T13:12:50Z",
+        "[tool calls]",
+        JSON.stringify([{ tool_name: "respond", args: { message: "final report" } }]),
+      ),
+    ];
+    expect(extractAssistantReplyForTurn(win)).toBe("final report");
   });
 
   it("returns null on an empty window", () => {

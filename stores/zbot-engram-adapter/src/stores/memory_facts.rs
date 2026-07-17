@@ -2152,7 +2152,13 @@ fn rank_hybrid_entries(
 }
 
 fn normalize_rrf_score(score: f64) -> f64 {
-    (score * RRF_K).min(1.0)
+    // RRF scores are small (roughly 1 / (k + rank)). Multiplying by `k`
+    // then clamping made every hit present in both sparse and semantic lists
+    // exactly 1.0, destroying the ranking before unified recall could use it.
+    // This monotonic transform keeps the adapter's [0, 1) score contract
+    // without collapsing distinct fused scores.
+    let scaled = (score * RRF_K).max(0.0);
+    scaled / (1.0 + scaled)
 }
 
 fn embedding_compatible(
@@ -2415,6 +2421,18 @@ fn storage_error(error: rusqlite::Error) -> AdapterError {
 mod tests {
     use super::*;
     use crate::error::AdapterErrorKind;
+
+    #[test]
+    fn hybrid_rrf_normalization_preserves_distinct_scores() {
+        let top = normalize_rrf_score((1.0 / 61.0) + (1.0 / 61.0));
+        let next = normalize_rrf_score((1.0 / 62.0) + (1.0 / 62.0));
+
+        assert!(
+            top > next,
+            "hybrid normalization must preserve distinct RRF relevance"
+        );
+        assert!(top <= 1.0 && next >= 0.0);
+    }
 
     #[test]
     fn provider_mode_error_keeps_stable_kind() {

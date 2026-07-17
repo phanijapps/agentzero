@@ -432,6 +432,131 @@ impl<D: StateDbProvider> StateRepository<D> {
         })
     }
 
+    /// Mark a session's remaining actionable plan steps as completed after a
+    /// trusted terminal execution. This is deliberately separate from
+    /// `save_session_plan`: it never accepts model-owned JSON and preserves
+    /// failed steps as an honest record of the run.
+    pub fn complete_session_plan(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+    ) -> Result<Option<SessionPlanSnapshot>, String> {
+        let source_event_timestamp = u64::try_from(chrono::Utc::now().timestamp_millis())
+            .map_err(|_| "system clock predates the Unix epoch".to_owned())?;
+        let source_event_timestamp_i64 = i64::try_from(source_event_timestamp)
+            .map_err(|_| "source event timestamp exceeds SQLite integer range".to_owned())?;
+
+        self.db.with_connection(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let execution_belongs_to_session: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM agent_executions
+                    WHERE id = ?1 AND session_id = ?2
+                )",
+                params![execution_id, session_id],
+                |row| row.get::<_, i64>(0).map(|count| count != 0),
+            )?;
+            if !execution_belongs_to_session {
+                tx.rollback()?;
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+
+            // A new user message can reactivate a session while the preceding
+            // turn is unwinding. Never let that prior terminal transition
+            // overwrite the active session's newer plan.
+            let session_is_completed: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sessions
+                    WHERE id = ?1 AND status = 'completed'
+                )",
+                params![session_id],
+                |row| row.get::<_, i64>(0).map(|count| count != 0),
+            )?;
+            if !session_is_completed {
+                tx.rollback()?;
+                return Ok(None);
+            }
+
+            let snapshot = tx
+                .query_row(
+                    "SELECT execution_id, plan_json, explanation, source_event_timestamp,
+                            source_event_sequence, updated_at
+                     FROM session_plans
+                     WHERE session_id = ?1",
+                    params![session_id],
+                    Self::row_to_session_plan,
+                )
+                .optional()?;
+            let Some(mut snapshot) = snapshot else {
+                tx.commit()?;
+                return Ok(None);
+            };
+
+            let mut changed = false;
+            for step in &mut snapshot.plan {
+                if matches!(
+                    step.status,
+                    SessionPlanStepStatus::Pending | SessionPlanStepStatus::InProgress
+                ) {
+                    step.status = SessionPlanStepStatus::Completed;
+                    changed = true;
+                }
+            }
+            if !changed {
+                tx.commit()?;
+                return Ok(None);
+            }
+
+            tx.execute(
+                "INSERT INTO session_plan_counters (session_id, last_issued_sequence)
+                 VALUES (?1, 0)
+                 ON CONFLICT(session_id) DO NOTHING",
+                params![session_id],
+            )?;
+            tx.execute(
+                "UPDATE session_plan_counters
+                 SET last_issued_sequence = last_issued_sequence + 1
+                 WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            let sequence: i64 = tx.query_row(
+                "SELECT last_issued_sequence
+                 FROM session_plan_counters
+                 WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            let updated_at = chrono::Utc::now().to_rfc3339();
+            let plan_json = serde_json::to_string(&snapshot.plan)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            tx.execute(
+                "UPDATE session_plans
+                 SET execution_id = ?2,
+                     plan_json = ?3,
+                     source_event_timestamp = ?4,
+                     source_event_sequence = ?5,
+                     updated_at = ?6
+                 WHERE session_id = ?1",
+                params![
+                    session_id,
+                    execution_id,
+                    plan_json,
+                    source_event_timestamp_i64,
+                    sequence,
+                    updated_at,
+                ],
+            )?;
+            tx.commit()?;
+
+            snapshot.execution_id = execution_id.to_owned();
+            snapshot.updated_at = updated_at;
+            snapshot.source_event_timestamp = source_event_timestamp;
+            snapshot.source_event_sequence =
+                u64::try_from(sequence).expect("sequence is non-negative and starts at one");
+            Ok(Some(snapshot))
+        })
+    }
+
     /// Return the current plan for one session, if one has been accepted.
     fn get_session_plan(&self, session_id: &str) -> Result<Option<SessionPlanSnapshot>, String> {
         self.db.with_connection(|conn| {
@@ -2042,6 +2167,83 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(detail.current_plan, Some(plan));
+    }
+
+    #[test]
+    fn terminal_completion_marks_actionable_steps_complete_and_keeps_failures() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        repo.create_execution(&root).unwrap();
+        repo.save_session_plan(
+            &session.id,
+            &root.id,
+            serde_json::json!([
+                {"step": "Gather evidence", "status": "completed"},
+                {"step": "Analyze evidence", "status": "in_progress"},
+                {"step": "Write conclusion", "status": "pending"},
+                {"step": "Unavailable source", "status": "failed"}
+            ]),
+            Some("Preserve this explanation".to_owned()),
+            100,
+        )
+        .unwrap();
+
+        // The method is lifecycle-only: an active session must retain the
+        // model's current progress rather than being force-completed.
+        assert!(repo
+            .complete_session_plan(&session.id, &root.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repo.get_mission_control_session_tokens(&session.id)
+                .unwrap()
+                .unwrap()
+                .current_plan
+                .expect("active plan")
+                .plan[1]
+                .status,
+            SessionPlanStepStatus::InProgress
+        );
+        repo.update_execution_status(&root.id, ExecutionStatus::Completed)
+            .unwrap();
+        repo.update_session_status(&session.id, SessionStatus::Completed)
+            .unwrap();
+
+        let completed = repo
+            .complete_session_plan(&session.id, &root.id)
+            .unwrap()
+            .expect("actionable steps should change");
+        assert_eq!(
+            completed
+                .plan
+                .iter()
+                .map(|step| step.status)
+                .collect::<Vec<_>>(),
+            vec![
+                SessionPlanStepStatus::Completed,
+                SessionPlanStepStatus::Completed,
+                SessionPlanStepStatus::Completed,
+                SessionPlanStepStatus::Failed,
+            ]
+        );
+        assert_eq!(
+            completed.explanation.as_deref(),
+            Some("Preserve this explanation")
+        );
+        assert_eq!(completed.source_event_sequence, 2);
+        assert_eq!(
+            repo.get_mission_control_session_tokens(&session.id)
+                .unwrap()
+                .unwrap()
+                .current_plan,
+            Some(completed)
+        );
+        assert!(repo
+            .complete_session_plan(&session.id, &root.id)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

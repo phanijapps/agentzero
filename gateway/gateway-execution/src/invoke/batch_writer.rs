@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use zbot_conversation::MessageStore;
 use zbot_runtime_sqlite::DatabaseManager;
 use zbot_trace::TraceWriter;
@@ -54,6 +54,13 @@ pub enum BatchWrite {
 
     /// Finalize a session's trace writer (called on session end).
     CloseSessionTrace { session_id: String },
+
+    /// Persist every queued write before acknowledging the caller. This is a
+    /// lifecycle barrier used immediately before terminal events so a client
+    /// snapshot cannot race the final assistant message.
+    Flush {
+        acknowledgement: oneshot::Sender<()>,
+    },
 }
 
 /// Handle for sending writes to the batch writer.
@@ -123,6 +130,21 @@ impl BatchWriterHandle {
         self.send(BatchWrite::CloseSessionTrace {
             session_id: session_id.to_string(),
         });
+    }
+
+    /// Wait until every write queued before this call has been persisted.
+    ///
+    /// The acknowledgement travels through the same FIFO channel as writes,
+    /// so it cannot overtake the terminal assistant message.
+    pub async fn flush(&self) {
+        let (acknowledgement, received) = oneshot::channel();
+        if self.tx.send(BatchWrite::Flush { acknowledgement }).is_err() {
+            tracing::warn!("BatchWriter channel closed, terminal flush skipped");
+            return;
+        }
+        if received.await.is_err() {
+            tracing::warn!("BatchWriter stopped before terminal flush completed");
+        }
     }
 }
 
@@ -248,6 +270,10 @@ async fn batch_writer_loop(
                         // Dropping the writer finalizes the file; events are
                         // durable (gzip member-per-event).
                         trace_writers.remove(&session_id);
+                    }
+                    Some(BatchWrite::Flush { acknowledgement }) => {
+                        flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                        let _ = acknowledgement.send(());
                     }
                     None => {
                         // Channel closed — flush remaining and exit
@@ -423,6 +449,27 @@ mod tests {
                 std::mem::discriminant(&other)
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn flush_makes_a_queued_session_message_immediately_replayable() {
+        let h = setup();
+        let writer = spawn_batch_writer(h.state.clone(), h.logs.clone(), h.messages.clone());
+
+        writer.session_message(
+            &h.session_id,
+            &h.execution_id,
+            "assistant",
+            "terminal response",
+            None,
+            None,
+        );
+        writer.flush().await;
+
+        let messages = h.messages.replay(&h.session_id, None, 100).expect("replay");
+        assert!(messages
+            .iter()
+            .any(|message| message.content == "terminal response"));
     }
 
     // ------------------------------------------------------------------

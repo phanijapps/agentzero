@@ -133,7 +133,11 @@ mod interp {
         } else if head == "args" {
             top_args.clone()
         } else {
-            return None;
+            // Procedures persisted before the explicit `{args.name}` syntax
+            // used bare `{name}` tokens. Treat those as top-level parameters
+            // so a legacy path is never handed literally to a file tool, which
+            // would otherwise resolve it below the scratch workspace.
+            top_args.get(head)?.clone()
         };
 
         walk(&root, &rest)
@@ -161,6 +165,15 @@ impl RunProcedureTool {
             procedure_store,
         }
     }
+}
+
+fn required_parameters(
+    proc: &zbot_stores_traits::Procedure,
+) -> std::result::Result<Vec<String>, String> {
+    let Some(raw) = proc.parameters.as_deref() else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str(raw).map_err(|error| format!("procedure parameters unparseable: {error}"))
 }
 
 #[async_trait]
@@ -213,19 +226,44 @@ impl Tool for RunProcedureTool {
             .map_err(|e| AgentError::Tool(format!("procedure lookup failed: {e}")))?
             .ok_or_else(|| AgentError::Tool(format!("procedure '{name}' not found")))?;
 
+        let top_args = args
+            .get("args")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
+        let declared = required_parameters(&proc).map_err(AgentError::Tool)?;
+        let missing: Vec<_> = declared
+            .iter()
+            .filter(|name| top_args.get(name.as_str()).is_none())
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            if let Err(error) = self.procedure_store.increment_failure(&proc.id).await {
+                tracing::warn!(error = %error, "increment_failure failed");
+            }
+            return Err(AgentError::Tool(format!(
+                "run_procedure '{}' requires args: {}",
+                proc.name,
+                missing.join(", ")
+            )));
+        }
+
         let steps: Vec<PatternStep> = serde_json::from_str(&proc.steps)
             .map_err(|e| AgentError::Tool(format!("procedure steps unparseable: {e}")))?;
 
         let mut step_results: Vec<Value> = Vec::with_capacity(steps.len());
         let started = std::time::Instant::now();
-
-        let top_args = args
-            .get("args")
-            .cloned()
-            .unwrap_or(Value::Object(Default::default()));
         let binds_per_step: Vec<Vec<String>> = steps.iter().map(|s| s.binds.clone()).collect();
 
         for (i, step) in steps.iter().enumerate() {
+            if step.args.is_empty() && step.task_template.is_some() {
+                if let Err(error) = self.procedure_store.increment_failure(&proc.id).await {
+                    tracing::warn!(error = %error, "increment_failure failed");
+                }
+                return Err(AgentError::Tool(format!(
+                    "run_procedure '{}' step {i} is a legacy task template, not executable tool args",
+                    proc.name
+                )));
+            }
             let inner_tool = match self.registry.find(&step.action) {
                 Some(t) => t,
                 None => {
@@ -612,6 +650,69 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["final"]["got"], "test_belief");
+    }
+
+    #[tokio::test]
+    async fn interpolation_resolves_legacy_bare_top_level_args() {
+        struct EchoTool;
+        #[async_trait]
+        impl Tool for EchoTool {
+            fn name(&self) -> &'static str {
+                "echo"
+            }
+            fn description(&self) -> &'static str {
+                "echo"
+            }
+            async fn execute(&self, _ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+                Ok(args)
+            }
+        }
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(EchoTool));
+        let steps_json = serde_json::to_string(&vec![
+            json!({"action": "echo", "args": {"path": "{transcript_path}"}, "binds": []}),
+        ])
+        .unwrap();
+        let store = Arc::new(InMemoryProcedureStore::with_one(test_procedure(
+            "p_legacy_args",
+            "legacy_args",
+            &steps_json,
+        )));
+        let tool = RunProcedureTool::new(Arc::new(registry), store);
+
+        let out = tool
+            .execute(
+                test_ctx(),
+                json!({"name": "legacy_args", "args": {"transcript_path": "/tmp/transcript.txt"}}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["final"]["path"], "/tmp/transcript.txt");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_procedure_when_a_declared_argument_is_missing() {
+        let mut procedure = test_procedure(
+            "p_missing_arg",
+            "needs_transcript",
+            r#"[{"action":"echo","args":{"path":"{transcript_path}"},"binds":[]}]"#,
+        );
+        procedure.parameters = Some(r#"["transcript_path", "job_description_path"]"#.to_string());
+        let store = Arc::new(InMemoryProcedureStore::with_one(procedure));
+        let tool = RunProcedureTool::new(Arc::new(ToolRegistry::new()), store.clone());
+
+        let error = tool
+            .execute(
+                test_ctx(),
+                json!({"name": "needs_transcript", "args": {"transcript_path": "/tmp/t.txt"}}),
+            )
+            .await
+            .expect_err("missing declared procedure args must not become a scratch path");
+
+        assert!(error.to_string().contains("job_description_path"));
+        assert!(store.failure_was_incremented("p_missing_arg").await);
     }
 
     #[tokio::test]

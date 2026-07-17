@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from "react";
-import { Square, Trash2 } from "lucide-react";
+import { Paperclip, Square, Trash2 } from "lucide-react";
 import { Markdown } from "../shared/markdown";
 import { ChatInput } from "../chat/ChatInput";
 import { StatusPill } from "../shared/statusPill";
@@ -34,7 +34,26 @@ function MessageRow({ message }: { message: QuickChatMessage }) {
       data-copy-host="true"
     >
       {message.role === "user"
-        ? <div className="quick-chat__user-bubble">{message.content}</div>
+        ? (
+          <div className="quick-chat__user-bubble">
+            <div>{message.content}</div>
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="quick-chat__attachments" aria-label="Attachments">
+                {message.attachments.map((attachment) => (
+                  <span
+                    className="quick-chat__attachment"
+                    data-testid="quick-chat-attachment"
+                    key={`${attachment.name}-${attachment.sizeLabel}`}
+                    title={`${attachment.mimeType} · ${attachment.sizeLabel}`}
+                  >
+                    <Paperclip size={12} aria-hidden="true" />
+                    {attachment.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
         : <AssistantBubble message={message} />}
       <CopyButton text={message.content} label={label} />
     </div>

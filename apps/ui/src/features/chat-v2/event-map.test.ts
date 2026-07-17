@@ -69,6 +69,25 @@ describe("mapGatewayEventToQuickChatAction", () => {
       .toEqual({ type: "TURN_COMPLETE" });
   });
 
+  it("maps the root agent_completed result as the terminal response fallback", () => {
+    expect(mapGatewayEventToQuickChatAction({
+      type: "agent_completed",
+      agent_id: "root",
+      result: "durable final answer",
+    } as any)).toEqual({
+      type: "AGENT_COMPLETED",
+      result: "durable final answer",
+    });
+  });
+
+  it("does not apply a delegated child completion to the root chat bubble", () => {
+    expect(mapGatewayEventToQuickChatAction({
+      type: "agent_completed",
+      agent_id: "ward:financial-analysis",
+      result: "child result",
+    } as any)).toBeNull();
+  });
+
   it("maps error with message to ERROR", () => {
     expect(mapGatewayEventToQuickChatAction({ type: "error", message: "network down" } as any))
       .toEqual({ type: "ERROR", message: "network down" });

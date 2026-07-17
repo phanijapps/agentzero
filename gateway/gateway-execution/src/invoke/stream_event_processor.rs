@@ -188,6 +188,15 @@ fn build_plan_surface(surface_id: String, snapshot: &SessionPlanSnapshot) -> Wor
     }
 }
 
+/// Build the stable session plan surface outside stream-event handling.
+/// Lifecycle completion uses this after reconciling a terminal plan state.
+pub(crate) fn build_session_plan_surface(
+    session_id: &str,
+    snapshot: &SessionPlanSnapshot,
+) -> WorkSurface {
+    build_plan_surface(plan_surface_id(session_id), snapshot)
+}
+
 fn plan_surface_id(session_id: &str) -> String {
     format!("plan-{session_id}")
 }

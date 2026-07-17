@@ -191,6 +191,22 @@ describe("reduceResearch", () => {
     expect(s.turns[0].assistantStreaming).toBe("");
   });
 
+  it("deduplicates repeated root RESPOND delivery", () => {
+    const afterFirst = reduceResearch(withRootTurn(), {
+      type: "RESPOND",
+      turnId: ROOT_EXEC,
+      text: "final",
+    });
+    const afterDuplicate = reduceResearch(afterFirst, {
+      type: "RESPOND",
+      turnId: ROOT_EXEC,
+      text: "final",
+    });
+
+    expect(afterDuplicate).toBe(afterFirst);
+    expect(afterDuplicate.turns).toHaveLength(1);
+  });
+
   it("RESPOND on a subagent sets the subagent's respond and clears its streaming buffer", () => {
     let s = withRootTurn();
     s = withSubagent(s, { turnId: SUB_EXEC });
@@ -207,6 +223,58 @@ describe("reduceResearch", () => {
     s = reduceResearch(s, { type: "AGENT_COMPLETED", turnId: ROOT_EXEC, completedAt: 10 });
     expect(s.turns[0].status).toBe("completed");
     expect(s.turns[0].endedAt).not.toBeNull();
+  });
+
+  it("AGENT_COMPLETED recovers the final root response when turn_complete was missed", () => {
+    let s = withRootTurn();
+    s = reduceResearch(s, {
+      type: "AGENT_COMPLETED",
+      turnId: ROOT_EXEC,
+      completedAt: 10,
+      result: "durable terminal response",
+    });
+    expect(s.turns[0]).toMatchObject({
+      status: "completed",
+      assistantText: "durable terminal response",
+    });
+  });
+
+  it("deduplicates repeated root terminal delivery after the final answer is rendered", () => {
+    let state = withRootTurn();
+    state = reduceResearch(state, { type: "RESPOND", turnId: ROOT_EXEC, text: "final" });
+    state = reduceResearch(state, {
+      type: "AGENT_COMPLETED",
+      turnId: ROOT_EXEC,
+      completedAt: 10,
+      result: "final",
+    });
+
+    const afterFirstCompletion = state;
+    const afterDuplicateCompletion = reduceResearch(state, {
+      type: "AGENT_COMPLETED",
+      turnId: ROOT_EXEC,
+      completedAt: 11,
+      result: "final",
+    });
+
+    expect(afterDuplicateCompletion).toBe(afterFirstCompletion);
+    expect(afterDuplicateCompletion.turns).toHaveLength(1);
+    expect(afterDuplicateCompletion.turns[0].assistantText).toBe("final");
+  });
+
+  it("AGENT_COMPLETED recovers the final subagent response when turn_complete was missed", () => {
+    let s = withRootTurn();
+    s = withSubagent(s, { turnId: SUB_EXEC });
+    s = reduceResearch(s, {
+      type: "AGENT_COMPLETED",
+      turnId: SUB_EXEC,
+      completedAt: 10,
+      result: "durable delegated response",
+    });
+    expect(s.turns[0].subagents[0]).toMatchObject({
+      status: "completed",
+      respond: "durable delegated response",
+    });
   });
 
   it("AGENT_COMPLETED on an empty root SessionTurn infers an error (silent crash)", () => {

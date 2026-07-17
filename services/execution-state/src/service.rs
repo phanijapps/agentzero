@@ -175,6 +175,17 @@ impl<D: StateDbProvider> StateService<D> {
         )
     }
 
+    /// Reconcile the persisted current plan after a trusted terminal
+    /// execution. Remaining pending and in-progress steps become completed;
+    /// failed steps are retained.
+    pub fn complete_session_plan(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+    ) -> Result<Option<SessionPlanSnapshot>, String> {
+        self.repo.complete_session_plan(session_id, execution_id)
+    }
+
     /// Find a session by its thread_id.
     ///
     /// Returns the session if found, regardless of its status.

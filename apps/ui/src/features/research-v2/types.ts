@@ -8,6 +8,8 @@
 // vs snake_case on the wire; mapping happens in event-map.ts.
 // =============================================================================
 
+import type { MessageAttachment } from "../chat/attachments";
+
 export type AgentTurnStatus = "running" | "completed" | "stopped" | "error";
 
 /** One entry in the chronological Thinking timeline inside an agent turn. */
@@ -70,6 +72,7 @@ export interface ResearchMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+  attachments?: MessageAttachment[];
 }
 
 export type ResearchStatus = "idle" | "running" | "complete" | "stopped" | "error";
@@ -89,7 +92,12 @@ export interface SessionTurn {
   /** 0..N-1 chronological. */
   index: number;
   /** The user message that opens this turn. */
-  userMessage: { id: string; content: string; createdAt: string };
+  userMessage: {
+    id: string;
+    content: string;
+    createdAt: string;
+    attachments?: MessageAttachment[];
+  };
   /** Subagents whose started_at falls in [startedAt, endedAt). */
   subagents: AgentTurn[];
   /** Final assistant text reply. Null while in flight. */

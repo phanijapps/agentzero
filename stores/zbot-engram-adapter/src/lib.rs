@@ -15,6 +15,7 @@ pub mod mapping;
 pub mod migration;
 pub mod recall;
 pub mod scope;
+mod semantic_services;
 pub mod stores;
 
 pub use bootstrap::EngramProvider;

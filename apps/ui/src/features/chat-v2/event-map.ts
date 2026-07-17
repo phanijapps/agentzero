@@ -23,6 +23,20 @@ function mapRespondEvent(ev: Record<string, unknown>): QuickChatAction | null {
   return { type: "RESPOND", text };
 }
 
+function mapRootAgentCompletedEvent(ev: Record<string, unknown>): QuickChatAction | null {
+  // Quick Chat always invokes the root agent. Child completion events must not
+  // replace the root bubble, but root AgentCompleted is a durable fallback if
+  // the preceding turn_complete websocket frame was missed.
+  if (ev["agent_id"] !== "root") return null;
+  const result = ev["result"];
+  return {
+    type: "AGENT_COMPLETED",
+    ...(typeof result === "string" && result.trim().length > 0
+      ? { result: result.trim() }
+      : {}),
+  };
+}
+
 /**
  * Extract the assistant's final answer from a `turn_complete` event.
  *
@@ -116,6 +130,7 @@ export function mapGatewayEventToQuickChatAction(ev: ConversationEvent): QuickCh
     case "invoke_accepted":
     case "session_initialized": return mapSessionInitializedEvent(raw);
     case "agent_started":       return { type: "AGENT_STARTED", agentId: (raw["agent_id"] ?? "") as string };
+    case "agent_completed":     return mapRootAgentCompletedEvent(raw);
     case "turn_complete":       return { type: "TURN_COMPLETE" };
     case "tool_call":           return mapToolCallEvent(raw);
     case "error":               return { type: "ERROR", message: (raw["message"] ?? "error") as string };

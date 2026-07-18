@@ -364,58 +364,15 @@ pub fn format_intent_injection(
 
     // Execution approach
     if es.approach == ExecutionApproach::Graph {
-        // Build a rich delegation task so planner sees the original request,
-        // intent, ward context, hidden requirements, and available resources
-        // — not just the bare goal.
-        let mut planner_task = String::new();
-        planner_task.push_str("Plan this goal.\\n\\n");
-        if let Some(msg) = original_message {
-            planner_task.push_str(&format!("Original request: {}\\n", msg));
-        }
-        planner_task.push_str(&format!("Intent: {}\\n", analysis.primary_intent));
-        planner_task.push_str(&format!(
-            "Ward: {} ({}) — {}",
-            wr.ward_name, wr.action, wr.reason
-        ));
-        if let Some(ref sub) = wr.subdirectory {
-            planner_task.push_str(&format!("; subdirectory: {}", sub));
-        }
-        planner_task.push_str(".\\n");
-        if !analysis.hidden_intents.is_empty() {
-            planner_task.push_str("Hidden requirements:\\n");
-            for h in &analysis.hidden_intents {
-                planner_task.push_str(&format!("- {}\\n", h));
-            }
-        }
-        if !analysis.recommended_skills.is_empty() {
-            planner_task.push_str(&format!(
-                "Recommended skills: {}.\\n",
-                analysis.recommended_skills.join(", ")
-            ));
-        }
-        if !analysis.recommended_agents.is_empty() {
-            let specialists: Vec<String> = analysis
-                .recommended_agents
-                .iter()
-                .filter(|a| a.as_str() != "planner-agent")
-                .cloned()
-                .collect();
-            if !specialists.is_empty() {
-                planner_task.push_str(&format!(
-                    "Recommended specialist agents: {}.\\n",
-                    specialists.join(", ")
-                ));
-            }
-        }
+        let planner_task = format_planner_task(analysis, original_message);
 
         out.push_str(&format!(
             "\n**Approach:** Complex task requiring multi-step execution.\n\
-             \n**First step:** Delegate to `planner-agent` with the full intent context:\n\
-             ```\n\
-             delegate_to_agent(agent_id=\"planner-agent\", task=\"{}\")\n\
-             ```\n\
+             \n**First step:** Establish the required workspace. The system then starts `planner-agent` with the full intent context.\n\
+             Do NOT delegate to a worker, planner, or ward-agent manually and do NOT create a root checklist before that transition.\n\
              The planner will read the ward, check existing code and specs, and return a structured execution plan.\n\
-             Then execute each step from the plan by delegating to the assigned agent.\n",
+             Then execute each step from the plan by delegating to the assigned agent.\n\
+             \nPlanner context:\n{}\n",
             planner_task
         ));
     } else if !es.explanation.is_empty() {
@@ -435,6 +392,54 @@ pub fn format_intent_injection(
     }
 
     out
+}
+
+/// Build the planner's stable task context from structured intent output.
+///
+/// The root prompt renders this for transparency while bootstrap stores the
+/// same content in the cold-graph planning gate. WardTool appends the actual
+/// active ward when it consumes that gate, so a provisional recommendation can
+/// never override the root's successful workspace choice.
+#[must_use]
+pub fn format_planner_task(analysis: &IntentAnalysis, original_message: Option<&str>) -> String {
+    let wr = &analysis.ward_recommendation;
+    let mut planner_task = String::from("Plan this goal.\\n\\n");
+    if let Some(msg) = original_message {
+        planner_task.push_str(&format!("Original request: {}\\n", msg));
+    }
+    planner_task.push_str(&format!("Intent: {}\\n", analysis.primary_intent));
+    planner_task.push_str(&format!(
+        "Ward recommendation: {} ({}) — {}",
+        wr.ward_name, wr.action, wr.reason
+    ));
+    if let Some(sub) = &wr.subdirectory {
+        planner_task.push_str(&format!("; subdirectory: {}", sub));
+    }
+    planner_task.push_str(".\\n");
+    if !analysis.hidden_intents.is_empty() {
+        planner_task.push_str("Hidden requirements:\\n");
+        for requirement in &analysis.hidden_intents {
+            planner_task.push_str(&format!("- {}\\n", requirement));
+        }
+    }
+    if !analysis.recommended_skills.is_empty() {
+        planner_task.push_str(&format!(
+            "Recommended skills: {}.\\n",
+            analysis.recommended_skills.join(", ")
+        ));
+    }
+    let specialists: Vec<&str> = analysis
+        .recommended_agents
+        .iter()
+        .filter_map(|agent| (agent.as_str() != "planner-agent").then_some(agent.as_str()))
+        .collect();
+    if !specialists.is_empty() {
+        planner_task.push_str(&format!(
+            "Recommended specialist agents: {}.\\n",
+            specialists.join(", ")
+        ));
+    }
+    planner_task
 }
 
 // ---------------------------------------------------------------------------

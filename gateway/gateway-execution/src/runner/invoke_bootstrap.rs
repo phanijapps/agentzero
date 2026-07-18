@@ -35,7 +35,8 @@ use crate::invoke::{
 };
 use crate::lifecycle::{emit_agent_started, get_or_create_session, start_execution};
 use crate::middleware::intent_analysis::{
-    analyze_intent, format_intent_injection, index_resources, WardAction, WardRecommendation,
+    analyze_intent, format_intent_injection, format_planner_task, index_resources,
+    ExecutionApproach, IntentAnalysis, WardAction, WardRecommendation,
 };
 use crate::session_title::{SessionTitleInputs, SessionTitleService};
 
@@ -154,6 +155,9 @@ struct IntentOutcome {
     /// A ward accepted by the filesystem validation and graduation gate. This
     /// is the only intent-derived ward identifier allowed into runtime state.
     existing_ward_id: Option<String>,
+    /// Present only for a cold graph request. Bootstrap installs this in root
+    /// tool context so ward entry can deterministically trigger planner-agent.
+    planning_task: Option<String>,
     /// Sanitized intent data, held until the active ward is known. Delaying
     /// the write prevents a model-suggested path from becoming fact scope.
     intent_snapshot: serde_json::Value,
@@ -162,6 +166,17 @@ struct IntentOutcome {
 // ============================================================================
 // FREE FUNCTIONS
 // ============================================================================
+
+/// A graph request is cold when bootstrap did not bind a graduated ward-agent.
+/// Cold work must enter its ward before WardTool launches planner-agent.
+fn cold_graph_planning_task(
+    analysis: &IntentAnalysis,
+    existing_ward_id: Option<&str>,
+    original_message: &str,
+) -> Option<String> {
+    (analysis.execution_strategy.approach == ExecutionApproach::Graph && existing_ward_id.is_none())
+        .then(|| format_planner_task(analysis, Some(original_message)))
+}
 
 /// Return an existing ward identifier only when it names exactly one real,
 /// non-symlinked child of the real wards root.
@@ -1090,6 +1105,17 @@ impl InvokeBootstrap {
             }
 
             recommended_skills = out.recommended_skills;
+            if is_root {
+                if let Some(task) = out.planning_task.as_deref() {
+                    builder = builder.with_initial_state(
+                        agent_tools::guards::PLANNING_GATE_STATE,
+                        serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                            task,
+                        ))
+                        .expect("planning gate is serializable"),
+                    );
+                }
+            }
             agent_for_build
                 .instructions
                 .push_str(&out.instructions_injection);
@@ -1476,6 +1502,11 @@ impl InvokeBootstrap {
             }
         };
 
+        // A graduated existing ward follows the warm ward-agent path. Every
+        // other graph request is cold: its root must establish a ward and the
+        // runtime gate will launch planner-agent from that transition.
+        let planning_task = cold_graph_planning_task(&analysis, existing_ward_id.as_deref(), msg);
+
         Some(IntentOutcome {
             recommended_skills: analysis.recommended_skills.clone(),
             title_hint: analysis.primary_intent.clone(),
@@ -1485,6 +1516,7 @@ impl InvokeBootstrap {
                 Some(msg),
             ),
             existing_ward_id,
+            planning_task,
             intent_snapshot: intent_json,
         })
     }
@@ -1644,6 +1676,7 @@ impl InvokeBootstrap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::middleware::intent_analysis::ExecutionStrategy;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1755,6 +1788,45 @@ mod tests {
                 "{prompt:?} should keep eager context"
             );
         }
+    }
+
+    fn intent_with_approach(approach: ExecutionApproach) -> IntentAnalysis {
+        IntentAnalysis {
+            primary_intent: "test-goal".to_string(),
+            hidden_intents: Vec::new(),
+            recommended_skills: vec!["coding".to_string()],
+            recommended_agents: vec!["builder-agent".to_string()],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::CreateNew,
+                ward_name: "creative-design".to_string(),
+                subdirectory: None,
+                structure: HashMap::new(),
+                reason: "new graph work".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach,
+                graph: None,
+                explanation: String::new(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: None,
+        }
+    }
+
+    #[test]
+    fn cold_graph_intent_installs_a_planner_task_but_warm_and_simple_paths_do_not() {
+        let graph = intent_with_approach(ExecutionApproach::Graph);
+        let task = cold_graph_planning_task(&graph, None, "Build a scene")
+            .expect("cold graph work requires planning");
+        assert!(task.contains("Original request: Build a scene"));
+        assert!(task.contains("creative-design"));
+
+        assert!(
+            cold_graph_planning_task(&graph, Some("graduated-ward"), "Build a scene").is_none(),
+            "a graduated ward-agent follows the warm path"
+        );
+        let simple = intent_with_approach(ExecutionApproach::Simple);
+        assert!(cold_graph_planning_task(&simple, None, "Hi").is_none());
     }
 
     struct FakeProcStore {

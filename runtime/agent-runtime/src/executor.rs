@@ -1514,6 +1514,25 @@ impl AgentExecutor {
         tool_name: &str,
         arguments: &Value,
     ) -> Result<ToolExecutionResult, String> {
+        // Cold graph work must establish its ward before any work can start.
+        // This lives at the executor boundary (rather than only in individual
+        // built-in tools) so MCP tools — which bypass the normal ToolRegistry
+        // and use the `{server}__{tool}` dispatch below — cannot escape the
+        // planning gate. `ward` remains available to make the required state
+        // transition; successful create/use then launches planner-agent.
+        if tool_name != "ward"
+            && agent_tools::guards::planning_gate_awaits_ward(shared_ctx.as_ref())
+        {
+            return Ok(ToolExecutionResult {
+                output: json!({
+                    "status": "redirect",
+                    "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call MCP tools or other tools yet."
+                })
+                .to_string(),
+                actions: EventActions::default(),
+            });
+        }
+
         // --- Replay intercept ---------------------------------------------------
         // When ZBOT_REPLAY_DIR is set, look up a recorded result and return it
         // instead of running the real tool. Strict mode (default) panics on miss;
@@ -2605,6 +2624,53 @@ mod executor_helper_coverage_tests {
         assert_eq!(blocked.0, "[blocked by hook]");
         assert_eq!(blocked.1.as_deref(), Some("blocked_by_hook"));
         assert_eq!(*blocked.2, Some(0));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_mcp_tool_before_ward_entry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(ToolCallThenDoneLlm {
+            calls: Arc::clone(&calls),
+            // MCP tools use the `{normalized-server}__{normalized-tool}`
+            // identifier. No MCP client is registered: reaching its dispatch
+            // path would therefore fail this test instead of redirecting.
+            tool_name: "blender_mcp__execute_code".to_string(),
+        });
+
+        let cfg = ExecutorConfig::new("root".into(), "p".into(), "m".into()).with_initial_state(
+            agent_tools::guards::PLANNING_GATE_STATE,
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan the Blender task",
+            ))
+            .unwrap(),
+        );
+        let exec = AgentExecutor::new(
+            cfg,
+            llm,
+            Arc::new(ToolRegistry::new()),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+
+        let mut events = Vec::new();
+        exec.execute_stream("create a scene", &[], |e| events.push(e))
+            .await
+            .unwrap();
+
+        let result = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::ToolResult { result, error, .. } => {
+                    Some((result.as_str(), error.as_deref()))
+                }
+                _ => None,
+            })
+            .expect("MCP-shaped tool call produces a result");
+        assert!(result.0.contains("cold graph work"));
+        assert!(result.0.contains("planner-agent"));
+        assert_eq!(result.1, None, "the MCP dispatch path was never reached");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     /// Stub LLM that emits a tool call for an UNREGISTERED tool, exercising

@@ -4,6 +4,96 @@
 // ============================================================================
 
 use agent_primitives::ToolContext;
+use serde::{Deserialize, Serialize};
+
+/// Root-context key used to require the planner before cold graph work starts.
+pub const PLANNING_GATE_STATE: &str = "app:planning_gate";
+
+const PLANNING_GATE_CLAIM: &str = "app:planning_gate_claim";
+
+/// The narrow runtime state that bridges intent analysis and ward entry.
+///
+/// It deliberately lives only in executor context: this correction prevents a
+/// root from skipping planner delegation in the current invocation, without
+/// introducing a second session scheduler or persistence format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanningGate {
+    /// Rich planner context prepared by intent analysis before the final ward
+    /// is known.
+    pub task: String,
+    #[serde(default)]
+    pub phase: PlanningGatePhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningGatePhase {
+    #[default]
+    AwaitingWard,
+    PlannerStarted,
+}
+
+impl PlanningGate {
+    #[must_use]
+    pub fn awaiting_ward(task: impl Into<String>) -> Self {
+        Self {
+            task: task.into(),
+            phase: PlanningGatePhase::AwaitingWard,
+        }
+    }
+}
+
+/// Return a valid cold-graph planning gate for a root execution.
+///
+/// Delegated agents must never inherit this restriction: their tasks are the
+/// work already approved by the root/planner pipeline.
+#[must_use]
+pub fn active_planning_gate(ctx: &dyn ToolContext) -> Option<PlanningGate> {
+    let is_delegated = ctx
+        .get_state("app:is_delegated")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if is_delegated {
+        return None;
+    }
+
+    let raw = ctx.get_state(PLANNING_GATE_STATE)?;
+    let gate: PlanningGate = serde_json::from_value(raw).ok()?;
+    (!gate.task.trim().is_empty()).then_some(gate)
+}
+
+/// Whether root must establish a ward before any planning or worker action.
+#[must_use]
+pub fn planning_gate_awaits_ward(ctx: &dyn ToolContext) -> bool {
+    matches!(
+        active_planning_gate(ctx).as_ref().map(|gate| gate.phase),
+        Some(PlanningGatePhase::AwaitingWard)
+    )
+}
+
+/// Atomically consume the cold-graph gate after a successful root ward entry.
+///
+/// Returns the task for `planner-agent`, augmented with the authoritative ward
+/// selected by the ward tool. Only the first successful caller can receive a
+/// task, preventing duplicate planner spawns from repeated or parallel ward
+/// tool calls.
+pub fn start_planning_after_ward(ctx: &dyn ToolContext, ward_id: &str) -> Option<String> {
+    let mut gate = active_planning_gate(ctx)?;
+    if gate.phase != PlanningGatePhase::AwaitingWard || !ctx.try_claim(PLANNING_GATE_CLAIM) {
+        return None;
+    }
+
+    gate.phase = PlanningGatePhase::PlannerStarted;
+    ctx.set_state(
+        PLANNING_GATE_STATE.to_string(),
+        serde_json::to_value(&gate).ok()?,
+    );
+
+    Some(format!(
+        "{}\n\nActive ward: `{ward_id}`. This is the authoritative workspace selected by the root; write the plan and steps for this ward.",
+        gate.task
+    ))
+}
 
 /// Check if the given `specs/` directory holds any unfilled placeholder
 /// spec — a file containing the literal text `"Status: placeholder"`.

@@ -1780,6 +1780,7 @@ dependencies = [
 [[package]]
 name = "engram-belief"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1789,6 +1790,7 @@ dependencies = [
 [[package]]
 name = "engram-consolidation"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1800,6 +1802,7 @@ dependencies = [
 [[package]]
 name = "engram-core"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "engram-belief",
  "engram-consolidation",
@@ -1814,6 +1817,7 @@ dependencies = [
 [[package]]
 name = "engram-decay"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1825,6 +1829,7 @@ dependencies = [
 [[package]]
 name = "engram-domain"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "chrono",
  "serde",
@@ -1835,6 +1840,7 @@ dependencies = [
 [[package]]
 name = "engram-eval"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1847,10 +1853,12 @@ dependencies = [
 [[package]]
 name = "engram-graph-analytics"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 
 [[package]]
 name = "engram-hierarchy"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1860,6 +1868,7 @@ dependencies = [
 [[package]]
 name = "engram-ingest"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1890,6 +1899,7 @@ dependencies = [
 [[package]]
 name = "engram-integration"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1919,6 +1929,7 @@ dependencies = [
 [[package]]
 name = "engram-knowledge"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1928,6 +1939,7 @@ dependencies = [
 [[package]]
 name = "engram-memory"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1937,6 +1949,7 @@ dependencies = [
 [[package]]
 name = "engram-reflection"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-belief",
@@ -1948,6 +1961,7 @@ dependencies = [
 [[package]]
 name = "engram-retrieval"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1958,6 +1972,7 @@ dependencies = [
 [[package]]
 name = "engram-runtime"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "engram-domain",
  "regex",
@@ -1967,6 +1982,7 @@ dependencies = [
 [[package]]
 name = "engram-store-associative-graph"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1980,6 +1996,7 @@ dependencies = [
 [[package]]
 name = "engram-store-community-summary"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1993,6 +2010,7 @@ dependencies = [
 [[package]]
 name = "engram-store-lexical"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -2004,6 +2022,7 @@ dependencies = [
 [[package]]
 name = "engram-store-sqlite"
 version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
 dependencies = [
  "async-trait",
  "chrono",

@@ -16,7 +16,10 @@ fn dependency_checklist_blocks_provider_selection_until_required_items_are_recor
         cargo_metadata: true,
         lockfile: true,
         dependency_scanner: true,
-        source_revision: Some("mem-alpha git 3af132299de6747685218220a41551670dc74a83".to_string()),
+        source_revision: Some(
+            "https://github.com/phanijapps/engram git 0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+                .to_string(),
+        ),
         dirty_state_policy: Some("ignore untracked local tool cache only".to_string()),
     };
 
@@ -30,7 +33,10 @@ fn dependency_checklist_records_source_and_dirty_state_evidence_without_private_
         cargo_metadata: true,
         lockfile: true,
         dependency_scanner: true,
-        source_revision: Some("mem-alpha git 3af132299de6747685218220a41551670dc74a83".to_string()),
+        source_revision: Some(
+            "https://github.com/phanijapps/engram git 0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+                .to_string(),
+        ),
         dirty_state_policy: Some(
             "untracked tool-cache directories are not release inputs".to_string(),
         ),
@@ -41,7 +47,7 @@ fn dependency_checklist_records_source_and_dirty_state_evidence_without_private_
     assert!(!json.contains("/home/"));
     assert!(!json.contains("projects/mem-alpha"));
     assert!(!json.contains("Cargo metadata path"));
-    assert!(json.contains("3af132299de6747685218220a41551670dc74a83"));
+    assert!(json.contains("0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"));
     assert!(checklist
         .items
         .iter()

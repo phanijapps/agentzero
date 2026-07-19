@@ -66,6 +66,23 @@ describe("CommissioningScreen", () => {
     expect(screen.getByRole("option", { name: "llama3.3" })).toBeInTheDocument();
   });
 
+  it("recommends Ollama Cloud models and clears keys across provider changes", () => {
+    renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: /build & code/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "openai-key" } });
+    fireEvent.click(screen.getByRole("button", { name: /ollama cloud/i }));
+    expect(screen.getByLabelText(/api key/i)).toHaveValue("");
+    expect(screen.getByRole("note", { name: /ollama cloud model recommendation/i })).toHaveTextContent("glm-5.2:cloud");
+    expect(screen.getByRole("note", { name: /ollama cloud model recommendation/i })).toHaveTextContent("gemma4:31b-cloud");
+
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "ollama-key" } });
+    fireEvent.click(screen.getByRole("button", { name: /local model/i }));
+    fireEvent.click(screen.getByRole("button", { name: /cloud provider/i }));
+    expect(screen.getByLabelText(/api key/i)).toHaveValue("");
+  });
+
   // AC2 — memory behavior requires an explicit informed choice.
   it("requires an explicit memory profile and recommends full Zbot memory", () => {
     renderScreen();

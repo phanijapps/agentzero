@@ -158,6 +158,7 @@ components:
         presetId:
           type: string
           description: Required for cloud; resolved server-side to a known preset.
+          enum: [ollama_cloud, openai, deepseek, openrouter, z-ai, mistral]
         model:
           type: string
           minLength: 1

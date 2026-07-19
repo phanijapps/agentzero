@@ -4,11 +4,26 @@
 // ============================================================================
 
 use crate::paths::SharedVaultPaths;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
+
+static PROVIDER_MUTATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+pub const OLLAMA_CLOUD_PENDING_MARKER: &str = ".ollama-cloud-commissioning-pending";
+
+pub fn provider_mutation_lock() -> &'static tokio::sync::Mutex<()> {
+    PROVIDER_MUTATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+pub fn ollama_cloud_commissioning_pending(paths: &crate::paths::VaultPaths) -> bool {
+    match std::fs::symlink_metadata(paths.config_dir().join(OLLAMA_CLOUD_PENDING_MARKER)) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
 
 // ============================================================================
 // Types
@@ -21,6 +36,7 @@ pub struct Provider {
     pub name: String,
     pub description: String,
     #[serde(rename = "apiKey")]
+    #[serde(default)]
     pub api_key: String,
     #[serde(rename = "baseUrl")]
     pub base_url: String,
@@ -98,6 +114,23 @@ impl Provider {
     /// Get effective rate limits. Falls back to defaults if not set.
     pub fn effective_rate_limits(&self) -> RateLimits {
         self.rate_limits.clone().unwrap_or_default()
+    }
+}
+
+fn validate_fixed_provider_origin(provider: &Provider) -> Result<(), String> {
+    if provider.id.as_deref() == Some("provider-ollama-cloud")
+        && provider.base_url != "https://ollama.com/v1"
+    {
+        return Err("Ollama Cloud endpoint must be https://ollama.com/v1".to_string());
+    }
+    Ok(())
+}
+
+fn scrub_secret(value: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        value.to_string()
+    } else {
+        value.replace(secret, "[redacted]")
     }
 }
 
@@ -242,6 +275,10 @@ impl ProviderService {
             .into_iter()
             .find(|p| p.id.as_deref() == Some(id))
             .ok_or_else(|| format!("Provider not found: {}", id))
+            .and_then(|provider| {
+                validate_fixed_provider_origin(&provider)?;
+                Ok(provider)
+            })
     }
 
     /// Create a new provider
@@ -265,6 +302,10 @@ impl ProviderService {
         }
 
         provider.id = Some(provider_id);
+        if provider.api_key.trim().is_empty() {
+            return Err("Provider API key is required".to_string());
+        }
+        validate_fixed_provider_origin(&provider)?;
         provider.created_at = Some(chrono::Utc::now().to_rfc3339());
 
         providers.push(provider.clone());
@@ -282,13 +323,16 @@ impl ProviderService {
             .position(|p| p.id.as_deref() == Some(id))
             .ok_or_else(|| format!("Provider not found: {}", id))?;
 
-        // Preserve ID and created_at
-        if provider.id.is_none() {
-            provider.id = providers[index].id.clone();
+        // Provider identity is selected by the route/storage lookup, never by
+        // mutable request data. This keeps identity-bound security policy intact.
+        provider.id = providers[index].id.clone();
+        if provider.api_key.trim().is_empty() {
+            provider.api_key = providers[index].api_key.clone();
         }
         if provider.created_at.is_none() {
             provider.created_at = providers[index].created_at.clone();
         }
+        validate_fixed_provider_origin(&provider)?;
 
         providers[index] = provider.clone();
         self.write_providers(&providers)?;
@@ -337,9 +381,22 @@ impl ProviderService {
 
     /// Test a provider connection
     pub async fn test(&self, provider: &Provider) -> ProviderTestResult {
-        let client = reqwest::Client::builder()
+        // Verification never forwards a user-supplied bearer credential to a
+        // redirect target. Canonical Ollama Cloud receives the additional
+        // fixed-origin validation below.
+        let client_builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
-            .build();
+            .redirect(reqwest::redirect::Policy::none());
+        if provider.id.as_deref() == Some("provider-ollama-cloud") {
+            if let Err(error) = validate_fixed_provider_origin(provider) {
+                return ProviderTestResult {
+                    success: false,
+                    message: error,
+                    models: None,
+                };
+            }
+        }
+        let client = client_builder.build();
 
         let client = match client {
             Ok(c) => c,
@@ -363,8 +420,34 @@ impl ProviderService {
 
         match response {
             Ok(resp) => {
-                if resp.status().is_success() {
-                    match resp.json::<serde_json::Value>().await {
+                let status = resp.status();
+                let mut stream = resp.bytes_stream();
+                let mut body = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = match chunk {
+                        Ok(chunk) => chunk,
+                        Err(error) => {
+                            return ProviderTestResult {
+                                success: false,
+                                message: scrub_secret(
+                                    &format!("Connection failed: {error}"),
+                                    &provider.api_key,
+                                ),
+                                models: None,
+                            }
+                        }
+                    };
+                    if body.len().saturating_add(chunk.len()) > 1_048_576 {
+                        return ProviderTestResult {
+                            success: false,
+                            message: "Provider response exceeded the 1 MiB limit".to_string(),
+                            models: None,
+                        };
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                if status.is_success() {
+                    match serde_json::from_slice::<serde_json::Value>(&body) {
                         Ok(json) => {
                             // Try to extract models from OpenAI-style response
                             let models: Vec<String> = json
@@ -373,8 +456,12 @@ impl ProviderService {
                                 .map(|arr: &Vec<serde_json::Value>| {
                                     arr.iter()
                                         .filter_map(|m: &serde_json::Value| {
-                                            m.get("id").and_then(|id| id.as_str()).map(String::from)
+                                            m.get("id")
+                                                .and_then(|id| id.as_str())
+                                                .filter(|id| id.chars().count() <= 160)
+                                                .map(|id| scrub_secret(id, &provider.api_key))
                                         })
+                                        .take(1_000)
                                         .collect()
                                 })
                                 .unwrap_or_default();
@@ -382,19 +469,25 @@ impl ProviderService {
                             if !models.is_empty() {
                                 ProviderTestResult {
                                     success: true,
-                                    message: format!(
-                                        "Successfully connected to {}. Found {} models.",
-                                        provider.name,
-                                        models.len()
+                                    message: scrub_secret(
+                                        &format!(
+                                            "Successfully connected to {}. Found {} models.",
+                                            provider.name,
+                                            models.len()
+                                        ),
+                                        &provider.api_key,
                                     ),
                                     models: Some(models),
                                 }
                             } else {
                                 ProviderTestResult {
                                     success: true,
-                                    message: format!(
-                                        "Connected to {}. Could not auto-detect models.",
-                                        provider.name
+                                    message: scrub_secret(
+                                        &format!(
+                                            "Connected to {}. Could not auto-detect models.",
+                                            provider.name
+                                        ),
+                                        &provider.api_key,
                                     ),
                                     models: None,
                                 }
@@ -402,16 +495,19 @@ impl ProviderService {
                         }
                         Err(_) => ProviderTestResult {
                             success: true,
-                            message: format!(
-                                "Connected to {}. Response format not recognized.",
-                                provider.name
+                            message: scrub_secret(
+                                &format!(
+                                    "Connected to {}. Response format not recognized.",
+                                    provider.name
+                                ),
+                                &provider.api_key,
                             ),
                             models: None,
                         },
                     }
                 } else {
-                    let status = resp.status();
-                    let error_text: String = resp.text().await.unwrap_or_default();
+                    let error_text =
+                        scrub_secret(&String::from_utf8_lossy(&body), &provider.api_key);
                     ProviderTestResult {
                         success: false,
                         message: format!("HTTP {}: {}", status, error_text),
@@ -421,9 +517,102 @@ impl ProviderService {
             }
             Err(e) => ProviderTestResult {
                 success: false,
-                message: format!("Connection failed: {}", e),
+                message: scrub_secret(&format!("Connection failed: {}", e), &provider.api_key),
                 models: None,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ollama_cloud(base_url: &str) -> Provider {
+        serde_json::from_value(serde_json::json!({
+            "id": "provider-ollama-cloud",
+            "name": "Ollama Cloud",
+            "description": "Ollama Cloud API",
+            "apiKey": "sentinel-secret",
+            "baseUrl": base_url,
+            "models": ["glm-5.2:cloud"],
+            "isDefault": false
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn ollama_cloud_origin_is_fixed() {
+        assert!(validate_fixed_provider_origin(&ollama_cloud("https://ollama.com/v1")).is_ok());
+        assert!(
+            validate_fixed_provider_origin(&ollama_cloud("http://localhost:11434/v1")).is_err()
+        );
+        assert!(validate_fixed_provider_origin(&ollama_cloud("https://example.com/v1")).is_err());
+    }
+
+    #[test]
+    fn secret_scrubbing_handles_empty_and_repeated_values() {
+        assert_eq!(scrub_secret("abc abc", "abc"), "[redacted] [redacted]");
+        assert_eq!(scrub_secret("unchanged", ""), "unchanged");
+    }
+
+    #[test]
+    fn update_cannot_rename_ollama_cloud_to_bypass_origin_policy() {
+        let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("config")).unwrap();
+        let paths = std::sync::Arc::new(crate::paths::VaultPaths::new(vault.path().to_path_buf()));
+        let service = ProviderService::new(paths);
+        service
+            .create(ollama_cloud("https://ollama.com/v1"))
+            .unwrap();
+        let mut attack = ollama_cloud("https://attacker.example/v1");
+        attack.id = Some("provider-renamed".to_string());
+
+        assert!(service.update("provider-ollama-cloud", attack).is_err());
+        let stored = service.get("provider-ollama-cloud").unwrap();
+        assert_eq!(stored.base_url, "https://ollama.com/v1");
+        assert_eq!(stored.api_key, "sentinel-secret");
+    }
+
+    #[test]
+    fn correcting_a_hand_edited_cloud_origin_retains_a_blank_omitted_key() {
+        let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("config")).unwrap();
+        let paths = std::sync::Arc::new(crate::paths::VaultPaths::new(vault.path().to_path_buf()));
+        std::fs::write(
+            paths.providers(),
+            serde_json::to_vec(&vec![ollama_cloud("https://attacker.example/v1")]).unwrap(),
+        )
+        .unwrap();
+        let service = ProviderService::new(paths);
+        let mut correction = ollama_cloud("https://ollama.com/v1");
+        correction.api_key.clear();
+
+        let updated = service.update("provider-ollama-cloud", correction).unwrap();
+        assert_eq!(updated.api_key, "sentinel-secret");
+        assert_eq!(updated.base_url, "https://ollama.com/v1");
+    }
+
+    #[test]
+    fn create_rejects_a_blank_api_key() {
+        let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("config")).unwrap();
+        let paths = std::sync::Arc::new(crate::paths::VaultPaths::new(vault.path().to_path_buf()));
+        let service = ProviderService::new(paths);
+        let mut provider = ollama_cloud("https://ollama.com/v1");
+        provider.api_key = "   ".to_string();
+
+        assert_eq!(
+            service.create(provider).unwrap_err(),
+            "Provider API key is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_mutation_lock_rejects_a_concurrent_owner() {
+        let owner = provider_mutation_lock().lock().await;
+        assert!(provider_mutation_lock().try_lock().is_err());
+        drop(owner);
+        assert!(provider_mutation_lock().try_lock().is_ok());
     }
 }

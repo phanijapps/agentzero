@@ -242,12 +242,12 @@ export interface ContextEditingConfig {
 // DOMAIN: Providers
 // ============================================================================
 
-/** API Provider credentials */
+/** Public API provider metadata. Stored credentials are never returned. */
 export interface Provider {
   id: string;
   name: string;
   description: string;
-  apiKey: string;
+  hasApiKey: boolean;
   baseUrl: string;
   models: string[];
   /** Embedding models for vector search/memory */

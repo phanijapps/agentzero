@@ -212,7 +212,7 @@ export interface ProviderResponse {
   id?: string;
   name: string;
   description: string;
-  apiKey: string;
+  hasApiKey: boolean;
   baseUrl: string;
   models: string[];
   embeddingModels?: string[];
@@ -238,11 +238,11 @@ export interface CreateProviderRequest {
 }
 
 export interface UpdateProviderRequest {
-  name?: string;
-  description?: string;
+  name: string;
+  description: string;
   apiKey?: string;
-  baseUrl?: string;
-  models?: string[];
+  baseUrl: string;
+  models: string[];
   embeddingModels?: string[];
   defaultModel?: string;
   rateLimits?: RateLimits;
@@ -617,7 +617,7 @@ export interface CommissioningRequest {
   memoryProfile: "safe_baseline" | "zbot_recommended_v1";
   provider: {
     kind: "cloud" | "local";
-    presetId?: "openai" | "deepseek" | "openrouter" | "z-ai" | "mistral";
+    presetId?: "ollama_cloud" | "openai" | "deepseek" | "openrouter" | "z-ai" | "mistral";
     model: string;
     /** Write-only. Never place this in component state after submit. */
     apiKey?: string;

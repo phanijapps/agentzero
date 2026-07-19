@@ -24,6 +24,57 @@ const MEMORY_PROFILE_PENDING_BYTES: &[u8] =
     include_bytes!("../../templates/zbot-memory-profile-v1-pending");
 const BASE_ONTOLOGY_BYTES: &[u8] = include_bytes!("../../templates/governance/base-ontology.json");
 const BASE_TAXONOMY_BYTES: &[u8] = include_bytes!("../../templates/governance/base-taxonomy.json");
+const OLLAMA_CLOUD_PENDING_BYTES: &[u8] =
+    b"version = 1\nprovider_id = provider-ollama-cloud\nmodel = glm-5.2:cloud\n";
+
+fn ollama_cloud_pending_path(paths: &gateway_services::VaultPaths) -> std::path::PathBuf {
+    paths
+        .config_dir()
+        .join(gateway_services::providers::OLLAMA_CLOUD_PENDING_MARKER)
+}
+
+fn apply_ollama_cloud_recovery_status(
+    status: CommissioningState,
+    recovery_code: Option<&'static str>,
+    pending: bool,
+) -> (CommissioningState, Option<&'static str>) {
+    if pending {
+        (
+            CommissioningState::NeedsAttention,
+            Some("ollama_cloud_commissioning_pending"),
+        )
+    } else {
+        (status, recovery_code)
+    }
+}
+
+fn claim_ollama_cloud_pending(paths: &gateway_services::VaultPaths) -> Result<bool, ()> {
+    use std::io::Write;
+
+    let path = ollama_cloud_pending_path(paths);
+    std::fs::create_dir_all(paths.config_dir()).map_err(|_| ())?;
+    match path.symlink_metadata() {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file()
+                || std::fs::read(&path).map_err(|_| ())? != OLLAMA_CLOUD_PENDING_BYTES
+            {
+                return Err(());
+            }
+            Ok(false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|_| ())?;
+            file.write_all(OLLAMA_CLOUD_PENDING_BYTES).map_err(|_| ())?;
+            file.sync_all().map_err(|_| ())?;
+            Ok(true)
+        }
+        Err(_) => Err(()),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FixedProfileTargetState {
@@ -425,6 +476,13 @@ struct KnownPreset {
 
 const CLOUD_PRESETS: &[KnownPreset] = &[
     KnownPreset {
+        id: "ollama_cloud",
+        provider_id: "provider-ollama-cloud",
+        name: "Ollama Cloud",
+        base_url: "https://ollama.com/v1",
+        models: &["glm-5.2:cloud", "gemma4:31b-cloud"],
+    },
+    KnownPreset {
         id: "openai",
         provider_id: "provider-openai",
         name: "OpenAI",
@@ -487,6 +545,12 @@ pub async fn get_commissioning_status(
         .map_err(|_| internal_error())?;
     let (status, recovery_code) =
         effective_status(&settings.commissioning, &settings.execution, &providers);
+    // Only successful persistence may remove this marker. An older Complete
+    // setting must never hide an interrupted recommissioning attempt.
+    let ollama_pending =
+        gateway_services::providers::ollama_cloud_commissioning_pending(state.paths.as_ref());
+    let (status, recovery_code) =
+        apply_ollama_cloud_recovery_status(status, recovery_code, ollama_pending);
     let (recovery_code, restart_required) =
         pending_memory_profile_recovery(state.paths.as_ref(), &settings, status, recovery_code);
 
@@ -573,12 +637,43 @@ pub async fn complete_commissioning(
     State(state): State<AppState>,
     Json(request): Json<CommissioningRequest>,
 ) -> Result<Json<CommissioningStatusResponse>, (StatusCode, Json<CommissioningError>)> {
+    let _guard = gateway_services::providers::provider_mutation_lock()
+        .try_lock()
+        .map_err(|_| {
+            validation_error(
+                "commissioning_in_progress",
+                "Commissioning is already in progress. Try again shortly.",
+            )
+        })?;
     validate_request(&request)?;
     let candidate = provider_from_selection(&request.provider)?;
+    let ollama_cloud = candidate.id.as_deref() == Some("provider-ollama-cloud");
+    let pending_path = ollama_cloud_pending_path(state.paths.as_ref());
+    if gateway_services::providers::ollama_cloud_commissioning_pending(state.paths.as_ref())
+        && !ollama_cloud
+    {
+        return Err(validation_error(
+            "ollama_cloud_commissioning_pending",
+            "Finish the pending Ollama Cloud setup before choosing another provider.",
+        ));
+    }
+    let pending_created = if ollama_cloud {
+        claim_ollama_cloud_pending(state.paths.as_ref()).map_err(|_| {
+            validation_error(
+                "ollama_cloud_commissioning_conflict",
+                "The pending Ollama Cloud setup marker is invalid.",
+            )
+        })?
+    } else {
+        false
+    };
 
     // Nothing is persisted until the selected provider has proved usable.
     let test_result = state.provider_service.test(&candidate).await;
     if !test_result.success {
+        if pending_created {
+            let _ = std::fs::remove_file(&pending_path);
+        }
         return Err(validation_error(
             "provider_verification_failed",
             "We could not verify that provider. Check the key or connection and try again.",
@@ -593,15 +688,16 @@ pub async fn complete_commissioning(
         ));
     }
 
-    persist_verified_commissioning(&state, &request, candidate)
+    persist_verified_commissioning(&state, &request, candidate).await
 }
 
-fn persist_verified_commissioning(
+async fn persist_verified_commissioning(
     state: &AppState,
     request: &CommissioningRequest,
     candidate: Provider,
 ) -> Result<Json<CommissioningStatusResponse>, (StatusCode, Json<CommissioningError>)> {
     let mut settings = state.settings.load().map_err(|_| internal_error())?;
+    let ollama_cloud = candidate.id.as_deref() == Some("provider-ollama-cloud");
     if request.memory_profile == CommissioningMemoryProfile::ZbotRecommendedV1 {
         preflight_full_memory_profile(
             state.paths.as_ref(),
@@ -611,6 +707,7 @@ fn persist_verified_commissioning(
         .map_err(memory_profile_error)?;
         provision_memory_profile(state.paths.as_ref()).map_err(memory_profile_error)?;
     }
+    let pending_path = ollama_cloud_pending_path(state.paths.as_ref());
 
     let provider_id = candidate
         .id
@@ -639,6 +736,22 @@ fn persist_verified_commissioning(
         model: Some(request.provider.model.trim().to_string()),
         ..settings.execution.orchestrator
     };
+    if ollama_cloud {
+        settings.execution.multimodal.provider_id = Some(provider_id.clone());
+        settings.execution.multimodal.model = Some("gemma4:31b-cloud".to_string());
+
+        let agents = state.agents.list().await.map_err(|_| internal_error())?;
+        for mut agent in agents {
+            agent.provider_id.clone_from(&provider_id);
+            agent.model = "glm-5.2:cloud".to_string();
+            let agent_id = agent.id.clone();
+            state
+                .agents
+                .update(&agent_id, agent)
+                .await
+                .map_err(|_| internal_error())?;
+        }
+    }
     if restart_required {
         settings.execution.memory = gateway_memory::MemorySettings::zbot_recommended_v1();
     }
@@ -679,6 +792,13 @@ fn persist_verified_commissioning(
         .settings
         .save(&settings)
         .map_err(|_| internal_error())?;
+    if ollama_cloud {
+        match std::fs::remove_file(&pending_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(internal_error()),
+        }
+    }
 
     Ok(Json(CommissioningStatusResponse {
         state: settings.commissioning.state,
@@ -876,6 +996,12 @@ fn provider_from_selection(
                         "Choose a supported cloud provider.",
                     )
                 })?;
+            if preset.id == "ollama_cloud" && selection.model.trim() != "glm-5.2:cloud" {
+                return Err(validation_error(
+                    "invalid_model",
+                    "Choose the recommended Ollama Cloud agent model.",
+                ));
+            }
             if !preset.models.contains(&selection.model.trim()) {
                 return Err(validation_error(
                     "invalid_model",
@@ -905,7 +1031,15 @@ fn provider_from_selection(
                 description: format!("{} API", preset.name),
                 api_key: api_key.to_string(),
                 base_url: preset.base_url.to_string(),
-                models: vec![selection.model.trim().to_string()],
+                models: if preset.id == "ollama_cloud" {
+                    preset
+                        .models
+                        .iter()
+                        .map(|model| (*model).to_string())
+                        .collect()
+                } else {
+                    vec![selection.model.trim().to_string()]
+                },
                 embedding_models: None,
                 embedding_dimensions: None,
                 verified: Some(true),
@@ -1149,13 +1283,14 @@ mod tests {
         assert!(serde_json::from_value::<CommissioningRequest>(unknown_provider).is_err());
     }
 
-    #[test]
-    fn verified_persistence_integrates_safe_full_and_orphan_recovery_boundaries() {
+    #[tokio::test]
+    async fn verified_persistence_integrates_safe_full_and_orphan_recovery_boundaries() {
         let safe_vault = tempfile::tempdir().unwrap();
         let safe_state = AppState::minimal(safe_vault.path().to_path_buf());
         let safe_request = valid_commissioning_request();
         let safe_response =
             persist_verified_commissioning(&safe_state, &safe_request, local_provider("llama3.3"))
+                .await
                 .unwrap()
                 .0;
         assert_eq!(safe_response.state, CommissioningState::Complete);
@@ -1197,6 +1332,7 @@ mod tests {
             &full_request,
             local_provider("llama3.3"),
         )
+        .await
         .is_err());
         let orphan_settings = full_state.settings.load().unwrap();
         let providers = full_state.provider_service.list().unwrap();
@@ -1218,6 +1354,7 @@ mod tests {
         std::fs::remove_dir_all(full_state.paths.soul()).unwrap();
         let full_response =
             persist_verified_commissioning(&full_state, &full_request, local_provider("llama3.3"))
+                .await
                 .unwrap()
                 .0;
         assert_eq!(full_response.state, CommissioningState::NeedsAttention);
@@ -1800,6 +1937,153 @@ mod tests {
             provider_from_selection(&oversized).unwrap_err().1 .0.code,
             "invalid_provider_key"
         );
+    }
+
+    #[test]
+    fn ollama_cloud_selection_uses_fixed_openai_compatible_provider() {
+        let selection = ProviderSelection {
+            kind: ProviderKind::Cloud,
+            preset_id: Some("ollama_cloud".to_string()),
+            model: "glm-5.2:cloud".to_string(),
+            api_key: Some("ollama-test-key".to_string()),
+        };
+
+        let provider = provider_from_selection(&selection).expect("valid Ollama Cloud preset");
+        assert_eq!(provider.id.as_deref(), Some("provider-ollama-cloud"));
+        assert_eq!(provider.base_url, "https://ollama.com/v1");
+        assert_eq!(provider.default_model.as_deref(), Some("glm-5.2:cloud"));
+        assert_eq!(provider.models, ["glm-5.2:cloud", "gemma4:31b-cloud"]);
+        assert_eq!(provider.api_key, "ollama-test-key");
+    }
+
+    #[test]
+    fn ollama_cloud_rejects_multimodal_model_as_agent_model() {
+        let selection = ProviderSelection {
+            kind: ProviderKind::Cloud,
+            preset_id: Some("ollama_cloud".to_string()),
+            model: "gemma4:31b-cloud".to_string(),
+            api_key: Some("ollama-test-key".to_string()),
+        };
+
+        assert_eq!(
+            provider_from_selection(&selection).unwrap_err().1 .0.code,
+            "invalid_model"
+        );
+    }
+
+    #[test]
+    fn ollama_pending_claim_is_exclusive_exact_and_conflict_safe() {
+        let vault = tempfile::tempdir().unwrap();
+        let paths = gateway_services::VaultPaths::new(vault.path().to_path_buf());
+        assert_eq!(claim_ollama_cloud_pending(&paths), Ok(true));
+        assert_eq!(claim_ollama_cloud_pending(&paths), Ok(false));
+        let marker = ollama_cloud_pending_path(&paths);
+        assert_eq!(std::fs::read(&marker).unwrap(), OLLAMA_CLOUD_PENDING_BYTES);
+
+        std::fs::write(&marker, b"conflicting transaction").unwrap();
+        assert_eq!(claim_ollama_cloud_pending(&paths), Err(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_marker_is_still_reported_as_pending() {
+        use std::os::unix::fs::symlink;
+
+        let vault = tempfile::tempdir().unwrap();
+        let paths = gateway_services::VaultPaths::new(vault.path().to_path_buf());
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        symlink(
+            vault.path().join("missing-target"),
+            ollama_cloud_pending_path(&paths),
+        )
+        .unwrap();
+
+        assert!(gateway_services::providers::ollama_cloud_commissioning_pending(&paths));
+        assert_eq!(claim_ollama_cloud_pending(&paths), Err(()));
+    }
+
+    #[test]
+    fn pending_ollama_retry_overrides_an_older_complete_status() {
+        assert_eq!(
+            apply_ollama_cloud_recovery_status(CommissioningState::Complete, None, true),
+            (
+                CommissioningState::NeedsAttention,
+                Some("ollama_cloud_commissioning_pending")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_persistence_aligns_agents_and_multimodal() {
+        let vault = tempfile::tempdir().unwrap();
+        let state = AppState::minimal(vault.path().to_path_buf());
+        state
+            .agents
+            .create(crate::services::agents::Agent {
+                id: "research-agent".to_string(),
+                name: "research-agent".to_string(),
+                display_name: "Research Agent".to_string(),
+                description: "Research".to_string(),
+                agent_type: Some("specialist".to_string()),
+                provider_id: "provider-old".to_string(),
+                model: "old-model".to_string(),
+                temperature: 0.2,
+                max_input_tokens: 200_000,
+                max_input_tokens_explicit: false,
+                max_tokens: 32_000,
+                thinking_enabled: true,
+                voice_recording_enabled: false,
+                system_instruction: None,
+                instructions: "Keep these instructions.".to_string(),
+                mcps: vec!["example".to_string()],
+                skills: vec!["research".to_string()],
+                middleware: None,
+                created_at: None,
+            })
+            .await
+            .unwrap();
+        let mut request = valid_commissioning_request();
+        request.provider = ProviderSelection {
+            kind: ProviderKind::Cloud,
+            preset_id: Some("ollama_cloud".to_string()),
+            model: "glm-5.2:cloud".to_string(),
+            api_key: Some("ollama-test-key".to_string()),
+        };
+        let candidate = provider_from_selection(&request.provider).unwrap();
+
+        let _ = persist_verified_commissioning(&state, &request, candidate)
+            .await
+            .unwrap();
+
+        let settings = state.settings.load().unwrap();
+        assert_eq!(
+            settings.execution.orchestrator.provider_id.as_deref(),
+            Some("provider-ollama-cloud")
+        );
+        assert_eq!(
+            settings.execution.orchestrator.model.as_deref(),
+            Some("glm-5.2:cloud")
+        );
+        assert_eq!(
+            settings.execution.multimodal.provider_id.as_deref(),
+            Some("provider-ollama-cloud")
+        );
+        assert_eq!(
+            settings.execution.multimodal.model.as_deref(),
+            Some("gemma4:31b-cloud")
+        );
+        let agent = state.agents.get("research-agent").await.unwrap();
+        assert_eq!(agent.provider_id, "provider-ollama-cloud");
+        assert_eq!(agent.model, "glm-5.2:cloud");
+        assert_eq!(agent.temperature, 0.2);
+        assert_eq!(agent.instructions, "Keep these instructions.\n");
+        assert_eq!(agent.mcps, ["example"]);
+        assert_eq!(agent.skills, ["research"]);
+        assert!(!state
+            .paths
+            .config_dir()
+            .join(".ollama-cloud-commissioning-pending")
+            .exists());
     }
 
     #[test]

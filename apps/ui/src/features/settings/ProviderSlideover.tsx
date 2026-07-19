@@ -89,7 +89,7 @@ export function ProviderSlideover({
       setForm({
         name: provider.name,
         description: provider.description,
-        apiKey: provider.apiKey,
+        apiKey: "",
         baseUrl: provider.baseUrl,
         models: [...provider.models],
         defaultModel: provider.defaultModel || provider.models[0] || "",
@@ -195,7 +195,7 @@ export function ProviderSlideover({
   };
 
   const handleSave = async () => {
-    if (!form.name || !form.apiKey || !form.baseUrl) return;
+    if (!form.name || !form.baseUrl || (mode === "create" && !form.apiKey)) return;
     setIsSaving(true);
     setError(null);
     try {
@@ -237,7 +237,7 @@ export function ProviderSlideover({
         const result = await transport.updateProvider(provider.id, {
           name: form.name,
           description: form.description,
-          apiKey: form.apiKey,
+          apiKey: form.apiKey || undefined,
           baseUrl: form.baseUrl,
           models: form.models,
           defaultModel: form.defaultModel || undefined,
@@ -283,7 +283,7 @@ export function ProviderSlideover({
 
   const maskedKey = form.apiKey
     ? `${form.apiKey.slice(0, 4)}${"•".repeat(8)}${form.apiKey.slice(-4)}`
-    : "Not set";
+    : provider?.hasApiKey ? "Configured" : "Not set";
 
   return (
     <>

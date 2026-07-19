@@ -59,6 +59,7 @@ const INTERESTS = [
 ];
 
 const CLOUD_PROVIDERS: Record<CloudPreset, { name: string; models: string[] }> = {
+  ollama_cloud: { name: "Ollama Cloud", models: ["glm-5.2:cloud"] },
   openai: { name: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "o4-mini", "gpt-4.1"] },
   deepseek: { name: "DeepSeek", models: ["deepseek-chat", "deepseek-reasoner"] },
   openrouter: { name: "OpenRouter", models: ["anthropic/claude-opus", "openai/gpt-4-turbo", "google/gemini-pro"] },
@@ -148,6 +149,7 @@ export function CommissioningScreen() {
   };
 
   const choosePreset = (nextPreset: CloudPreset) => {
+    setApiKey("");
     setPreset(nextPreset);
     setModel(CLOUD_PROVIDERS[nextPreset].models[0]);
     setError(null);
@@ -313,8 +315,8 @@ export function CommissioningScreen() {
             <h2>Choose how your agent thinks</h2>
             <p className="commissioning-panel__intro">Use a cloud provider with your own key or connect a local Ollama model.</p>
             <div className="commissioning-choice-row">
-              <button className={`commissioning-choice ${providerKind === "cloud" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("cloud"); setError(null); }}><Cloud aria-hidden="true" /><strong>Cloud provider</strong><span>Bring an API key from a supported provider.</span></button>
-              <button className={`commissioning-choice ${providerKind === "local" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("local"); setError(null); }}><HeartHandshake aria-hidden="true" /><strong>Local model</strong><span>Run privately through Ollama on this device.</span></button>
+              <button className={`commissioning-choice ${providerKind === "cloud" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("cloud"); setApiKey(""); setModel(CLOUD_PROVIDERS[preset].models[0]); setError(null); }}><Cloud aria-hidden="true" /><strong>Cloud provider</strong><span>Bring an API key from a supported provider.</span></button>
+              <button className={`commissioning-choice ${providerKind === "local" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("local"); setApiKey(""); setModel(localDiagnosis?.models?.[0] || ""); setError(null); }}><HeartHandshake aria-hidden="true" /><strong>Local model</strong><span>Run privately through Ollama on this device.</span></button>
             </div>
             {providerKind === "cloud" ? (
               <div className="commissioning-provider-form">
@@ -324,6 +326,7 @@ export function CommissioningScreen() {
                 <p className="commissioning-provider-form__hint">Need a provider with a custom endpoint or authentication method? Add it in Settings after commissioning.</p>
                 <label className="form-group"><span className="form-label">API key</span><input className="form-input" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" placeholder="Paste your key" /></label>
                 <label className="form-group"><span className="form-label">Model</span><select className="form-select" value={model} onChange={(event) => setModel(event.target.value)}>{selectedModelOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
+                {preset === "ollama_cloud" && <div className="commissioning-memory-disclosure" role="note" aria-label="Ollama Cloud model recommendation"><strong>Recommended Ollama Cloud setup</strong><p>All agents start with <code>glm-5.2:cloud</code>. Images and other multimodal work use <code>gemma4:31b-cloud</code>.</p></div>}
               </div>
             ) : (
               <div className="commissioning-local">

@@ -13,7 +13,7 @@ description = "Config-based services for the AgentZero gateway"
 
 [dependencies]
 # Internal crates (for shared config types)
-zero-core = { path = "../../framework/zero-core" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 agent-runtime = { path = "../../runtime/agent-runtime" }
 agent-tools = { path = "../../runtime/agent-tools" }
 discovery = { path = "../../discovery" }
@@ -45,6 +45,8 @@ thiserror = { workspace = true }
 parking_lot = "0.12"
 arc-swap = "1"
 dirs = "5"
+base64 = { workspace = true }
+sha2 = "0.10"
 
 # File watching for hot-reload
 notify = "7"

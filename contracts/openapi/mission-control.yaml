@@ -1,0 +1,75 @@
+openapi: 3.1.0
+info:
+  title: z-Bot Mission Control API
+  version: 1.0.0
+  description: Additive contract for selected Mission Control session detail.
+x-spec: docs/specs/session-plan-monitoring/spec.md
+paths:
+  /api/executions/v2/mission-control/sessions/{sessionId}/tokens:
+    get:
+      summary: Read selected Mission Control session token slices and current plan
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: The selected session's bounded detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MissionControlSessionTokens' }
+        '404':
+          description: The selected session does not exist.
+components:
+  schemas:
+    PlanStep:
+      type: object
+      additionalProperties: false
+      required: [step, status]
+      properties:
+        step: { type: string, minLength: 1, maxLength: 512 }
+        status:
+          type: string
+          enum: [pending, in_progress, completed, failed]
+    CurrentPlan:
+      type: object
+      additionalProperties: false
+      required: [execution_id, plan, updated_at]
+      properties:
+        execution_id: { type: string, minLength: 1 }
+        explanation: { type: string, maxLength: 1000 }
+        plan:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/PlanStep' }
+        updated_at: { type: string, format: date-time }
+    MissionControlExecutionSummary:
+      type: object
+      additionalProperties: false
+      required: [execution_id, agent_id, delegation_type, tokens_in, tokens_out]
+      properties:
+        execution_id: { type: string }
+        agent_id: { type: string }
+        delegation_type: { type: string }
+        tokens_in: { type: integer, minimum: 0 }
+        tokens_out: { type: integer, minimum: 0 }
+        child_session_id: { type: string }
+    MissionControlSessionTokens:
+      type: object
+      additionalProperties: false
+      required:
+        [conversation_id, root_execution_id, total_tokens_in, total_tokens_out,
+         executions]
+      properties:
+        conversation_id: { type: string }
+        root_execution_id: { type: string }
+        total_tokens_in: { type: integer, minimum: 0 }
+        total_tokens_out: { type: integer, minimum: 0 }
+        executions:
+          type: array
+          items: { $ref: '#/components/schemas/MissionControlExecutionSummary' }
+        current_plan:
+          allOf: [{ $ref: '#/components/schemas/CurrentPlan' }]
+          description: Latest validated update_plan snapshot for this selected session.

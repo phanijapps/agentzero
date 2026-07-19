@@ -43,6 +43,28 @@ describe("<AgentTurnBlock> (root)", () => {
     expect(screen.queryByTestId(/timeline/)).toBeNull();
   });
 
+  it("uses only the live ticker for a running root tool call", () => {
+    render(
+      <AgentTurnBlock
+        turn={makeRoot({
+          status: "running",
+          completedAt: null,
+          respond: null,
+          timeline: [{
+            id: "root-tool",
+            at: 1,
+            kind: "tool_call",
+            text: "read_file",
+            toolName: "read_file",
+          }],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Running read_file")).toBeTruthy();
+    expect(screen.queryByTestId("turn-tool-activity")).toBeNull();
+  });
+
   it("renders nested subagent cards when childTurns are provided", () => {
     const root = makeRoot();
     const child = makeChild({

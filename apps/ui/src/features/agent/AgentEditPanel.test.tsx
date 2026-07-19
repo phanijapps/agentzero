@@ -80,7 +80,9 @@ function makeAgent(overrides: Partial<AgentResponse> = {}): AgentResponse {
     providerId: "openai",
     model: "gpt-4o",
     temperature: 0.7,
-    maxTokens: 4096,
+    maxInputTokens: 200000,
+    maxOutputTokens: 32000,
+    maxTokens: 32000,
     thinkingEnabled: false,
     voiceRecordingEnabled: false,
     instructions: "You are helpful.",
@@ -180,6 +182,8 @@ describe("AgentEditPanel — Advanced section", () => {
     const [, payload] = mockUpdateAgent.mock.calls[0];
     expect(payload).not.toHaveProperty("voiceRecordingEnabled");
     expect(payload).toHaveProperty("thinkingEnabled");
+    expect(payload).toHaveProperty("maxOutputTokens", 32000);
+    expect(payload).not.toHaveProperty("maxTokens");
     await waitFor(() => expect(onSave).toHaveBeenCalled());
   });
 
@@ -446,25 +450,25 @@ describe("AgentEditPanel — form field changes", () => {
     expect(screen.getByText(/^0\.7$/)).toBeInTheDocument();
   });
 
-  it("editing max tokens updates the value (Number.parseInt path)", async () => {
+  it("editing max output tokens updates the value (Number.parseInt path)", async () => {
     await mountReady();
-    const input = document.querySelector(
+    const input = document.querySelectorAll(
       'input[type="number"]',
-    ) as HTMLInputElement;
+    )[1] as HTMLInputElement;
     fireEvent.change(input, { target: { value: "8192" } });
     expect(input.value).toBe("8192");
   });
 
-  it("editing max tokens with non-numeric input falls back to 4096", async () => {
+  it("editing max output tokens with non-numeric input falls back to 32000", async () => {
     await mountReady();
-    const input = document.querySelector(
+    const input = document.querySelectorAll(
       'input[type="number"]',
-    ) as HTMLInputElement;
+    )[1] as HTMLInputElement;
     // jsdom's number-type inputs swallow non-digit input. To exercise the
-    // `Number.parseInt(...) || 4096` fallback, pass an empty string —
-    // parseInt("") is NaN → falsy → fallback 4096.
+    // `Number.parseInt(...) || 32000` fallback, pass an empty string —
+    // parseInt("") is NaN → falsy → fallback 32000.
     fireEvent.change(input, { target: { value: "" } });
-    expect(input.value).toBe("4096");
+    expect(input.value).toBe("32000");
   });
 
   it("typing into the System Prompt textarea inside Advanced updates instructions", async () => {

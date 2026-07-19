@@ -16,8 +16,8 @@ use crate::middleware::traits::{
     ExecutionState, MiddlewareContext, MiddlewareEffect, PreProcessMiddleware,
 };
 use crate::types::{ChatMessage, StreamEvent, ToolCall};
+use agent_primitives::types::Part;
 use serde_json::json;
-use zero_core::types::Part;
 
 /// Compress an assistant message into a one-line summary.
 ///
@@ -583,6 +583,62 @@ mod tests {
         // Should only clear calculator, not search
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0], 3); // Index of calculator result
+    }
+
+    #[test]
+    fn test_exclude_load_skill_preserves_skill_results() {
+        let skill_tool_call = ToolCall::new(
+            "call_skill".to_string(),
+            "load_skill".to_string(),
+            json!({"skill": "rust-development"}),
+        );
+        let search_tool_call = ToolCall::new(
+            "call_search".to_string(),
+            "search".to_string(),
+            json!({"query": "rust ownership"}),
+        );
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: vec![Part::Text {
+                    text: String::new(),
+                }],
+                tool_calls: Some(vec![skill_tool_call, search_tool_call]),
+                tool_call_id: None,
+                is_summary: false,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: vec![Part::Text {
+                    text: "# Rust Development\n\nUse ownership-aware patterns.".to_string(),
+                }],
+                tool_calls: None,
+                tool_call_id: Some("call_skill".to_string()),
+                is_summary: false,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: vec![Part::Text {
+                    text: "Search result body".to_string(),
+                }],
+                tool_calls: None,
+                tool_call_id: Some("call_search".to_string()),
+                is_summary: false,
+            },
+        ];
+        let config = ContextEditingConfig {
+            enabled: true,
+            trigger_tokens: 100,
+            keep_tool_results: 0,
+            min_reclaim: 0,
+            exclude_tools: vec!["load_skill".to_string()],
+            ..Default::default()
+        };
+        let middleware = ContextEditingMiddleware::new(config);
+
+        let indices = middleware.find_tool_results_to_clear(&messages);
+
+        assert_eq!(indices, vec![2]);
     }
 
     #[test]

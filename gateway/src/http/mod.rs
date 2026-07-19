@@ -4,11 +4,13 @@
 
 mod agents;
 mod artifacts;
+mod autonomy;
 mod belief_network;
 mod beliefs;
 mod bridge;
 mod chat;
 mod cleanup;
+pub(crate) mod commissioning;
 mod connectors;
 mod conversations;
 mod cron;
@@ -31,10 +33,12 @@ mod plugins;
 mod providers;
 mod sessions;
 mod settings;
-mod setup;
 mod skills;
+mod surfaces;
 mod tools;
+mod traces;
 mod upload;
+mod vault;
 mod ward_actions;
 mod ward_content;
 mod ward_curator;
@@ -115,6 +119,18 @@ pub fn create_http_router(
             "/api/conversations/:id/messages",
             get(conversations::list_messages),
         )
+        .route(
+            "/api/autonomy",
+            get(autonomy::list_items).post(autonomy::create_item),
+        )
+        .route("/api/autonomy/:id", get(autonomy::get_item))
+        .route("/api/surfaces/actions", post(surfaces::invoke_action))
+        .route(
+            "/api/autonomy/:id/transition",
+            post(autonomy::transition_item),
+        )
+        .route("/api/autonomy/:id/resume", post(autonomy::resume_item))
+        .route("/api/autonomy/:id/eligibility", get(autonomy::eligibility))
         // Tool endpoints
         .route("/api/tools", get(tools::list_tools))
         .route("/api/tools/:name", get(tools::get_tool))
@@ -126,6 +142,19 @@ pub fn create_http_router(
         .route("/api/skills/:id", delete(skills::delete_skill))
         // Provider endpoints
         .nest("/api/providers", providers::routes())
+        // Durable first-run commissioning
+        .route(
+            "/api/commissioning/status",
+            get(commissioning::get_commissioning_status),
+        )
+        .route(
+            "/api/commissioning/local/diagnose",
+            post(commissioning::diagnose_local_runtime),
+        )
+        .route(
+            "/api/commissioning/complete",
+            post(commissioning::complete_commissioning),
+        )
         // Model registry endpoints
         .route("/api/models", get(models::list_models))
         .route("/api/models/:id", get(models::get_model))
@@ -136,6 +165,13 @@ pub fn create_http_router(
         .route("/api/mcps/:id", put(mcps::update_mcp))
         .route("/api/mcps/:id", delete(mcps::delete_mcp))
         .route("/api/mcps/:id/test", post(mcps::test_mcp))
+        .route("/api/mcps/:id/oauth/status", get(mcps::mcp_oauth_status))
+        .route("/api/mcps/:id/oauth/start", post(mcps::start_mcp_oauth))
+        .route(
+            "/api/mcps/:id/oauth/disconnect",
+            post(mcps::disconnect_mcp_oauth),
+        )
+        .route("/api/mcps/oauth/callback", get(mcps::mcp_oauth_callback))
         // Connector endpoints
         .route("/api/connectors", get(connectors::list_connectors))
         .route("/api/connectors", post(connectors::create_connector))
@@ -211,9 +247,6 @@ pub fn create_http_router(
         .route("/api/customization/files", get(customization::list_files))
         .route("/api/customization/file", get(customization::get_file))
         .route("/api/customization/file", put(customization::put_file))
-        // Setup wizard endpoints
-        .route("/api/setup/status", get(setup::get_setup_status))
-        .route("/api/setup/mcp-defaults", get(setup::get_mcp_defaults))
         // Embedding backend selection (Phase 1)
         .route("/api/embeddings/health", get(embeddings::get_health))
         .route("/api/embeddings/models", get(embeddings::list_models))
@@ -281,6 +314,14 @@ pub fn create_http_router(
         .route("/api/curator/consolidate", post(ward_curator::consolidate))
         // Ward listing (Memory Tab Command Deck — Task 9)
         .route("/api/wards", get(ward_content::list_wards))
+        // Vault filesystem browser — local-only, read-only ward tree + preview.
+        .route("/api/vault/wards", get(vault::list_vault_wards))
+        .route("/api/vault/wards/:ward_id/tree", get(vault::get_vault_tree))
+        .route(
+            "/api/vault/wards/:ward_id/search",
+            get(vault::search_vault_files),
+        )
+        .route("/api/vault/wards/:ward_id/file", get(vault::get_vault_file))
         // Ward content aggregator (Memory Tab Command Deck — Task 5)
         .route(
             "/api/wards/:ward_id/content",
@@ -307,6 +348,7 @@ pub fn create_http_router(
         .route("/api/sessions/archive", post(sessions::archive_sessions))
         .route("/api/sessions/restore/:id", post(sessions::restore_session))
         .route("/api/sessions/:id/state", get(sessions::get_session_state))
+        .route("/api/traces/query", post(traces::query_traces))
         // Hard-delete a session with memory-preserving cascade (R18)
         .route("/api/sessions/:id", delete(sessions::delete_session))
         // Artifact endpoints
@@ -426,6 +468,7 @@ pub fn create_http_router(
     router = router.route("/ws", get(axum_ws_upgrade_handler));
 
     router
+        .layer(Extension(config.clone()))
         .layer(Extension(ws_handler))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

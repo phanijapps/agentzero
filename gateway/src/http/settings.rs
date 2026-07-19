@@ -39,26 +39,12 @@ pub async fn get_tool_settings(
     }
 }
 
-/// Request for updating tool settings.
-///
-/// Note: grep, load_skill are core tools and always enabled.
+/// Request for updating live tool settings.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateToolSettingsRequest {
     #[serde(default)]
-    pub python: bool,
-    #[serde(default)]
-    pub web_fetch: bool,
-    #[serde(default)]
-    pub ui_tools: bool,
-    #[serde(default)]
-    pub create_agent: bool,
-    #[serde(default)]
-    pub introspection: bool,
-    #[serde(default)]
     pub file_tools: bool,
-    #[serde(default)]
-    pub todos: bool,
     #[serde(default)]
     pub offload_large_results: bool,
     #[serde(default = "default_offload_threshold")]
@@ -72,13 +58,7 @@ fn default_offload_threshold() -> usize {
 impl From<UpdateToolSettingsRequest> for ToolSettings {
     fn from(req: UpdateToolSettingsRequest) -> Self {
         ToolSettings {
-            python: req.python,
-            web_fetch: req.web_fetch,
-            ui_tools: req.ui_tools,
-            create_agent: req.create_agent,
-            introspection: req.introspection,
             file_tools: req.file_tools,
-            todos: req.todos,
             offload_large_results: req.offload_large_results,
             offload_threshold_tokens: req.offload_threshold_tokens,
         }
@@ -382,7 +362,7 @@ pub async fn update_execution_settings(
 
     // Update SOUL.md if agent_name is provided
     if let Some(ref name) = settings.agent_name {
-        let soul_path = state.paths.vault_dir().join("config").join("SOUL.md");
+        let soul_path = state.paths.soul();
         let current = std::fs::read_to_string(&soul_path).unwrap_or_default();
         // Replace the first line "You are **OldName**" with the new name
         let updated = if let Some(rest) = current.strip_prefix("You are **") {
@@ -468,7 +448,7 @@ pub async fn update_network_settings(
                     data: None,
                     error: Some(e),
                 }),
-            ))
+            ));
         }
     };
     current.network = new_cfg.clone();

@@ -4,7 +4,7 @@
 //! Message types are provided by the `gateway-ws-protocol` crate.
 
 mod axum_handler;
-mod handler;
+pub(crate) mod handler;
 mod session;
 mod subscriptions;
 

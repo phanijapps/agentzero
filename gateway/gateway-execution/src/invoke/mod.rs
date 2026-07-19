@@ -16,25 +16,29 @@ mod stream_context;
 mod stream_event_processor;
 mod token_tracking;
 mod tool_call_accumulator;
+pub mod unified_recall_adapter;
 mod ward_scaffolding;
 pub mod ward_usage_adapter;
 pub mod working_memory;
 pub mod working_memory_middleware;
 
-pub use batch_writer::{spawn_batch_writer, spawn_batch_writer_with_repo, BatchWriterHandle};
+pub use batch_writer::{spawn_batch_writer, spawn_batch_writer_with_traces, BatchWriterHandle};
+pub(crate) use executor::mcp_startup_failure_observer;
 pub use executor::{
-    collect_agents_summary, collect_skills_summary, resolve_thinking_flag, ExecutorBuilder,
-    RuntimeActorKind,
+    build_context_capability_catalog, collect_agents_summary, collect_skills_summary,
+    resolve_thinking_flag, select_engine, ExecutorBuilder, RuntimeActorKind,
 };
 pub use micro_recall::{
     detect_triggers, execute_micro_recall, extract_new_entities, MicroRecallContext,
     MicroRecallTrigger,
 };
+pub(crate) use response_accumulator::assistant_turn_content;
 pub use response_accumulator::ResponseAccumulator;
 pub use setup::{
     append_system_context, detect_subagent_role, subagent_rules, AgentLoader, SubagentRole,
 };
 pub use stream_context::StreamContext;
+pub(crate) use stream_event_processor::build_session_plan_surface;
 pub use stream_event_processor::{broadcast_event, process_stream_event};
 pub use tool_call_accumulator::{ToolCallAccumulator, ToolCallRecord};
 pub use ward_scaffolding::{collect_ward_setup_for_skill, collect_ward_setups_for_skills};

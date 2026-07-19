@@ -27,12 +27,12 @@ pub enum Style {
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
-const FG_ACCENT: &str = "\x1b[38;2;167;139;250m";    // violet-400
-const FG_SECONDARY: &str = "\x1b[38;2;56;189;248m";  // sky-400
-const FG_AMBER: &str = "\x1b[38;2;251;191;36m";      // amber-400
-const FG_MUTED: &str = "\x1b[38;2;100;116;139m";     // slate-500
-const FG_SUCCESS: &str = "\x1b[38;2;34;197;94m";     // emerald-500
-const FG_ERROR: &str = "\x1b[38;2;248;113;113m";     // red-400
+const FG_ACCENT: &str = "\x1b[38;2;167;139;250m"; // violet-400
+const FG_SECONDARY: &str = "\x1b[38;2;56;189;248m"; // sky-400
+const FG_AMBER: &str = "\x1b[38;2;251;191;36m"; // amber-400
+const FG_MUTED: &str = "\x1b[38;2;100;116;139m"; // slate-500
+const FG_SUCCESS: &str = "\x1b[38;2;34;197;94m"; // emerald-500
+const FG_ERROR: &str = "\x1b[38;2;248;113;113m"; // red-400
 
 fn open(style: Style) -> &'static str {
     match style {

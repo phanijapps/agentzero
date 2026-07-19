@@ -2,6 +2,7 @@
 name = "knowledge-graph"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 # Async runtime
@@ -31,9 +32,6 @@ async-trait = { workspace = true }
 
 # Logging
 tracing = "0.1"
-
-# LLM integration for smart extraction
-zero-app = { path = "../../framework/zero-app" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,61 +1,20 @@
-// ============================================================================
-// MissionControlPage — page-level integration test
-// Verifies KPI strip + session list + detail pane all render and respond to
-// session selection. Mocks the data hooks so the test stays focused on the
-// page composition (other tests cover hooks + sub-components in isolation).
-// ============================================================================
-
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@/test/utils";
-
-// ---------------------------------------------------------------------------
-// Mock the data hooks — we feed sessions in via the mock state.
-// Mock SessionChatViewer so the test doesn't need transport plumbing.
-// ---------------------------------------------------------------------------
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { fireEvent, render, screen } from "@/test/utils";
+import type { LogSession } from "@/services/transport/types";
 
 const mockUseMissionControlSessions = vi.fn();
-const mockUseSessionDetailBundle = vi.fn();
-const mockUseSelectedSessionTokens = vi.fn();
-const mockUseAutoRefresh = vi.fn();
-const mockUseSessionTrace = vi.fn();
-const mockUseTraceSubscription = vi.fn();
-
-vi.mock("../logs/log-hooks", () => ({
-  useAutoRefresh: (...args: unknown[]) => mockUseAutoRefresh(...args),
-}));
 
 vi.mock("./useMissionControlSessions", () => ({
   useMissionControlSessions: (...args: unknown[]) => mockUseMissionControlSessions(...args),
 }));
 
-vi.mock("./useSessionDetailBundle", () => ({
-  useSessionDetailBundle: (...args: unknown[]) => mockUseSessionDetailBundle(...args),
-}));
-
-vi.mock("./useSelectedSessionTokens", () => ({
-  useSelectedSessionTokens: (...args: unknown[]) => mockUseSelectedSessionTokens(...args),
-}));
-
-vi.mock("../logs/useSessionTrace", () => ({
-  useSessionTrace: (sessionId: string | null) => mockUseSessionTrace(sessionId),
-}));
-
-vi.mock("../logs/useTraceSubscription", () => ({
-  useTraceSubscription: (...args: unknown[]) => mockUseTraceSubscription(...args),
-}));
-
-// Stub MessagesPane (replaces the older SessionChatViewer-based view) so the
-// page test stays focused on layout + selection rather than the messages
-// fetch path. MessagesPane has its own dedicated test file.
-vi.mock("./MessagesPane", () => ({
-  MessagesPane: ({ session }: { session: { session_id: string } | null }) => (
-    <div data-testid="session-chat-viewer">{session?.session_id ?? ""}</div>
+vi.mock("./SessionDetailPane", () => ({
+  SessionDetailPane: ({ session }: { session: LogSession }) => (
+    <div data-testid="mission-inspector">Inspector for {session.session_id}</div>
   ),
 }));
 
-// Import after mocks so they resolve.
 import { MissionControlPage } from "./MissionControlPage";
-import type { LogSession } from "@/services/transport/types";
 
 function makeSession(overrides: Partial<LogSession> = {}): LogSession {
   return {
@@ -64,8 +23,8 @@ function makeSession(overrides: Partial<LogSession> = {}): LogSession {
     agent_id: "agent:root",
     agent_name: "root",
     started_at: new Date().toISOString(),
-    status: "completed",
-    token_count: 0,
+    status: "running",
+    token_count: 1440,
     tool_call_count: 0,
     error_count: 0,
     child_session_ids: [],
@@ -78,147 +37,84 @@ beforeEach(() => {
   mockUseMissionControlSessions.mockReturnValue({
     sessions: [],
     tokenIndex: { byRootExecId: new Map(), executionsByRootExecId: new Map() },
+    refreshGeneration: 1,
     loading: false,
     error: null,
     refetch: vi.fn(),
   });
-  mockUseSessionTrace.mockReturnValue({ trace: null, loading: false, refetch: vi.fn() });
-  mockUseSessionDetailBundle.mockReturnValue({
-    bundle: { root: null, children: [] },
-    loading: false,
-    error: null,
-    refetch: vi.fn(),
-  });
-  mockUseSelectedSessionTokens.mockReturnValue({
-    byRootExecId: new Map(),
-    executionsByRootExecId: new Map(),
-  });
-  mockUseAutoRefresh.mockReturnValue(undefined);
-  mockUseTraceSubscription.mockReturnValue(undefined);
 });
 
 describe("MissionControlPage", () => {
-  it("renders the KPI strip with all five labels", () => {
+  it("renders the Attention Radar header and bounded snapshot metric", () => {
     render(<MissionControlPage />);
-    expect(screen.getByRole("region", { name: /mission control overview/i })).toBeInTheDocument();
-    expect(screen.getByText("Running")).toBeInTheDocument();
-    expect(screen.getByText("Done · 24h")).toBeInTheDocument();
+    expect(screen.getByRole("main", { name: /mission control attention radar/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Attention Radar" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Mission overview" })).toHaveTextContent("Attention now");
+    expect(screen.getByText("Bounded session summary")).toBeInTheDocument();
   });
 
-  it("renders the empty session-list message when there are no sessions", () => {
+  it("shows a calm empty Radar state", () => {
     render(<MissionControlPage />);
-    expect(screen.getByText(/no sessions match/i)).toBeInTheDocument();
+    expect(screen.getByText(/no recent missions/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Radar standing by" })).toBeInTheDocument();
   });
 
-  it("renders one row per session in the list", () => {
+  it("ranks a failed mission before an active mission", () => {
     mockUseMissionControlSessions.mockReturnValue({
       sessions: [
-        makeSession({ session_id: "alpha-1", title: "alpha" }),
-        makeSession({ session_id: "beta-2", title: "beta" }),
+        makeSession({ session_id: "active-1", title: "active mission", status: "running" }),
+        makeSession({ session_id: "failed-1", title: "failed mission", status: "error" }),
       ],
       tokenIndex: { byRootExecId: new Map(), executionsByRootExecId: new Map() },
+      refreshGeneration: 1,
       loading: false,
       error: null,
       refetch: vi.fn(),
     });
     render(<MissionControlPage />);
-    expect(screen.getByText("alpha")).toBeInTheDocument();
-    expect(screen.getByText("beta")).toBeInTheDocument();
+    const missions = screen.getAllByRole("button", { name: /focus (active|failed) mission/i });
+    expect(missions[0]).toHaveAccessibleName("Focus failed mission");
   });
 
-  it("auto-selects the first visible session when none is selected", () => {
-    // Explicit timestamps so applyFilters' newest-first sort is deterministic.
+  it("keeps the inspector expanded when the focused mission changes", () => {
     mockUseMissionControlSessions.mockReturnValue({
       sessions: [
-        makeSession({
-          session_id: "first-aaaaaa",
-          title: "alpha-row",
-          started_at: "2026-04-25T22:00:00Z",
-        }),
-        makeSession({
-          session_id: "second-bbbbbb",
-          title: "beta-row",
-          started_at: "2026-04-25T21:00:00Z",
-        }),
+        makeSession({ session_id: "first-1", title: "first mission" }),
+        makeSession({ session_id: "second-2", title: "second mission" }),
       ],
       tokenIndex: { byRootExecId: new Map(), executionsByRootExecId: new Map() },
+      refreshGeneration: 1,
       loading: false,
       error: null,
       refetch: vi.fn(),
     });
     render(<MissionControlPage />);
-    // Detail pane mounts the SessionChatViewer for the auto-selected session.
-    // Newest first → first-aaaaaa is selected.
-    const viewer = screen.getByTestId("session-chat-viewer");
-    expect(viewer.textContent).toBe("first-aaaaaa");
+    fireEvent.click(screen.getByRole("button", { name: "Focus second mission" }));
+    expect(screen.getByRole("heading", { name: "second mission" })).toBeInTheDocument();
+    expect(screen.getByTestId("mission-inspector")).toHaveTextContent("second-2");
   });
 
-  it("switches the detail pane when a different session row is clicked", () => {
+  it("shows the detailed trace by default and lets the user collapse it", () => {
     mockUseMissionControlSessions.mockReturnValue({
-      sessions: [
-        makeSession({ session_id: "first-1", title: "first" }),
-        makeSession({ session_id: "second-2", title: "second" }),
-      ],
+      sessions: [makeSession({ session_id: "live-1", title: "live mission" })],
       tokenIndex: { byRootExecId: new Map(), executionsByRootExecId: new Map() },
+      refreshGeneration: 1,
       loading: false,
       error: null,
       refetch: vi.fn(),
     });
     render(<MissionControlPage />);
-    const secondRow = screen.getByText("second").closest("button")!;
-    fireEvent.click(secondRow);
-    // Detail pane title now includes "second"
-    expect(screen.getAllByText(/second/).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("mission-inspector")).toHaveTextContent("live-1");
+    fireEvent.click(screen.getByRole("button", { name: /hide inspector/i }));
+    expect(screen.queryByTestId("mission-inspector")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /inspect mission/i }));
+    expect(screen.getByTestId("mission-inspector")).toHaveTextContent("live-1");
   });
 
-  it("toggles a status filter when a chip is clicked", () => {
-    mockUseMissionControlSessions.mockReturnValue({
-      sessions: [
-        makeSession({ session_id: "ok", title: "ok-row", status: "completed" }),
-        makeSession({ session_id: "broken", title: "broken-row", status: "error" }),
-      ],
-      tokenIndex: { byRootExecId: new Map(), executionsByRootExecId: new Map() },
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
+  it("places live operations and system posture in the right column", () => {
     render(<MissionControlPage />);
-    expect(screen.getByText("broken-row")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "FAILED" }));
-    expect(screen.queryByText("broken-row")).not.toBeInTheDocument();
-  });
-
-  it("filters by search term", () => {
-    mockUseMissionControlSessions.mockReturnValue({
-      sessions: [
-        makeSession({ session_id: "auth-1", title: "refactor auth ward" }),
-        makeSession({ session_id: "report-1", title: "summarize Q4 reports" }),
-      ],
-      tokenIndex: { byRootExecId: new Map(), executionsByRootExecId: new Map() },
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
-    render(<MissionControlPage />);
-    fireEvent.change(screen.getByPlaceholderText(/search sessions/i), {
-      target: { value: "auth" },
-    });
-    expect(screen.getByText("refactor auth ward")).toBeInTheDocument();
-    expect(screen.queryByText("summarize Q4 reports")).not.toBeInTheDocument();
-  });
-
-  it("hands the WS subscription to the selected session", () => {
-    mockUseMissionControlSessions.mockReturnValue({
-      sessions: [makeSession({ session_id: "live-1", status: "running", title: "live-row" })],
-      tokenIndex: { byRootExecId: new Map(), executionsByRootExecId: new Map() },
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
-    render(<MissionControlPage />);
-    expect(mockUseTraceSubscription).toHaveBeenCalled();
-    const calls = mockUseTraceSubscription.mock.calls as [{ session: LogSession | null }][];
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall[0].session?.session_id).toBe("live-1");
+    const sidebar = screen.getByRole("complementary", { name: "Live operations and system posture" });
+    expect(sidebar).toHaveTextContent("Recent mission activity");
+    expect(sidebar).toHaveTextContent("Ready for focused work");
   });
 });

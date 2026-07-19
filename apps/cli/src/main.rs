@@ -51,6 +51,18 @@ struct Args {
     #[arg(long)]
     no_color: bool,
 
+    /// Invoke a catalog-approved surface action through the gateway registry.
+    #[arg(long, value_name = "ACTION", requires_all = ["surface_target", "expected_state"])]
+    surface_action: Option<String>,
+
+    /// Target id for --surface-action (for example, an autonomy item id).
+    #[arg(long, value_name = "ID")]
+    surface_target: Option<String>,
+
+    /// Required current target state; prevents stale or replayed mutations.
+    #[arg(long, value_name = "STATE")]
+    expected_state: Option<String>,
+
     /// One-shot prompt. When provided, sends and exits on turn completion.
     /// If stdin is not a TTY, its contents are prepended to this message.
     prompt: Option<String>,
@@ -68,6 +80,20 @@ async fn main() -> Result<()> {
         .health()
         .await
         .with_context(|| format!("daemon unreachable at {}", cfg.daemon_url))?;
+
+    if let Some(action_id) = args.surface_action.as_deref() {
+        client
+            .invoke_surface_action(
+                action_id,
+                args.surface_target
+                    .as_deref()
+                    .expect("clap requires target"),
+                args.expected_state.as_deref().expect("clap requires state"),
+            )
+            .await
+            .context("invoke surface action")?;
+        return Ok(());
+    }
 
     let chat = client
         .init_chat_session()

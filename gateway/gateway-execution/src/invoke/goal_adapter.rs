@@ -8,8 +8,8 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use agent_tools::{GoalAccess, GoalSummary};
-use zero_stores_domain::Goal;
-use zero_stores_traits::GoalStore;
+use zbot_stores_domain::Goal;
+use zbot_stores_traits::GoalStore;
 
 /// Adapter that implements [`GoalAccess`] by delegating to a [`GoalStore`].
 pub struct GoalAdapter {
@@ -25,6 +25,7 @@ impl GoalAdapter {
 fn to_summary(g: Goal) -> GoalSummary {
     GoalSummary {
         id: g.id,
+        ward_id: g.ward_id,
         title: g.title,
         description: g.description,
         state: g.state,

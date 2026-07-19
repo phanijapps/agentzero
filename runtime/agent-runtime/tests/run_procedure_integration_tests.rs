@@ -9,6 +9,7 @@
 //! can be discovered through the outer registry by name and successfully
 //! drive a procedure to completion.
 
+use agent_primitives::{Result, Tool, ToolContext};
 use agent_runtime::tools::context::ToolContext as ConcreteCtx;
 use agent_runtime::tools::registry::ToolRegistry;
 use agent_runtime::tools::run_procedure::RunProcedureTool;
@@ -16,8 +17,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
-use zero_core::{Result, Tool, ToolContext};
-use zero_stores_traits::{Procedure, ProcedureStore};
+use zbot_stores_traits::{Procedure, ProcedureStore};
 
 struct EchoTool;
 

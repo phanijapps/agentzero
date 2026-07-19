@@ -1,6 +1,6 @@
 //! # ExecutionStream
 //!
-//! Per-execution event loop. Consumes an `AgentExecutor` stream,
+//! Per-execution event loop. Consumes an AgentZero engine stream,
 //! accumulates tool calls, drives lifecycle transitions, and fires
 //! post-execution background tasks (distillation, ward indexing).
 //!
@@ -9,13 +9,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_runtime::{AgentExecutor, ChatMessage};
+use agent_runtime::{BoxedAgentEngine, ChatMessage, ToolResultContextConfig};
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::EventBus;
 use gateway_services::SharedVaultPaths;
 use tokio::sync::{mpsc, RwLock};
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::delegation::extract_structured_result;
 use crate::delegation::{DelegationRegistry, DelegationRequest};
@@ -23,8 +23,8 @@ use crate::handle::ExecutionHandle;
 use crate::invoke::micro_recall::MicroRecallContext;
 use crate::invoke::working_memory_middleware;
 use crate::invoke::{
-    broadcast_event, process_stream_event, spawn_batch_writer_with_repo, BatchWriterHandle,
-    ResponseAccumulator, StreamContext, ToolCallAccumulator, WorkingMemory,
+    assistant_turn_content, broadcast_event, process_stream_event, spawn_batch_writer_with_traces,
+    BatchWriterHandle, ResponseAccumulator, StreamContext, ToolCallAccumulator, WorkingMemory,
 };
 use crate::lifecycle::{
     complete_execution, crash_execution, stop_execution, CompleteExecution, CrashExecution,
@@ -44,15 +44,17 @@ pub struct ExecutionStream {
     pub event_bus: Arc<EventBus>,
     pub state_service: Arc<StateService<DatabaseManager>>,
     pub log_service: Arc<LogService<DatabaseManager>>,
-    pub conversation_repo: Arc<ConversationRepository>,
+    pub messages: Arc<dyn zbot_conversation::MessageStore>,
+    pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     pub delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     pub delegation_registry: Arc<DelegationRegistry>,
     pub handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     pub distiller: Option<Arc<crate::distillation::SessionDistiller>>,
-    pub kg_episode_repo: Option<Arc<zero_stores_sqlite::KgEpisodeRepository>>,
+    pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub paths: SharedVaultPaths,
-    pub kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
-    pub memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
+    pub memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     pub bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
     pub bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
@@ -99,39 +101,10 @@ struct EventHandlerDeps<'a> {
     execution_id: &'a str,
     agent_id: &'a str,
     handle: &'a ExecutionHandle,
-    kg_episode_repo: Option<&'a Arc<zero_stores_sqlite::KgEpisodeRepository>>,
-    kg_store: Option<&'a Arc<dyn zero_stores::KnowledgeGraphStore>>,
-}
-
-/// Pull the `message` (or `text`) arg from a `respond` tool call in
-/// the current turn's tool-call list, when one is present.
-///
-/// The `respond` tool transports the agent's final answer in its
-/// args rather than via streamed assistant tokens. Without this
-/// helper, the assistant row persisted at tool-result time would be
-/// the `"[tool calls]"` placeholder and the answer would only live
-/// in the WS event stream — invisible after a page reload.
-///
-/// Accepts either `args.text` or `args.message` (both shapes appear
-/// across older / newer respond-tool callers; see
-/// `gateway/gateway-execution/src/session_state.rs` for the matching
-/// lookup that runs against execution_log metadata).
-fn extract_respond_message(tool_calls: &[serde_json::Value]) -> Option<String> {
-    for tc in tool_calls {
-        if tc.get("tool_name").and_then(|v| v.as_str()) != Some("respond") {
-            continue;
-        }
-        let args = tc.get("args")?;
-        let msg = args
-            .get("text")
-            .or_else(|| args.get("message"))
-            .and_then(|v| v.as_str())?;
-        if msg.is_empty() {
-            continue;
-        }
-        return Some(msg.to_string());
-    }
-    None
+    tool_result_context: &'a ToolResultContextConfig,
+    kg_episode_store: Option<&'a Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
+    kg_store: Option<&'a Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    ingestion_adapter: Option<&'a Arc<dyn agent_tools::IngestionAccess>>,
 }
 
 /// Handle a `StreamEvent::ToolCallStart` — record the call, update the
@@ -160,6 +133,7 @@ fn handle_tool_result(
     deps: &EventHandlerDeps<'_>,
     tool_id: &str,
     result: &str,
+    context_result: Option<&str>,
     error: Option<&str>,
 ) {
     acc.tool_acc
@@ -178,13 +152,7 @@ fn handle_tool_result(
     //      turn had no streamed text (graph_query, memory, etc.).
     if !acc.turn_tool_calls.is_empty() {
         let tc_json = serde_json::to_string(&acc.turn_tool_calls).unwrap_or_default();
-        let content = if !acc.turn_text.is_empty() {
-            std::mem::take(&mut acc.turn_text)
-        } else if let Some(msg) = extract_respond_message(&acc.turn_tool_calls) {
-            msg
-        } else {
-            "[tool calls]".to_string()
-        };
+        let content = assistant_turn_content(&mut acc.turn_text, &acc.turn_tool_calls);
         deps.batch_writer.session_message(
             deps.session_id,
             deps.execution_id,
@@ -197,10 +165,13 @@ fn handle_tool_result(
     }
 
     // Emit tool result message
-    let tool_content = match error {
-        Some(err) => format!("Error: {}", err),
-        None => result.to_string(),
-    };
+    let tool_content = super::prompt_safe_tool_content(
+        &acc.current_tool_name,
+        result,
+        context_result,
+        error,
+        deps.tool_result_context,
+    );
     deps.batch_writer.session_message(
         deps.session_id,
         deps.execution_id,
@@ -222,25 +193,27 @@ fn handle_tool_result(
     // Phase 6d: real-time graph extraction from tool output.
     // Non-blocking — fires in a background task so the execution
     // loop never waits.
-    if let (Some(ep_repo), Some(kg)) = (deps.kg_episode_repo, deps.kg_store) {
+    if let (Some(ep_store), Some(kg)) = (deps.kg_episode_store, deps.kg_store) {
         let tool_name_cl = acc.current_tool_name.clone();
         let tool_id_cl = tool_id.to_string();
         let result_cl = result.to_string();
         let session_id_cl = deps.session_id.to_string();
         let agent_id_cl = deps.agent_id.to_string();
-        let ep_store: Arc<dyn zero_stores_traits::KgEpisodeStore> = Arc::new(
-            zero_stores_sqlite::GatewayKgEpisodeStore::new(ep_repo.clone()),
-        );
+        let ep_store = ep_store.clone();
         let kg_cl = kg.clone();
+        let intake_cl = deps.ingestion_adapter.cloned();
         tokio::spawn(async move {
             crate::tool_result_extractor::extract_and_persist(
-                &tool_name_cl,
-                &tool_id_cl,
-                &result_cl,
-                &session_id_cl,
-                &agent_id_cl,
-                ep_store.as_ref(),
-                kg_cl.as_ref(),
+                crate::tool_result_extractor::ExtractAndPersistRequest {
+                    tool_name: &tool_name_cl,
+                    tool_call_id: &tool_id_cl,
+                    result_text: &result_cl,
+                    session_id: &session_id_cl,
+                    agent_id: &agent_id_cl,
+                    evidence_intake: intake_cl.as_deref(),
+                    episode_store: ep_store.as_ref(),
+                    kg: kg_cl.as_ref(),
+                },
             )
             .await;
         });
@@ -270,7 +243,11 @@ impl ExecutionStream {
     /// `tokio::spawn(async move { … })` block), with `self.<field>`
     /// replacing every captured-runner-field access and `ctx.<field>`
     /// replacing every `args.<field>` access.
-    pub async fn run(&self, ctx: ExecutionContext, executor: AgentExecutor) -> Result<(), String> {
+    pub async fn run(
+        &self,
+        ctx: ExecutionContext,
+        executor: BoxedAgentEngine,
+    ) -> Result<(), String> {
         let ExecutionContext {
             execution_id,
             session_id,
@@ -284,11 +261,12 @@ impl ExecutionStream {
             recommended_skills,
         } = ctx;
 
-        // Create batch writer for non-blocking DB writes (with conversation repo for session messages)
-        let batch_writer = spawn_batch_writer_with_repo(
+        // Create batch writer for non-blocking DB writes.
+        let batch_writer = spawn_batch_writer_with_traces(
             self.state_service.clone(),
             self.log_service.clone(),
-            Some(self.conversation_repo.clone()),
+            self.paths.traces_dir(),
+            self.messages.clone(),
         );
 
         // Create stream context for event processing
@@ -307,9 +285,10 @@ impl ExecutionStream {
         .with_recommended_skills(recommended_skills.clone());
 
         let mut response_acc = ResponseAccumulator::new();
-
-        // Append user message to session stream BEFORE execution
-        batch_writer.session_message(&session_id, &execution_id, "user", &message, None, None);
+        let settings_service = gateway_services::SettingsService::new(self.paths.clone());
+        let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
+        let tool_result_context =
+            super::prompt_safe_tool_result_config(&tool_settings, self.paths.vault_dir());
 
         // Per-turn mutable state — kept in one struct so the event
         // handlers take `&mut EventAccumulator` instead of 10 parameters.
@@ -418,8 +397,9 @@ impl ExecutionStream {
         let execution_id_inner = execution_id.clone();
         let agent_id_inner = agent_id.clone();
         let batch_writer_inner = batch_writer.clone();
-        let kg_episode_repo_inner = self.kg_episode_repo.clone();
+        let kg_episode_store_inner = self.kg_episode_store.clone();
         let kg_store_inner = self.kg_store.clone();
+        let ingestion_adapter_inner = self.ingestion_adapter.clone();
 
         // Execute with streaming — closure dispatches into free-fn
         // handlers defined at module scope (handle_tool_call_start,
@@ -431,57 +411,68 @@ impl ExecutionStream {
         // which we handle as a graceful exit below (stop_execution,
         // not crash_execution).
         let stop_sig = Some(handle.stop_signal());
+        let mut on_event = |event| {
+            if handle.is_stop_requested() {
+                return;
+            }
+
+            handle.increment();
+
+            let deps = EventHandlerDeps {
+                batch_writer: &batch_writer_inner,
+                session_id: &session_id_inner,
+                execution_id: &execution_id_inner,
+                agent_id: &agent_id_inner,
+                handle: &handle,
+                tool_result_context: &tool_result_context,
+                kg_episode_store: kg_episode_store_inner.as_ref(),
+                kg_store: kg_store_inner.as_ref(),
+                ingestion_adapter: ingestion_adapter_inner.as_ref(),
+            };
+
+            // Stream messages to session as they happen
+            match &event {
+                agent_runtime::StreamEvent::ToolCallStart {
+                    tool_id,
+                    tool_name,
+                    args,
+                    ..
+                } => handle_tool_call_start(&mut acc, tool_id, tool_name, args),
+                agent_runtime::StreamEvent::ToolResult {
+                    tool_id,
+                    result,
+                    context_result,
+                    error,
+                    ..
+                } => handle_tool_result(
+                    &mut acc,
+                    &deps,
+                    tool_id,
+                    result,
+                    context_result.as_deref(),
+                    error.as_deref(),
+                ),
+                agent_runtime::StreamEvent::Token { content, .. } => {
+                    acc.turn_text.push_str(content);
+                }
+                _ => {}
+            }
+
+            // Process the event (logging, delegation, token tracking)
+            let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
+
+            // Accumulate response content
+            if let Some(delta) = response_delta {
+                response_acc.append(&delta);
+            }
+
+            // Broadcast the gateway event (if not an internal-only event)
+            if let Some(event) = gateway_event {
+                broadcast_event(stream_ctx.event_bus.clone(), event);
+            }
+        };
         let result = executor
-            .execute_stream_with_stop_flag(&message, &history, stop_sig, |event| {
-                if handle.is_stop_requested() {
-                    return;
-                }
-
-                handle.increment();
-
-                let deps = EventHandlerDeps {
-                    batch_writer: &batch_writer_inner,
-                    session_id: &session_id_inner,
-                    execution_id: &execution_id_inner,
-                    agent_id: &agent_id_inner,
-                    handle: &handle,
-                    kg_episode_repo: kg_episode_repo_inner.as_ref(),
-                    kg_store: kg_store_inner.as_ref(),
-                };
-
-                // Stream messages to session as they happen
-                match &event {
-                    agent_runtime::StreamEvent::ToolCallStart {
-                        tool_id,
-                        tool_name,
-                        args,
-                        ..
-                    } => handle_tool_call_start(&mut acc, tool_id, tool_name, args),
-                    agent_runtime::StreamEvent::ToolResult {
-                        tool_id,
-                        result,
-                        error,
-                        ..
-                    } => handle_tool_result(&mut acc, &deps, tool_id, result, error.as_deref()),
-                    agent_runtime::StreamEvent::Token { content, .. } => {
-                        acc.turn_text.push_str(content);
-                    }
-                    _ => {}
-                }
-
-                // Process the event (logging, delegation, token tracking)
-                let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
-
-                // Accumulate response content
-                if let Some(delta) = response_delta {
-                    response_acc.append(&delta);
-                }
-
-                // Broadcast the gateway event (if not an internal-only event)
-                if let Some(event) = gateway_event {
-                    broadcast_event(stream_ctx.event_bus.clone(), event);
-                }
-            })
+            .execute_stream_with_stop_flag(&message, &history, stop_sig, &mut on_event)
             .await;
 
         // Execute micro-recall triggers collected during the stream
@@ -534,6 +525,25 @@ impl ExecutionStream {
                 &accumulated_response,
             );
             batch_writer.log(response_log);
+        }
+
+        // Turn-boundary checkpoint — write a versioned snapshot of the
+        // agent's context state so session_state can read it in O(1)
+        // (T12) instead of replaying execution_logs.
+        super::core::write_turn_checkpoint(
+            &self.checkpoints,
+            &self.state_service,
+            &execution_id,
+            &session_id,
+            handle.current_iteration(),
+            &accumulated_response,
+        );
+
+        // `agent_completed` causes Research to refresh its durable snapshot.
+        // Make the assistant row visible before that lifecycle event can win
+        // the race against the periodic batch flush.
+        if result.is_ok() {
+            batch_writer.flush().await;
         }
 
         // Handle completion
@@ -602,19 +612,9 @@ impl ExecutionStream {
                     let sid = session_id.clone();
                     let aid = agent_id.clone();
                     let ward_id_for_indexer = session_ward.clone();
-                    // Phase C: trait-routed indexer. Wrap the SQLite
-                    // kg_episode_repo as a KgEpisodeStore for the test
-                    // path; production already has the trait wired via
-                    // AppState but ExecutionStream's struct still holds
-                    // the concrete repo for backward compat. Same shape
-                    // for kg_store: the SqliteKgStore wrap of graph_storage.
-                    let kg_episode_store_for_indexer: Option<
-                        Arc<dyn zero_stores_traits::KgEpisodeStore>,
-                    > = self.kg_episode_repo.as_ref().map(|r| {
-                        Arc::new(zero_stores_sqlite::GatewayKgEpisodeStore::new(r.clone()))
-                            as Arc<dyn zero_stores_traits::KgEpisodeStore>
-                    });
-                    let kg_store_for_indexer: Option<Arc<dyn zero_stores::KnowledgeGraphStore>> =
+                    // The indexer receives the active backend-neutral stores.
+                    let kg_episode_store_for_indexer = self.kg_episode_store.clone();
+                    let kg_store_for_indexer: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
                         self.kg_store.clone();
                     let paths_for_indexer = self.paths.clone();
                     tokio::spawn(async move {
@@ -770,7 +770,7 @@ mod tests {
     use gateway_events::EventBus;
     use gateway_services::VaultPaths;
     use tokio::sync::{mpsc, RwLock};
-    use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+    use zbot_runtime_sqlite::DatabaseManager;
 
     #[test]
     fn execution_stream_constructs_with_minimum_required_deps() {
@@ -784,7 +784,6 @@ mod tests {
         let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
         let state = Arc::new(StateService::new(db.clone()));
         let logs = Arc::new(LogService::new(db.clone()));
-        let convo = Arc::new(ConversationRepository::new(db));
         let bus = Arc::new(EventBus::new());
         let (tx, _rx) = mpsc::unbounded_channel();
         let registry = Arc::new(crate::delegation::DelegationRegistry::new());
@@ -794,134 +793,25 @@ mod tests {
             event_bus: bus,
             state_service: state,
             log_service: logs,
-            conversation_repo: convo,
+            messages: Arc::new(zbot_conversation::SqliteMessageStore::new(
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+            )),
+            checkpoints: Arc::new(zbot_conversation::SqliteCheckpointStore::new(
+                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
+            )),
             delegation_tx: tx,
             delegation_registry: registry,
             handles,
             distiller: None,
-            kg_episode_repo: None,
+            kg_episode_store: None,
             paths,
             kg_store: None,
+            ingestion_adapter: None,
             memory_store: None,
             connector_registry: None,
             bridge_registry: None,
             bridge_outbox: None,
             handoff_writer: None,
         };
-    }
-
-    // ----- extract_respond_message: persistence of the agent's final answer
-    //       when emitted via the `respond` tool. Regression coverage for the
-    //       Quick-Chat-reloads-blank bug.
-
-    #[test]
-    fn extract_respond_message_picks_message_arg() {
-        let calls = vec![serde_json::json!({
-            "tool_name": "respond",
-            "args": { "message": "Here is your answer." }
-        })];
-        assert_eq!(
-            extract_respond_message(&calls),
-            Some("Here is your answer.".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_respond_message_picks_text_arg_as_fallback() {
-        let calls = vec![serde_json::json!({
-            "tool_name": "respond",
-            "args": { "text": "Older-style payload." }
-        })];
-        assert_eq!(
-            extract_respond_message(&calls),
-            Some("Older-style payload.".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_respond_message_prefers_text_over_message_when_both_present() {
-        // The lookup in session_state.rs's `find_respond` checks `text`
-        // first, then `message`. Mirror that ordering here so both
-        // call sites behave consistently.
-        let calls = vec![serde_json::json!({
-            "tool_name": "respond",
-            "args": { "text": "from-text", "message": "from-message" }
-        })];
-        assert_eq!(
-            extract_respond_message(&calls),
-            Some("from-text".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_respond_message_skips_non_respond_tools() {
-        let calls = vec![
-            serde_json::json!({
-                "tool_name": "graph_query",
-                "args": { "action": "search", "query": "user" }
-            }),
-            serde_json::json!({
-                "tool_name": "memory",
-                "args": { "action": "recall" }
-            }),
-        ];
-        assert_eq!(extract_respond_message(&calls), None);
-    }
-
-    #[test]
-    fn extract_respond_message_returns_first_respond_when_multiple() {
-        // Unusual but possible — the model could emit two respond calls
-        // in one turn. The first is what flushes the assistant row.
-        let calls = vec![
-            serde_json::json!({
-                "tool_name": "respond",
-                "args": { "message": "first" }
-            }),
-            serde_json::json!({
-                "tool_name": "respond",
-                "args": { "message": "second" }
-            }),
-        ];
-        assert_eq!(extract_respond_message(&calls), Some("first".to_string()));
-    }
-
-    #[test]
-    fn extract_respond_message_returns_none_when_message_empty() {
-        // Empty string is treated as "no answer" so we don't persist a
-        // blank assistant row that hides the placeholder fallback.
-        let calls = vec![serde_json::json!({
-            "tool_name": "respond",
-            "args": { "message": "" }
-        })];
-        assert_eq!(extract_respond_message(&calls), None);
-    }
-
-    #[test]
-    fn extract_respond_message_returns_none_when_no_message_arg() {
-        let calls = vec![serde_json::json!({
-            "tool_name": "respond",
-            "args": { "format": "json" }
-        })];
-        assert_eq!(extract_respond_message(&calls), None);
-    }
-
-    #[test]
-    fn extract_respond_message_handles_mixed_tool_calls() {
-        // Realistic scenario: graph_query, then respond. The respond
-        // payload is what we want as the persisted assistant content.
-        let calls = vec![
-            serde_json::json!({
-                "tool_name": "graph_query",
-                "args": { "action": "search", "query": "user" }
-            }),
-            serde_json::json!({
-                "tool_name": "respond",
-                "args": { "message": "Here is what I found." }
-            }),
-        ];
-        assert_eq!(
-            extract_respond_message(&calls),
-            Some("Here is what I found.".to_string())
-        );
     }
 }

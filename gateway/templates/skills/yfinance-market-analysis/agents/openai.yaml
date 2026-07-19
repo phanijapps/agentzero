@@ -1,0 +1,4 @@
+interface:
+  display_name: "YFinance Market Analysis"
+  short_description: "Unified yfinance market analysis workflows"
+  default_prompt: "Use $yfinance-market-analysis to analyze AAPL across price, fundamentals, catalysts, options, and risk."

@@ -59,7 +59,13 @@ export function WardRail({ wards, activeId, onSelect }: Props) {
   const regular = wards.filter((w) => !w.id.startsWith("__"));
   const global = wards.filter((w) => w.id.startsWith("__"));
   return (
-    <nav className="memory-wards" aria-label="Wards">
+    <nav className="memory-wards" aria-label="Memory scope">
+      <header className="memory-wards__head">
+        <div>
+          <h2>Scope radar</h2>
+          <p>Where to recall from</p>
+        </div>
+      </header>
       <div className="memory-wards__title">
         <span>WARDS</span>
         <span>{regular.length}</span>

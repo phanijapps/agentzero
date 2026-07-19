@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { getTransport } from "@/services/transport";
-import type { SessionDetail, ExecutionLog, LogSession } from "@/services/transport/types";
+import type { SessionDetail, ExecutionLog, LogSession, SessionMessage } from "@/services/transport/types";
 import type { DetailBundle } from "../mission-control/useSessionDetailBundle";
 import type { TraceNode } from "./trace-types";
 import { isInternalTool, extractToolSummary } from "./trace-types";
@@ -41,17 +41,6 @@ export function useSessionTrace(
       return;
     }
 
-    if (preloaded) {
-      if (!preloaded.root) {
-        setTrace(null);
-        setLoading(false);
-        return;
-      }
-      setTrace(buildTraceTree(preloaded.root, preloaded.children));
-      setLoading(false);
-      return;
-    }
-
     setTrace(null);
     let cancelled = false;
 
@@ -59,34 +48,52 @@ export function useSessionTrace(
       setLoading(true);
       try {
         const transport = await getTransport();
+        let rootDetail: SessionDetail;
+        let childDetails: SessionDetail[];
 
-        // 1. Fetch root session detail
-        const rootResult = await transport.getLogSession(sessionId);
-        if (cancelled) return;
-        if (!rootResult.success || !rootResult.data) {
-          console.error("Failed to load root session:", rootResult.error);
-          setLoading(false);
-          return;
-        }
+        if (preloaded) {
+          if (!preloaded.root) {
+            setTrace(null);
+            setLoading(false);
+            return;
+          }
+          rootDetail = preloaded.root;
+          childDetails = preloaded.children;
+        } else {
+          // 1. Fetch root session detail
+          const rootResult = await transport.getLogSession(sessionId);
+          if (cancelled) return;
+          if (!rootResult.success || !rootResult.data) {
+            console.error("Failed to load root session:", rootResult.error);
+            setLoading(false);
+            return;
+          }
 
-        const rootDetail = rootResult.data;
+          rootDetail = rootResult.data;
 
-        // 2. Fetch all child session details in parallel
-        const childIds = rootDetail.session.child_session_ids ?? [];
-        const childResults = await Promise.all(
-          childIds.map((id) => transport.getLogSession(id)),
-        );
-        if (cancelled) return;
+          // 2. Fetch all child session details in parallel
+          const childIds = rootDetail.session.child_session_ids ?? [];
+          const childResults = await Promise.all(
+            childIds.map((id) => transport.getLogSession(id)),
+          );
+          if (cancelled) return;
 
-        const childDetails: SessionDetail[] = [];
-        for (const cr of childResults) {
-          if (cr.success && cr.data) {
-            childDetails.push(cr.data);
+          childDetails = [];
+          for (const cr of childResults) {
+            if (cr.success && cr.data) {
+              childDetails.push(cr.data);
+            }
           }
         }
 
+        const messageSessionId = rootDetail.session.conversation_id || sessionId;
+        const messagesResult = await transport.getSessionMessages(messageSessionId, { scope: "all" });
+        const payloads = messagesResult.success && messagesResult.data
+          ? buildToolPayloadIndex(messagesResult.data)
+          : new Map<string, ToolPayload>();
+
         // 3. Build trace tree
-        const tree = buildTraceTree(rootDetail, childDetails);
+        const tree = buildTraceTree(rootDetail, childDetails, payloads);
         setTrace(tree);
       } catch (err) {
         if (!cancelled) {
@@ -131,6 +138,57 @@ export function extractMetaField(log: ExecutionLog, field: string): string | und
 // Helper: find matching tool_result for a tool_call
 // ============================================================================
 
+interface ToolPayload {
+  args?: string;
+  result?: string;
+}
+
+function stringifyPayload(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function parseToolCalls(value: unknown): Array<Record<string, unknown>> {
+  if (!value) return [];
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed as Array<Record<string, unknown>> : [];
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
+}
+
+function buildToolPayloadIndex(messages: SessionMessage[]): Map<string, ToolPayload> {
+  const byToolId = new Map<string, ToolPayload>();
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const call of parseToolCalls(message.tool_calls)) {
+        const toolId = typeof call.tool_id === "string" ? call.tool_id : undefined;
+        if (!toolId) continue;
+        byToolId.set(toolId, {
+          ...byToolId.get(toolId),
+          args: stringifyPayload(call.args),
+        });
+      }
+      continue;
+    }
+
+    if (message.role === "tool" && message.tool_call_id) {
+      byToolId.set(message.tool_call_id, {
+        ...byToolId.get(message.tool_call_id),
+        result: message.content,
+      });
+    }
+  }
+
+  return byToolId;
+}
+
 function findMatchingResult(
   logs: ExecutionLog[],
   toolCallLog: ExecutionLog,
@@ -168,6 +226,7 @@ function mapStatus(status: string): TraceNode["status"] {
 function buildTraceTree(
   rootDetail: SessionDetail,
   childDetails: SessionDetail[],
+  payloads: Map<string, ToolPayload> = new Map(),
 ): TraceNode {
   const rootSession = rootDetail.session;
 
@@ -192,7 +251,7 @@ function buildTraceTree(
   };
 
   // Process root session logs into children
-  rootNode.children = buildChildNodes(rootDetail.logs, rootSession, childMap);
+  rootNode.children = buildChildNodes(rootDetail.logs, rootSession, childMap, payloads);
 
   return rootNode;
 }
@@ -204,6 +263,7 @@ function buildTraceTree(
 function processToolCallLog(
   log: ExecutionLog,
   logs: ExecutionLog[],
+  payloads: Map<string, ToolPayload>,
 ): TraceNode | null {
   const toolName = extractMetaField(log, "tool_name") || log.message;
 
@@ -211,8 +271,10 @@ function processToolCallLog(
   if (isInternalTool(toolName)) return null;
 
   const resultLog = findMatchingResult(logs, log);
-  const args = extractMetaField(log, "args");
-  const result = resultLog ? extractMetaField(resultLog, "result") : undefined;
+  const toolId = extractMetaField(log, "tool_id");
+  const payload = toolId ? payloads.get(toolId) : undefined;
+  const args = extractMetaField(log, "args") ?? payload?.args;
+  const result = resultLog ? (extractMetaField(resultLog, "result") ?? payload?.result) : payload?.result;
   const durationMs = resultLog?.duration_ms ?? log.duration_ms;
   const hasError = resultLog ? resultLog.level === "error" : false;
 
@@ -235,6 +297,7 @@ function processDelegationLog(
   log: ExecutionLog,
   session: LogSession,
   childSessionsByAgent: Map<string, SessionDetail[]>,
+  payloads: Map<string, ToolPayload>,
 ): TraceNode {
   // Metadata key is "child_agent" (from stream.rs), not "child_agent_id" (from service.rs)
   const childAgentId =
@@ -273,6 +336,7 @@ function processDelegationLog(
       childSessionDetail.session,
       // Pass empty map: we don't recurse further for grandchildren in this version
       new Map(),
+      payloads,
     );
   }
 
@@ -301,6 +365,7 @@ function buildChildNodes(
   logs: ExecutionLog[],
   session: LogSession,
   childMap: Map<string, SessionDetail>,
+  payloads: Map<string, ToolPayload>,
 ): TraceNode[] {
   const children: TraceNode[] = [];
 
@@ -327,10 +392,10 @@ function buildChildNodes(
 
   for (const log of orderedLogs) {
     if (log.category === "tool_call") {
-      const node = processToolCallLog(log, logs);
+      const node = processToolCallLog(log, logs, payloads);
       if (node) children.push(node);
     } else if (log.category === "delegation") {
-      const node = processDelegationLog(log, session, childSessionsByAgent);
+      const node = processDelegationLog(log, session, childSessionsByAgent, payloads);
       children.push(node);
     } else if (log.category === "error") {
       children.push(processErrorLog(log));

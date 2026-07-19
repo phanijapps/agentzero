@@ -53,7 +53,7 @@ gateway-events (foundation — no gateway deps)
     ├── gateway-cron
     ├── gateway-bus
     ├── gateway-ws-protocol
-    ├── gateway-bridge (depends on gateway-services + zero-stores-sqlite)
+    ├── gateway-bridge (depends on gateway-services + zbot-stores-sqlite)
     └── gateway-execution (depends on most above)
             │
             └── gateway (thin shell — composes everything)
@@ -113,6 +113,6 @@ intent_analysis_started, intent_analysis_complete, token_usage, heartbeat, error
 
 - `runtime/*` — Agent executor, LLM client, tools
 - `services/*` — Execution state, API logs
-- `stores/zero-stores-sqlite` — SQLite connection pool, schema, all repositories (merged from gateway-database)
-- `framework/zero-core` — `FileSystemContext` trait
+- `stores/zbot-stores-sqlite` — SQLite connection pool, schema, and repositories
+- `runtime/agent-primitives` — `FileSystemContext` trait and shared tool primitives
 - `discovery` — LAN mDNS advertisement

@@ -8,6 +8,8 @@
 // vs snake_case on the wire; mapping happens in event-map.ts.
 // =============================================================================
 
+import type { MessageAttachment } from "../chat/attachments";
+
 export type AgentTurnStatus = "running" | "completed" | "stopped" | "error";
 
 /** One entry in the chronological Thinking timeline inside an agent turn. */
@@ -70,6 +72,7 @@ export interface ResearchMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+  attachments?: MessageAttachment[];
 }
 
 export type ResearchStatus = "idle" | "running" | "complete" | "stopped" | "error";
@@ -89,7 +92,12 @@ export interface SessionTurn {
   /** 0..N-1 chronological. */
   index: number;
   /** The user message that opens this turn. */
-  userMessage: { id: string; content: string; createdAt: string };
+  userMessage: {
+    id: string;
+    content: string;
+    createdAt: string;
+    attachments?: MessageAttachment[];
+  };
   /** Subagents whose started_at falls in [startedAt, endedAt). */
   subagents: AgentTurn[];
   /** Final assistant text reply. Null while in flight. */
@@ -128,6 +136,20 @@ export interface ResearchArtifactRef {
   label?: string;
 }
 
+/**
+ * Client-only identity for a turn the browser has rendered but a session
+ * snapshot may have observed. It prevents either an older snapshot before
+ * confirmation or a delayed older snapshot after confirmation from replacing
+ * the latest submitted turn during this session.
+ */
+export interface PendingUserTurn {
+  /** Client-generated ID reused by the durable root message row. */
+  messageId: string;
+  /** Scope guard for snapshots from a different execution/session. */
+  rootExecutionId: string | null;
+  sessionId: string | null;
+}
+
 export interface ResearchSessionState {
   /** Server-assigned. Null until init / SESSION_BOUND lands. */
   sessionId: string | null;
@@ -152,6 +174,11 @@ export interface ResearchSessionState {
    * delegation/token/respond events to the latest open turn.
    */
   turns: SessionTurn[];
+  /**
+   * Replaced by the next submission and cleared on reset. This is not sent to
+   * the server; it only protects the local view from out-of-order snapshots.
+   */
+  pendingUserTurn: PendingUserTurn | null;
   /** True between IntentAnalysisStarted and Complete/Skipped. */
   intentAnalyzing: boolean;
   /** From IntentAnalysisComplete. */
@@ -171,6 +198,7 @@ export const EMPTY_RESEARCH_STATE: ResearchSessionState = {
   wardName: null,
   rootExecutionId: null,
   turns: [],
+  pendingUserTurn: null,
   intentAnalyzing: false,
   intentClassification: null,
   planPath: null,

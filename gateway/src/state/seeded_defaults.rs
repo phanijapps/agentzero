@@ -6,7 +6,7 @@
 //! user removed kept reappearing).
 //!
 //! The registry is a single JSON file at
-//! `<vault>/config/seeded_defaults.json`, append-only in spirit (we never
+//! `<vault>/config/seeded-defaults.json`, append-only in spirit (we never
 //! remove entries). It is keyed by category so the same mechanism can later
 //! cover agents, MCPs, or anything else seeded from a bundled template.
 
@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-const REGISTRY_FILE: &str = "seeded_defaults.json";
+#[cfg(test)]
+const REGISTRY_FILE: &str = "seeded-defaults.json";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(crate) struct SeededDefaultsRegistry {
@@ -26,7 +27,7 @@ pub(crate) struct SeededDefaultsRegistry {
 
 impl SeededDefaultsRegistry {
     fn path(paths: &SharedVaultPaths) -> PathBuf {
-        paths.config_dir().join(REGISTRY_FILE)
+        paths.seeded_defaults()
     }
 
     /// Load the registry from disk; returns `Default` on missing or

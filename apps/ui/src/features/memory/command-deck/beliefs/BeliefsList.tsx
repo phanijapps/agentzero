@@ -65,7 +65,7 @@ export function BeliefsList({ agentId, partitionId }: Props) {
       disabled: false,
       error: null,
     });
-  }, [partitionId]);
+  }, [agentId, partitionId]);
 
   useEffect(() => {
     if (!partitionId) {

@@ -6,8 +6,17 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ZBOT_INSTALL");
+    println!("cargo:rerun-if-env-changed=ZBOT_BUILD_DATE");
+    println!("cargo:rerun-if-env-changed=ZBOT_BUILD_TIMESTAMP");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads");
+
+    if let Ok(build_date) = std::env::var("ZBOT_BUILD_DATE") {
+        println!("cargo:rustc-env=BUILD_DATE={build_date}");
+    }
+    if let Ok(build_timestamp) = std::env::var("ZBOT_BUILD_TIMESTAMP") {
+        println!("cargo:rustc-env=BUILD_TIMESTAMP={build_timestamp}");
+    }
 
     if std::env::var_os("ZBOT_INSTALL").is_none() {
         return;

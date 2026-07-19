@@ -329,8 +329,8 @@ impl Clone for Box<dyn EventMiddleware> {
 mod tests {
     use super::*;
     use crate::types::ToolCall;
+    use agent_primitives::types::Part;
     use serde_json::json;
-    use zero_core::types::Part;
 
     fn user_msg(s: &str) -> ChatMessage {
         ChatMessage::user(s.to_string())

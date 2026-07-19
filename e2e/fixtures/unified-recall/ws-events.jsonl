@@ -1,0 +1,6 @@
+{"t_offset_ms":0,"type":"invoke_accepted","payload":{"session_id":"sess-synthetic-unified-recall-0000","conversation_id":"conv-synthetic-unified-recall"}}
+{"t_offset_ms":50,"type":"agent_started","payload":{"session_id":"sess-synthetic-unified-recall-0000","execution_id":"exec-synthetic-unified-recall-0000","agent_id":"root"}}
+{"t_offset_ms":300,"type":"tool_call","payload":{"session_id":"sess-synthetic-unified-recall-0000","execution_id":"exec-synthetic-unified-recall-0000","tool_name":"recall","tool_id":"call_recall","args":{"query":"knowledge graph memory","limit":5}}}
+{"t_offset_ms":900,"type":"tool_result","payload":{"session_id":"sess-synthetic-unified-recall-0000","execution_id":"exec-synthetic-unified-recall-0000","tool_id":"call_recall","result":"{\"mode\":\"unified\"}"}}
+{"t_offset_ms":1100,"type":"tool_call","payload":{"session_id":"sess-synthetic-unified-recall-0000","execution_id":"exec-synthetic-unified-recall-0000","tool_name":"respond","tool_id":"call_respond","args":{"message":"I used unified recall for knowledge graph memory."}}}
+{"t_offset_ms":1300,"type":"agent_completed","payload":{"session_id":"sess-synthetic-unified-recall-0000","execution_id":"exec-synthetic-unified-recall-0000","agent_id":"root"}}

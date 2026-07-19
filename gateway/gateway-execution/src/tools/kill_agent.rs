@@ -1,8 +1,8 @@
 use crate::agent_pool::AgentResultBus;
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zero_core::{Result, Tool, ToolContext, ZeroError};
 
 pub struct KillAgentTool {
     bus: Arc<AgentResultBus>,
@@ -44,7 +44,7 @@ impl Tool for KillAgentTool {
         let execution_id = args
             .get("execution_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("execution_id is required".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("execution_id is required".to_string()))?;
 
         if self.bus.kill(execution_id) {
             tracing::info!(execution_id = %execution_id, "kill_agent: stopped running subagent");
@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use crate::handle::ExecutionHandle;
 
-    fn dummy_ctx() -> Arc<dyn zero_core::ToolContext> {
+    fn dummy_ctx() -> Arc<dyn agent_primitives::ToolContext> {
         Arc::new(agent_runtime::ToolContext::full_with_state(
             "test-agent".to_string(),
             None,

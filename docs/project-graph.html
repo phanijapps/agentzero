@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentZero Project Graph</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f4;
+      --panel: #ffffff;
+      --ink: #1b1f23;
+      --muted: #617074;
+      --line: #d5dad6;
+      --accent: #276b5f;
+      --accent-2: #b64926;
+      --shadow: 0 12px 34px rgba(29, 35, 38, 0.12);
+      --runtime: #a84f29;
+      --stores: #55752f;
+      --services: #885a9a;
+      --gateway: #2f756f;
+      --apps: #a23b55;
+      --discovery: #7a6d2a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    main {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(14px);
+      position: sticky;
+      top: 0;
+      z-index: 3;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 760;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    input,
+    select,
+    button {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 6px;
+      min-height: 36px;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    input {
+      width: min(260px, 48vw);
+      padding: 0 11px;
+    }
+
+    select,
+    button {
+      padding: 0 10px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 650;
+    }
+
+    button.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      min-height: 0;
+    }
+
+    .graph-shell {
+      position: relative;
+      min-width: 0;
+      min-height: calc(100vh - 86px);
+      overflow: auto;
+      padding: 20px;
+    }
+
+    .graph-canvas {
+      min-width: 1040px;
+      min-height: 820px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 820px;
+    }
+
+    .lane-label {
+      font-size: 12px;
+      fill: #58666a;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .edge {
+      fill: none;
+      stroke: #aeb8b5;
+      stroke-width: 1.4;
+      opacity: 0.48;
+    }
+
+    .edge.highlight {
+      stroke: var(--accent-2);
+      stroke-width: 2.8;
+      opacity: 0.96;
+    }
+
+    .edge.dim {
+      opacity: 0.08;
+    }
+
+    .node rect {
+      stroke: rgba(27, 31, 35, 0.22);
+      stroke-width: 1;
+      rx: 6;
+      filter: drop-shadow(0 4px 10px rgba(27, 31, 35, 0.12));
+      cursor: pointer;
+    }
+
+    .node text {
+      pointer-events: none;
+      fill: #ffffff;
+    }
+
+    .node .name {
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    .node .kind {
+      font-size: 10px;
+      opacity: 0.86;
+      text-transform: uppercase;
+    }
+
+    .node.dim {
+      opacity: 0.16;
+    }
+
+    .node.selected rect {
+      stroke: #111;
+      stroke-width: 2.5;
+    }
+
+    .legend {
+      position: absolute;
+      left: 18px;
+      bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      max-width: 640px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.9);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+
+    aside {
+      min-width: 0;
+      border-left: 1px solid var(--line);
+      background: #fbfcfa;
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .panel {
+      display: grid;
+      gap: 16px;
+    }
+
+    .section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 14px;
+    }
+
+    h2,
+    h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    h3 {
+      margin-bottom: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+
+    .selected-title {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 8px;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex: none;
+    }
+
+    .detail-line {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 8px;
+      color: var(--muted);
+      font-size: 12px;
+      background: #f8faf8;
+    }
+
+    .list {
+      display: grid;
+      gap: 8px;
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    .list button {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      min-height: 34px;
+      text-align: left;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+
+    .count-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #f8faf8;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 20px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 960px) {
+      .topbar,
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar {
+        justify-content: flex-start;
+      }
+
+      aside {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .graph-shell {
+        min-height: 620px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="topbar">
+      <div>
+        <h1>AgentZero Project Graph</h1>
+        <div class="meta">
+          <span id="summary"></span>
+          <span>Arrows point from each crate to the workspace crates it depends on.</span>
+        </div>
+      </div>
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search crate or path" aria-label="Search crate or path">
+        <select id="group" aria-label="Filter by group">
+          <option value="all">All groups</option>
+        </select>
+        <button id="labels" class="active" type="button">Labels</button>
+        <button id="reset" type="button">Reset</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <section class="graph-shell" aria-label="Workspace dependency graph">
+        <div class="graph-canvas">
+          <svg id="graph" viewBox="0 0 1080 820" role="img" aria-labelledby="graph-title">
+            <title id="graph-title">AgentZero Rust workspace dependency graph</title>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#aeb8b5"></path>
+              </marker>
+              <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#b64926"></path>
+              </marker>
+            </defs>
+            <g id="lanes"></g>
+            <g id="edges"></g>
+            <g id="nodes"></g>
+          </svg>
+          <div class="legend" id="legend"></div>
+        </div>
+      </section>
+
+      <aside>
+        <div class="panel">
+          <section class="section" id="detail"></section>
+          <section class="section">
+            <h3>Workspace Counts</h3>
+            <div class="count-grid" id="counts"></div>
+          </section>
+          <section class="section">
+            <h3>Visible Crates</h3>
+            <div class="list" id="crate-list"></div>
+          </section>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const groups = {
+      runtime: { label: "Runtime", color: "#a84f29" },
+      stores: { label: "Stores", color: "#55752f" },
+      services: { label: "Services", color: "#885a9a" },
+      gateway: { label: "Gateway", color: "#2f756f" },
+      apps: { label: "Apps", color: "#a23b55" },
+      discovery: { label: "Discovery", color: "#7a6d2a" }
+    };
+
+    const nodes = [
+      { id: "agent-primitives", group: "runtime", layer: 0, row: 0, kind: "lib", path: "runtime/agent-primitives", description: "Shared agent data types, errors, and multimodal primitives.", deps: [] },
+      { id: "zbot-stores-domain", group: "stores", layer: 0, row: 1, kind: "lib", path: "stores/zbot-stores-domain", description: "Pure-data persistence domain types.", deps: [] },
+      { id: "api-logs", group: "services", layer: 0, row: 2, kind: "lib", path: "services/api-logs", description: "Execution log service types.", deps: [] },
+      { id: "execution-state", group: "services", layer: 0, row: 3, kind: "lib", path: "services/execution-state", description: "Session execution state tracking.", deps: [] },
+      { id: "discovery", group: "discovery", layer: 0, row: 4, kind: "lib", path: "discovery", description: "LAN service advertisement.", deps: [] },
+      { id: "gateway-events", group: "gateway", layer: 0, row: 5, kind: "lib", path: "gateway/gateway-events", description: "Gateway event bus and event types.", deps: [] },
+      { id: "daily-sessions", group: "services", layer: 0, row: 6, kind: "lib", path: "services/daily-sessions", description: "Daily session service.", deps: [] },
+      { id: "gateway-ws-protocol", group: "gateway", layer: 0, row: 7, kind: "lib", path: "gateway/gateway-ws-protocol", description: "WebSocket protocol message types.", deps: [] },
+
+      { id: "zbot-stores-traits", group: "stores", layer: 1, row: 0, kind: "lib", path: "stores/zbot-stores-traits", description: "Backend-agnostic store traits.", deps: ["zbot-stores-domain"] },
+      { id: "gateway-bus", group: "gateway", layer: 1, row: 1, kind: "lib", path: "gateway/gateway-bus", description: "GatewayBus trait and session types.", deps: ["execution-state"] },
+      { id: "gateway-hooks", group: "gateway", layer: 1, row: 2, kind: "lib", path: "gateway/gateway-hooks", description: "Inbound trigger hook abstraction.", deps: ["gateway-events"] },
+
+      { id: "knowledge-graph", group: "services", layer: 2, row: 0, kind: "lib", path: "services/knowledge-graph", description: "Knowledge graph service.", deps: [] },
+      { id: "agent-tools", group: "runtime", layer: 2, row: 1, kind: "lib", path: "runtime/agent-tools", description: "Built-in tools for AgentZero.", deps: ["agent-primitives", "zbot-stores-traits"] },
+      { id: "zbot-stores", group: "stores", layer: 2, row: 2, kind: "lib", path: "stores/zbot-stores", description: "Persistence layer facade.", deps: ["knowledge-graph", "zbot-stores-domain", "zbot-stores-traits"] },
+
+      { id: "agent-runtime", group: "runtime", layer: 3, row: 0, kind: "lib", path: "runtime/agent-runtime", description: "Agent execution framework with Rig-backed orchestration and MCP support.", deps: ["agent-primitives", "agent-tools", "zbot-stores-traits"] },
+      { id: "gateway-memory", group: "gateway", layer: 3, row: 1, kind: "lib", path: "gateway/gateway-memory", description: "Memory subsystem config and shared types.", deps: ["agent-runtime", "gateway-events", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-traits"] },
+      { id: "zbot-stores-sqlite", group: "stores", layer: 3, row: 2, kind: "lib", path: "stores/zbot-stores-sqlite", description: "SQLite-backed store implementation.", deps: ["agent-primitives", "agent-runtime", "api-logs", "execution-state", "gateway-services", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-traits"] },
+      { id: "zbot-stores-conformance", group: "stores", layer: 3, row: 3, kind: "lib", path: "stores/zbot-stores-conformance", description: "Persistence conformance test harness.", deps: ["knowledge-graph", "zbot-stores", "zbot-stores-traits"] },
+
+      { id: "gateway-services", group: "gateway", layer: 4, row: 0, kind: "lib", path: "gateway/gateway-services", description: "Config services for the gateway.", deps: ["agent-primitives", "agent-runtime", "agent-tools", "discovery", "gateway-memory"] },
+      { id: "gateway-templates", group: "gateway", layer: 4, row: 1, kind: "lib", path: "gateway/gateway-templates", description: "Embedded templates and prompt assembly.", deps: ["gateway-services"] },
+      { id: "gateway-connectors", group: "gateway", layer: 4, row: 2, kind: "lib", path: "gateway/gateway-connectors", description: "External connector management.", deps: ["agent-primitives", "gateway-services"] },
+      { id: "gateway-bridge", group: "gateway", layer: 4, row: 3, kind: "lib", path: "gateway/gateway-bridge", description: "WebSocket bridge for worker connections.", deps: ["agent-primitives", "gateway-bus", "zbot-stores-sqlite", "zbot-stores-traits"] },
+      { id: "gateway-cron", group: "gateway", layer: 4, row: 4, kind: "lib", path: "gateway/gateway-cron", description: "Cron job configuration and persistence.", deps: ["gateway-services"] },
+
+      { id: "gateway-execution", group: "gateway", layer: 5, row: 0, kind: "lib", path: "gateway/gateway-execution", description: "Agent execution engine for the gateway.", deps: ["agent-primitives", "agent-runtime", "agent-tools", "api-logs", "execution-state", "gateway-bridge", "gateway-connectors", "gateway-events", "gateway-memory", "gateway-services", "gateway-templates", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-sqlite", "zbot-stores-traits"] },
+
+      { id: "gateway", group: "gateway", layer: 6, row: 0, kind: "lib", path: "gateway", description: "HTTP and WebSocket gateway shell.", deps: ["agent-primitives", "agent-runtime", "agent-tools", "api-logs", "discovery", "execution-state", "gateway-bridge", "gateway-bus", "gateway-connectors", "gateway-cron", "gateway-events", "gateway-execution", "gateway-hooks", "gateway-memory", "gateway-services", "gateway-templates", "gateway-ws-protocol", "knowledge-graph", "zbot-stores", "zbot-stores-domain", "zbot-stores-sqlite", "zbot-stores-traits"] },
+
+      { id: "daemon", group: "apps", layer: 7, row: 0, kind: "bin", path: "apps/daemon", description: "zbotd daemon binary.", deps: ["gateway", "gateway-services"] },
+      { id: "cli", group: "apps", layer: 7, row: 1, kind: "bin", path: "apps/cli", description: "zbot command-line client.", deps: ["gateway-ws-protocol"] }
+    ];
+
+    const layerLabels = [
+      "Foundations",
+      "Traits and Bus",
+      "Stores and Tools",
+      "Runtime and Persistence",
+      "Gateway Components",
+      "Execution",
+      "Gateway Shell",
+      "Apps"
+    ];
+
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const edges = nodes.flatMap((node) => node.deps.map((dep) => ({ from: node.id, to: dep })));
+    const inbound = new Map(nodes.map((node) => [node.id, []]));
+    edges.forEach((edge) => inbound.get(edge.to).push(edge.from));
+
+    let selectedId = "gateway";
+    let showLabels = true;
+    let activeGroup = "all";
+    let searchText = "";
+
+    const svg = document.getElementById("graph");
+    const laneLayer = document.getElementById("lanes");
+    const edgeLayer = document.getElementById("edges");
+    const nodeLayer = document.getElementById("nodes");
+    const detail = document.getElementById("detail");
+    const crateList = document.getElementById("crate-list");
+    const counts = document.getElementById("counts");
+    const summary = document.getElementById("summary");
+    const search = document.getElementById("search");
+    const groupSelect = document.getElementById("group");
+    const labelsButton = document.getElementById("labels");
+    const resetButton = document.getElementById("reset");
+    const legend = document.getElementById("legend");
+
+    const graphWidth = 1080;
+    const graphHeight = 820;
+    const nodeWidth = 118;
+    const nodeHeight = 48;
+    const leftPad = 32;
+    const topPad = 64;
+    const layerGap = 125;
+    const rowGap = 76;
+
+    function position(node) {
+      const layerCount = nodes.filter((entry) => entry.layer === node.layer).length;
+      const laneTop = topPad + Math.max(0, (8 - layerCount) * rowGap * 0.33);
+      return {
+        x: leftPad + node.layer * layerGap,
+        y: laneTop + node.row * rowGap
+      };
+    }
+
+    function matchesFilters(node) {
+      const groupMatch = activeGroup === "all" || node.group === activeGroup;
+      const haystack = `${node.id} ${node.path} ${node.description}`.toLowerCase();
+      const searchMatch = !searchText || haystack.includes(searchText);
+      return groupMatch && searchMatch;
+    }
+
+    function relatedToSelection(id) {
+      if (!selectedId) return true;
+      const selected = nodeById.get(selectedId);
+      return id === selectedId || selected.deps.includes(id) || inbound.get(selectedId).includes(id);
+    }
+
+    function edgePath(from, to) {
+      const a = position(nodeById.get(from));
+      const b = position(nodeById.get(to));
+      const x1 = a.x;
+      const y1 = a.y + nodeHeight / 2;
+      const x2 = b.x + nodeWidth;
+      const y2 = b.y + nodeHeight / 2;
+      const bend = Math.max(34, Math.abs(x1 - x2) * 0.42);
+      return `M ${x1} ${y1} C ${x1 - bend} ${y1}, ${x2 + bend} ${y2}, ${x2} ${y2}`;
+    }
+
+    function el(name, attrs = {}) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+      Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
+      return node;
+    }
+
+    function renderLanes() {
+      laneLayer.replaceChildren();
+      layerLabels.forEach((label, index) => {
+        const x = leftPad + index * layerGap - 12;
+        const line = el("line", { x1: x, y1: 36, x2: x, y2: graphHeight - 58, stroke: "#edf0ed", "stroke-width": "1" });
+        const text = el("text", { x, y: 45, class: "lane-label", transform: `rotate(-20 ${x} 45)` });
+        text.textContent = label;
+        laneLayer.append(line, text);
+      });
+    }
+
+    function renderEdges(visibleIds) {
+      const selected = nodeById.get(selectedId);
+      edgeLayer.replaceChildren();
+      edges.forEach((edge) => {
+        const path = el("path", {
+          d: edgePath(edge.from, edge.to),
+          class: "edge",
+          "marker-end": "url(#arrow)"
+        });
+        const isVisible = visibleIds.has(edge.from) && visibleIds.has(edge.to);
+        const isHot = selected && (edge.from === selected.id || edge.to === selected.id);
+        if (!isVisible || !relatedToSelection(edge.from) || !relatedToSelection(edge.to)) {
+          path.classList.add("dim");
+        }
+        if (isHot) {
+          path.classList.add("highlight");
+          path.setAttribute("marker-end", "url(#arrow-hot)");
+        }
+        edgeLayer.append(path);
+      });
+    }
+
+    function renderNodes(visibleIds) {
+      nodeLayer.replaceChildren();
+      nodes.forEach((node) => {
+        const pos = position(node);
+        const color = groups[node.group].color;
+        const g = el("g", { class: "node", tabindex: "0", role: "button", "aria-label": node.id });
+        g.setAttribute("transform", `translate(${pos.x}, ${pos.y})`);
+        if (!visibleIds.has(node.id) || !relatedToSelection(node.id)) g.classList.add("dim");
+        if (node.id === selectedId) g.classList.add("selected");
+
+        const rect = el("rect", { width: nodeWidth, height: nodeHeight, fill: color });
+        g.append(rect);
+
+        if (showLabels) {
+          const name = el("text", { x: 10, y: 21, class: "name" });
+          const label = node.id.length > 15 ? `${node.id.slice(0, 14)}...` : node.id;
+          name.textContent = label;
+          const kind = el("text", { x: 10, y: 38, class: "kind" });
+          kind.textContent = `${groups[node.group].label} / ${node.kind}`;
+          g.append(name, kind);
+        }
+
+        g.addEventListener("click", () => {
+          selectedId = node.id;
+          render();
+        });
+        g.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectedId = node.id;
+            render();
+          }
+        });
+        nodeLayer.append(g);
+      });
+    }
+
+    function renderDetail() {
+      const node = nodeById.get(selectedId);
+      const dependents = inbound.get(node.id);
+      detail.innerHTML = `
+        <div class="selected-title">
+          <span class="dot" style="background:${groups[node.group].color}"></span>
+          <h2>${node.id}</h2>
+        </div>
+        <div class="detail-line">${node.description}</div>
+        <div class="detail-line"><strong>Path:</strong> ${node.path}</div>
+        <div class="detail-line"><strong>Group:</strong> ${groups[node.group].label}</div>
+        <div class="detail-line"><strong>Depends on:</strong> ${node.deps.length}</div>
+        <div class="pills">${node.deps.map((dep) => `<button class="pill" data-jump="${dep}" type="button">${dep}</button>`).join("") || '<span class="pill">No internal deps</span>'}</div>
+        <div class="detail-line" style="margin-top:12px"><strong>Used by:</strong> ${dependents.length}</div>
+        <div class="pills">${dependents.map((dep) => `<button class="pill" data-jump="${dep}" type="button">${dep}</button>`).join("") || '<span class="pill">No internal dependents</span>'}</div>
+      `;
+      detail.querySelectorAll("[data-jump]").forEach((button) => {
+        button.addEventListener("click", () => {
+          selectedId = button.dataset.jump;
+          render();
+        });
+      });
+    }
+
+    function renderCounts(visibleIds) {
+      const visibleNodes = nodes.filter((node) => visibleIds.has(node.id));
+      const visibleEdges = edges.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to));
+      counts.innerHTML = `
+        <div class="stat"><strong>${nodes.length}</strong><span>workspace crates</span></div>
+        <div class="stat"><strong>${edges.length}</strong><span>internal edges</span></div>
+        <div class="stat"><strong>${visibleNodes.length}</strong><span>visible crates</span></div>
+        <div class="stat"><strong>${visibleEdges.length}</strong><span>visible edges</span></div>
+      `;
+      summary.textContent = `${nodes.length} crates, ${edges.length} internal dependency edges`;
+    }
+
+    function renderCrateList(visibleIds) {
+      crateList.replaceChildren();
+      nodes.filter((node) => visibleIds.has(node.id)).forEach((node) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.innerHTML = `<span>${node.id}</span><span style="color:${groups[node.group].color}">${groups[node.group].label}</span>`;
+        button.addEventListener("click", () => {
+          selectedId = node.id;
+          render();
+        });
+        crateList.append(button);
+      });
+    }
+
+    function renderLegend() {
+      legend.innerHTML = Object.entries(groups).map(([id, group]) => (
+        `<span class="legend-item"><span class="swatch" style="background:${group.color}"></span>${group.label}</span>`
+      )).join("");
+    }
+
+    function renderGroupSelect() {
+      Object.entries(groups).forEach(([id, group]) => {
+        const option = document.createElement("option");
+        option.value = id;
+        option.textContent = group.label;
+        groupSelect.append(option);
+      });
+    }
+
+    function render() {
+      const visibleIds = new Set(nodes.filter(matchesFilters).map((node) => node.id));
+      renderEdges(visibleIds);
+      renderNodes(visibleIds);
+      renderDetail();
+      renderCounts(visibleIds);
+      renderCrateList(visibleIds);
+    }
+
+    search.addEventListener("input", () => {
+      searchText = search.value.trim().toLowerCase();
+      render();
+    });
+
+    groupSelect.addEventListener("change", () => {
+      activeGroup = groupSelect.value;
+      render();
+    });
+
+    labelsButton.addEventListener("click", () => {
+      showLabels = !showLabels;
+      labelsButton.classList.toggle("active", showLabels);
+      render();
+    });
+
+    resetButton.addEventListener("click", () => {
+      selectedId = "gateway";
+      showLabels = true;
+      activeGroup = "all";
+      searchText = "";
+      search.value = "";
+      groupSelect.value = "all";
+      labelsButton.classList.add("active");
+      render();
+    });
+
+    renderGroupSelect();
+    renderLegend();
+    renderLanes();
+    render();
+  </script>
+</body>
+</html>

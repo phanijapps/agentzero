@@ -1,0 +1,148 @@
+discovery-schema-version = "0.1"
+
+[markers]
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/agents/implementer.upstream.md"
+destination-path = ".claude/agents/implementer.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/contract-acquisition/SKILL.upstream.md"
+destination-path = ".claude/skills/contract-acquisition/SKILL.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/new-spec/SKILL.upstream.md"
+destination-path = ".claude/skills/new-spec/SKILL.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/new-spec/assets/spec.upstream.md"
+destination-path = ".claude/skills/new-spec/assets/spec.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/operational-safety/SKILL.upstream.md"
+destination-path = ".claude/skills/operational-safety/SKILL.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/operational-safety/references/cloud-implementation-craft.upstream.md"
+destination-path = ".claude/skills/operational-safety/references/cloud-implementation-craft.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/receive-brief/scripts/lint-brief-coverage.upstream.py"
+destination-path = ".claude/skills/receive-brief/scripts/lint-brief-coverage.py"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/work-loop/SKILL.upstream.md"
+destination-path = ".claude/skills/work-loop/SKILL.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/work-loop/references/infra-verification.upstream.md"
+destination-path = ".claude/skills/work-loop/references/infra-verification.md"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/work-loop/scripts/lint-spec-status.upstream.py"
+destination-path = ".claude/skills/work-loop/scripts/lint-spec-status.py"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".claude/skills/work-loop/scripts/loop-cohort.upstream.py"
+destination-path = ".claude/skills/work-loop/scripts/loop-cohort.py"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = ".gitignore.upstream"
+destination-path = ".gitignore"
+scope = "repo"
+
+[[findings.accepted]]
+kind = "companion-merge"
+source-path = "AGENTS.upstream.md"
+destination-path = "AGENTS.md"
+scope = "repo"
+reason = "Declined - local AGENTS.md has project-specific content; upstream is generic template"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/architecture.md"
+destination-path = "docs/architecture/architecture.md"
+scope = "repo"
+reason = "Consolidate architecture documentation into canonical docs/ location"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/components/"
+destination-path = "docs/architecture/components/"
+scope = "repo"
+reason = "Component documentation belongs under architecture/ for discoverability"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/future-state/"
+destination-path = "docs/architecture/future-state/"
+scope = "repo"
+reason = "Design documents for upcoming features belong in architecture tree"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/decisions.md"
+destination-path = "docs/adr/decisions.md"
+scope = "repo"
+reason = "Architecture Decision Records should be in canonical docs/adr/ location"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/product-context.md"
+destination-path = "docs/product/product-context.md"
+scope = "repo"
+reason = "Product-facing content should live in docs/product/"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/product.md"
+destination-path = "docs/product/technical-product.md"
+scope = "repo"
+reason = "Technical product documentation belongs in docs/product/"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/websocket-events.md"
+destination-path = "docs/architecture/websocket-events.md"
+scope = "repo"
+reason = "WebSocket protocol documentation belongs in architecture/"
+
+[[findings.accepted]]
+kind = "discovery"
+source-path = "memory-bank/tech-debt.md"
+destination-path = "docs/tech-debt.md"
+scope = "repo"
+reason = "Technical debt tracking should be in top-level docs/"
+
+[[findings.pending]]
+kind = "template-fill"
+source-path = "docs/architecture/overview.md"
+destination-path = "docs/architecture/overview.md"
+scope = "repo"
+template_sections = ["Apps and packages", "Pack listing", "Package conventions", "Where to start"]
+reason = "docs/architecture/overview.md contains template placeholders that should be replaced with actual project information"
+
+[findings]

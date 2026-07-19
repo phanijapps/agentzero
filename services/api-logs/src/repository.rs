@@ -171,11 +171,6 @@ impl<D: DbProvider> LogsRepository<D> {
                 params_vec.push(Box::new(agent_id.clone()));
             }
 
-            if let Some(conversation_id) = &filter.conversation_id {
-                sql.push_str(" AND e.conversation_id = ?");
-                params_vec.push(Box::new(conversation_id.clone()));
-            }
-
             if let Some(from_time) = &filter.from_time {
                 sql.push_str(" AND e.timestamp >= ?");
                 params_vec.push(Box::new(from_time.clone()));
@@ -205,9 +200,18 @@ impl<D: DbProvider> LogsRepository<D> {
                     s.mode as session_mode
                 FROM normalized e
                 LEFT JOIN sessions s ON s.id = e.conversation_id
-                LEFT JOIN agent_executions ae ON ae.id = e.session_id
-                GROUP BY e.session_id",
+                LEFT JOIN agent_executions ae ON ae.id = e.session_id",
             );
+            // Apply this filter after canonicalizing continuation ids in the
+            // CTE. A follow-up turn stores `sess-...-cont-<hex>` on its raw
+            // rows but is exposed to callers as the original `sess-...` id.
+            // Filtering raw rows made those delegated executions disappear
+            // from an otherwise valid historical session snapshot.
+            if let Some(conversation_id) = &filter.conversation_id {
+                sql.push_str(" WHERE e.conversation_id = ?");
+                params_vec.push(Box::new(conversation_id.clone()));
+            }
+            sql.push_str(" GROUP BY e.session_id");
             if filter.root_only {
                 sql.push_str(" HAVING MAX(e.parent_session_id) IS NULL");
             }
@@ -800,6 +804,50 @@ mod tests {
         assert_eq!(row.conversation_id, "sess-cont-stem");
         assert_eq!(row.title.as_deref(), Some("My session"));
         assert_eq!(row.mode.as_deref(), Some("fast"));
+    }
+
+    /// A filter by canonical conversation id must use the same normalization
+    /// as the returned `conversation_id`. Otherwise a reopened multi-turn
+    /// session loses agents delegated during a `-cont-<hex>` continuation.
+    #[test]
+    fn list_sessions_conversation_filter_includes_continuation_subagents() {
+        let repo = setup_repo();
+        repo.insert_log(&make_log(
+            "exec-root",
+            "sess-cont-stem",
+            "root",
+            LogLevel::Info,
+            LogCategory::Session,
+            "start",
+        ))
+        .unwrap();
+        repo.insert_log(
+            &make_log(
+                "exec-follow-up-agent",
+                "sess-cont-stem-cont-aaaaaaaa",
+                "research-agent",
+                LogLevel::Info,
+                LogCategory::Session,
+                "delegated work",
+            )
+            .with_parent("exec-root"),
+        )
+        .unwrap();
+
+        let sessions = repo
+            .list_sessions(&LogFilter {
+                conversation_id: Some("sess-cont-stem".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .all(|session| session.conversation_id == "sess-cont-stem"));
+        assert!(sessions
+            .iter()
+            .any(|session| session.session_id == "exec-follow-up-agent"));
     }
 
     /// Two unrelated stems must not bleed into each other when only one of

@@ -1,5 +1,5 @@
 //! Ward-curator HTTP endpoints. Spec:
-//! `memory-bank/future-state/2026-05-23-ward-curator-spec.md`.
+//! `docs/architecture/future-state/2026-05-23-ward-curator-spec.md`.
 //!
 //! - `POST /api/curator/cleanup` — Phase B Layer-1 transitions (archive,
 //!   stale, reactivate). Backup + audit log written on a live run.
@@ -65,9 +65,8 @@ pub async fn restore(
 /// Build an LLM client for the ward curator. Three-tier resolution mirrors
 /// the distillation pattern:
 ///   `settings.curator.{provider_id,model}` → `settings.orchestrator.{…}` → provider default
-/// `temperature` / `max_tokens` always inherit the orchestrator — the per-
-/// task config only exposes provider+model, matching the existing
-/// Distillation card in Settings > Advanced.
+/// Temperature inherits the orchestrator; max output uses the curator override
+/// when configured and otherwise inherits the orchestrator.
 fn make_curator_llm(state: &AppState) -> Result<Arc<dyn LlmClient>, String> {
     let exec = state.settings.get_execution_settings().unwrap_or_default();
     let curator = &exec.curator;
@@ -104,11 +103,12 @@ fn make_curator_llm(state: &AppState) -> Result<Arc<dyn LlmClient>, String> {
         .map(str::to_string)
         .or_else(|| orch.model.clone().filter(|m| !m.is_empty()))
         .unwrap_or_else(|| provider.default_model().to_string());
+    let max_tokens = curator.max_tokens.unwrap_or(orch.max_tokens);
 
     let provider_id = provider.id.clone().unwrap_or_else(|| "default".to_string());
     let llm_config = LlmConfig::new(provider.base_url, provider.api_key, model, provider_id)
         .with_temperature(orch.temperature)
-        .with_max_tokens(orch.max_tokens);
+        .with_max_tokens(max_tokens);
     let client = OpenAiClient::new(llm_config).map_err(|e| format!("build llm client: {e}"))?;
     Ok(Arc::new(client) as Arc<dyn LlmClient>)
 }

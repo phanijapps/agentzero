@@ -37,7 +37,7 @@ pub fn routes() -> Router<AppState> {
 // Helpers
 // ============================================================================
 
-/// Enrich a provider's model list with capabilities from the model registry.
+/// Enrich a provider's model list with fallback capabilities.
 /// Only populates model_configs if it's None (doesn't overwrite user data).
 fn enrich_provider(provider: &mut Provider, registry: &ModelRegistry) {
     // Inject default rate limits so UI always sees them

@@ -3,10 +3,10 @@
 // Core message types for LLM communication
 // ============================================================================
 
+use agent_primitives::types::Part;
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use zero_core::types::Part;
 
 /// A chat message in the conversation
 #[derive(Debug, Clone)]
@@ -104,7 +104,9 @@ impl ChatMessage {
     /// Returns true if this message contains any non-text parts.
     #[must_use]
     pub fn has_multimodal_content(&self) -> bool {
-        self.content.iter().any(zero_core::Part::is_multimodal)
+        self.content
+            .iter()
+            .any(agent_primitives::Part::is_multimodal)
     }
 }
 
@@ -260,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_message_multimodal_content() {
-        use zero_core::types::{ContentSource, ImageDetail};
+        use agent_primitives::types::{ContentSource, ImageDetail};
         let msg = ChatMessage {
             role: "user".to_string(),
             content: vec![
@@ -290,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_serialization_multimodal_is_array() {
-        use zero_core::types::ContentSource;
+        use agent_primitives::types::ContentSource;
         let msg = ChatMessage {
             role: "user".to_string(),
             content: vec![

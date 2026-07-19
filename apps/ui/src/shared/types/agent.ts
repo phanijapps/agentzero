@@ -216,7 +216,9 @@ export interface AgentConfig {
   providerId: string;        // Provider name
   model: string;            // Model name
   temperature?: number;     // Temperature (0-1)
-  maxTokens?: number;       // Max tokens for response
+  maxInputTokens?: number;  // Max input/context tokens
+  maxOutputTokens?: number; // Max tokens for response
+  maxTokens?: number;       // Legacy alias for maxOutputTokens
   systemPrompt?: string;    // System prompt (from AGENTS.md)
   instructions?: string;    // Additional instructions
 }

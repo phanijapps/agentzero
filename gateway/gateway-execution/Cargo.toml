@@ -17,18 +17,23 @@ agent-runtime = { path = "../../runtime/agent-runtime" }
 agent-tools = { path = "../../runtime/agent-tools" }
 api-logs = { path = "../../services/api-logs" }
 execution-state = { path = "../../services/execution-state" }
-zero-core = { path = "../../framework/zero-core" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
+agent-surfaces = { path = "../../runtime/agent-surfaces" }
 gateway-events = { path = "../gateway-events" }
+# JSON Schema derivation for the Rig extractor (intent analysis typed output).
+schemars = { workspace = true }
 gateway-memory = { path = "../gateway-memory" }
 gateway-services = { path = "../gateway-services" }
 gateway-connectors = { path = "../gateway-connectors" }
 gateway-templates = { path = "../gateway-templates" }
 gateway-bridge = { path = "../gateway-bridge" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
-zero-stores = { path = "../../stores/zero-stores" }
-zero-stores-domain = { path = "../../stores/zero-stores-domain" }
-zero-stores-sqlite = { path = "../../stores/zero-stores-sqlite" }
-zero-stores-traits = { path = "../../stores/zero-stores-traits" }
+zbot-stores = { path = "../../stores/zbot-stores" }
+zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
+zbot-conversation = { path = "../../stores/zbot-conversation" }
+zbot-trace = { path = "../../stores/zbot-trace" }
+zbot-runtime-sqlite = { path = "../../stores/zbot-runtime-sqlite" }
+zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
 # Async
 tokio = { workspace = true }
@@ -66,7 +71,7 @@ sha2 = "0.10"
 dirs = "5"
 
 # Utilities
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 chrono = { workspace = true }
 indexmap = { workspace = true }
 
@@ -82,6 +87,7 @@ test-stubs = []
 
 [dev-dependencies]
 tempfile = "3"
+zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
 tokio-test = "0.4"
 filetime = "0.2"
 

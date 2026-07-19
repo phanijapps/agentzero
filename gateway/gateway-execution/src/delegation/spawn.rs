@@ -3,18 +3,18 @@
 //! Handles spawning of delegated subagents.
 
 use super::callback::{handle_delegation_failure, handle_delegation_success};
-use super::context::{infer_delegation_mode, DelegationContext, DelegationRequest};
+use super::context::{infer_delegation_mode, DelegationContext, DelegationMode, DelegationRequest};
 use super::registry::DelegationRegistry;
-use agent_runtime::AgentExecutor;
-use api_logs::LogService;
+use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig};
+use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
 use gateway_events::{EventBus, GatewayEvent};
 use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths, SkillService};
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path};
 use std::sync::Arc;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock};
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::agent_pool::{AgentResultBus, AgentWaitError};
 
@@ -23,8 +23,9 @@ use agent_runtime::ChatMessage;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
     broadcast_event, collect_agents_summary, collect_skills_summary, detect_subagent_role,
-    process_stream_event, spawn_batch_writer_with_repo, subagent_rules, AgentLoader,
-    ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext,
+    mcp_startup_failure_observer, process_stream_event, select_engine,
+    spawn_batch_writer_with_traces, subagent_rules, AgentLoader, ExecutorBuilder,
+    ResponseAccumulator, RuntimeActorKind, StreamContext,
 };
 use crate::lifecycle::{
     complete_execution, crash_execution, emit_delegation_completed, emit_delegation_started,
@@ -53,14 +54,16 @@ pub async fn spawn_delegated_agent(
     mcp_service: Arc<McpService>,
     skill_service: Arc<SkillService>,
     paths: SharedVaultPaths,
-    conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     delegation_registry: Arc<DelegationRegistry>,
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     log_service: Arc<LogService<DatabaseManager>>,
     state_service: Arc<StateService<DatabaseManager>>,
     delegation_permit: Option<OwnedSemaphorePermit>,
-    memory_store: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     memory_recall: Option<Arc<MemoryRecall>>,
     rate_limiters: Arc<
@@ -68,7 +71,7 @@ pub async fn spawn_delegated_agent(
             std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
         >,
     >,
-    kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
+    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     steering_registry: Arc<agent_runtime::SteeringRegistry>,
@@ -157,6 +160,43 @@ pub async fn spawn_delegated_agent(
     )
     .await;
 
+    // Dynamic assignments are valid only for an existing configured agent or
+    // an already-created ward. This check occurs before `AgentLoader` can
+    // auto-create a specialist, so an arbitrary delegate target can never
+    // obtain an MCP merely by naming one in a tool call.
+    let has_dynamic_assignment = request.capability_assignment.is_some();
+    let dynamic_assignment = match request.capability_assignment.as_ref() {
+        Some(assignment)
+            if assignment.agent_id == request.child_agent_id
+                && dynamic_target_exists(
+                    &agent_service,
+                    paths.vault_dir(),
+                    &request.child_agent_id,
+                )
+                .await =>
+        {
+            Some(assignment)
+        }
+        Some(_) => {
+            log_capability_resolution(
+                &log_service,
+                CapabilityResolutionLog {
+                    execution_id: &execution_id,
+                    session_id: &session_id,
+                    agent_id: &request.child_agent_id,
+                    origin: "rejected_target",
+                    effective_skills: &[],
+                    effective_mcps: &[],
+                    unresolved_skill_count: 1,
+                    unresolved_count: 1,
+                    rejection_codes: &[],
+                },
+            );
+            None
+        }
+        None => None,
+    };
+
     // Load agent and provider using AgentLoader
     let agent_loader = AgentLoader::new(&agent_service, &provider_service, paths.clone());
     let (mut agent, provider) = match agent_loader
@@ -171,6 +211,13 @@ pub async fn spawn_delegated_agent(
             return Err(e);
         }
     };
+
+    // The dedicated planner is descriptive only. It can discover available
+    // capabilities through the host catalog but must never start an MCP while
+    // deciding the graph.
+    if request.child_agent_id == "planner-agent" {
+        agent.mcps.clear();
+    }
 
     // Detect actor kind before prompt rules. Warm ward agents keep full-tool
     // actor policy even when the task contains review-like language.
@@ -196,13 +243,137 @@ pub async fn spawn_delegated_agent(
     let original_instructions = std::mem::take(&mut agent.instructions);
     agent.instructions = format!("{}\n\n{}", rules, original_instructions);
 
-    // Skill hints (one line)
-    if !request.skills.is_empty() {
-        let skill_names = request.skills.join(", ");
+    // Explicit dynamic skills are recommendations to the existing lazy
+    // `load_skill` workflow. Validate the planner/root choice against the
+    // current service catalog before it reaches model instructions; omitted
+    // legacy assignments retain their prior hint unchanged.
+    let dynamic_skill_resolution = match dynamic_assignment {
+        Some(assignment) => resolve_dynamic_skills(&skill_service, &assignment.skills).await,
+        None => None,
+    };
+    let recommended_skills: &[String] = dynamic_skill_resolution.as_ref().map_or_else(
+        || {
+            if has_dynamic_assignment {
+                &[] as &[String]
+            } else {
+                request.skills.as_slice()
+            }
+        },
+        |resolution| resolution.effective.as_slice(),
+    );
+    if !recommended_skills.is_empty() {
+        let skill_names = recommended_skills.join(", ");
         agent.instructions.push_str(&format!(
             "\nRecommended skills: {}. Use load_skill to load any you need.\n",
             skill_names
         ));
+    }
+
+    // An explicit assignment overrides static `agent.mcps`, including an
+    // empty array. Resolution accepts only canonical enabled/runtime-ready
+    // server IDs and records aggregate reason codes without raw request data.
+    if request.child_agent_id == "planner-agent" {
+        // The planner may discover and record capabilities, but it is never
+        // an execution target. A model-supplied mapping cannot remount MCPs
+        // after the static planner list was cleared above.
+        agent.mcps.clear();
+        if let Some(assignment) = dynamic_assignment {
+            log_capability_resolution(
+                &log_service,
+                CapabilityResolutionLog {
+                    execution_id: &execution_id,
+                    session_id: &session_id,
+                    agent_id: &request.child_agent_id,
+                    origin: "planner_runtime_prohibited",
+                    effective_skills: dynamic_skill_resolution
+                        .as_ref()
+                        .map_or(&[], |resolution| resolution.effective.as_slice()),
+                    effective_mcps: &[],
+                    unresolved_skill_count: dynamic_skill_resolution
+                        .as_ref()
+                        .map_or(assignment.skills.len(), |resolution| {
+                            resolution.unresolved_count
+                        }),
+                    unresolved_count: assignment.mcps.len(),
+                    rejection_codes: &["planner_runtime_prohibited"],
+                },
+            );
+        }
+    } else if let Some(assignment) = dynamic_assignment {
+        match mcp_service.resolve_dynamic_runtime_ids(&assignment.mcps) {
+            Ok(resolution) => {
+                agent.mcps = resolution.effective_ids.clone();
+                let rejection_codes = resolution
+                    .rejections
+                    .iter()
+                    .map(|reason| reason.as_str())
+                    .collect::<Vec<_>>();
+                log_capability_resolution(
+                    &log_service,
+                    CapabilityResolutionLog {
+                        execution_id: &execution_id,
+                        session_id: &session_id,
+                        agent_id: &request.child_agent_id,
+                        origin: capability_assignment_origin(delegation_mode),
+                        effective_skills: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(&[], |resolution| resolution.effective.as_slice()),
+                        effective_mcps: &resolution.effective_ids,
+                        unresolved_skill_count: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(assignment.skills.len(), |resolution| {
+                                resolution.unresolved_count
+                            }),
+                        unresolved_count: resolution.rejections.len(),
+                        rejection_codes: &rejection_codes,
+                    },
+                );
+            }
+            Err(_) => {
+                // Fail closed: a catalog/configuration read failure leaves no
+                // dynamic MCPs mounted and does not fall back to static ones.
+                agent.mcps.clear();
+                log_capability_resolution(
+                    &log_service,
+                    CapabilityResolutionLog {
+                        execution_id: &execution_id,
+                        session_id: &session_id,
+                        agent_id: &request.child_agent_id,
+                        origin: "dynamic_resolution_unavailable",
+                        effective_skills: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(&[], |resolution| resolution.effective.as_slice()),
+                        effective_mcps: &[],
+                        unresolved_skill_count: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(assignment.skills.len(), |resolution| {
+                                resolution.unresolved_count
+                            }),
+                        unresolved_count: assignment.mcps.len(),
+                        rejection_codes: &[],
+                    },
+                );
+            }
+        }
+    } else if !has_dynamic_assignment {
+        log_capability_resolution(
+            &log_service,
+            CapabilityResolutionLog {
+                execution_id: &execution_id,
+                session_id: &session_id,
+                agent_id: &request.child_agent_id,
+                origin: "legacy_fallback",
+                effective_skills: &[],
+                effective_mcps: &agent.mcps,
+                unresolved_skill_count: 0,
+                unresolved_count: 0,
+                rejection_codes: &[],
+            },
+        );
+    } else {
+        // A present assignment that fails target validation is still dynamic.
+        // Do not silently revive static MCPs or legacy skill hints.
+        agent.mcps.clear();
     }
 
     // Inject output contract into child agent instructions when schema is provided
@@ -221,6 +392,8 @@ pub async fn spawn_delegated_agent(
     // Get tool settings
     let settings_service = gateway_services::SettingsService::new(paths.clone());
     let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
+    let tool_result_context =
+        crate::runner::prompt_safe_tool_result_config(&tool_settings, paths.vault_dir());
 
     // Look up the parent session's ward, then resolve the ward this
     // delegation actually runs in: a `ward:<name>` target runs in its
@@ -279,14 +452,8 @@ pub async fn spawn_delegated_agent(
         );
     }
 
-    // Build model registry for capability lookups
-    let bundled_models = gateway_templates::Templates::get("models_registry.json")
-        .map(|f| f.data.to_vec())
-        .unwrap_or_default();
-    let model_registry = Arc::new(gateway_services::models::ModelRegistry::load(
-        &bundled_models,
-        paths.vault_dir(),
-    ));
+    // Build fallback-only model metadata registry.
+    let model_registry = Arc::new(gateway_services::models::ModelRegistry::load());
 
     // Get shared rate limiter for the child's provider
     let provider_id = provider.id.clone().unwrap_or_else(|| provider.name.clone());
@@ -299,7 +466,22 @@ pub async fn spawn_delegated_agent(
     let mut builder = ExecutorBuilder::new(paths.vault_dir().clone(), tool_settings)
         .with_model_registry(model_registry)
         .with_actor_kind(actor_kind)
-        .with_initial_state("app:delegation_mode", delegation_mode.as_state_value());
+        .with_initial_state("app:delegation_mode", delegation_mode.as_state_value())
+        .with_mcp_startup_failure_observer(mcp_startup_failure_observer(
+            log_service.clone(),
+            execution_id.clone(),
+            session_id.clone(),
+            request.child_agent_id.clone(),
+        ));
+
+    if request.child_agent_id == "planner-agent" || request.child_agent_id.starts_with("ward:") {
+        if let Some(catalog) = request.planning_capability_catalog.as_ref() {
+            builder = builder.with_initial_state(
+                agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE,
+                catalog.clone(),
+            );
+        }
+    }
 
     if let Some(limiter) = rate_limiter {
         builder = builder.with_rate_limiter(limiter);
@@ -318,14 +500,18 @@ pub async fn spawn_delegated_agent(
     if let Some(a) = ingestion_adapter {
         builder = builder.with_ingestion_adapter(a);
     }
+    let goal_adapter_for_recall = goal_adapter.clone();
     if let Some(a) = goal_adapter {
         builder = builder.with_goal_adapter(a);
+    }
+    if let Some(recall) = memory_recall.clone() {
+        builder = builder.with_memory_recall(recall);
     }
     builder = builder
         .with_state_service(state_service.clone())
         .with_steering_registry(steering_registry.clone())
         .with_agent_result_bus(agent_result_bus.clone())
-        .with_conversation_repo(conversation_repo.clone());
+        .with_message_store(messages.clone());
 
     let mut executor = match builder
         .build(
@@ -358,32 +544,58 @@ pub async fn spawn_delegated_agent(
     // facts, wiki, procedures, graph nodes, episodes, and goals.
     let initial_history = if let Some(recall) = &memory_recall {
         let ward_id = session_ward_id.as_deref();
-        match recall
-            .recall_unified(&request.child_agent_id, &request.task, ward_id, &[], 10)
+        let authorization = crate::invoke::unified_recall_adapter::recall_authorization_context(
+            recall,
+            request.child_agent_id.clone(),
+            "delegated_executor",
+            &request.session_id,
+            ward_id,
+        );
+        if let Some(authorization) = authorization {
+            match crate::invoke::unified_recall_adapter::automatic_unified_recall(
+                recall.clone(),
+                goal_adapter_for_recall,
+                authorization,
+                &request.task,
+                10,
+            )
             .await
-        {
-            Ok(items) if !items.is_empty() => {
-                let formatted = crate::recall::format_scored_items(&items);
-                if formatted.is_empty() {
-                    Vec::new()
-                } else {
-                    tracing::info!(
-                        agent = %request.child_agent_id,
-                        count = items.len(),
-                        "Primed subagent with unified recalled context"
+            {
+                Ok(response) if !response.results.is_empty() => {
+                    let formatted = crate::recall::format_unified_recall_response_with_options(
+                        &response,
+                        crate::recall::ContextPacketBuildOptions::new(
+                            format!("{execution_id}:delegation-recall"),
+                            request.child_agent_id.clone(),
+                            context_actor_kind(actor_kind),
+                            1_200,
+                        )
+                        .with_conversation_id(Some(child_conversation_id.clone()))
+                        .with_ward_id(session_ward_id.clone()),
                     );
-                    vec![ChatMessage::system(formatted)]
+                    if formatted.is_empty() {
+                        Vec::new()
+                    } else {
+                        tracing::info!(
+                            agent = %request.child_agent_id,
+                            count = response.count,
+                            "Primed subagent with unified recalled context"
+                        );
+                        vec![ChatMessage::system(formatted)]
+                    }
+                }
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!(
+                        agent = %request.child_agent_id,
+                        reason = ?e.code,
+                        "Delegation recall failed, proceeding without priming"
+                    );
+                    Vec::new()
                 }
             }
-            Ok(_) => Vec::new(),
-            Err(e) => {
-                tracing::warn!(
-                    agent = %request.child_agent_id,
-                    error = %e,
-                    "Delegation recall failed, proceeding without priming"
-                );
-                Vec::new()
-            }
+        } else {
+            Vec::new()
         }
     } else {
         Vec::new()
@@ -411,7 +623,7 @@ pub async fn spawn_delegated_agent(
     // The post-execution state_handoff hook reuses the same trait store
     // the executor was wired with. Cloning is cheap (Arc) and lets the
     // handoff fire after the executor has consumed its own copy.
-    let fact_store_for_ctx: Option<Arc<dyn zero_stores::MemoryFactStore>> = memory_store.clone();
+    let fact_store_for_ctx: Option<Arc<dyn zbot_stores::MemoryFactStore>> = memory_store.clone();
 
     // Phase 7: pass the memory_store handle through so spawn_execution_task
     // can query ctx.state.* rows when building the ward_snapshot preamble.
@@ -419,7 +631,7 @@ pub async fn spawn_delegated_agent(
 
     // Spawn the execution task
     spawn_execution_task(SpawnContext {
-        executor,
+        executor: select_engine(executor),
         handle: handle_clone,
         request: request.clone(),
         execution_id: execution_id.clone(),
@@ -427,7 +639,9 @@ pub async fn spawn_delegated_agent(
         child_session_id,
         conv_id: child_conversation_id.clone(),
         event_bus,
-        conversation_repo,
+        messages,
+        session_meta,
+        checkpoints,
         delegation_registry,
         delegation_tx,
         log_service,
@@ -435,6 +649,7 @@ pub async fn spawn_delegated_agent(
         paths,
         delegation_permit,
         initial_history,
+        tool_result_context,
         fact_store_for_ctx,
         memory_store_for_snapshot,
         distiller,
@@ -450,6 +665,117 @@ pub async fn spawn_delegated_agent(
     );
 
     Ok(child_conversation_id)
+}
+
+const MAX_DYNAMIC_SKILLS: usize = 25;
+
+struct DynamicSkillResolution {
+    effective: Vec<String>,
+    unresolved_count: usize,
+}
+
+/// Resolve planner/root-provided skill recommendations against the live skill
+/// service. The child sees only canonical, deduplicated names and never raw
+/// rejected model values.
+async fn resolve_dynamic_skills(
+    skill_service: &SkillService,
+    requested: &[String],
+) -> Option<DynamicSkillResolution> {
+    let available = skill_service.list().await.ok()?;
+    let known = available
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect::<HashSet<_>>();
+    let mut effective = Vec::new();
+    let mut seen = HashSet::new();
+    let mut unresolved_count = requested.len().saturating_sub(MAX_DYNAMIC_SKILLS);
+
+    for skill in requested.iter().take(MAX_DYNAMIC_SKILLS) {
+        if known.contains(skill) && seen.insert(skill.clone()) {
+            effective.push(skill.clone());
+        } else if !known.contains(skill) {
+            unresolved_count += 1;
+        }
+    }
+
+    Some(DynamicSkillResolution {
+        effective,
+        unresolved_count,
+    })
+}
+
+async fn dynamic_target_exists(
+    agent_service: &AgentService,
+    vault_dir: &Path,
+    agent_id: &str,
+) -> bool {
+    if let Some(ward_id) = agent_id.strip_prefix("ward:") {
+        if ward_id.is_empty() || ward_id.contains(['/', '\\']) {
+            return false;
+        }
+        let mut components = Path::new(ward_id).components();
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+            return false;
+        }
+        return std::fs::symlink_metadata(vault_dir.join("wards").join(ward_id))
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+    }
+
+    agent_service.get(agent_id).await.is_ok()
+}
+
+/// A step-executor delegation is the root's execution of a planner-written
+/// step briefing. Keep the provenance host-derived from the validated posture
+/// rather than a model-supplied metadata field.
+fn capability_assignment_origin(mode: DelegationMode) -> &'static str {
+    if mode == DelegationMode::StepExecutor {
+        "planner"
+    } else {
+        "dynamic"
+    }
+}
+
+/// Persist only canonical accepted IDs and aggregate closed rejection codes.
+/// Raw assignments, config errors, URLs, and secret-bearing MCP config are
+/// deliberately excluded from this execution-log record.
+struct CapabilityResolutionLog<'a> {
+    execution_id: &'a str,
+    session_id: &'a str,
+    agent_id: &'a str,
+    origin: &'a str,
+    effective_skills: &'a [String],
+    effective_mcps: &'a [String],
+    unresolved_skill_count: usize,
+    unresolved_count: usize,
+    rejection_codes: &'a [&'a str],
+}
+
+fn log_capability_resolution(
+    log_service: &LogService<DatabaseManager>,
+    resolution: CapabilityResolutionLog<'_>,
+) {
+    let entry = ExecutionLog::new(
+        resolution.execution_id,
+        resolution.session_id,
+        resolution.agent_id,
+        LogLevel::Info,
+        LogCategory::Intent,
+        "Resolved execution capabilities",
+    )
+    .with_metadata(serde_json::json!({
+        "origin": resolution.origin,
+        "effective_skills": resolution.effective_skills,
+        "effective_mcps": resolution.effective_mcps,
+        "unresolved_skill_count": resolution.unresolved_skill_count,
+        "unresolved_count": resolution.unresolved_count,
+        "rejection_codes": resolution.rejection_codes,
+    }));
+    if log_service.log(entry).is_err() {
+        tracing::debug!(
+            agent_id = resolution.agent_id,
+            "Failed to persist capability resolution audit event"
+        );
+    }
 }
 
 /// Return the `<reuse_check>` imperative for coding-capable agents.
@@ -501,7 +827,7 @@ fn reuse_check_block(agent_id: &str) -> Option<&'static str> {
 /// - Fields can be reordered freely without breaking call sites.
 struct SpawnContext {
     // --- Execution identity ---
-    executor: AgentExecutor,
+    executor: BoxedAgentEngine,
     handle: ExecutionHandle,
     request: DelegationRequest,
     execution_id: String,
@@ -510,13 +836,16 @@ struct SpawnContext {
     /// Child conversation id (what the downstream stream/log services key on).
     conv_id: String,
     initial_history: Vec<ChatMessage>,
+    tool_result_context: ToolResultContextConfig,
 
     // --- Resource control ---
     delegation_permit: Option<OwnedSemaphorePermit>,
 
     // --- Shared services ---
     event_bus: Arc<EventBus>,
-    conversation_repo: Arc<ConversationRepository>,
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
     delegation_registry: Arc<DelegationRegistry>,
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     log_service: Arc<LogService<DatabaseManager>>,
@@ -524,8 +853,8 @@ struct SpawnContext {
     paths: SharedVaultPaths,
 
     // --- Optional memory wiring (Phase 4b + 7 ward_snapshot preamble) ---
-    fact_store_for_ctx: Option<Arc<dyn zero_stores::MemoryFactStore>>,
-    memory_store_for_snapshot: Option<Arc<dyn zero_stores::MemoryFactStore>>,
+    fact_store_for_ctx: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    memory_store_for_snapshot: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     /// Distiller for the subagent's child session — fired after
     /// `complete_session(child_session_id)`.
     distiller: Option<Arc<crate::distillation::SessionDistiller>>,
@@ -546,9 +875,12 @@ fn spawn_execution_task(ctx: SpawnContext) {
         child_session_id,
         conv_id,
         initial_history,
+        tool_result_context,
         delegation_permit,
         event_bus,
-        conversation_repo,
+        messages,
+        session_meta,
+        checkpoints,
         delegation_registry,
         delegation_tx,
         log_service,
@@ -574,12 +906,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
     // Inner layer (Phase 4b): <session_ctx ... /> tag with sid + tool
     // hint so the subagent can fetch more ctx fields on demand.
     //
-    // Ward lookup is cheap (single-row query via ConversationRepository)
-    // and falls back to "__global__" if the ward can't be resolved.
-    let ward_for_preamble = conversation_repo
-        .get_session_ward_id(&session_id)
-        .ok()
-        .flatten();
+    // Ward lookup is cheap and falls back to "__global__" if it can't be resolved.
+    let ward_for_preamble = session_meta.session_ward_id(&session_id).ok().flatten();
 
     // Step 1 of 2: session_ctx tag (always emitted, tiny)
     let with_ctx_tag = crate::session_ctx::preamble::prepend_to_task(
@@ -629,11 +957,12 @@ fn spawn_execution_task(ctx: SpawnContext) {
             with_snapshot
         };
 
-        // Create batch writer with conversation repo for session message streaming
-        let batch_writer = spawn_batch_writer_with_repo(
+        // Create batch writer for session message and trace streaming.
+        let batch_writer = spawn_batch_writer_with_traces(
             state_service.clone(),
             log_service.clone(),
-            Some(conversation_repo.clone()),
+            paths.traces_dir(),
+            messages.clone(),
         );
 
         // Create stream context for event processing
@@ -667,88 +996,93 @@ fn spawn_execution_task(ctx: SpawnContext) {
         let batch_writer_inner = batch_writer.clone();
         let mut turn_tool_calls: Vec<serde_json::Value> = Vec::new();
         let mut turn_text = String::new();
+        let mut current_tool_name = String::new();
 
         let stop_sig = Some(handle.stop_signal());
-        let result = executor
-            .execute_stream_with_stop_flag(&task_msg, &initial_history, stop_sig, |event| {
-                if handle.is_stop_requested() {
-                    return;
+        let mut on_event = |event| {
+            if handle.is_stop_requested() {
+                return;
+            }
+
+            handle.increment();
+
+            // Stream messages to child session
+            match &event {
+                agent_runtime::StreamEvent::ToolCallStart {
+                    tool_id,
+                    tool_name,
+                    args,
+                    ..
+                } => {
+                    current_tool_name = tool_name.clone();
+                    turn_tool_calls.push(serde_json::json!({
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "args": args,
+                    }));
                 }
-
-                handle.increment();
-
-                // Stream messages to child session
-                match &event {
-                    agent_runtime::StreamEvent::ToolCallStart {
-                        tool_id,
-                        tool_name,
-                        args,
-                        ..
-                    } => {
-                        turn_tool_calls.push(serde_json::json!({
-                            "tool_id": tool_id,
-                            "tool_name": tool_name,
-                            "args": args,
-                        }));
-                    }
-                    agent_runtime::StreamEvent::ToolResult {
-                        tool_id,
-                        result,
-                        error,
-                        ..
-                    } => {
-                        if !turn_tool_calls.is_empty() {
-                            let tc_json =
-                                serde_json::to_string(&turn_tool_calls).unwrap_or_default();
-                            let content = if turn_text.is_empty() {
-                                "[tool calls]".to_string()
-                            } else {
-                                std::mem::take(&mut turn_text)
-                            };
-                            batch_writer_inner.session_message(
-                                &child_session_id_inner,
-                                &execution_id_inner,
-                                "assistant",
-                                &content,
-                                Some(&tc_json),
-                                None,
-                            );
-                            turn_tool_calls.clear();
-                        }
-
-                        let tool_content = if let Some(err) = error {
-                            format!("Error: {}", err)
+                agent_runtime::StreamEvent::ToolResult {
+                    tool_id,
+                    result,
+                    context_result,
+                    error,
+                    ..
+                } => {
+                    if !turn_tool_calls.is_empty() {
+                        let tc_json = serde_json::to_string(&turn_tool_calls).unwrap_or_default();
+                        let content = if turn_text.is_empty() {
+                            "[tool calls]".to_string()
                         } else {
-                            result.clone()
+                            std::mem::take(&mut turn_text)
                         };
                         batch_writer_inner.session_message(
                             &child_session_id_inner,
                             &execution_id_inner,
-                            "tool",
-                            &tool_content,
+                            "assistant",
+                            &content,
+                            Some(&tc_json),
                             None,
-                            Some(tool_id),
                         );
+                        turn_tool_calls.clear();
                     }
-                    agent_runtime::StreamEvent::Token { content, .. } => {
-                        turn_text.push_str(content);
-                    }
-                    _ => {}
-                }
 
-                // Process the event (logging, delegation, token tracking)
-                let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
-
-                // Accumulate response content
-                if let Some(delta) = response_delta {
-                    response_acc.append(&delta);
+                    let tool_content = crate::runner::prompt_safe_tool_content(
+                        &current_tool_name,
+                        result,
+                        context_result.as_deref(),
+                        error.as_deref(),
+                        &tool_result_context,
+                    );
+                    batch_writer_inner.session_message(
+                        &child_session_id_inner,
+                        &execution_id_inner,
+                        "tool",
+                        &tool_content,
+                        None,
+                        Some(tool_id),
+                    );
                 }
-
-                // Broadcast the gateway event (if not an internal-only event)
-                if let Some(event) = gateway_event {
-                    broadcast_event(stream_ctx.event_bus.clone(), event);
+                agent_runtime::StreamEvent::Token { content, .. } => {
+                    turn_text.push_str(content);
                 }
-            })
+                _ => {}
+            }
+
+            // Process the event (logging, delegation, token tracking)
+            let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
+
+            // Accumulate response content
+            if let Some(delta) = response_delta {
+                response_acc.append(&delta);
+            }
+
+            // Broadcast the gateway event (if not an internal-only event)
+            if let Some(event) = gateway_event {
+                broadcast_event(stream_ctx.event_bus.clone(), event);
+            }
+        };
+        let result = executor
+            .execute_stream_with_stop_flag(&task_msg, &initial_history, stop_sig, &mut on_event)
             .await;
 
         let accumulated_response = response_acc.into_response();
@@ -765,13 +1099,29 @@ fn spawn_execution_task(ctx: SpawnContext) {
             );
         }
 
+        // Turn-boundary checkpoint — write a versioned snapshot of the
+        // subagent's context state so session_state can read it in O(1).
+        crate::runner::core::write_turn_checkpoint(
+            &checkpoints,
+            &state_service,
+            &execution_id,
+            &child_session_id,
+            handle.current_iteration(),
+            &accumulated_response,
+        );
+
         match result {
             Ok(()) => {
+                // Child completion can be observed independently by Research;
+                // do not let it overtake the final child-session message.
+                batch_writer.flush().await;
+
                 // Unblock any wait_agent before firing callbacks.
                 agent_result_bus.resolve(&execution_id, &agent_id, &accumulated_response);
 
                 handle_execution_success(HandleExecutionSuccess {
-                    conversation_repo: &conversation_repo,
+                    messages: messages.as_ref(),
+                    session_meta: session_meta.as_ref(),
                     state_service: &state_service,
                     log_service: &log_service,
                     event_bus: &event_bus,
@@ -805,7 +1155,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 let crash_report = build_crash_report(
                     &agent_id,
                     &e.to_string(),
-                    &conversation_repo,
+                    messages.as_ref(),
                     &child_session_id,
                     &state_service,
                     &session_id,
@@ -821,7 +1171,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 );
 
                 handle_execution_failure(HandleExecutionFailure {
-                    conversation_repo: &conversation_repo,
+                    messages: messages.as_ref(),
                     state_service: &state_service,
                     log_service: &log_service,
                     event_bus: &event_bus,
@@ -871,7 +1221,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
 /// Inputs for `handle_execution_success` — same pattern as `SpawnContext`
 /// but borrowed (these are called from inside the spawn-owned async closure).
 struct HandleExecutionSuccess<'a> {
-    conversation_repo: &'a ConversationRepository,
+    messages: &'a dyn zbot_conversation::MessageStore,
+    session_meta: &'a dyn zbot_conversation::SessionMetaStore,
     state_service: &'a StateService<DatabaseManager>,
     log_service: &'a LogService<DatabaseManager>,
     event_bus: &'a EventBus,
@@ -883,13 +1234,14 @@ struct HandleExecutionSuccess<'a> {
     response: &'a str,
     parent_agent: &'a str,
     parent_execution_id: &'a str,
-    fact_store_for_ctx: Option<&'a Arc<dyn zero_stores::MemoryFactStore>>,
+    fact_store_for_ctx: Option<&'a Arc<dyn zbot_stores::MemoryFactStore>>,
 }
 
 /// Handle successful execution completion.
 async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     let HandleExecutionSuccess {
-        conversation_repo,
+        messages,
+        session_meta,
         state_service,
         log_service,
         event_bus,
@@ -943,6 +1295,21 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     })
     .await;
 
+    // Persist the parent callback before marking delegation completion. The
+    // completion event wakes the continuation watcher; waking it first creates
+    // a race where the root can resume without the child result in context.
+    handle_delegation_success(
+        delegation_ctx.as_ref(),
+        messages,
+        event_bus,
+        session_id,
+        parent_execution_id,
+        agent_id,
+        conv_id,
+        response,
+    )
+    .await;
+
     // Check if this was the last delegation and continuation is needed
     match state_service.complete_delegation(session_id) {
         Ok(true) => {
@@ -966,27 +1333,14 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
         Err(e) => tracing::warn!("Failed to complete delegation tracking: {}", e),
     }
 
-    // Send callback message to parent if enabled
-    handle_delegation_success(
-        delegation_ctx.as_ref(),
-        conversation_repo,
-        event_bus,
-        session_id,
-        parent_execution_id,
-        agent_id,
-        conv_id,
-        response,
-    )
-    .await;
-
     // Phase 2b: write a state_handoff fact so the next subagent in this
     // session can fetch this one's summary by exact key. We look up the
     // session's ward so the ctx row is stored per-ward (matches plan +
     // intent snapshots). Fire-and-forget — a failed write logs a warning
     // but never disrupts delegation completion.
     if let Some(fs) = fact_store_for_ctx {
-        let ward_id = conversation_repo
-            .get_session_ward_id(session_id)
+        let ward_id = session_meta
+            .session_ward_id(session_id)
             .ok()
             .flatten()
             .unwrap_or_else(|| "__global__".to_string());
@@ -1039,7 +1393,7 @@ fn crash_spawn_failure(
 /// named fields prevent order-swap bugs between `session_id` and
 /// `parent_execution_id`.
 struct HandleExecutionFailure<'a> {
-    conversation_repo: &'a ConversationRepository,
+    messages: &'a dyn zbot_conversation::MessageStore,
     state_service: &'a StateService<DatabaseManager>,
     log_service: &'a LogService<DatabaseManager>,
     event_bus: &'a EventBus,
@@ -1055,7 +1409,7 @@ struct HandleExecutionFailure<'a> {
 /// Handle execution failure.
 async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
     let HandleExecutionFailure {
-        conversation_repo,
+        messages,
         state_service,
         log_service,
         event_bus,
@@ -1085,7 +1439,7 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
 
     // Send error callback to parent
     handle_delegation_failure(
-        conversation_repo,
+        messages,
         event_bus,
         session_id,
         parent_execution_id,
@@ -1128,7 +1482,7 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
 fn build_crash_report(
     agent_id: &str,
     error: &str,
-    conversation_repo: &ConversationRepository,
+    messages: &dyn zbot_conversation::MessageStore,
     child_session_id: &str,
     state_service: &StateService<DatabaseManager>,
     parent_session_id: &str,
@@ -1139,7 +1493,7 @@ fn build_crash_report(
     // Try to extract plan status from child session messages.
     // Plan updates appear as tool results containing JSON with `__plan_update: true`.
     let mut found_plan = false;
-    if let Ok(messages) = conversation_repo.get_session_conversation(child_session_id, 200) {
+    if let Ok(messages) = messages.replay(child_session_id, None, 200) {
         // Scan tool-result messages for plan updates (last one is most recent)
         let plan_messages: Vec<_> = messages
             .iter()
@@ -1251,6 +1605,15 @@ fn actor_kind_for_delegation(child_agent_id: &str, task: &str) -> RuntimeActorKi
     }
 }
 
+fn context_actor_kind(actor_kind: RuntimeActorKind) -> ContextActorKind {
+    match actor_kind {
+        RuntimeActorKind::Root => ContextActorKind::Root,
+        RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
+        RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
+        RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
+    }
+}
+
 /// Simple recursive directory listing that skips hidden files and common noise.
 fn walkdir_simple(dir: &Path) -> std::io::Result<Vec<String>> {
     let mut files = Vec::new();
@@ -1327,6 +1690,44 @@ mod tests {
         assert_eq!(
             actor_kind_for_delegation("ward:maritime", "Review the implementation"),
             RuntimeActorKind::WardAgent
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_skill_resolution_accepts_only_live_unique_skill_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("research");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: research\ndescription: Find evidence\n---\n",
+        )
+        .expect("skill file");
+        let service = SkillService::with_roots(vec![dir.path().to_path_buf()]);
+
+        let resolution = resolve_dynamic_skills(
+            &service,
+            &[
+                "research".to_string(),
+                "missing".to_string(),
+                "research".to_string(),
+            ],
+        )
+        .await
+        .expect("skill catalog reads");
+        assert_eq!(resolution.effective, vec!["research"]);
+        assert_eq!(resolution.unresolved_count, 1);
+    }
+
+    #[test]
+    fn planned_step_assignments_are_audited_as_planner_origin() {
+        assert_eq!(
+            capability_assignment_origin(DelegationMode::StepExecutor),
+            "planner"
+        );
+        assert_eq!(
+            capability_assignment_origin(DelegationMode::WardBackedBuild),
+            "dynamic"
         );
     }
 }

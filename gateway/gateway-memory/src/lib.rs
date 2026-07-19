@@ -11,13 +11,22 @@ pub use llm_factory::{CachedLlmClient, LlmClientConfig, MemoryLlmFactory};
 pub use services::{MemoryServices, MemoryServicesConfig};
 pub use util::{parse_llm_json, strip_code_fence};
 
+pub use recall::context_atoms::{
+    dropped_candidate_for_superseded_fact, scored_fact_to_context_atom,
+    scored_item_to_context_atom, scored_items_to_context_atoms,
+};
 pub use recall::query_gate::{
     GateResponse, LlmQueryGate, QueryGate, QueryGateLlm, RetrievalDecision,
 };
 pub use recall::scored_item::{
     intent_boost, rrf_merge, GoalLite, ItemKind, Provenance, ScoredItem,
 };
-pub use recall::MemoryRecall;
+pub use recall::{
+    MemoryRecall, RecallProviderScope, RecallSkosExpansionLimits, UnifiedRecallOutcome,
+    UnifiedRecallReasonCode, UnifiedRecallScope, UnifiedRecallSourceState,
+    UnifiedRecallSourceStatus, UnifiedRecallSourceSummary, UnifiedRecallTaxonomyCandidate,
+    UnifiedRecallTaxonomyRelation, UnifiedRecallTaxonomyTrace,
+};
 pub use sleep::belief_contradiction_detector::{
     BeliefContradictionConfig, BeliefContradictionDetector, ContradictionDetectionStats,
     ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision, LlmContradictionJudge,
@@ -54,6 +63,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+
+/// Canonical inspectable bytes for the Full Zbot memory V1 preset.
+pub const ZBOT_RECOMMENDED_V1_MEMORY_JSON: &str =
+    include_str!("../templates/zbot-recommended-v1-memory.json");
+
+/// Canonical bytes written to `config/recall-config.json` for Full Zbot V1.
+pub const ZBOT_RECOMMENDED_V1_RECALL_JSON: &str =
+    include_str!("../templates/zbot-recommended-v1-recall.json");
 
 // ============================================================================
 // RECALL CONFIG
@@ -279,14 +296,29 @@ impl Default for RecallConfig {
 }
 
 impl RecallConfig {
-    /// Load recall config from `{path}/config/recall_config.json`.
+    /// Construct the immutable Full Zbot recall V1 profile.
+    ///
+    /// Provisioning writes the canonical bundled bytes directly so `HashMap`
+    /// iteration cannot drift.
+    pub fn zbot_recommended_v1() -> Self {
+        serde_json::from_str(ZBOT_RECOMMENDED_V1_RECALL_JSON)
+            .expect("bundled Full Zbot recall V1 fixture must remain valid")
+    }
+
+    /// Load recall config from `{path}/config/recall-config.json`.
     ///
     /// - Missing file → compiled defaults (info log)
     /// - Corrupted file → compiled defaults (warning log)
     /// - Partial file → deep merge with defaults (user values win per key)
+    ///
+    /// This compatibility entry point accepts a vault root. New callers that
+    /// already own a canonical path should use [`Self::load_from_file`].
     pub fn load_from_path(path: &Path) -> Self {
-        let file_path = path.join("config").join("recall_config.json");
+        Self::load_from_file(&path.join("config").join("recall-config.json"))
+    }
 
+    /// Load recall configuration from one resolved config file path.
+    pub fn load_from_file(file_path: &Path) -> Self {
         if !file_path.exists() {
             tracing::info!(
                 "No recall config at {} — using compiled defaults",
@@ -295,7 +327,7 @@ impl RecallConfig {
             return Self::default();
         }
 
-        let content = match std::fs::read_to_string(&file_path) {
+        let content = match std::fs::read_to_string(file_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
@@ -373,6 +405,10 @@ fn deep_merge(base: Value, overlay: Value) -> Value {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySettings {
+    /// Durable memory provider selection. Engram is the only runtime semantic
+    /// memory provider; SQLite remains only for conversations/execution state.
+    #[serde(default)]
+    pub provider: MemoryProviderSettings,
     /// Minimum hours between corrections-abstraction LLM calls.
     /// Default: 24. Set to 0 to run on every sleep cycle (hourly).
     #[serde(default = "default_corrections_abstractor_interval_hours")]
@@ -424,6 +460,7 @@ pub fn default_conflict_resolver_interval_hours() -> u32 {
 impl Default for MemorySettings {
     fn default() -> Self {
         Self {
+            provider: MemoryProviderSettings::default(),
             corrections_abstractor_interval_hours: default_corrections_abstractor_interval_hours(),
             conflict_resolver_interval_hours: default_conflict_resolver_interval_hours(),
             query_gate: QueryGateConfig::default(),
@@ -433,6 +470,321 @@ impl Default for MemorySettings {
             procedure_recommendation: ProcedureRecommendationConfig::default(),
         }
     }
+}
+
+impl MemorySettings {
+    /// Construct the immutable Full Zbot memory V1 profile.
+    ///
+    /// The contract test pins the complete bundled fixture independently from
+    /// mutable defaults.
+    pub fn zbot_recommended_v1() -> Self {
+        serde_json::from_str(ZBOT_RECOMMENDED_V1_MEMORY_JSON)
+            .expect("bundled Full Zbot memory V1 fixture must remain valid")
+    }
+}
+
+/// Durable memory provider selection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryProviderSettings {
+    /// Provider mode. Only Engram is a runtime provider.
+    #[serde(default)]
+    pub mode: MemoryProviderMode,
+    /// Engram storage directory relative to the zbot data root, or absolute
+    /// path confined under that root.
+    #[serde(default = "default_engram_path")]
+    pub engram_path: String,
+    /// Tenant used for Engram scopes.
+    #[serde(default = "default_memory_provider_tenant")]
+    pub tenant: String,
+    /// Where ward ids map in Engram scope.
+    #[serde(default)]
+    pub ward_scope_target: MemoryScopeTarget,
+    /// Where belief partition ids map in Engram scope.
+    #[serde(default)]
+    pub partition_scope_target: MemoryScopeTarget,
+    /// Adapter embedding compatibility behavior.
+    #[serde(default)]
+    pub embedding_mode: MemoryEmbeddingMode,
+    /// Engram embedding provider identity for vector-space safety.
+    #[serde(default)]
+    pub embedding_provider: MemoryEmbeddingProviderSettings,
+    /// Engram SQLite storage layout.
+    #[serde(default)]
+    pub sqlite_storage_layout: MemorySqliteStorageLayout,
+    /// Migration execution mode used by adapter tooling.
+    #[serde(default)]
+    pub migration_mode: MemoryMigrationMode,
+    /// Zbot-owned ontology/taxonomy governance policy.
+    #[serde(default)]
+    pub governance: MemoryGovernanceSettings,
+}
+
+impl Default for MemoryProviderSettings {
+    fn default() -> Self {
+        Self {
+            mode: MemoryProviderMode::Engram,
+            engram_path: default_engram_path(),
+            tenant: default_memory_provider_tenant(),
+            ward_scope_target: MemoryScopeTarget::Workspace,
+            partition_scope_target: MemoryScopeTarget::Workspace,
+            embedding_mode: MemoryEmbeddingMode::PreserveBytes,
+            embedding_provider: MemoryEmbeddingProviderSettings::default(),
+            sqlite_storage_layout: MemorySqliteStorageLayout::default(),
+            migration_mode: MemoryMigrationMode::DryRun,
+            governance: MemoryGovernanceSettings::default(),
+        }
+    }
+}
+
+/// Zbot-owned ontology/taxonomy governance settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGovernanceSettings {
+    /// Local ontology definition files under the trusted config root.
+    #[serde(default)]
+    pub ontology_definition_paths: Vec<String>,
+    /// Local SKOS taxonomy definition files under the trusted config root.
+    #[serde(default)]
+    pub taxonomy_definition_paths: Vec<String>,
+    /// Fallback ontology/taxonomy selection.
+    #[serde(default)]
+    pub default_selection: MemoryGovernanceSelection,
+    /// Scoped selection overlays.
+    #[serde(default)]
+    pub overlays: Vec<MemoryGovernanceOverlay>,
+    /// Ontology validation mode.
+    #[serde(default)]
+    pub validation_mode: MemoryGovernanceValidationMode,
+    /// Behavior for unclassified records.
+    #[serde(default)]
+    pub allow_unclassified: MemoryAllowUnclassifiedPolicy,
+    /// SKOS expansion limits for recall.
+    #[serde(default)]
+    pub skos_expansion: MemorySkosExpansionSettings,
+}
+
+impl Default for MemoryGovernanceSettings {
+    fn default() -> Self {
+        Self {
+            ontology_definition_paths: Vec::new(),
+            taxonomy_definition_paths: Vec::new(),
+            default_selection: MemoryGovernanceSelection::default(),
+            overlays: Vec::new(),
+            validation_mode: MemoryGovernanceValidationMode::Advisory,
+            allow_unclassified: MemoryAllowUnclassifiedPolicy::Allow,
+            skos_expansion: MemorySkosExpansionSettings::default(),
+        }
+    }
+}
+
+/// Active ontology/taxonomy IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGovernanceSelection {
+    #[serde(default)]
+    pub ontology_ids: Vec<String>,
+    #[serde(default)]
+    pub taxonomy_scheme_ids: Vec<String>,
+}
+
+/// Scoped governance overlay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGovernanceOverlay {
+    #[serde(default)]
+    pub ward_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub selection: MemoryGovernanceSelection,
+}
+
+/// Ontology validation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryGovernanceValidationMode {
+    #[default]
+    Advisory,
+    Disabled,
+}
+
+/// Unclassified record policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryAllowUnclassifiedPolicy {
+    #[default]
+    Allow,
+    Warn,
+}
+
+/// SKOS recall expansion limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySkosExpansionSettings {
+    #[serde(default = "default_skos_expansion_depth")]
+    pub max_depth: u8,
+    #[serde(default = "default_skos_expansion_fan_out")]
+    pub max_fan_out: u16,
+    #[serde(default = "default_skos_expansion_candidates")]
+    pub max_candidates: u16,
+}
+
+impl Default for MemorySkosExpansionSettings {
+    fn default() -> Self {
+        Self {
+            max_depth: default_skos_expansion_depth(),
+            max_fan_out: default_skos_expansion_fan_out(),
+            max_candidates: default_skos_expansion_candidates(),
+        }
+    }
+}
+
+/// Durable memory provider mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryProviderMode {
+    /// Engram-backed adapter provider.
+    #[default]
+    Engram,
+}
+
+/// Engram scope target selected by the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryScopeTarget {
+    /// Map to Engram workspace.
+    #[default]
+    Workspace,
+    /// Map to Engram environment.
+    Environment,
+    /// Map to Engram subject.
+    Subject,
+}
+
+/// Adapter embedding compatibility mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryEmbeddingMode {
+    /// Preserve zbot embedding bytes in adapter sidecars.
+    #[default]
+    PreserveBytes,
+    /// Store only Engram embedding references.
+    EngramRefs,
+    /// Disable adapter-managed embeddings.
+    Disabled,
+}
+
+/// Migration mode for adapter tooling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryMigrationMode {
+    /// Report only.
+    #[default]
+    DryRun,
+    /// Write after manifest acceptance.
+    Apply,
+}
+
+/// Engram SQLite storage layout selected by the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum MemorySqliteStorageLayout {
+    /// Open one SQLite file per Engram store family.
+    MultiFileDirectory,
+    /// Open every Engram SQLite-backed store against one shared file.
+    SingleFile { file_name: String },
+}
+
+impl Default for MemorySqliteStorageLayout {
+    fn default() -> Self {
+        Self::SingleFile {
+            file_name: default_engram_data_file_name(),
+        }
+    }
+}
+
+/// Embedding provider identity used by Engram vector indexes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEmbeddingProviderSettings {
+    /// Provider family, e.g. fastembed, ollama, or openai.
+    #[serde(default = "default_embedding_provider_type")]
+    pub provider_type: String,
+    /// Provider-specific model identifier.
+    #[serde(default = "default_embedding_model")]
+    pub model: String,
+    /// Vector dimensions produced by the model.
+    #[serde(default = "default_embedding_dimensions")]
+    pub dimensions: u32,
+    /// Prompt profile used for embeddings.
+    #[serde(default = "default_embedding_prompt_profile")]
+    pub prompt_profile: String,
+    /// Normalization applied to embeddings, if any.
+    #[serde(default)]
+    pub normalization: Option<String>,
+}
+
+impl Default for MemoryEmbeddingProviderSettings {
+    fn default() -> Self {
+        Self {
+            provider_type: default_embedding_provider_type(),
+            model: default_embedding_model(),
+            dimensions: default_embedding_dimensions(),
+            prompt_profile: default_embedding_prompt_profile(),
+            normalization: None,
+        }
+    }
+}
+
+fn default_engram_path() -> String {
+    "engram".to_string()
+}
+
+fn default_engram_data_file_name() -> String {
+    "engram_data.db".to_string()
+}
+
+fn default_memory_provider_tenant() -> String {
+    "agentzero".to_string()
+}
+
+fn default_embedding_provider_type() -> String {
+    "fastembed".to_string()
+}
+
+fn default_embedding_model() -> String {
+    "BAAI/bge-small-en-v1.5".to_string()
+}
+
+fn default_embedding_dimensions() -> u32 {
+    384
+}
+
+fn default_embedding_prompt_profile() -> String {
+    "query".to_string()
+}
+
+fn default_skos_expansion_depth() -> u8 {
+    1
+}
+
+fn default_skos_expansion_fan_out() -> u16 {
+    8
+}
+
+fn default_skos_expansion_candidates() -> u16 {
+    16
 }
 
 // ============================================================================
@@ -844,7 +1196,7 @@ mod tests {
         });
 
         fs::write(
-            config_dir.join("recall_config.json"),
+            config_dir.join("recall-config.json"),
             serde_json::to_string_pretty(&override_json).unwrap(),
         )
         .unwrap();
@@ -884,7 +1236,7 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
 
         fs::write(
-            config_dir.join("recall_config.json"),
+            config_dir.join("recall-config.json"),
             "this is not valid json {{{",
         )
         .unwrap();
@@ -943,7 +1295,7 @@ mod tests {
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"graph_traversal": {"max_hops": 3}}"#,
         )
         .unwrap();
@@ -972,7 +1324,7 @@ mod tests {
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"graph_traversal": {"min_kg_confidence": 0.5}}"#,
         )
         .unwrap();
@@ -987,14 +1339,14 @@ mod tests {
 
     #[test]
     fn min_kg_confidence_missing_key_falls_back_to_default() {
-        // Older recall_config.json files won't have the field — verify
+        // Older recall-config.json files won't have the field — verify
         // serde's `default = "..."` attribute fills in the compiled value
         // rather than failing to deserialize.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"graph_traversal": {"max_hops": 3}}"#,
         )
         .unwrap();
@@ -1040,7 +1392,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join("recall_config.json"), r#"{"min_score": 0.5}"#).unwrap();
+        std::fs::write(path.join("recall-config.json"), r#"{"min_score": 0.5}"#).unwrap();
         let config = RecallConfig::load_from_path(dir.path());
         assert_eq!(config.min_score, 0.5);
     }
@@ -1061,7 +1413,7 @@ mod tests {
         let path = dir.path().join("config");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
-            path.join("recall_config.json"),
+            path.join("recall-config.json"),
             r#"{"kg_decay": {"entity_half_life_days": 30.0}}"#,
         )
         .unwrap();
@@ -1083,10 +1435,141 @@ mod tests {
         let json = r#"{"conflictResolverIntervalHours": 6}"#;
         let m: MemorySettings = serde_json::from_str(json).unwrap();
         assert_eq!(m.conflict_resolver_interval_hours, 6);
+        assert_eq!(m.provider.mode, MemoryProviderMode::Engram);
         assert_eq!(
             m.corrections_abstractor_interval_hours, 24,
             "default preserved"
         );
+    }
+
+    #[test]
+    fn memory_provider_defaults_to_engram() {
+        let m = MemorySettings::default();
+
+        assert_eq!(m.provider.mode, MemoryProviderMode::Engram);
+        assert_eq!(m.provider.engram_path, "engram");
+        assert_eq!(m.provider.tenant, "agentzero");
+        assert!(m.provider.governance.ontology_definition_paths.is_empty());
+        assert!(m.provider.governance.taxonomy_definition_paths.is_empty());
+        assert_eq!(
+            m.provider.sqlite_storage_layout,
+            MemorySqliteStorageLayout::SingleFile {
+                file_name: "engram_data.db".to_string()
+            }
+        );
+        assert_eq!(m.provider.embedding_provider.provider_type, "fastembed");
+        assert_eq!(m.provider.embedding_provider.dimensions, 384);
+    }
+
+    #[test]
+    fn memory_settings_deserializes_engram_provider_additively() {
+        let json = r#"{
+            "provider": {
+                "mode": "engram",
+                "engramPath": "memory/engram",
+                "tenant": "zbot",
+                "wardScopeTarget": "environment",
+                "partitionScopeTarget": "subject",
+                "embeddingMode": "engram_refs",
+                "embeddingProvider": {
+                    "providerType": "ollama",
+                    "model": "nomic-embed-text",
+                    "dimensions": 768,
+                    "promptProfile": "query",
+                    "normalization": "l2"
+                },
+                "sqliteStorageLayout": {
+                    "kind": "single_file",
+                    "fileName": "agent_memory.sqlite"
+                },
+                "migrationMode": "dry_run"
+            }
+        }"#;
+
+        let m: MemorySettings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(m.provider.mode, MemoryProviderMode::Engram);
+        assert_eq!(m.provider.engram_path, "memory/engram");
+        assert_eq!(m.provider.tenant, "zbot");
+        assert_eq!(m.provider.ward_scope_target, MemoryScopeTarget::Environment);
+        assert_eq!(
+            m.provider.partition_scope_target,
+            MemoryScopeTarget::Subject
+        );
+        assert_eq!(m.provider.embedding_mode, MemoryEmbeddingMode::EngramRefs);
+        assert_eq!(m.provider.embedding_provider.provider_type, "ollama");
+        assert_eq!(m.provider.embedding_provider.model, "nomic-embed-text");
+        assert_eq!(m.provider.embedding_provider.dimensions, 768);
+        assert_eq!(
+            m.provider.embedding_provider.normalization.as_deref(),
+            Some("l2")
+        );
+        assert_eq!(
+            m.provider.sqlite_storage_layout,
+            MemorySqliteStorageLayout::SingleFile {
+                file_name: "agent_memory.sqlite".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn memory_settings_deserializes_governance_additively() {
+        let json = r#"{
+            "provider": {
+                "governance": {
+                    "ontologyDefinitionPaths": ["governance/base-ontology.json"],
+                    "taxonomyDefinitionPaths": ["governance/base-taxonomy.json"],
+                    "defaultSelection": {
+                        "ontologyIds": ["zbot.base:v1"],
+                        "taxonomySchemeIds": ["zbot.tasks:v1"]
+                    },
+                    "overlays": [{
+                        "wardId": "ward-a",
+                        "selection": {
+                            "ontologyIds": ["ward.finance:v1"],
+                            "taxonomySchemeIds": ["ward.finance:v1"]
+                        }
+                    }],
+                    "validationMode": "disabled",
+                    "allowUnclassified": "warn",
+                    "skosExpansion": {
+                        "maxDepth": 2,
+                        "maxFanOut": 4,
+                        "maxCandidates": 10
+                    }
+                }
+            }
+        }"#;
+
+        let m: MemorySettings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            m.provider.governance.ontology_definition_paths,
+            vec!["governance/base-ontology.json"]
+        );
+        assert_eq!(
+            m.provider.governance.taxonomy_definition_paths,
+            vec!["governance/base-taxonomy.json"]
+        );
+        assert_eq!(
+            m.provider.governance.default_selection.ontology_ids,
+            vec!["zbot.base:v1"]
+        );
+        assert_eq!(
+            m.provider.governance.overlays[0].ward_id.as_deref(),
+            Some("ward-a")
+        );
+        assert_eq!(
+            m.provider.governance.validation_mode,
+            MemoryGovernanceValidationMode::Disabled
+        );
+        assert_eq!(
+            m.provider.governance.allow_unclassified,
+            MemoryAllowUnclassifiedPolicy::Warn
+        );
+        assert_eq!(m.provider.governance.skos_expansion.max_depth, 2);
+        assert_eq!(m.provider.governance.skos_expansion.max_fan_out, 4);
+        assert_eq!(m.provider.governance.skos_expansion.max_candidates, 10);
     }
 
     #[test]
@@ -1297,5 +1780,96 @@ mod tests {
         // unspecified fields keep defaults
         assert_eq!(m.hierarchy.interval_hours, 24);
         assert_eq!(m.hierarchy.cluster_target_size, 20);
+    }
+
+    // AC4 — the V1 preset pins approved tuning and built-in identity.
+    #[test]
+    fn zbot_recommended_v1_pins_memory_tuning_and_builtin_embeddings() {
+        let defaults = serde_json::to_value(MemorySettings::default()).unwrap();
+        let profile = MemorySettings::zbot_recommended_v1();
+        let approved: serde_json::Value =
+            serde_json::from_str(include_str!("../templates/zbot-recommended-v1-memory.json"))
+                .unwrap();
+
+        assert_eq!(serde_json::to_value(&profile).unwrap(), approved);
+        assert_eq!(
+            defaults["correctionsAbstractorIntervalHours"],
+            serde_json::json!(24)
+        );
+        assert_eq!(defaults["queryGate"]["enabled"], serde_json::json!(false));
+
+        assert_eq!(profile.corrections_abstractor_interval_hours, 1);
+        assert!(profile.query_gate.enabled);
+        assert!(profile.belief_network.enabled);
+        assert_eq!(profile.belief_network.interval_hours, 0);
+        assert_eq!(profile.belief_network.contradiction_budget_per_cycle, 200);
+        assert!(profile.mmr.enabled);
+        assert!(profile.hierarchy.enabled);
+        assert_eq!(profile.hierarchy.interval_hours, 0);
+        assert!((profile.procedure_recommendation.tentative.score_floor - 0.55).abs() < 1e-9);
+        assert_eq!(
+            profile.provider.embedding_provider.provider_type,
+            "fastembed"
+        );
+        assert_eq!(
+            profile.provider.embedding_provider.model,
+            "bge-small-en-v1.5"
+        );
+        assert_eq!(profile.provider.embedding_provider.dimensions, 384);
+        assert_eq!(profile.provider.embedding_provider.prompt_profile, "query");
+        assert_eq!(
+            profile.provider.governance.default_selection.ontology_ids,
+            ["zbot.base:v1"]
+        );
+        assert_eq!(
+            profile
+                .provider
+                .governance
+                .default_selection
+                .taxonomy_scheme_ids,
+            ["zbot.general:v1"]
+        );
+    }
+
+    // AC5 — the versioned recall profile is materializable and inspectable.
+    #[test]
+    fn zbot_recommended_v1_materializes_recall_defaults() {
+        let approved_bytes = include_str!("../templates/zbot-recommended-v1-recall.json");
+        let approved: RecallConfig = serde_json::from_str(approved_bytes).unwrap();
+        let profile = RecallConfig::zbot_recommended_v1();
+        assert_eq!(
+            serde_json::to_value(profile).unwrap(),
+            serde_json::to_value(approved).unwrap()
+        );
+        assert_eq!(RecallConfig::default().max_recall_tokens, 3000);
+
+        let json = ZBOT_RECOMMENDED_V1_RECALL_JSON.to_string();
+        assert_eq!(json.as_bytes(), approved_bytes.as_bytes());
+        let parsed: RecallConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_recall_tokens, 3000);
+        assert_eq!(parsed.max_facts, 10);
+        assert_eq!(parsed.max_episodes, 3);
+        assert!(parsed.mid_session_recall.enabled);
+        assert!(parsed.graph_traversal.enabled);
+        assert!(parsed.predictive_recall.enabled);
+    }
+
+    // AC5 — bundled definitions expose the approved governance IDs.
+    #[test]
+    fn bundled_governance_definitions_have_approved_ids() {
+        fn bundled_governance() -> (&'static str, &'static str) {
+            (
+                include_str!("../../templates/governance/base-ontology.json"),
+                include_str!("../../templates/governance/base-taxonomy.json"),
+            )
+        }
+
+        let (ontology, taxonomy) = bundled_governance();
+        let ontology: serde_json::Value = serde_json::from_str(ontology).unwrap();
+        let taxonomy: serde_json::Value = serde_json::from_str(taxonomy).unwrap();
+        assert_eq!(ontology["kind"], "zbot.ontology");
+        assert_eq!(ontology["ontologyId"], "zbot.base:v1");
+        assert_eq!(taxonomy["kind"], "zbot.skos_taxonomy");
+        assert_eq!(taxonomy["schemeId"], "zbot.general:v1");
     }
 }

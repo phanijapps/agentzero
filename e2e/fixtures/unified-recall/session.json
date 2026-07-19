@@ -1,0 +1,14 @@
+{
+  "session_id": "sess-synthetic-unified-recall-0000",
+  "title": "Unified recall",
+  "executions": [
+    {
+      "execution_id": "exec-synthetic-unified-recall-0000",
+      "agent_id": "root",
+      "parent_execution_id": null,
+      "started_at_offset_ms": 0,
+      "ended_at_offset_ms": 2000
+    }
+  ],
+  "artifacts": []
+}

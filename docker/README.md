@@ -10,17 +10,24 @@ cd docker/
 ```
 
 First build takes ~10 minutes (Rust compilation). Subsequent starts are instant.
+The launcher creates `~/zbot` on the host before Docker starts so the vault is
+owned by your host user, not by root.
 
-Open **http://localhost:18791** and add your LLM provider in Settings.
+Open **http://localhost:18791** and complete setup.
 
 ## Manual Setup
 
 ```bash
 cd docker/
 cp .env.example .env
-# Edit .env — set VAULT_PATH to your preferred location
+# Edit .env — set VAULT_PATH and ports as needed
+mkdir -p ~/zbot
+chown "$(id -u):$(id -g)" ~/zbot
 docker compose up -d --build
 ```
+
+Open the app at `http://localhost:${HTTP_PORT}`. With the default `.env.example`,
+that is `http://localhost:18791`.
 
 ## Configuration
 
@@ -28,9 +35,35 @@ Edit `docker/.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VAULT_PATH` | `~/Documents/zbot` | Host directory for all z-Bot data |
+| `VAULT_PATH` | `~/zbot` | Host directory for all z-Bot data |
 | `HTTP_PORT` | `18791` | Web UI + HTTP API + `/ws` WebSocket upgrade |
-| `WS_PORT` | `18790` | Legacy standalone WebSocket bind, off by default — flip `legacy_ws_port_enabled: true` only if you have integrations that hardcode `ws://host:18790` and haven't migrated to the unified `/ws` route |
+| `NGROK_AUTHTOKEN` | empty | Optional ngrok auth token for public tunnel exposure |
+| `NGROK_DOMAIN` | empty | Optional reserved ngrok domain, for example `example.ngrok.app` |
+| `NGROK_WEB_PORT` | `4040` | Host port for the local ngrok inspector UI |
+
+## Expose with ngrok
+
+The compose file includes an optional `ngrok` profile. Keep your token in
+`docker/.env`; do not commit it.
+
+```bash
+cd docker/
+cp .env.example .env
+# Edit .env and set NGROK_AUTHTOKEN
+docker compose --profile ngrok up -d --build
+```
+
+The ngrok container tunnels the internal app URL `http://zbot:18791`.
+
+After startup:
+
+- Local app: `http://localhost:${HTTP_PORT}`
+- Local ngrok inspector: `http://localhost:${NGROK_WEB_PORT}`
+- Public URL: shown in the ngrok inspector or `docker compose logs ngrok`
+
+If you have a reserved ngrok domain, set `NGROK_DOMAIN=your-domain.ngrok.app`
+before starting the profile. If `NGROK_DOMAIN` is empty, ngrok assigns a
+temporary public URL.
 
 ## What's in the Container
 
@@ -45,7 +78,12 @@ Edit `docker/.env`:
 
 ## Vault Directory
 
-The vault (`VAULT_PATH`) is bind-mounted into the container. The daemon creates the full directory structure on first run:
+The vault (`VAULT_PATH`) is bind-mounted into the container. Create the host
+directory before starting Compose. If the path does not exist, Docker may create
+it as `root`, which prevents the non-root `zbot` container user from writing to
+`/data/zbot`.
+
+The daemon creates the full directory structure inside the vault on first run:
 
 ```
 zbot/

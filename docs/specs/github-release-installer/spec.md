@@ -1,9 +1,9 @@
 # Spec: GitHub Release Installer
 
-- **Status:** Draft
+- **Status:** Closed
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
-- **Constrained by:** RFC-0004: GitHub Release Installer and Cross-Platform Packaging; `memory-bank/future-state/path-to-release.md`; `memory-bank/PUBLISHING.md`
+- **Constrained by:** RFC-0004: GitHub Release Installer and Cross-Platform Packaging; `docs/architecture/future-state/path-to-release.md`; `memory-bank/PUBLISHING.md`
 
 > **Spec contract:** this document defines what "done" means. The implementing
 > PR must match this spec, or update it. Verification must be derivable from it.
@@ -133,10 +133,10 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
 - Technical: at spec creation, daemon depended on `tikv-jemallocator` and installed it as
   global allocator unconditionally (source: `apps/daemon/Cargo.toml`;
   `apps/daemon/src/main.rs`).
-- Technical: `memory-bank/future-state/path-to-release.md` already identifies
+- Technical: `docs/architecture/future-state/path-to-release.md` already identifies
   GitHub Releases, `curl | sh`, CalVer, checksums, rustls, jemalloc gating, and
   cross-platform artifacts as release-path work (source:
-  `memory-bank/future-state/path-to-release.md`).
+  `docs/architecture/future-state/path-to-release.md`).
 - Product: public install should use GitHub raw installer scripts and GitHub
   Releases, not a product-domain installer URL (source: user confirmation
   2026-06-01).

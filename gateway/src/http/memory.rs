@@ -6,13 +6,16 @@
 //! abstracted from the HTTP surface.
 
 use crate::state::AppState;
+use agent_runtime::llm::embedding::EmbeddingClient;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
-use zero_stores_domain::MemoryFact;
+use zbot_engram_adapter::GovernanceCapabilityHealth;
+use zbot_stores_domain::MemoryFact;
+use zbot_stores_traits::EmbeddingQueryIdentity;
 
 // ============================================================================
 // REQUEST/RESPONSE TYPES
@@ -55,6 +58,53 @@ impl From<MemoryFact> for MemoryFactResponse {
             match_source: None,
         }
     }
+}
+
+fn is_public_memory_fact(fact: &MemoryFactResponse) -> bool {
+    !matches!(fact.category.as_str(), "ctx" | "instruction" | "correction")
+}
+
+fn validate_public_fact_input(
+    category: &str,
+    key: &str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if matches!(category, "ctx" | "instruction" | "correction") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("category '{category}' is internal-only"),
+            }),
+        ));
+    }
+    if key.is_empty()
+        || key.len() > 200
+        || key
+            .chars()
+            .any(|ch| !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/')))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "key must contain only ASCII letters, numbers, '.', '_', '-', ':', or '/'"
+                    .to_string(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+fn public_internal_error(
+    log_context: &str,
+    public_message: &str,
+    e: String,
+) -> (StatusCode, Json<ErrorResponse>) {
+    tracing::error!("{}: {}", log_context, e);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: public_message.to_string(),
+        }),
+    )
 }
 
 /// Query parameters for listing memory facts.
@@ -148,20 +198,12 @@ pub async fn list_memory_facts(
         )
         .await
         .map_err(|e| {
-            tracing::error!("Failed to list memory facts: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to list memory facts: {}", e),
-                }),
+            public_internal_error(
+                "Failed to list memory facts",
+                "Failed to list memory facts",
+                e,
             )
         })?;
-
-    let total = memory_store
-        .count_all_facts(Some(&agent_id))
-        .await
-        .map(|n| n as usize)
-        .unwrap_or(0);
 
     let facts: Vec<MemoryFactResponse> = raw_facts
         .into_iter()
@@ -172,7 +214,9 @@ pub async fn list_memory_facts(
                 None
             }
         })
+        .filter(is_public_memory_fact)
         .collect();
+    let total = facts.len();
 
     Ok(Json(MemoryListResponse { facts, total }))
 }
@@ -198,6 +242,7 @@ pub async fn search_memory_facts(
     let mode = query.mode.as_deref().unwrap_or("hybrid");
     let ward_id = query.ward_id.as_deref();
     let scope_agent: Option<&str> = Some(agent_id.as_str());
+    let embedding_client = state.embedding_service.client();
 
     // For semantic + hybrid we need an embedding of the query text. Fall
     // through to FTS-only on hybrid if the embedding backend is down;
@@ -205,27 +250,21 @@ pub async fn search_memory_facts(
     let qe_opt: Option<Vec<f32>> = match mode {
         "fts" => None,
         "semantic" => {
-            let emb = state
-                .embedding_service
-                .client()
+            let emb = embedding_client
                 .embed(&[query.q.as_str()])
                 .await
                 .map_err(|e| {
+                    tracing::debug!("semantic memory search embedding unavailable: {e}");
                     (
                         StatusCode::BAD_REQUEST,
                         Json(ErrorResponse {
-                            error: format!("Embedding backend unavailable: {}", e),
+                            error: "Embedding backend unavailable".to_string(),
                         }),
                     )
                 })?;
             emb.into_iter().next()
         }
-        _ => match state
-            .embedding_service
-            .client()
-            .embed(&[query.q.as_str()])
-            .await
-        {
+        _ => match embedding_client.embed(&[query.q.as_str()]).await {
             Ok(v) => v.into_iter().next(),
             Err(e) => {
                 tracing::debug!("hybrid search: embedding unavailable ({e}); FTS-only");
@@ -233,15 +272,19 @@ pub async fn search_memory_facts(
             }
         },
     };
+    let query_identity = qe_opt
+        .as_ref()
+        .map(|_| embedding_query_identity(embedding_client.as_ref()));
 
     let raw_rows = memory_store
-        .search_memory_facts_hybrid(
+        .search_memory_facts_hybrid_with_identity(
             scope_agent,
             &query.q,
             mode,
             query.limit,
             ward_id,
             qe_opt.as_deref(),
+            query_identity.as_ref(),
             None, // as_of — HTTP search defaults to "now"; point-in-time is exposed via the agent tool
         )
         .await
@@ -252,6 +295,8 @@ pub async fn search_memory_facts(
     let facts: Vec<MemoryFactResponse> = raw_rows
         .into_iter()
         .filter_map(|v| serde_json::from_value::<MemoryFactResponse>(v).ok())
+        .map(normalize_public_match_source)
+        .filter(is_public_memory_fact)
         .filter(|f| {
             query
                 .category
@@ -265,14 +310,25 @@ pub async fn search_memory_facts(
     Ok(Json(MemoryListResponse { facts, total }))
 }
 
+fn normalize_public_match_source(mut fact: MemoryFactResponse) -> MemoryFactResponse {
+    if fact.match_source.as_deref() == Some("exact_degraded") {
+        fact.match_source = Some("fts".to_string());
+    }
+    fact
+}
+
 fn search_err(context: &str, e: String) -> (StatusCode, Json<ErrorResponse>) {
-    tracing::error!("{}: {}", context, e);
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: format!("{}: {}", context, e),
-        }),
-    )
+    public_internal_error(context, context, e)
+}
+
+fn embedding_query_identity(client: &dyn EmbeddingClient) -> EmbeddingQueryIdentity {
+    EmbeddingQueryIdentity {
+        provider_type: client.provider_type(),
+        model: client.model_name(),
+        dimensions: client.dimensions() as u32,
+        prompt_profile: client.prompt_profile(),
+        normalization: client.normalization(),
+    }
 }
 
 /// GET /api/memory/:agent_id/facts/:fact_id - Get a single memory fact.
@@ -296,19 +352,19 @@ pub async fn get_memory_fact(
         .get_memory_fact_by_id(&fact_id)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get memory fact: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to get memory fact: {}", e),
-                }),
-            )
+            public_internal_error("Failed to get memory fact", "Failed to get memory fact", e)
         })?;
 
     let fact: Option<MemoryFactResponse> =
         raw.and_then(|v| serde_json::from_value::<MemoryFactResponse>(v).ok());
 
     match fact {
+        Some(f) if f.agent_id == agent_id && !is_public_memory_fact(&f) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Fact is not available through public memory endpoints".to_string(),
+            }),
+        )),
         Some(f) if f.agent_id == agent_id => Ok(Json(f)),
         Some(_) => Err((
             StatusCode::FORBIDDEN,
@@ -347,29 +403,31 @@ pub async fn delete_memory_fact(
         .get_memory_fact_by_id(&fact_id)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get memory fact for deletion: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to get memory fact: {}", e),
-                }),
+            public_internal_error(
+                "Failed to get memory fact for deletion",
+                "Failed to get memory fact",
+                e,
             )
         })?;
     let fact: Option<MemoryFactResponse> =
         raw.and_then(|v| serde_json::from_value::<MemoryFactResponse>(v).ok());
 
     match fact {
+        Some(f) if f.agent_id == agent_id && !is_public_memory_fact(&f) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Fact is not available through public memory endpoints".to_string(),
+            }),
+        )),
         Some(f) if f.agent_id == agent_id => {
             let deleted = memory_store
                 .delete_memory_fact(&fact_id)
                 .await
                 .map_err(|e| {
-                    tracing::error!("Failed to delete memory fact: {}", e);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: format!("Failed to delete memory fact: {}", e),
-                        }),
+                    public_internal_error(
+                        "Failed to delete memory fact",
+                        "Failed to delete memory fact",
+                        e,
                     )
                 })?;
 
@@ -437,6 +495,8 @@ pub async fn create_memory_fact(
         }
     };
 
+    validate_public_fact_input(&request.category, &request.key)?;
+
     let now = chrono::Utc::now().to_rfc3339();
     let fact = MemoryFact {
         id: format!("fact-{}", uuid::Uuid::new_v4()),
@@ -465,24 +525,55 @@ pub async fn create_memory_fact(
     };
 
     let fact_value = serde_json::to_value(&fact).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to encode fact: {}", e),
-            }),
+        public_internal_error(
+            "Failed to encode fact",
+            "Failed to create fact",
+            e.to_string(),
         )
     })?;
+
+    if request.pinned && request.category == "user" && request.key == "user.profile" {
+        let existing_profiles = memory_store
+            .list_memory_facts(Some(&agent_id), Some("user"), Some("agent"), 100, 0)
+            .await
+            .map_err(|e| {
+                public_internal_error(
+                    "Failed to list existing user profile facts",
+                    "Failed to create fact",
+                    e,
+                )
+            })?;
+
+        for existing in existing_profiles {
+            let existing: MemoryFact = match serde_json::from_value(existing) {
+                Ok(fact) => fact,
+                Err(e) => {
+                    tracing::warn!(
+                        "memory fact row decode failed while replacing user profile: {e}"
+                    );
+                    continue;
+                }
+            };
+
+            if existing.key == "user.profile" && existing.ward_id == fact.ward_id {
+                memory_store
+                    .delete_memory_fact(&existing.id)
+                    .await
+                    .map_err(|e| {
+                        public_internal_error(
+                            "Failed to replace existing user profile fact",
+                            "Failed to create fact",
+                            e,
+                        )
+                    })?;
+            }
+        }
+    }
+
     memory_store
         .upsert_typed_fact(fact_value, None)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to create fact: {}", e),
-                }),
-            )
-        })?;
+        .map_err(|e| public_internal_error("Failed to create fact", "Failed to create fact", e))?;
 
     Ok((StatusCode::CREATED, Json(MemoryFactResponse::from(fact))))
 }
@@ -525,14 +616,7 @@ pub async fn search_all_memory_facts(
     let raw = memory_store
         .search_memory_facts_hybrid(None, &query.q, "fts", query.limit, None, None, None)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Search failed: {}", e),
-                }),
-            )
-        })?;
+        .map_err(|e| public_internal_error("Global memory search failed", "Search failed", e))?;
 
     let facts: Vec<MemoryFactResponse> = raw
         .into_iter()
@@ -547,6 +631,7 @@ pub async fn search_all_memory_facts(
             Some(cat) => f.category == cat,
             None => true,
         })
+        .filter(is_public_memory_fact)
         .collect();
     let total = facts.len();
 
@@ -583,20 +668,12 @@ pub async fn list_all_memory_facts(
         )
         .await
         .map_err(|e| {
-            tracing::error!("Failed to list memory facts: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to list memory facts: {}", e),
-                }),
+            public_internal_error(
+                "Failed to list memory facts",
+                "Failed to list memory facts",
+                e,
             )
         })?;
-
-    let total = memory_store
-        .count_all_facts(query.agent_id.as_deref())
-        .await
-        .map(|n| n as usize)
-        .unwrap_or(0);
 
     // Each row is a serde_json::Value matching the MemoryFactResponse shape.
     // Rows that fail to deserialize are skipped with a warning rather than
@@ -610,7 +687,9 @@ pub async fn list_all_memory_facts(
                 None
             }
         })
+        .filter(is_public_memory_fact)
         .collect();
+    let total = facts.len();
 
     Ok(Json(MemoryListResponse { facts, total }))
 }
@@ -702,7 +781,7 @@ pub struct MemoryStats {
 /// - fact / episode / procedure / wiki / goal counts come from
 ///   `memory_store.aggregate_stats()`.
 ///
-/// `db_size_mb` is read directly from the on-disk database file —
+/// `db_size_mb` is read directly from the configured Engram storage path —
 /// that's a filesystem operation, not a store concern.
 pub async fn stats(State(state): State<AppState>) -> Json<MemoryStats> {
     let mut stats = MemoryStats::default();
@@ -730,13 +809,49 @@ pub async fn stats(State(state): State<AppState>) -> Json<MemoryStats> {
         }
     }
 
-    let knowledge_path = state.paths.knowledge_db();
-    if let Ok(meta) = std::fs::metadata(&knowledge_path) {
-        // Safe: file sizes fit in f64 precision well within petabyte range.
-        stats.db_size_mb = (meta.len() as f64) / (1024.0 * 1024.0);
+    let provider = state
+        .settings
+        .get_execution_settings()
+        .map(|settings| settings.memory.provider)
+        .unwrap_or_default();
+    let storage_path =
+        crate::state::persistence_factory::adapter_config_from_memory_provider_settings(
+            state.paths.as_ref(),
+            &provider,
+        )
+        .and_then(|config| {
+            config
+                .resolve_engram_path()
+                .map(|resolved| resolved.path().to_path_buf())
+                .map_err(|error| error.to_string())
+        });
+    if let Ok(storage_path) = storage_path {
+        if let Ok(bytes) = storage_size_bytes(&storage_path, 0) {
+            stats.db_size_mb = (bytes as f64) / (1024.0 * 1024.0);
+        }
     }
 
     Json(stats)
+}
+
+fn storage_size_bytes(path: &std::path::Path, depth: usize) -> std::io::Result<u64> {
+    if depth > 4 {
+        return Ok(0);
+    }
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(0);
+    }
+    if meta.is_file() {
+        return Ok(meta.len());
+    }
+
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        total = total.saturating_add(storage_size_bytes(&entry.path(), depth + 1)?);
+    }
+    Ok(total)
 }
 
 /// Memory subsystem health response.
@@ -749,16 +864,13 @@ pub struct MemoryHealth {
     pub last_compaction_merges: u64,
     pub last_compaction_prunes: u64,
     pub last_compaction_at: Option<String>,
+    pub governance: Option<GovernanceCapabilityHealth>,
 }
 
 /// `GET /api/memory/health` — queue depth, recent failures, last compaction.
 ///
 /// Pulls episode-pipeline metrics through `state.memory_store.health_metrics`
-/// (which counts pending / running / failed rows in `kg_episodes`)
-/// instead of reaching into `state.knowledge_db` directly. Compaction
-/// metrics still come from `state.compaction_repo` — that repository
-/// has not been migrated to a `zero-stores` trait yet (tracked under
-/// TD-023's HTTP-handler retirement follow-up).
+/// instead of reaching into a concrete semantic database handle.
 pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
     let mut health = MemoryHealth::default();
 
@@ -770,14 +882,16 @@ pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
         }
     }
 
-    if let Some(compaction_repo) = state.compaction_repo.as_ref() {
-        if let Ok(Some(summary)) = compaction_repo.latest_run_summary() {
+    if let Some(compaction_store) = state.compaction_store.as_ref() {
+        if let Ok(Some(summary)) = compaction_store.latest_run_summary().await {
             health.last_compaction_run_id = Some(summary.run_id);
             health.last_compaction_merges = summary.merges;
             health.last_compaction_prunes = summary.prunes;
             health.last_compaction_at = Some(summary.latest_at);
         }
     }
+
+    health.governance = state.governance_health.clone();
 
     Json(health)
 }

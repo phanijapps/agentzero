@@ -3,20 +3,20 @@
 // Execution context for tool operations
 // ============================================================================
 
+use agent_primitives::event::EventActions;
+use agent_primitives::types::Content;
+use agent_primitives::CallbackContext;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
-use zero_core::event::EventActions;
-use zero_core::types::Content;
-use zero_core::CallbackContext;
 
 /// Context for tool execution
 ///
 /// Provides tools with necessary information about the execution environment
 /// including conversation scoping and available resources.
 ///
-/// Implements `zero_core::ToolContext` trait for compatibility with tools.
+/// Implements `agent_primitives::ToolContext` trait for compatibility with tools.
 ///
 /// This context is designed to be shared across all tool calls in an execution loop
 /// via `Arc<ToolContext>`. State set by one tool (e.g., loaded skills) persists and
@@ -243,7 +243,7 @@ impl ToolContext {
 // IMPLEMENT ZERO_CORE TRAITS
 // ============================================================================
 
-impl zero_core::ReadonlyContext for ToolContext {
+impl agent_primitives::ReadonlyContext for ToolContext {
     fn invocation_id(&self) -> &str {
         self.conversation_id.as_deref().unwrap_or("unknown")
     }
@@ -273,7 +273,7 @@ impl zero_core::ReadonlyContext for ToolContext {
     }
 }
 
-impl zero_core::CallbackContext for ToolContext {
+impl agent_primitives::CallbackContext for ToolContext {
     fn get_state(&self, key: &str) -> Option<Value> {
         self.state.read().ok()?.get(key).cloned()
     }
@@ -299,7 +299,7 @@ impl zero_core::CallbackContext for ToolContext {
     }
 }
 
-impl zero_core::ToolContext for ToolContext {
+impl agent_primitives::ToolContext for ToolContext {
     fn function_call_id(&self) -> String {
         self.get_function_call_id()
     }
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn try_claim_atomic() {
-        use zero_core::CallbackContext;
+        use agent_primitives::CallbackContext;
         let ctx = ToolContext::new();
         // First claim succeeds
         assert!(ctx.try_claim("delegate"));
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn readonly_context_defaults() {
-        use zero_core::ReadonlyContext;
+        use agent_primitives::ReadonlyContext;
         let ctx = ToolContext::new();
         assert_eq!(ctx.invocation_id(), "unknown");
         assert_eq!(ctx.agent_name(), "root");
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn readonly_context_uses_set_values() {
-        use zero_core::ReadonlyContext;
+        use agent_primitives::ReadonlyContext;
         let ctx = ToolContext::full("a".to_string(), Some("c".to_string()), vec![]);
         assert_eq!(ctx.invocation_id(), "c");
         assert_eq!(ctx.agent_name(), "a");
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn actions_round_trip_and_take() {
-        use zero_core::ToolContext as ZcToolContext;
+        use agent_primitives::ToolContext as ZcToolContext;
         let ctx = ToolContext::new();
         // Default actions
         let mut a = ctx.actions();
@@ -563,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn function_call_id_via_zero_core_trait() {
-        use zero_core::ToolContext as ZcToolContext;
+    fn function_call_id_via_agent_primitives_trait() {
+        use agent_primitives::ToolContext as ZcToolContext;
         let ctx = ToolContext::new();
         ctx.set_function_call_id("zid".to_string());
         assert_eq!(ZcToolContext::function_call_id(&ctx), "zid");

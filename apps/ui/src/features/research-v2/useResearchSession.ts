@@ -1,21 +1,24 @@
-import { useCallback, useEffect, useReducer, useRef, type Dispatch } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type Dispatch } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getTransport } from "@/services/transport";
 import type {
   Artifact,
   ConversationEvent,
   UnsubscribeFn,
+  WorkSurface,
 } from "@/services/transport/types";
 import { randomId } from "@/shared/utils/randomId";
 import { useStatusPill, type PillEventSink } from "../shared/statusPill";
 import type { UploadedFile } from "../chat/ChatInput";
-import { composeMessageWithAttachments } from "../chat/attachments";
+import { composeMessageWithAttachments, displayAttachments } from "../chat/attachments";
 import { EMPTY_RESEARCH_STATE, type ResearchSessionState } from "./types";
 import { reduceResearch, type ResearchAction } from "./reducer";
 import { mapGatewayEventToResearchAction, mapGatewayEventToPillEvent } from "./event-map";
 import { snapshotSession } from "./session-snapshot";
+import { GOAL_ARTIFACT_LIST_OPTIONS, selectGoalArtifacts } from "./artifact-poll";
 
 const ROOT_AGENT_ID = "root";
+const FILE_MUTATION_TOOLS = new Set(["write_file", "edit_file"]);
 // Client-owned conv_id prefix. Research has no `/api/chat/init`, so the UI
 // mints the id and subscribes to it BEFORE invoke — that ordering is what
 // lets the first token reach the UI (R14a).
@@ -72,20 +75,30 @@ function respondActionFromDelegationCompleted(
 interface EventHandlerCtx {
   pillSink: PillEventSink;
   dispatch: Dispatch<ResearchAction>;
+  fileMutationToolIdsRef: { current: Set<string> };
+  onWardFileMutation: () => void;
+  /** Records the server-assigned identity before React has re-rendered. */
+  onRootSessionBound: (sessionId: string) => void;
   /** Called once per root `agent_completed` — used to re-snapshot. */
-  onRootAgentCompleted: (executionId: string) => void;
+  onRootAgentCompleted: (sessionId: string, executionId: string) => void;
   /** Called (debounced) when a self-heal reconcile should run — e.g. a
    *  delegate_to_agent tool call fired, or a delegation_completed arrived,
    *  both of which indicate child-turn state needs a pull from REST. */
   onReconcileHint: () => void;
+  onSurface: (event: ConversationEvent) => void;
 }
 
 function makeEventHandler(ctx: EventHandlerCtx) {
   return (event: ConversationEvent) => {
     const raw = event as unknown as Record<string, unknown>;
+    if (raw["type"] === "surface_created" || raw["type"] === "surface_updated" || raw["type"] === "surface_deleted") {
+      ctx.onSurface(event);
+      return;
+    }
     console.debug("[research-v2] event:", raw["type"], "sid:", raw["session_id"], "cid:", raw["conversation_id"], "eid:", raw["execution_id"]);
     const action = mapGatewayEventToResearchAction(event);
     if (action) ctx.dispatch(action);
+    handleRootSessionBound(raw, ctx.onRootSessionBound);
     // Respond-tool path: synthesize RESPOND from tool_call.args.message
     // because turn_complete.final_message arrives empty for tool-emitted
     // responses (Done.final_message is populated only from streamed tokens).
@@ -95,6 +108,7 @@ function makeEventHandler(ctx: EventHandlerCtx) {
     if (synthesizedChildRespond) ctx.dispatch(synthesizedChildRespond);
     const pillEv = mapGatewayEventToPillEvent(event);
     if (pillEv) ctx.pillSink.push(pillEv);
+    handleWardFileMutation(raw, ctx.fileMutationToolIdsRef, ctx.onWardFileMutation);
     // R14f: re-snapshot on root agent_completed to backfill anything WS dropped
     // (session title, artifacts, subagent completions, per-turn respond).
     handleRootAgentCompleted(raw, ctx.onRootAgentCompleted);
@@ -106,6 +120,45 @@ function makeEventHandler(ctx: EventHandlerCtx) {
     // same hint so a second subagent in the same session also heals.
     handleReconcileHint(raw, ctx.onReconcileHint);
   };
+}
+
+function updateSurfaces(
+  event: ConversationEvent,
+  setSurfaces: (value: WorkSurface[] | ((current: WorkSurface[]) => WorkSurface[])) => void,
+) {
+  const raw = event as unknown as { surface?: WorkSurface; surface_id?: string };
+  if (event.type === "surface_deleted" && raw.surface_id) {
+    setSurfaces(current => current.filter(item => item.surface_id !== raw.surface_id));
+  } else if (raw.surface) {
+    setSurfaces(current => [...current.filter(item => item.surface_id !== raw.surface!.surface_id), raw.surface!]);
+  }
+}
+
+function toolCallIdOf(raw: Record<string, unknown>): string | null {
+  const id = raw["tool_call_id"] ?? raw["tool_id"];
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+function handleWardFileMutation(
+  raw: Record<string, unknown>,
+  fileMutationToolIdsRef: { current: Set<string> },
+  onWardFileMutation: () => void,
+): void {
+  const type = raw["type"];
+  const id = toolCallIdOf(raw);
+  if (!id) return;
+  if (type === "tool_call") {
+    const tool = raw["tool_name"] ?? raw["tool"];
+    if (typeof tool === "string" && FILE_MUTATION_TOOLS.has(tool)) {
+      fileMutationToolIdsRef.current.add(id);
+    }
+    return;
+  }
+  if (type !== "tool_result" || !fileMutationToolIdsRef.current.has(id)) return;
+  fileMutationToolIdsRef.current.delete(id);
+  const error = raw["error"];
+  if (typeof error === "string" && error.length > 0) return;
+  onWardFileMutation();
 }
 
 function handleReconcileHint(
@@ -125,7 +178,7 @@ function handleReconcileHint(
 
 function handleRootAgentCompleted(
   raw: Record<string, unknown>,
-  onRootAgentCompleted: (executionId: string) => void,
+  onRootAgentCompleted: (sessionId: string, executionId: string) => void,
 ): void {
   if (raw["type"] !== "agent_completed") return;
   const parent = raw["parent_execution_id"];
@@ -133,9 +186,26 @@ function handleRootAgentCompleted(
   // need a reconcile because their own state was already snapshot-sourced.
   const isRoot = parent == null || parent === "";
   if (!isRoot) return;
+  const sessionId = raw["session_id"];
   const execId = raw["execution_id"];
-  if (typeof execId !== "string" || execId.length === 0) return;
-  onRootAgentCompleted(execId);
+  if (
+    typeof sessionId !== "string" || sessionId.length === 0 ||
+    typeof execId !== "string" || execId.length === 0
+  ) return;
+  onRootAgentCompleted(sessionId, execId);
+}
+
+function handleRootSessionBound(
+  raw: Record<string, unknown>,
+  onRootSessionBound: (sessionId: string) => void,
+): void {
+  const type = raw["type"];
+  const parent = raw["parent_execution_id"];
+  const isRootStarted = type === "agent_started" && (parent == null || parent === "");
+  if (type !== "invoke_accepted" && type !== "session_initialized" && !isRootStarted) return;
+  const sessionId = raw["session_id"];
+  if (typeof sessionId !== "string" || sessionId.length === 0) return;
+  onRootSessionBound(sessionId);
 }
 
 // --- Subscription refs ----------------------------------------------------
@@ -176,9 +246,13 @@ async function hydrateFromSnapshot(
   sessionId: string,
   dispatch: Dispatch<ResearchAction>,
   latestArtifactsRef: { current: Artifact[] },
+  canApply: () => boolean = () => true,
 ): Promise<void> {
   const transport = await getTransport();
   const snap = await snapshotSession(transport, sessionId);
+  // A route selection can change while REST requests are in flight. Never
+  // publish an obsolete snapshot into the shared session reducer.
+  if (!canApply()) return;
   if (!snap) {
     dispatch({ type: "ERROR", message: "Failed to load session" });
     return;
@@ -194,14 +268,21 @@ async function hydrateFromSnapshot(
     rootExecutionId: snap.rootExecutionId,
     turns: snap.turns,
     artifacts: snap.artifacts,
+    intentAnalyzing: snap.intentAnalyzing,
+    intentClassification: snap.intentClassification,
   });
   // Mirror the artifact records in the ref so the slide-out can resolve
   // id → Artifact without a second fetch. snapshotSession already pulled
-  // /artifacts once; reuse its decision here via a parallel call to keep the
-  // cache hot. On failure we just skip — slide-out will re-fetch on demand.
+  // /artifacts once; refresh the full-record cache through the same bounded
+  // manifest. On failure the slide-out will re-fetch on demand.
   try {
-    const res = await transport.listSessionArtifacts(sessionId);
-    if (res.success && res.data) latestArtifactsRef.current = res.data;
+    const res = await transport.listSessionArtifacts(
+      sessionId,
+      GOAL_ARTIFACT_LIST_OPTIONS,
+    );
+    if (canApply() && res.success && res.data) {
+      latestArtifactsRef.current = selectGoalArtifacts(res.data);
+    }
   } catch {
     // Intentionally silent — the snapshot's refs are enough for rendering.
   }
@@ -288,6 +369,8 @@ export function useResearchSession() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(reduceResearch, EMPTY_RESEARCH_STATE);
+  const [wardVaultRevision, setWardVaultRevision] = useState(0);
+  const [surfaces, setSurfaces] = useState<WorkSurface[]>([]);
   const { state: pillState, sink: pillSink } = useStatusPill();
 
   const hydratedForSessionRef = useRef<string | null>(null); // one-shot hydration guard (StrictMode)
@@ -313,17 +396,56 @@ export function useResearchSession() {
   const latestArtifactsRef = useRef<Artifact[]>([]);
   // Guard against redundant re-snapshots when agent_completed fires more than
   // once for the same root execution (WS redelivery or duplicate dispatch).
-  const resnapshotForExecRef = useRef<string | null>(null);
+  const resnapshotForRootRef = useRef<string | null>(null);
+  // The conversation subscription is installed before the server assigns a
+  // session ID. Keep that identity outside React state so a fast completion
+  // can still refresh the persisted artifact manifest before the next render.
+  const activeSessionIdRef = useRef<string | null>(urlSessionId ?? null);
+  const routeSessionIdRef = useRef<string | null>(urlSessionId ?? null);
+  routeSessionIdRef.current = urlSessionId ?? null;
+  if (urlSessionId) activeSessionIdRef.current = urlSessionId;
+  const fileMutationToolIdsRef = useRef<Set<string>>(new Set());
+  const bumpWardVaultRevision = useCallback(() => {
+    setWardVaultRevision((current) => current + 1);
+  }, []);
+  const recordRootSession = useCallback((sessionId: string) => {
+    const routeSessionId = routeSessionIdRef.current;
+    const activeSessionId = activeSessionIdRef.current;
+    if (routeSessionId && routeSessionId !== sessionId) return;
+    if (activeSessionId && activeSessionId !== sessionId) return;
+    activeSessionIdRef.current = sessionId;
+  }, []);
+  const refreshCompletedRoot = useCallback((sessionId: string, executionId: string) => {
+    if (activeSessionIdRef.current !== sessionId) return;
+    const rootKey = `${sessionId}:${executionId}`;
+    if (resnapshotForRootRef.current === rootKey) return;
+    resnapshotForRootRef.current = rootKey;
+    void hydrateFromSnapshot(
+      sessionId,
+      dispatch,
+      latestArtifactsRef,
+      () => activeSessionIdRef.current === sessionId,
+    );
+  }, []);
 
   // --- Hydrate an EXISTING session (only when URL carries one) ---
   useEffect(() => {
     if (!urlSessionId || hydratedForSessionRef.current === urlSessionId) return;
-    (async () => {
-      await hydrateFromSnapshot(urlSessionId, dispatch, latestArtifactsRef);
+    let active = true;
+    void (async () => {
+      await hydrateFromSnapshot(
+        urlSessionId,
+        dispatch,
+        latestArtifactsRef,
+        () => active,
+      );
       // Set AFTER the dispatch (chat-v2 learning #6) so StrictMode's first
       // mount re-entering doesn't skip dispatch via a pre-completion flag.
-      hydratedForSessionRef.current = urlSessionId;
+      if (active) hydratedForSessionRef.current = urlSessionId;
     })();
+    return () => {
+      active = false;
+    };
   }, [urlSessionId]);
 
   // --- Subscription cleanup on unmount (StrictMode-safe). ---
@@ -348,14 +470,20 @@ export function useResearchSession() {
     const sid = state.sessionId;
     if (!sid || state.status !== "running") return;
     if (subscribedSessionIdRef.current === sid) return;
-    const onRootAgentCompleted = (execId: string) => {
-      if (resnapshotForExecRef.current === execId) return;
-      resnapshotForExecRef.current = execId;
-      void hydrateFromSnapshot(sid, dispatch, latestArtifactsRef);
+    const onRootAgentCompleted = (eventSessionId: string, execId: string) => {
+      if (eventSessionId !== sid) return;
+      refreshCompletedRoot(eventSessionId, execId);
     };
     const onReconcileHint = makeDebouncedReconcile(sid, dispatch, latestArtifactsRef);
     const onEvent = makeEventHandler({
-      pillSink, dispatch, onRootAgentCompleted, onReconcileHint,
+      pillSink,
+      dispatch,
+      fileMutationToolIdsRef,
+      onWardFileMutation: bumpWardVaultRevision,
+      onRootSessionBound: recordRootSession,
+      onRootAgentCompleted,
+      onReconcileHint,
+      onSurface: (event) => updateSurfaces(event, setSurfaces),
     });
     // Tear down any prior session-id subscription, then register the new one.
     teardownSubscription({
@@ -393,11 +521,15 @@ export function useResearchSession() {
     };
     // pillSink has stable identity; dispatch is stable; intentional exhaustive-deps skip.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.sessionId, state.status]);
+  }, [state.sessionId, state.status, bumpWardVaultRevision, recordRootSession, refreshCompletedRoot]);
 
-  // --- Sync URL when the backend hands us a session id ---
+  // --- Sync URL when a trusted server event binds a session id ---
   useEffect(() => {
-    if (state.sessionId && urlSessionId !== state.sessionId) {
+    // A route with a session id is a user selection and must remain
+    // authoritative while that selected snapshot hydrates. Otherwise the
+    // previous session in state can immediately navigate back over the new
+    // selection. Only a new, unscoped Research route needs state → URL sync.
+    if (state.sessionId && !urlSessionId) {
       navigate(`/research/${state.sessionId}`, { replace: true });
     }
   }, [state.sessionId, urlSessionId, navigate]);
@@ -437,25 +569,21 @@ export function useResearchSession() {
       // agent only learns about the upload through the message text.
       const promptText = composeMessageWithAttachments(trimmed, attachments);
       const sendAt = Date.now();
+      const messageId = `msg-${randomId()}`;
       lastSendMsRef.current = sendAt;
       dispatch({
         type: "APPEND_USER",
         message: {
-          id: randomId(),
-          content: promptText,
+          id: messageId,
+          content: trimmed,
+          attachments: displayAttachments(attachments),
           createdAt: new Date(sendAt).toISOString(),
         },
       });
       // Closure read: safe because only SESSION_BOUND (dispatched below) mutates state.conversationId.
       const convId = state.conversationId ?? `${CONV_ID_PREFIX}${randomId()}`;
       const refs: SubscriptionRefs = { subscribedConvIdRef, unsubscribeRef };
-      const onRootAgentCompleted = (execId: string) => {
-        if (resnapshotForExecRef.current === execId) return;
-        resnapshotForExecRef.current = execId;
-        const sid = state.sessionId;
-        if (!sid) return;
-        void hydrateFromSnapshot(sid, dispatch, latestArtifactsRef);
-      };
+      const onRootAgentCompleted = refreshCompletedRoot;
       // Reconcile hint reads the latest sessionId each fire via a getter so
       // pre-invoke-accepted delegations still trigger a snapshot once the
       // session id lands.
@@ -465,7 +593,14 @@ export function useResearchSession() {
         scheduleReconcile(sid, dispatch, latestArtifactsRef, reconcileTimerRef);
       };
       const onEvent = makeEventHandler({
-        pillSink, dispatch, onRootAgentCompleted, onReconcileHint,
+        pillSink,
+        dispatch,
+        fileMutationToolIdsRef,
+        onWardFileMutation: bumpWardVaultRevision,
+        onRootSessionBound: recordRootSession,
+        onRootAgentCompleted,
+        onReconcileHint,
+        onSurface: (event) => updateSurfaces(event, setSurfaces),
       });
       try {
         await ensureSubscription(convId, onEvent, refs);
@@ -484,8 +619,8 @@ export function useResearchSession() {
           convId,
           promptText,
           state.sessionId ?? undefined,
-          // mode undefined → executor defaults to SessionMode::Research
-          undefined,
+          "deep",
+          messageId,
         );
         console.debug("[research-v2] sendMessage: executeAgent result", result.success, result.data, result.error);
         if (!result.success) {
@@ -497,7 +632,7 @@ export function useResearchSession() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pillSink stable, see module-level note above.
-    [state.status, state.conversationId, state.sessionId],
+    [state.status, state.conversationId, state.sessionId, recordRootSession, refreshCompletedRoot],
   );
 
   const stopAgent = useCallback(async () => {
@@ -511,8 +646,12 @@ export function useResearchSession() {
     teardownSubscription({ subscribedConvIdRef, unsubscribeRef });
     pillSink.push({ kind: "reset" });
     dispatch({ type: "RESET" });
+    setWardVaultRevision(0);
+    setSurfaces([]);
+    fileMutationToolIdsRef.current.clear();
     hydratedForSessionRef.current = null;
-    resnapshotForExecRef.current = null;
+    resnapshotForRootRef.current = null;
+    activeSessionIdRef.current = null;
     navigate("/research", { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pillSink stable, see module-level note above.
   }, [navigate]);
@@ -525,5 +664,5 @@ export function useResearchSession() {
   // hydrateFromSnapshot (on open + on root agent_completed).
   const getFullArtifact = useCallback((id: string): Artifact | undefined => latestArtifactsRef.current.find((a) => a.id === id), []);
 
-  return { state, pillState, sendMessage, stopAgent, startNewResearch, toggleThinking, getFullArtifact };
+  return { state, pillState, surfaces, wardVaultRevision, sendMessage, stopAgent, startNewResearch, toggleThinking, getFullArtifact };
 }

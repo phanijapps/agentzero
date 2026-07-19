@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { WriteRail } from "../WriteRail";
 
 describe("WriteRail", () => {
-  it("opens AddDrawer with preset category when + Instruction clicked", () => {
+  it("creates only public memory categories", () => {
     const onSave = vi.fn();
     render(
       <WriteRail
@@ -12,14 +12,17 @@ describe("WriteRail", () => {
         counts={{ facts: 10, wiki: 2, procedures: 1, episodes: 3 }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /\+ instruction/i }));
+    expect(screen.queryByRole("button", { name: /\+ instruction/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /\+ policy/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /\+ preference/i }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: /memory content/i }), {
       target: { value: "Always verify OPF metadata" },
     });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(onSave).toHaveBeenCalledWith({
-      category: "instruction",
+      category: "preference",
       content: "Always verify OPF metadata",
       ward_id: "wardA",
     });

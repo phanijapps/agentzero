@@ -19,14 +19,16 @@
 //! wired (stripped-down test fixtures).
 
 use crate::state::AppState;
+use agent_runtime::llm::embedding::EmbeddingClient;
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Instant;
-use zero_stores_domain::{RouteHint, RouteSourceKind, SessionEpisode, WikiHit};
+use zbot_stores_domain::{RouteHint, RouteSourceKind, SessionEpisode, WikiHit};
+use zbot_stores_traits::EmbeddingQueryIdentity;
 
 fn route_hint_value(hint: RouteHint) -> Value {
-    serde_json::to_value(hint).unwrap_or_else(|_| Value::Null)
+    serde_json::to_value(hint).unwrap_or(Value::Null)
 }
 
 /// Request body for unified search.
@@ -67,6 +69,16 @@ fn default_types() -> Vec<String> {
 
 fn default_limit() -> usize {
     10
+}
+
+fn validate_mode(mode: &str) -> Result<&str, HandlerError> {
+    match mode {
+        "hybrid" | "fts" | "semantic" => Ok(mode),
+        other => Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("unsupported memory search mode: {other}"),
+        )),
+    }
 }
 
 /// One type's block in the response.
@@ -118,7 +130,7 @@ fn wiki_hit_to_value(hit: WikiHit) -> Value {
     })
 }
 
-fn procedure_to_value(proc: zero_stores_domain::Procedure, score: f64) -> Value {
+fn procedure_to_value(proc: zbot_stores_domain::Procedure, score: f64) -> Value {
     let route_hint = proc
         .ward_id
         .as_ref()
@@ -170,7 +182,8 @@ fn episode_to_value(ep: SessionEpisode, score: Option<f64>, source: &str) -> Val
     v
 }
 
-fn fact_to_value(fact: zero_stores_domain::MemoryFact, source: &str, score: Option<f64>) -> Value {
+fn fact_to_value(fact: zbot_stores_domain::MemoryFact, source: &str, score: Option<f64>) -> Value {
+    let public_source = public_match_source(source);
     let route_hint = RouteHint::new(fact.ward_id.clone(), RouteSourceKind::Fact)
         .with_memory_id(fact.id.clone())
         .with_session_id(fact.session_id.clone())
@@ -190,13 +203,20 @@ fn fact_to_value(fact: zero_stores_domain::MemoryFact, source: &str, score: Opti
         "updated_at": fact.updated_at,
         "pinned": fact.pinned,
         "epistemic_class": fact.epistemic_class,
-        "match_source": source,
+        "match_source": public_source,
         "route_hint": route_hint_value(route_hint),
     });
     if let (Value::Object(ref mut m), Some(s)) = (&mut v, score) {
         m.insert("score".into(), json!(s));
     }
     v
+}
+
+fn public_match_source(source: &str) -> &str {
+    match source {
+        "exact_degraded" => "fts",
+        other => other,
+    }
 }
 
 /// Fallback agent id used when scoping procedure / episode searches in v1
@@ -238,30 +258,23 @@ pub async fn memory_search(
 
     // Optional caller-scoped agent. `None` → no agent/scope gate (admin/debug).
     let agent: Option<String> = req.agent_id.clone();
+    let embedding_client = state.embedding_service.client();
+    let mode = validate_mode(req.mode.as_str())?;
 
     // Single embedding attempt, mode-dependent.
-    let embedding: Option<Vec<f32>> = match req.mode.as_str() {
+    let embedding: Option<Vec<f32>> = match mode {
         "fts" => None,
         "semantic" => {
-            let v = state
-                .embedding_service
-                .client()
+            let v = embedding_client
                 .embed(&[req.query.as_str()])
                 .await
                 .map_err(|e| {
-                    err(
-                        StatusCode::BAD_REQUEST,
-                        format!("embedding backend unavailable: {e}"),
-                    )
+                    tracing::debug!("unified semantic search: embedding unavailable ({e})");
+                    err(StatusCode::BAD_REQUEST, "embedding backend unavailable")
                 })?;
             Some(v.into_iter().next().unwrap_or_default())
         }
-        _ => match state
-            .embedding_service
-            .client()
-            .embed(&[req.query.as_str()])
-            .await
-        {
+        _ => match embedding_client.embed(&[req.query.as_str()]).await {
             Ok(v) => v.into_iter().next(),
             Err(e) => {
                 tracing::debug!("unified search: embedding unavailable ({e}); FTS-only");
@@ -269,6 +282,9 @@ pub async fn memory_search(
             }
         },
     };
+    let query_identity = embedding
+        .as_ref()
+        .map(|_| embedding_query_identity(embedding_client.as_ref()));
 
     let want_facts = req.types.iter().any(|t| t == "facts");
     let want_wiki = req.types.iter().any(|t| t == "wiki");
@@ -276,7 +292,7 @@ pub async fn memory_search(
     let want_eps = req.types.iter().any(|t| t == "episodes");
 
     let query = req.query.clone();
-    let mode = req.mode.clone();
+    let mode = mode.to_string();
     let limit = req.limit;
     let ward_owned = ward.clone();
     let agent_owned = agent.clone();
@@ -286,6 +302,7 @@ pub async fn memory_search(
         let query = query.clone();
         let mode = mode.clone();
         let emb = embedding.clone();
+        let query_identity = query_identity.clone();
         let ward = ward_owned.clone();
         let agent = agent_owned.clone();
         async move {
@@ -298,6 +315,7 @@ pub async fn memory_search(
                 &query,
                 &mode,
                 emb.as_deref(),
+                query_identity.as_ref(),
                 agent.as_deref(),
                 ward.as_deref(),
                 limit,
@@ -315,12 +333,19 @@ pub async fn memory_search(
         let query = query.clone();
         let mode = mode.clone();
         let emb = embedding.clone();
+        let query_identity = query_identity.clone();
         let ward = ward_owned.clone();
         async move {
             if !want_wiki {
                 return TypeBlock::default();
             }
             let t0 = Instant::now();
+            if mode == "hybrid" && emb.is_none() {
+                return TypeBlock {
+                    hits: Vec::new(),
+                    latency_ms: t0.elapsed().as_millis() as u64,
+                };
+            }
             // In semantic-only mode, pass embedding but use a synthetic query
             // the FTS arm won't match (search_hybrid still runs FTS with it —
             // acceptable: no harm since RRF will favor vec hits).
@@ -330,7 +355,13 @@ pub async fn memory_search(
                 query.as_str()
             };
             let hits = wiki_store
-                .search_wiki_hybrid_typed(ward.as_deref(), pass_query, limit, emb.as_deref())
+                .search_wiki_hybrid_typed_with_identity(
+                    ward.as_deref(),
+                    pass_query,
+                    limit,
+                    emb.as_deref(),
+                    query_identity.as_ref(),
+                )
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -347,6 +378,7 @@ pub async fn memory_search(
         let proc_store = proc_store.clone();
         let mode = mode.clone();
         let emb = embedding.clone();
+        let query_identity = query_identity.clone();
         let ward = ward_owned.clone();
         let agent = agent_owned.clone();
         async move {
@@ -359,7 +391,13 @@ pub async fn memory_search(
                 // No FTS table for procedures: fts mode returns empty.
                 ("fts", _) => Vec::new(),
                 (_, Some(emb)) => proc_store
-                    .search_procedures_by_similarity_typed(emb, scope_agent, ward.as_deref(), limit)
+                    .search_procedures_by_similarity_typed_with_identity(
+                        emb,
+                        query_identity.as_ref(),
+                        scope_agent,
+                        ward.as_deref(),
+                        limit,
+                    )
                     .await
                     .unwrap_or_default()
                     .into_iter()
@@ -379,6 +417,7 @@ pub async fn memory_search(
         let query = query.clone();
         let mode = mode.clone();
         let emb = embedding.clone();
+        let query_identity = query_identity.clone();
         let ward = ward_owned.clone();
         let agent = agent_owned.clone();
         async move {
@@ -397,7 +436,13 @@ pub async fn memory_search(
                     .map(|ep| episode_to_value(ep, None, "fts"))
                     .collect(),
                 (_, Some(emb)) => episode_store
-                    .search_episodes_by_similarity_typed(scope_agent, emb, 0.0, limit)
+                    .search_episodes_by_similarity_typed_with_identity(
+                        scope_agent,
+                        emb,
+                        query_identity.as_ref(),
+                        0.0,
+                        limit,
+                    )
                     .await
                     .unwrap_or_default()
                     .into_iter()
@@ -406,6 +451,7 @@ pub async fn memory_search(
                     .filter(|(ep, _)| ward.as_deref().is_none_or(|w| ep.ward_id == w))
                     .map(|(ep, s)| episode_to_value(ep, Some(s), "vec"))
                     .collect(),
+                ("hybrid", None) => Vec::new(),
                 (_, None) => episode_store
                     .keyword_search_episodes(&query, ward.as_deref(), limit)
                     .await
@@ -440,10 +486,11 @@ pub async fn memory_search(
 /// unfiltered pool (admin/debug).
 #[allow(clippy::too_many_arguments)]
 async fn run_facts(
-    memory_store: &dyn zero_stores_traits::MemoryFactStore,
+    memory_store: &dyn zbot_stores_traits::MemoryFactStore,
     query: &str,
     mode: &str,
     embedding: Option<&[f32]>,
+    query_identity: Option<&EmbeddingQueryIdentity>,
     agent_id: Option<&str>,
     ward: Option<&str>,
     limit: usize,
@@ -452,18 +499,42 @@ async fn run_facts(
         return Vec::new();
     }
     memory_store
-        .search_memory_facts_hybrid_typed(agent_id, query, mode, limit, ward, embedding, None)
+        .search_memory_facts_hybrid_typed_with_identity(
+            agent_id,
+            query,
+            mode,
+            limit,
+            ward,
+            embedding,
+            query_identity,
+            None,
+        )
         .await
         .unwrap_or_default()
         .into_iter()
+        .filter(|(fact, _, _)| is_public_fact(fact))
         .map(|(fact, score, src)| fact_to_value(fact, &src, Some(score)))
         .collect()
+}
+
+fn is_public_fact(fact: &zbot_stores_domain::MemoryFact) -> bool {
+    !matches!(fact.category.as_str(), "ctx" | "instruction" | "correction")
+}
+
+fn embedding_query_identity(client: &dyn EmbeddingClient) -> EmbeddingQueryIdentity {
+    EmbeddingQueryIdentity {
+        provider_type: client.provider_type(),
+        model: client.model_name(),
+        dimensions: client.dimensions() as u32,
+        prompt_profile: client.prompt_profile(),
+        normalization: client.normalization(),
+    }
 }
 
 #[cfg(test)]
 mod helpers_tests {
     use super::*;
-    use zero_stores_domain::{MemoryFact, Procedure, SessionEpisode, WikiArticle, WikiHit};
+    use zbot_stores_domain::{MemoryFact, Procedure, SessionEpisode, WikiArticle, WikiHit};
 
     fn fact() -> MemoryFact {
         MemoryFact {
@@ -644,7 +715,7 @@ mod helpers_tests {
     /// impl; we only need to implement the two non-default methods.
     struct StubStore;
     #[async_trait::async_trait]
-    impl zero_stores_traits::MemoryFactStore for StubStore {
+    impl zbot_stores_traits::MemoryFactStore for StubStore {
         async fn save_fact(
             &self,
             _agent_id: &str,
@@ -670,14 +741,24 @@ mod helpers_tests {
     #[tokio::test]
     async fn run_facts_in_semantic_mode_without_embedding_returns_empty() {
         let store = StubStore;
-        let out = run_facts(&store, "anything", "semantic", None, None, None, 10).await;
+        let out = run_facts(&store, "anything", "semantic", None, None, None, None, 10).await;
         assert!(out.is_empty());
     }
 
     #[tokio::test]
     async fn run_facts_in_fts_mode_with_default_store_returns_empty() {
         let store = StubStore;
-        let out = run_facts(&store, "build", "fts", None, Some("root"), Some("lab"), 10).await;
+        let out = run_facts(
+            &store,
+            "build",
+            "fts",
+            None,
+            None,
+            Some("root"),
+            Some("lab"),
+            10,
+        )
+        .await;
         assert!(out.is_empty());
     }
 }

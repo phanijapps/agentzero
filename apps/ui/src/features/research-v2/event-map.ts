@@ -43,7 +43,7 @@ function toolNameOf(e: Record<string, unknown>, fallback: string): string {
 // -------------------------------------------------------------------------
 
 function mapAgentStarted(e: Record<string, unknown>, now: number): ResearchAction {
-  return {
+  const action: Extract<ResearchAction, { type: "AGENT_STARTED" }> = {
     type: "AGENT_STARTED",
     turnId: turnIdOf(e),
     agentId: (e["agent_id"] as string) ?? "root",
@@ -51,6 +51,15 @@ function mapAgentStarted(e: Record<string, unknown>, now: number): ResearchActio
     wardId: (e["ward_id"] as string | null) ?? null,
     startedAt: now,
   };
+  const sessionId = e["session_id"];
+  if (typeof sessionId === "string" && sessionId.length > 0) {
+    action.sessionId = sessionId;
+  }
+  const conversationId = e["conversation_id"];
+  if (typeof conversationId === "string" && conversationId.length > 0) {
+    action.conversationId = conversationId;
+  }
+  return action;
 }
 
 /**
@@ -188,7 +197,20 @@ export function mapGatewayEventToResearchAction(ev: ConversationEvent): Research
   const now = Date.now();
   switch (type) {
     case "agent_started":            return mapAgentStarted(e, now);
-    case "agent_completed":          return { type: "AGENT_COMPLETED", turnId: turnIdOf(e), completedAt: now };
+    case "agent_completed": {
+      // The lifecycle event is the recovery path when the preceding
+      // turn_complete websocket frame was missed. Keep its final response so
+      // the reducer can render it before closing the turn.
+      const result = e["result"];
+      return {
+        type: "AGENT_COMPLETED",
+        turnId: turnIdOf(e),
+        completedAt: now,
+        ...(typeof result === "string" && result.trim().length > 0
+          ? { result: result.trim() }
+          : {}),
+      };
+    }
     case "agent_stopped":            return { type: "AGENT_STOPPED",   turnId: turnIdOf(e), completedAt: now };
     case "delegation_started":       return mapDelegationStarted(e, now);
     case "delegation_completed":     return mapDelegationCompleted(e, now);

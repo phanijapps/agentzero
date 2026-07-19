@@ -325,15 +325,16 @@ fn test_intent_injection_sdlc_for_graph() {
         hidden_intents: vec!["fetch options data".to_string()],
         recommended_skills: vec!["coding".to_string()],
         recommended_agents: vec!["code-agent".to_string()],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
-            action: "create_new".to_string(),
+            action: WardAction::CreateNew,
             ward_name: "financial-analysis".to_string(),
             subdirectory: Some("stocks/amd".to_string()),
             structure: Default::default(),
             reason: "domain match".to_string(),
         },
         execution_strategy: ExecutionStrategy {
-            approach: "graph".to_string(),
+            approach: ExecutionApproach::Graph,
             graph: None,
             explanation: "Complex analysis".to_string(),
         },
@@ -369,15 +370,16 @@ fn test_intent_injection_no_sdlc_for_simple() {
         hidden_intents: vec![],
         recommended_skills: vec![],
         recommended_agents: vec![],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
-            action: "use_existing".to_string(),
+            action: WardAction::UseExisting,
             ward_name: "scratch".to_string(),
             subdirectory: None,
             structure: Default::default(),
             reason: "simple".to_string(),
         },
         execution_strategy: ExecutionStrategy {
-            approach: "simple".to_string(),
+            approach: ExecutionApproach::Simple,
             graph: None,
             explanation: "Quick question".to_string(),
         },
@@ -395,6 +397,18 @@ fn test_intent_injection_no_sdlc_for_simple() {
         !injection.contains("tasks.json"),
         "Simple approach should NOT mention tasks.json"
     );
+    assert!(
+        injection.contains("**Fast path:**"),
+        "Simple approach should explicitly route through the direct fast path"
+    );
+    assert!(
+        !injection.contains("delegate_to_agent(agent_id="),
+        "Simple approach should not render an executable delegation example"
+    );
+    assert!(
+        !injection.contains("ward(action="),
+        "Simple approach should not force ward entry"
+    );
 }
 
 /// Ward rules should not have hardcoded domain examples.
@@ -407,15 +421,16 @@ fn test_ward_rules_domain_agnostic() {
         hidden_intents: vec![],
         recommended_skills: vec![],
         recommended_agents: vec![],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
-            action: "create_new".to_string(),
+            action: WardAction::CreateNew,
             ward_name: "test".to_string(),
             subdirectory: None,
             structure: Default::default(),
             reason: "test".to_string(),
         },
         execution_strategy: ExecutionStrategy {
-            approach: "simple".to_string(),
+            approach: ExecutionApproach::Simple,
             graph: None,
             explanation: "test".to_string(),
         },

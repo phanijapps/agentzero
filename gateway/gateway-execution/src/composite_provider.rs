@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zero_core::connectors::{ConnectorInfo, ConnectorResourceProvider};
+use agent_primitives::connectors::{ConnectorInfo, ConnectorResourceProvider};
 
 /// Composite provider that routes queries to either HTTP connectors or bridge workers.
 ///

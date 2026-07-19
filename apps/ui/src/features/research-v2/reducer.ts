@@ -24,6 +24,7 @@ import type {
   SessionTurn,
   TimelineEntry,
 } from "./types";
+import type { MessageAttachment } from "../chat/attachments";
 import { EMPTY_RESEARCH_STATE } from "./types";
 
 const SILENT_CRASH_MESSAGE =
@@ -32,6 +33,7 @@ const SILENT_CRASH_MESSAGE =
 export interface UserMessagePayload {
   id: string;
   content: string;
+  attachments?: MessageAttachment[];
   /** ISO timestamp from the gateway, or `now` when the UI mints it. */
   createdAt: string;
 }
@@ -48,6 +50,8 @@ export type ResearchAction =
       rootExecutionId: string | null;
       turns: SessionTurn[];
       artifacts: ResearchArtifactRef[];
+      intentAnalyzing?: boolean;
+      intentClassification?: string | null;
     }
   | { type: "APPEND_USER"; message: UserMessagePayload }
   | { type: "SESSION_BOUND"; sessionId: string | null; conversationId: string }
@@ -60,10 +64,13 @@ export type ResearchAction =
       parentExecutionId: string | null;
       wardId: string | null;
       startedAt: number;
+      /** Authoritative server identity carried by root `agent_started`. */
+      sessionId?: string;
+      conversationId?: string;
       /** Optional — populated when this event came from delegation_started. */
       request?: string | null;
     }
-  | { type: "AGENT_COMPLETED"; turnId: string; completedAt: number }
+  | { type: "AGENT_COMPLETED"; turnId: string; completedAt: number; result?: string }
   | { type: "AGENT_STOPPED"; turnId: string; completedAt: number }
   | { type: "THINKING_DELTA"; turnId: string; entry: TimelineEntry }
   | { type: "TOOL_CALL"; turnId: string; entry: TimelineEntry }
@@ -93,6 +100,7 @@ function newOpenTurn(payload: UserMessagePayload, prior: number): SessionTurn {
       id: payload.id,
       content: payload.content,
       createdAt: payload.createdAt,
+      ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
     },
     subagents: [],
     assistantText: null,
@@ -110,8 +118,12 @@ function setLastTurn(
   fn: (t: SessionTurn) => SessionTurn,
 ): ResearchSessionState {
   if (state.turns.length === 0) return state;
+  const lastIndex = state.turns.length - 1;
+  const current = state.turns[lastIndex];
+  const updated = fn(current);
+  if (updated === current) return state;
   const next = state.turns.slice();
-  next[next.length - 1] = fn(next[next.length - 1]);
+  next[lastIndex] = updated;
   return { ...state, turns: next };
 }
 
@@ -208,17 +220,51 @@ function handleHydrate(
   state: ResearchSessionState,
   action: Extract<ResearchAction, { type: "HYDRATE" }>,
 ): ResearchSessionState {
+  const pendingTurn = state.pendingUserTurn
+    ? state.turns.find(
+        (turn) => turn.userMessage.id === state.pendingUserTurn?.messageId,
+      )
+    : undefined;
+  // The Research caller supplies this opaque id through invoke metadata. It
+  // becomes the durable Message.id, so content (including identical prompts)
+  // never participates in reconciliation.
+  const snapshotHasPendingTurn =
+    pendingTurn !== undefined &&
+    (state.pendingUserTurn?.sessionId === null ||
+      state.pendingUserTurn?.sessionId === action.sessionId) &&
+    (state.pendingUserTurn?.rootExecutionId === null ||
+      state.pendingUserTurn?.rootExecutionId === action.rootExecutionId) &&
+    action.turns.some(
+      (turn) => turn.userMessage.id === state.pendingUserTurn?.messageId,
+    );
+  const retainedOptimisticTurn =
+    pendingTurn && !snapshotHasPendingTurn ? pendingTurn : null;
+
   return {
     ...state,
     sessionId: action.sessionId,
-    conversationId: action.conversationId,
+    conversationId: action.conversationId ?? state.conversationId,
     title: action.title,
-    status: action.status,
+    status: retainedOptimisticTurn ? state.status : action.status,
     wardId: action.wardId,
     wardName: action.wardName,
-    rootExecutionId: action.rootExecutionId,
-    turns: action.turns,
+    rootExecutionId: retainedOptimisticTurn
+      ? state.rootExecutionId ?? action.rootExecutionId
+      : action.rootExecutionId,
+    turns: retainedOptimisticTurn
+      ? [...action.turns, retainedOptimisticTurn]
+      : action.turns,
+    // Keep the latest submitted id after confirmation as well: a request made
+    // before the durable row existed can resolve after this newer snapshot and
+    // must not erase the confirmed turn. The next APPEND_USER or RESET replaces
+    // this session-scoped guard.
+    pendingUserTurn: state.pendingUserTurn,
     artifacts: action.artifacts,
+    // Snapshot data is authoritative on a route change. Without resetting
+    // these fields, a late hydrate can leave the prior session's context
+    // inspector attached to the newly selected session.
+    intentAnalyzing: action.intentAnalyzing ?? false,
+    intentClassification: action.intentClassification ?? null,
   };
 }
 
@@ -234,6 +280,11 @@ function handleAppendUser(
   return {
     ...promoted,
     turns: [...promoted.turns, fresh],
+    pendingUserTurn: {
+      messageId: action.message.id,
+      rootExecutionId: promoted.rootExecutionId,
+      sessionId: promoted.sessionId,
+    },
     status: "running",
   };
 }
@@ -257,17 +308,34 @@ function handleAgentStarted(
   state: ResearchSessionState,
   action: Extract<ResearchAction, { type: "AGENT_STARTED" }>,
 ): ResearchSessionState {
+  const boundState = action.sessionId
+    ? {
+        ...state,
+        sessionId: action.sessionId,
+        conversationId: action.conversationId ?? state.conversationId,
+      }
+    : state;
+
   // Sticky ward: null wardId on the event inherits from state (never clear).
-  const wardForTurn = action.wardId ?? state.wardId;
+  const wardForTurn = action.wardId ?? boundState.wardId;
 
   // Root agent: stamp rootExecutionId once. If no SessionTurn exists yet
   // (e.g. live session that hasn't seen APPEND_USER), open a placeholder.
   if (action.parentExecutionId === null) {
     const withRoot =
-      state.rootExecutionId == null
-        ? { ...state, rootExecutionId: action.turnId }
-        : state;
-    return withRoot;
+      boundState.rootExecutionId == null
+        ? { ...boundState, rootExecutionId: action.turnId }
+        : boundState;
+    if (!withRoot.pendingUserTurn) return withRoot;
+    return {
+      ...withRoot,
+      pendingUserTurn: {
+        ...withRoot.pendingUserTurn,
+        rootExecutionId:
+          withRoot.pendingUserTurn.rootExecutionId ?? withRoot.rootExecutionId,
+        sessionId: withRoot.pendingUserTurn.sessionId ?? withRoot.sessionId,
+      },
+    };
   }
 
   // Subagent. Append to the latest open turn.
@@ -280,8 +348,8 @@ function handleAgentStarted(
     request: action.request ?? null,
   });
   // Idempotent: if we already have this subagent (from snapshot), skip.
-  if (locateSubagent(state, action.turnId)) return state;
-  return appendSubagent(state, sub);
+  if (locateSubagent(boundState, action.turnId)) return boundState;
+  return appendSubagent(boundState, sub);
 }
 
 function handleAgentCompleted(
@@ -289,12 +357,25 @@ function handleAgentCompleted(
   action: Extract<ResearchAction, { type: "AGENT_COMPLETED" }>,
 ): ResearchSessionState {
   if (action.turnId === state.rootExecutionId) {
-    return setLastTurn(state, (t) => closeTurn(t, action.completedAt));
+    return setLastTurn(state, (t) => {
+      const withResult =
+        action.result &&
+        (t.assistantText !== action.result || t.assistantStreaming !== "")
+          ? { ...t, assistantText: action.result, assistantStreaming: "" }
+          : t;
+      return closeTurn(withResult, action.completedAt);
+    });
   }
-  return updateSubagent(state, action.turnId, (s) => closeSubagent(s, action.completedAt));
+  return updateSubagent(state, action.turnId, (s) => closeSubagent(
+    action.result
+      ? { ...s, respond: action.result, respondStreaming: "" }
+      : s,
+    action.completedAt,
+  ));
 }
 
 function closeTurn(t: SessionTurn, completedAt: number): SessionTurn {
+  if (t.status === "completed") return t;
   if (turnHasMeaningfulContent(t)) {
     const promotedReply =
       t.assistantText ??
@@ -395,11 +476,19 @@ function handleRespond(
   action: Extract<ResearchAction, { type: "RESPOND" }>,
 ): ResearchSessionState {
   if (action.turnId === state.rootExecutionId) {
-    return setLastTurn(state, (t) => ({
-      ...t,
-      assistantText: action.text,
-      assistantStreaming: "",
-    }));
+    return setLastTurn(state, (t) => {
+      if (
+        t.status !== "running" ||
+        (t.assistantText === action.text && t.assistantStreaming === "")
+      ) {
+        return t;
+      }
+      return {
+        ...t,
+        assistantText: action.text,
+        assistantStreaming: "",
+      };
+    });
   }
   return updateSubagent(state, action.turnId, (s) => ({
     ...s,
@@ -477,8 +566,26 @@ export function reduceResearch(
       return { ...state, planPath: action.planPath };
     case "SESSION_COMPLETE":
       return { ...state, status: "complete" };
-    case "ERROR":
-      return { ...state, status: "error" };
+    case "ERROR": {
+      const pendingMessageId = state.pendingUserTurn?.messageId;
+      return {
+        ...state,
+        status: "error",
+        intentAnalyzing: false,
+        turns: pendingMessageId
+          ? state.turns.map((turn) =>
+              turn.userMessage.id === pendingMessageId
+                ? {
+                    ...turn,
+                    status: "error",
+                    assistantText: "Request failed. Please try again.",
+                    assistantStreaming: "",
+                  }
+                : turn,
+            )
+          : state.turns,
+      };
+    }
     case "RESET":
       return EMPTY_RESEARCH_STATE;
     case "SET_ARTIFACTS":

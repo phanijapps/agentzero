@@ -169,6 +169,26 @@ If you'd rather keep the daemon loopback-only, toggle **Expose to LAN** off in S
 
 **Heads up for upgraders:** prior versions only listened on `127.0.0.1`. After this release the daemon listens on `0.0.0.0` by default.
 
+### Public tunnel with ngrok
+
+Docker users can enable the `ngrok` compose profile. For a z-Bot daemon running
+directly on a dedicated machine, use the host launcher:
+
+```bash
+# zbotd must already be running on this machine.
+NGROK_AUTHTOKEN=<your-token> ./scripts/expose-ngrok.sh
+
+# Optional reserved ngrok domain:
+NGROK_AUTHTOKEN=<your-token> ./scripts/expose-ngrok.sh --domain example.ngrok.app
+```
+
+The script checks `http://127.0.0.1:18791/api/health` before opening the tunnel
+and then runs `ngrok http http://127.0.0.1:18791`. The public ngrok URL serves
+the web UI, REST API, and WebSocket endpoint at `/ws`.
+
+This exposes your local daemon on the public internet. Only share the ngrok URL
+with trusted clients, and use ngrok-side access controls when needed.
+
 ## Architecture
 
 ```
@@ -201,9 +221,11 @@ If you'd rather keep the daemon loopback-only, toggle **Expose to LAN** off in S
 │  ├── config/                                            │
 │  │   ├── providers.json   # LLM provider configs        │
 │  │   ├── settings.json    # System configuration        │
-│  │   ├── mcps.json        # MCP server configs          │
-│  │   ├── SOUL.md          # Root agent personality      │
-│  │   └── INSTRUCTIONS.md  # Root agent instructions     │
+│  │   ├── mcp-servers.json # MCP server configs          │
+│  │   ├── agent/           # Root agent contracts        │
+│  │   │   ├── SOUL.md      #   Personality               │
+│  │   │   └── INSTRUCTIONS.md # Execution rules          │
+│  │   └── agent-prompts/   # User-editable prompt modules│
 │  ├── data/                                              │
 │  │   ├── conversations.db # Sessions, messages, memory  │
 │  │   └── knowledge.db     # Entities & relationships    │
@@ -245,10 +267,10 @@ z-Bot uses a **goal-oriented execution model** — not a simple request-response
 | Document | Description |
 |----------|-------------|
 | [AGENTS.md](AGENTS.md) | Code organization and layer structure |
-| [memory-bank/architecture.md](memory-bank/architecture.md) | Technical architecture details |
-| [memory-bank/product.md](memory-bank/product.md) | Product features and roadmap |
-| [memory-bank/product-context.md](memory-bank/product-context.md) | Vision, principles, and differentiators |
-| [memory-bank/decisions.md](memory-bank/decisions.md) | Technology choices and architecture decisions |
+| [docs/architecture/architecture.md](docs/architecture/architecture.md) | Technical architecture details |
+| [docs/product/technical-product.md](docs/product/technical-product.md) | Product features and roadmap |
+| [docs/product/product-context.md](docs/product/product-context.md) | Vision, principles, and differentiators |
+| [docs/adr/decisions.md](docs/adr/decisions.md) | Technology choices and architecture decisions |
 
 ## Tech Stack
 

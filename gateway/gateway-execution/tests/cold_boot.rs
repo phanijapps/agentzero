@@ -10,8 +10,8 @@ use tempfile::tempdir;
 
 use gateway_services::VaultPaths;
 use knowledge_graph::{Entity, EntityType, ExtractedKnowledge};
-use zero_stores_sqlite::kg::storage::GraphStorage;
-use zero_stores_sqlite::KnowledgeDatabase;
+use zbot_stores_sqlite::kg::storage::GraphStorage;
+use zbot_stores_sqlite::KnowledgeDatabase;
 
 fn normalized(v: Vec<f32>) -> Vec<f32> {
     let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();

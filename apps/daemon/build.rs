@@ -5,15 +5,24 @@
 //! env var, so dev builds keep the bare `CARGO_PKG_VERSION` — no
 //! spurious branch suffix during normal work.
 //!
-//! See `memory-bank/future-state/2026-05-03-versioning-and-rename-plan.md`
+//! See `docs/architecture/future-state/2026-05-03-versioning-and-rename-plan.md`
 //! for the broader versioning + rename context.
 
 use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ZBOT_INSTALL");
+    println!("cargo:rerun-if-env-changed=ZBOT_BUILD_DATE");
+    println!("cargo:rerun-if-env-changed=ZBOT_BUILD_TIMESTAMP");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads");
+
+    if let Ok(build_date) = std::env::var("ZBOT_BUILD_DATE") {
+        println!("cargo:rustc-env=BUILD_DATE={build_date}");
+    }
+    if let Ok(build_timestamp) = std::env::var("ZBOT_BUILD_TIMESTAMP") {
+        println!("cargo:rustc-env=BUILD_TIMESTAMP={build_timestamp}");
+    }
 
     if std::env::var_os("ZBOT_INSTALL").is_none() {
         return;

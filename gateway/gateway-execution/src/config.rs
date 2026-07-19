@@ -2,11 +2,13 @@
 //!
 //! Configuration types for agent execution.
 
+use agent_primitives::FileSystemContext;
 use execution_state::TriggerSource;
 use gateway_events::HookContext;
+use gateway_services::VaultPaths;
 use serde_json::Value;
 use std::path::PathBuf;
-use zero_core::FileSystemContext;
+use zbot_conversation::LedgerResumePacket;
 
 // ============================================================================
 // FILE SYSTEM CONTEXT
@@ -89,7 +91,7 @@ impl FileSystemContext for GatewayFileSystem {
     }
 
     fn mcps_config(&self) -> Option<PathBuf> {
-        Some(self.vault_dir.join("config").join("mcps.json"))
+        Some(VaultPaths::new(self.vault_dir.clone()).mcps())
     }
 }
 
@@ -104,8 +106,8 @@ pub struct ExecutionConfig {
     pub agent_id: String,
     /// Conversation ID for tracking (legacy, used for message persistence)
     pub conversation_id: String,
-    /// Configuration directory (vault path)
-    pub config_dir: PathBuf,
+    /// Vault root containing configuration, data, and workspaces.
+    pub vault_dir: PathBuf,
     /// Maximum iterations before prompting for continuation
     pub max_iterations: u32,
     /// Optional hook context for routing responses
@@ -126,12 +128,19 @@ pub struct ExecutionConfig {
     pub source: TriggerSource,
     /// Metadata from the request (e.g., plugin context, sender info)
     pub metadata: Option<Value>,
+    /// Browser-generated correlation id for the root user message. This is
+    /// deliberately separate from general request metadata, which is not
+    /// trusted as a conversation-store primary key.
+    pub client_message_id: Option<String>,
     /// Execution mode: "fast"/"chat" skips intent analysis pipeline and uses a lean prompt;
     /// "deep"/"research" runs the full pipeline (intent analysis, planning, delegation, wards).
     /// Memory injection runs in BOTH modes — mode only gates the pipeline depth.
     ///
     /// Any other value (including "deep"/"research") uses the research behavior.
     pub mode: Option<String>,
+    /// Server-built context for exactly one explicitly resumed ledger item.
+    /// Private so generic callers cannot set it through a struct literal.
+    ledger_resume_packet: Option<LedgerResumePacket>,
 }
 
 /// Session execution mode — split from "fast_mode" to decouple memory injection
@@ -163,11 +172,11 @@ impl SessionMode {
 
 impl ExecutionConfig {
     /// Create a new execution config.
-    pub fn new(agent_id: String, conversation_id: String, config_dir: PathBuf) -> Self {
+    pub fn new(agent_id: String, conversation_id: String, vault_dir: PathBuf) -> Self {
         Self {
             agent_id,
             conversation_id,
-            config_dir,
+            vault_dir,
             max_iterations: 1000,
             hook_context: None,
             session_id: None,
@@ -176,7 +185,9 @@ impl ExecutionConfig {
             connector_id: None,
             source: TriggerSource::default(),
             metadata: None,
+            client_message_id: None,
             mode: None,
+            ledger_resume_packet: None,
         }
     }
 
@@ -229,11 +240,30 @@ impl ExecutionConfig {
         self
     }
 
+    /// Set the validated-at-use client correlation id for a root message.
+    #[must_use]
+    pub fn with_client_message_id(mut self, client_message_id: String) -> Self {
+        self.client_message_id = Some(client_message_id);
+        self
+    }
+
     /// Set the execution mode ("fast" or "deep").
     #[must_use]
     pub fn with_mode(mut self, mode: String) -> Self {
         self.mode = Some(mode);
         self
+    }
+
+    /// Attach a packet created by the trusted ledger-resume boundary.
+    #[must_use]
+    pub fn with_ledger_resume_packet(mut self, packet: LedgerResumePacket) -> Self {
+        self.ledger_resume_packet = Some(packet);
+        self
+    }
+
+    /// Return the trusted packet, if this is a ledger-resume execution.
+    pub fn ledger_resume_packet(&self) -> Option<&LedgerResumePacket> {
+        self.ledger_resume_packet.as_ref()
     }
 
     /// Returns the typed session mode (memory-safe successor to `is_fast_mode`).
@@ -264,6 +294,7 @@ mod tests {
         assert_eq!(config.conversation_id, "conv-123");
         assert_eq!(config.source, TriggerSource::Web); // default
         assert!(config.metadata.is_none());
+        assert!(config.client_message_id.is_none());
         assert!(config.session_id.is_none());
         assert!(config.respond_to.is_none());
     }
@@ -295,6 +326,21 @@ mod tests {
         .with_metadata(metadata.clone());
 
         assert_eq!(config.metadata, Some(metadata));
+    }
+
+    #[test]
+    fn execution_config_with_client_message_id() {
+        let config = ExecutionConfig::new(
+            "root".to_string(),
+            "conv-123".to_string(),
+            PathBuf::from("/tmp"),
+        )
+        .with_client_message_id("msg-550e8400-e29b-41d4-a716-446655440000".to_string());
+
+        assert_eq!(
+            config.client_message_id.as_deref(),
+            Some("msg-550e8400-e29b-41d4-a716-446655440000")
+        );
     }
 
     #[test]
@@ -413,7 +459,7 @@ mod tests {
         assert_eq!(fs.wards_root_dir(), Some(vault.join("wards")));
         assert_eq!(
             fs.mcps_config(),
-            Some(vault.join("config").join("mcps.json"))
+            Some(vault.join("config").join("mcp-servers.json"))
         );
         assert_eq!(
             fs.conversation_dir("c1"),

@@ -1,0 +1,17 @@
+[package]
+name = "zbot-stores"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+knowledge-graph = { path = "../../services/knowledge-graph" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+# Pure-data domain types (port request/response shapes).
+zbot-stores-domain = { path = "../zbot-stores-domain" }
+zbot-stores-traits = { path = "../zbot-stores-traits" }
+
+[lints]
+workspace = true

@@ -3,12 +3,36 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    network_mode: host
+    ports:
+      - "${HTTP_PORT:-18791}:18791"
     volumes:
       - ${VAULT_PATH:-~/Documents/zbot}:/data/zbot
       - fastembed-cache:/home/zbot/.cache/fastembed
     environment:
-      - RUST_LOG=warn
+      RUST_LOG: ${RUST_LOG:-warn}
+    restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:alpine
+    profiles:
+      - ngrok
+    depends_on:
+      - zbot
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        set -eu
+        if [ -n "$${NGROK_DOMAIN:-}" ]; then
+          exec ngrok http --url "$${NGROK_DOMAIN}" http://zbot:18791
+        fi
+        exec ngrok http http://zbot:18791
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+      NGROK_DOMAIN: ${NGROK_DOMAIN:-}
+    ports:
+      - "${NGROK_WEB_PORT:-4040}:4040"
     restart: unless-stopped
 
 volumes:

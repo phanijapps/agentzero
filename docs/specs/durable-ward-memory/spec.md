@@ -1,6 +1,6 @@
 # Spec: Durable Ward Memory
 
-- **Status:** Draft
+- **Status:** Closed
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0001: Unified Compaction and Memory Policy; RFC-0002: Memory Hygiene; [`runtime-context-control`](../runtime-context-control/spec.md); [`memory-hygiene`](../memory-hygiene/spec.md)
@@ -156,7 +156,7 @@ slice.
 - Technical: `knowledge.db` contains ward-scoped facts, wiki, procedures,
   episodes, goals, KG data, and vector indexes; it is already the searchable
   durable substrate (source:
-  `memory-bank/components/memory-layer/overview.md`).
+  `docs/architecture/components/memory-layer/overview.md`).
 - Technical: wards are persistent directories with `AGENTS.md`,
   `memory-bank/`, artifacts, specs, and session-produced files; live local wards
   confirm this shape under `/home/videogamer/Documents/zbot/wards` (source:

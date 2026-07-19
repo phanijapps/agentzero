@@ -1,7 +1,7 @@
 # Plan: Durable Ward Memory
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Drafting
+- **Status:** Closed
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as you learn. When it changes substantially
@@ -79,7 +79,7 @@ or breaks `ward:{name}` synthesis fails a focused gateway-execution test.
 
 **Depends on:** T1
 
-**Touches:** `stores/zero-stores-domain/src/*`,
+**Touches:** `stores/zbot-stores-domain/src/*`,
 `gateway/gateway-memory/src/recall/*`,
 `gateway/src/http/memory_search.rs`,
 `gateway/src/http/ward_content.rs`
@@ -157,7 +157,7 @@ which items rank.
 `services/execution-state/src/types.rs`,
 `gateway/gateway-execution/src/artifacts.rs`,
 `gateway/src/http/ward_content.rs`,
-`stores/zero-stores-sqlite/src/*`
+`stores/zbot-stores-sqlite/src/*`
 
 **Tests:**
 - TDD: an artifact recorded with `ward_id` and relative path produces a route

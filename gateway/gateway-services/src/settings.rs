@@ -10,6 +10,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+use crate::models::{DEFAULT_MAX_INPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS};
+
 // Re-export so `gateway_services::settings::MemorySettings` keeps working;
 // `lib.rs` continues to surface it as `gateway_services::MemorySettings`.
 pub use gateway_memory::MemorySettings;
@@ -37,6 +39,125 @@ pub struct AppSettings {
     /// (`exposeToLan: true`) applies.
     #[serde(default)]
     pub network: discovery::DiscoveryConfig,
+
+    /// Durable first-run commissioning choices. This deliberately records
+    /// portable semantic intent only; provisioning stays outside the gateway.
+    #[serde(default)]
+    pub commissioning: CommissioningSettings,
+}
+
+/// Durable readiness state for the Agent Commissioning flow.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommissioningState {
+    #[default]
+    NotStarted,
+    InProgress,
+    NeedsAttention,
+    Complete,
+}
+
+/// Portable semantic choices consumed by a later semantic provider integration.
+/// No Engram identifier, crate type, or storage path belongs in this type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticProfile {
+    pub version: u32,
+    pub base_pack_ids: Vec<String>,
+    pub domain_pack_ids: Vec<String>,
+    pub provisioning: SemanticProvisioning,
+}
+
+impl Default for SemanticProfile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            base_pack_ids: vec!["zbot.base:v1".to_string(), "zbot.general:v1".to_string()],
+            domain_pack_ids: Vec::new(),
+            provisioning: SemanticProvisioning::Deferred,
+        }
+    }
+}
+
+/// Commissioning owns the selection; semantic provisioning is intentionally
+/// deferred until the provider integration consumes this profile.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticProvisioning {
+    #[default]
+    Deferred,
+}
+
+/// User-owned configuration collected during commissioning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommissioningSettings {
+    pub version: u32,
+    pub state: CommissioningState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_focus: Option<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Personal details the user elects to keep in local z-Bot data. These are
+    /// deliberately separate from the agent's working instructions, so they
+    /// are not copied into `SOUL.md` or sent as model context by commissioning.
+    #[serde(default)]
+    pub user_profile: UserProfile,
+    #[serde(default = "default_commissioning_autonomy")]
+    pub autonomy: String,
+    #[serde(default = "default_commissioning_privacy")]
+    pub privacy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub semantic_profile: SemanticProfile,
+}
+
+/// A locally persisted, user-owned profile collected during commissioning.
+///
+/// This is configuration data, not semantic memory. It has no backend or
+/// provider dependency and is intentionally omitted from status responses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub interests: Vec<String>,
+    #[serde(default)]
+    pub hobbies: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_of_birth: Option<String>,
+}
+
+impl Default for CommissioningSettings {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            state: CommissioningState::NotStarted,
+            primary_focus: None,
+            domains: Vec::new(),
+            profile: None,
+            user_profile: UserProfile::default(),
+            autonomy: default_commissioning_autonomy(),
+            privacy: default_commissioning_privacy(),
+            provider_id: None,
+            model: None,
+            semantic_profile: SemanticProfile::default(),
+        }
+    }
+}
+
+fn default_commissioning_autonomy() -> String {
+    "guided".to_string()
+}
+
+fn default_commissioning_privacy() -> String {
+    "local_preferred".to_string()
 }
 
 /// Execution settings for controlling agent concurrency and delegation behavior.
@@ -104,8 +225,15 @@ pub struct OrchestratorConfig {
     /// Temperature (0.0 - 2.0). Default: 0.7.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
-    /// Maximum output tokens. Default: 16384 (higher to accommodate thinking).
-    #[serde(default = "default_orchestrator_max_tokens")]
+    /// Maximum input tokens. None = inherit from provider/model limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u64>,
+    /// Maximum output tokens. Default: 32000.
+    #[serde(
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        default = "default_max_output_tokens"
+    )]
     pub max_tokens: u32,
     /// Enable extended thinking/reasoning. Default: true.
     /// Orchestrator reasons before delegating — improves planning quality.
@@ -122,8 +250,11 @@ fn default_true() -> bool {
 fn default_temperature() -> f64 {
     0.7
 }
-fn default_orchestrator_max_tokens() -> u32 {
-    16384
+fn default_max_input_tokens() -> u64 {
+    DEFAULT_MAX_INPUT_TOKENS
+}
+fn default_max_output_tokens() -> u32 {
+    DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 impl Default for OrchestratorConfig {
@@ -132,9 +263,20 @@ impl Default for OrchestratorConfig {
             provider_id: None,
             model: None,
             temperature: default_temperature(),
-            max_tokens: default_orchestrator_max_tokens(),
+            max_input_tokens: None,
+            max_tokens: default_max_output_tokens(),
             thinking_enabled: true,
         }
+    }
+}
+
+impl OrchestratorConfig {
+    pub fn effective_max_input_tokens(&self) -> u64 {
+        self.max_input_tokens.unwrap_or(DEFAULT_MAX_INPUT_TOKENS)
+    }
+
+    pub fn max_input_tokens_explicit(&self) -> bool {
+        self.max_input_tokens.is_some()
     }
 }
 
@@ -151,6 +293,21 @@ pub struct DistillationConfig {
     /// Model override. None = inherit from orchestrator config.
     #[serde(default)]
     pub model: Option<String>,
+    /// Max input tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxInputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_input_tokens: Option<u64>,
+    /// Max output tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_tokens: Option<u32>,
 }
 
 /// Ward-curator LLM configuration (provider/model override).
@@ -166,6 +323,21 @@ pub struct CuratorConfig {
     /// Model override. None = inherit from orchestrator config.
     #[serde(default)]
     pub model: Option<String>,
+    /// Max input tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxInputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_input_tokens: Option<u64>,
+    /// Max output tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_tokens: Option<u32>,
 }
 
 /// Intent-analysis LLM configuration (provider/model override).
@@ -183,6 +355,21 @@ pub struct IntentAnalysisConfig {
     /// Model override. None = inherit from orchestrator config.
     #[serde(default)]
     pub model: Option<String>,
+    /// Max input tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxInputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_input_tokens: Option<u64>,
+    /// Max output tokens override. None = inherit from orchestrator config.
+    #[serde(
+        default,
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_tokens: Option<u32>,
 }
 
 /// Default multimodal model configuration.
@@ -194,24 +381,27 @@ pub struct MultimodalConfig {
     pub model: Option<String>,
     #[serde(default = "default_multimodal_temperature")]
     pub temperature: f64,
-    #[serde(default = "default_multimodal_max_tokens")]
+    #[serde(default = "default_max_input_tokens")]
+    pub max_input_tokens: u64,
+    #[serde(
+        rename = "maxOutputTokens",
+        alias = "maxTokens",
+        default = "default_max_output_tokens"
+    )]
     pub max_tokens: u32,
 }
 
 fn default_multimodal_temperature() -> f64 {
     0.3
 }
-fn default_multimodal_max_tokens() -> u32 {
-    4096
-}
-
 impl Default for MultimodalConfig {
     fn default() -> Self {
         Self {
             provider_id: None,
             model: None,
             temperature: default_multimodal_temperature(),
-            max_tokens: default_multimodal_max_tokens(),
+            max_input_tokens: default_max_input_tokens(),
+            max_tokens: default_max_output_tokens(),
         }
     }
 }
@@ -290,11 +480,11 @@ impl SettingsService {
         }
     }
 
-    /// Create a legacy settings service with a direct config path.
-    /// Used for early initialization before VaultPaths is available.
-    pub fn new_legacy(config_dir: PathBuf) -> Self {
+    /// Create a settings service from a vault root.
+    /// Used for early initialization before shared paths are available.
+    pub fn from_vault_dir(vault_dir: PathBuf) -> Self {
         Self {
-            paths: std::sync::Arc::new(crate::paths::VaultPaths::new(config_dir)),
+            paths: std::sync::Arc::new(crate::paths::VaultPaths::new(vault_dir)),
             cache: RwLock::new(None),
         }
     }
@@ -461,36 +651,67 @@ mod tests {
     #[test]
     fn test_default_settings() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let settings = service.load().unwrap();
-        // Optional tools are disabled by default
-        assert!(!settings.tools.python);
-        assert!(!settings.tools.web_fetch);
+        assert!(!settings.tools.file_tools);
+        assert!(settings.tools.offload_large_results);
         // Logging is enabled by default (quiet mode)
         assert!(settings.logs.enabled);
+        assert_eq!(settings.commissioning.state, CommissioningState::NotStarted);
+        assert_eq!(
+            settings.commissioning.semantic_profile.base_pack_ids,
+            ["zbot.base:v1", "zbot.general:v1"]
+        );
+    }
+
+    #[test]
+    fn commissioning_settings_round_trip_without_semantic_provider_details() {
+        let dir = tempdir().unwrap();
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
+        let mut settings = AppSettings::default();
+        settings.commissioning.state = CommissioningState::Complete;
+        settings.commissioning.primary_focus = Some("research_learn".to_string());
+        settings.commissioning.domains = vec!["learning".to_string()];
+        settings.commissioning.user_profile = UserProfile {
+            name: Some("Ada".to_string()),
+            interests: vec!["Learning".to_string()],
+            hobbies: vec!["Reading".to_string()],
+            date_of_birth: Some("1990-01-01".to_string()),
+        };
+        settings.commissioning.semantic_profile.domain_pack_ids =
+            vec!["zbot.learning:v1".to_string()];
+
+        service.save(&settings).unwrap();
+        service.invalidate_cache();
+        let loaded = service.load().unwrap();
+
+        assert_eq!(loaded.commissioning, settings.commissioning);
+        let json = serde_json::to_string(&loaded.commissioning).unwrap();
+        assert!(!json.contains("engram"));
+        assert!(!json.contains("storagePath"));
     }
 
     #[test]
     fn test_save_and_load() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
-        settings.tools.python = true;
-        settings.tools.web_fetch = true;
+        settings.tools.file_tools = true;
+        settings.tools.offload_large_results = false;
 
         service.save(&settings).unwrap();
 
         let loaded = service.load().unwrap();
-        assert!(loaded.tools.python);
-        assert!(loaded.tools.web_fetch);
+        assert!(loaded.tools.file_tools);
+        assert!(!loaded.tools.offload_large_results);
     }
 
     #[test]
     fn test_log_settings_crud() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         // Default: logging enabled with stdout suppressed
         let log_settings = service.get_log_settings().unwrap();
@@ -515,7 +736,7 @@ mod tests {
     #[test]
     fn test_log_settings_validation() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         // Invalid log level should fail
         let invalid_settings = LogSettings {
@@ -530,10 +751,10 @@ mod tests {
     #[test]
     fn test_settings_json_format() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
-        settings.tools.python = true;
+        settings.tools.file_tools = true;
         settings.logs.enabled = true;
         settings.logs.max_files = 30;
 
@@ -557,12 +778,13 @@ mod tests {
     #[test]
     fn test_distillation_config_in_execution_settings() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let mut settings = AppSettings::default();
         settings.execution.distillation = DistillationConfig {
             provider_id: Some("ollama".to_string()),
             model: Some("llama3".to_string()),
+            ..Default::default()
         };
         service.save(&settings).unwrap();
 
@@ -573,9 +795,38 @@ mod tests {
     }
 
     #[test]
+    fn orchestrator_reads_legacy_max_tokens_as_output_tokens() {
+        let json = r#"{
+            "providerId": "p",
+            "model": "m",
+            "temperature": 0.7,
+            "maxInputTokens": 123456,
+            "maxTokens": 7777,
+            "thinkingEnabled": true
+        }"#;
+
+        let config: OrchestratorConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.max_input_tokens, Some(123456));
+        assert!(config.max_input_tokens_explicit());
+        assert_eq!(config.max_tokens, 7777);
+    }
+
+    #[test]
+    fn orchestrator_defaults_to_simplified_token_limits() {
+        let config = OrchestratorConfig::default();
+        assert_eq!(config.max_input_tokens, None);
+        assert_eq!(
+            config.effective_max_input_tokens(),
+            DEFAULT_MAX_INPUT_TOKENS
+        );
+        assert!(!config.max_input_tokens_explicit());
+        assert_eq!(config.max_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
+    }
+
+    #[test]
     fn test_distillation_config_absent_in_json() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let json = r#"{ "execution": { "maxParallelAgents": 3 } }"#;
         let config_dir = dir.path().join("config");
@@ -594,10 +845,10 @@ mod tests {
     #[test]
     fn save_preserves_unknown_top_level_keys() {
         let dir = tempdir().unwrap();
-        let service = SettingsService::new_legacy(dir.path().to_path_buf());
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
 
         let initial_json = r#"{
-  "tools": { "python": false, "webFetch": false },
+  "tools": { "fileTools": true, "offloadLargeResults": true },
   "embeddings": {
     "backend": "ollama",
     "dimensions": 1024,
@@ -613,7 +864,7 @@ mod tests {
         // wizard, etc. call. Before the fix this wiped the file wholesale.
         service.invalidate_cache();
         let mut settings = service.load().unwrap();
-        settings.tools.python = true;
+        settings.tools.file_tools = true;
         service.save(&settings).unwrap();
 
         // Reread raw so we can assert unknown keys survived.
@@ -640,7 +891,7 @@ mod tests {
             "arbitrary unknown keys must survive typed save"
         );
         assert_eq!(
-            parsed["tools"]["python"].as_bool(),
+            parsed["tools"]["fileTools"].as_bool(),
             Some(true),
             "typed field update must still take effect"
         );

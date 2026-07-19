@@ -1,0 +1,90 @@
+{
+  "beliefNetwork": {
+    "contradictionBudgetPerCycle": 200,
+    "enabled": true,
+    "factConfidenceDropThreshold": 0.3,
+    "intervalHours": 0,
+    "neighborhoodPrefixDepth": 1
+  },
+  "conflictResolverIntervalHours": 24,
+  "correctionsAbstractorIntervalHours": 1,
+  "hierarchy": {
+    "clusterTargetSize": 20,
+    "enabled": true,
+    "interClusterRelationThreshold": 3,
+    "intervalHours": 0,
+    "llmBudgetPerCycle": 50,
+    "maxLayers": 4
+  },
+  "mmr": {
+    "candidatePool": 30,
+    "enabled": true,
+    "lambda": 0.6
+  },
+  "procedureRecommendation": {
+    "advisory": {
+      "scoreFloor": 0.7,
+      "successFloor": 2
+    },
+    "enabled": true,
+    "promoted": {
+      "scoreFloor": 0.85,
+      "successFloor": 3
+    },
+    "tentative": {
+      "scoreFloor": 0.55,
+      "successFloor": 1
+    }
+  },
+  "provider": {
+    "embeddingMode": "preserve_bytes",
+    "embeddingProvider": {
+      "dimensions": 384,
+      "model": "bge-small-en-v1.5",
+      "normalization": null,
+      "promptProfile": "query",
+      "providerType": "fastembed"
+    },
+    "engramPath": "engram",
+    "governance": {
+      "allowUnclassified": "allow",
+      "defaultSelection": {
+        "ontologyIds": [
+          "zbot.base:v1"
+        ],
+        "taxonomySchemeIds": [
+          "zbot.general:v1"
+        ]
+      },
+      "ontologyDefinitionPaths": [
+        "governance/base-ontology.json"
+      ],
+      "overlays": [],
+      "skosExpansion": {
+        "maxCandidates": 16,
+        "maxDepth": 1,
+        "maxFanOut": 8
+      },
+      "taxonomyDefinitionPaths": [
+        "governance/base-taxonomy.json"
+      ],
+      "validationMode": "advisory"
+    },
+    "migrationMode": "dry_run",
+    "mode": "engram",
+    "partitionScopeTarget": "workspace",
+    "sqliteStorageLayout": {
+      "fileName": "engram_data.db",
+      "kind": "single_file"
+    },
+    "tenant": "agentzero",
+    "wardScopeTarget": "workspace"
+  },
+  "queryGate": {
+    "enabled": true,
+    "maxSubqueries": 4,
+    "maxSubqueryLen": 200,
+    "modelId": null,
+    "timeoutMs": 3000
+  }
+}

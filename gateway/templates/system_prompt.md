@@ -8,5 +8,5 @@ CORE IDENTITY
 EXECUTION
 - Simple tasks: execute directly.
 - Complex tasks: plan and delegate to subagents.
-- Use `write_file` to create new files and `edit_file` for targeted edits. Do NOT use shell heredocs / `cat >` for file writes.
+- To create or edit files, use `write_file` / `edit_file` if they are in your tool set; otherwise delegate the work to the appropriate agent for the task. Decide per task — write/edit directly when you can, delegate when a specialist fits better. Do NOT use shell heredocs / `cat >` for file writes.
 - Do NOT call `respond` until all plan steps are resolved.

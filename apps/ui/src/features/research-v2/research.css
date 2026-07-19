@@ -19,24 +19,116 @@
 /* --- Header ---------------------------------------------------------------- */
 
 .research-page__header {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: var(--spacing-3);
+  padding: var(--spacing-3) var(--spacing-5);
   border-bottom: 1px solid var(--border);
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--attention-violet) 10%, transparent), transparent 42%),
+    var(--background-surface);
+}
+
+.research-page__header-main {
+  min-width: 0;
+}
+
+.research-page__eyebrow {
+  margin: 0 0 2px;
+  color: var(--subtle-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .research-page__title {
-  flex: 1;
-  text-align: center;
-  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  min-width: 0;
   color: var(--foreground);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-page__header-meta {
+  margin: 3px 0 0;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.025em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-page__title .intent-info {
+  flex: 0 0 auto;
+}
+
+.research-page__title .intent-info__btn {
+  color: var(--muted-foreground);
 }
 
 .research-page__header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--spacing-2);
+  min-width: 0;
+}
+
+.research-page__header-actions .status-pill {
+  width: min(360px, calc(100vw - 560px));
+  max-width: 360px;
+  border-color: color-mix(in srgb, var(--attention-cyan) 25%, var(--border));
+  box-shadow: none;
+}
+
+.research-page__header-actions .status-pill__header {
+  padding: 7px 12px 7px 15px;
+  font-size: var(--text-xs);
+}
+
+.research-page__header-actions .status-pill__terminal {
+  padding: 5px 12px;
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 900px) {
+  .research-page__header {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    padding: var(--spacing-3) var(--spacing-4);
+  }
+
+  .research-page__header-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .research-page__header-actions .status-pill {
+    width: min(100%, 480px);
+    max-width: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .research-page__title {
+    font-size: var(--text-base);
+  }
+
+  .research-page__header-meta {
+    max-width: 100%;
+  }
 }
 
 .research-page__ward-chip {
@@ -69,20 +161,49 @@
   outline-offset: 2px;
 }
 
-/* --- Pill strip ------------------------------------------------------------ */
-
-.research-page__pill-strip {
-  display: flex;
-  justify-content: center;
-  padding: 8px 20px 0;
-  min-height: 36px;
-}
-
 /* --- Scrollable body ------------------------------------------------------- */
 
 .research-page__body {
   flex: 1;
   overflow-y: auto;
+  scrollbar-color: color-mix(in srgb, var(--fx-accent) 42%, var(--muted-foreground)) transparent;
+  scrollbar-width: thin;
+}
+
+.research-page__body--with-vault {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(248px, 320px) minmax(0, 1fr);
+  gap: var(--spacing-3);
+  align-items: stretch;
+  justify-content: stretch;
+  overflow: hidden;
+  padding: var(--spacing-3) var(--spacing-5);
+}
+
+.research-page__body--vault-collapsed {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+/* Context stays intentionally sparse: it is only mounted for the intent and
+ * delegated-agent data a session actually has. On desktop it becomes the
+ * dedicated right inspector beside the existing focus column. */
+.research-page__body--with-context {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
+  gap: var(--spacing-3);
+  align-items: stretch;
+  overflow: hidden;
+  padding: var(--spacing-3) var(--spacing-5);
+}
+
+.research-page__body--with-vault.research-page__body--with-context {
+  grid-template-columns: minmax(248px, 320px) minmax(0, 1fr) minmax(360px, 420px);
+}
+
+.research-page__body--vault-collapsed.research-page__body--with-context {
+  grid-template-columns: auto minmax(0, 1fr) minmax(360px, 420px);
 }
 
 .research-page__column {
@@ -92,6 +213,286 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.research-page__body--with-vault .research-page__column,
+.research-page__body--with-context .research-page__column {
+  min-height: 0;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  overflow-y: auto;
+  padding: var(--spacing-4);
+  border: 1px solid color-mix(in srgb, var(--attention-cyan) 18%, var(--border));
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--attention-violet) 10%, transparent), transparent 42%),
+    var(--attention-panel);
+  scrollbar-color: color-mix(in srgb, var(--fx-accent) 42%, var(--muted-foreground)) transparent;
+  scrollbar-width: thin;
+}
+
+.research-page__body::-webkit-scrollbar,
+.research-page__body--with-vault .research-page__column::-webkit-scrollbar,
+.research-page__body--with-context .research-page__column::-webkit-scrollbar,
+.research-page__context::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.research-page__body::-webkit-scrollbar-track,
+.research-page__body--with-vault .research-page__column::-webkit-scrollbar-track,
+.research-page__body--with-context .research-page__column::-webkit-scrollbar-track,
+.research-page__context::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.research-page__body::-webkit-scrollbar-thumb,
+.research-page__body--with-vault .research-page__column::-webkit-scrollbar-thumb,
+.research-page__body--with-context .research-page__column::-webkit-scrollbar-thumb,
+.research-page__context::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-full);
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--fx-accent) 34%, var(--muted-foreground));
+}
+
+.research-page__body::-webkit-scrollbar-thumb:hover,
+.research-page__body--with-vault .research-page__column::-webkit-scrollbar-thumb:hover,
+.research-page__body--with-context .research-page__column::-webkit-scrollbar-thumb:hover,
+.research-page__context::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--fx-accent) 62%, var(--muted-foreground));
+}
+
+.research-page__vault-shell {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--attention-cyan) 22%, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--attention-panel);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 3%, transparent);
+}
+
+.research-page__vault-shell--collapsed {
+  display: none;
+}
+
+.research-page__vault-shell .vault-tree-pane {
+  height: 100%;
+}
+
+.research-page__vault-toggle {
+  align-self: start;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--muted-foreground);
+  background: var(--background-surface);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.research-page__vault-toggle:hover {
+  color: var(--foreground);
+  background: var(--background-elevated);
+}
+
+.research-page__context {
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  padding: var(--spacing-4);
+  border: 1px solid color-mix(in srgb, var(--attention-violet) 24%, var(--border));
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(155deg, color-mix(in srgb, var(--attention-violet) 12%, transparent), transparent 48%),
+    var(--attention-panel);
+  scrollbar-color: color-mix(in srgb, var(--fx-accent) 42%, var(--muted-foreground)) transparent;
+  scrollbar-width: thin;
+}
+
+.research-page__context-header {
+  padding-bottom: var(--spacing-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.research-page__context-header h2,
+.research-page__context-section h3 {
+  margin: 0;
+  color: var(--foreground);
+}
+
+.research-page__context-header h2 {
+  font-size: var(--text-base);
+  letter-spacing: -0.01em;
+}
+
+.research-page__context-section {
+  padding: var(--spacing-4) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.research-page__context-section:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.research-page__context-section h3 {
+  margin-bottom: var(--spacing-2);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.research-page__context-disclosure {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.research-page__context-disclosure:hover .research-page__context-disclosure-title,
+.research-page__context-disclosure:focus-visible .research-page__context-disclosure-title {
+  color: var(--foreground);
+}
+
+.research-page__context-disclosure:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.research-page__context-disclosure-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.research-page__context-disclosure-title {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.research-page__context-disclosure-summary {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-page__context-disclosure-details {
+  padding-top: var(--spacing-3);
+}
+
+.research-page__context-agent-list,
+.research-page__context-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+.research-page__context-turn + .research-page__context-turn {
+  margin-top: var(--spacing-4);
+  padding-top: var(--spacing-4);
+  border-top: 1px dashed var(--border);
+}
+
+.research-page__context-turn-label {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* Three panes are useful only while the focus canvas can remain readable.
+ * Tablet layouts preserve every pane by sequencing them instead of squeezing
+ * the thread between the filesystem and inspector. */
+@media (max-width: 1180px) {
+  .research-page__body--with-context,
+  .research-page__body--with-vault.research-page__body--with-context,
+  .research-page__body--vault-collapsed.research-page__body--with-context {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: var(--spacing-3) var(--spacing-4);
+  }
+
+  .research-page__body--with-context .research-page__vault-shell {
+    min-height: 260px;
+    max-height: 360px;
+    flex: 0 0 auto;
+  }
+
+  .research-page__body--with-context .research-page__column,
+  .research-page__context {
+    overflow: visible;
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .research-page__body--with-vault {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: var(--spacing-3) var(--spacing-4);
+  }
+
+  .research-page__body--vault-collapsed {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .research-page__body--with-context,
+  .research-page__body--with-vault.research-page__body--with-context,
+  .research-page__body--vault-collapsed.research-page__body--with-context {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: var(--spacing-3) var(--spacing-4);
+  }
+
+  .research-page__vault-shell {
+    min-height: 260px;
+    max-height: 360px;
+    flex: 0 0 auto;
+  }
+
+  .research-page__body--with-vault .research-page__column,
+  .research-page__body--with-context .research-page__column {
+    overflow: visible;
+    flex: 0 0 auto;
+  }
+
+  .research-page__context {
+    overflow: visible;
+    flex: 0 0 auto;
+  }
+
+  .research-page__vault-toggle {
+    justify-self: start;
+  }
 }
 
 /* --- Empty state ----------------------------------------------------------- */
@@ -118,14 +519,14 @@
   max-width: 80%;
   min-width: 0;
   padding: 10px 14px;
-  background: linear-gradient(135deg, var(--fx-accent), color-mix(in srgb, var(--fx-accent) 60%, #c08bff));
-  border-radius: 14px 14px 2px 14px;
+  background: var(--primary);
+  border-radius: var(--radius-lg) var(--radius-lg) 2px var(--radius-lg);
   font-size: 14px;
   font-weight: 500;
-  color: #02030a;
+  color: var(--primary-foreground);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  box-shadow: 0 0 calc(24px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 35%, transparent);
+  box-shadow: none;
 }
 
 /* --- Assistant turn bubble ----------------------------------------------- */
@@ -139,13 +540,11 @@
   max-width: 80%;
   min-width: 0;
   padding: 14px 16px;
-  border-radius: 14px 14px 14px 2px;
-  background: linear-gradient(180deg, rgba(13, 16, 24, 0.85), rgba(10, 12, 20, 0.85));
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.3),
-    0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 8%, transparent);
-  backdrop-filter: blur(6px);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) 2px;
+  background: var(--background-surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  backdrop-filter: none;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -204,6 +603,24 @@
   flex: 1;
   min-width: 0;
   width: 100%;
+}
+.research-msg__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.research-msg__attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 /* Assistant copy sits under the message, left-aligned. Shared .copy-btn
  * styles live in features/shared/copyButton/copy-button.css. */
@@ -323,6 +740,24 @@
   font-family: var(--font-mono);
 }
 
+.intent-info__panel {
+  margin-top: var(--spacing-3);
+  padding: var(--spacing-3);
+  border: 1px solid color-mix(in srgb, var(--attention-cyan) 20%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--background-surface) 76%, transparent);
+  font-size: var(--text-sm);
+}
+
+.intent-info__panel .intent-info__header {
+  margin-bottom: var(--spacing-2);
+}
+
+.intent-info__panel .intent-info__body {
+  max-height: none;
+  overflow: visible;
+}
+
 /* --- Intent lines ---------------------------------------------------------- */
 
 .research-page__intent-muted {
@@ -354,6 +789,12 @@
   margin: 0 auto;
 }
 
+.research-page--with-vault .research-page__composer {
+  max-width: none;
+  margin: 0;
+  padding: 12px 16px;
+}
+
 /* =============================================================================
    AgentTurnBlock styles
    ============================================================================= */
@@ -361,12 +802,10 @@
 .agent-turn-block {
   padding: 12px 14px;
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(13, 16, 24, 0.85), rgba(10, 12, 20, 0.85));
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.3),
-    0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 8%, transparent);
-  backdrop-filter: blur(6px);
+  background: var(--background-elevated);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .agent-turn-block__header {
@@ -468,6 +907,49 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+/* --- Completed-turn tool activity ----------------------------------------- */
+/* The live ticker disappears at completion; this is the compact durable
+ * audit row. It deliberately excludes arguments and results, which can carry
+ * sensitive context, and excludes respond because the answer is already
+ * visible immediately above. */
+.tool-activity {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.tool-activity__label {
+  font-weight: 600;
+}
+
+.tool-activity__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-activity__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 44%, transparent);
+}
+
+.tool-activity__item code {
+  color: var(--foreground);
+  font-size: 10px;
 }
 
 /* --- Root block: nested subagent cards ---------------------------------- */
@@ -840,21 +1322,22 @@
   gap: 6px;
   align-items: center;
   padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--fx-accent) 18%, transparent);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(13, 16, 24, 0.7);
+  background: var(--background-surface);
   color: var(--foreground);
   cursor: pointer;
   white-space: nowrap;
   font: inherit;
   font-family: var(--font-mono);
   font-size: 12px;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-  backdrop-filter: blur(4px);
+  transition: border-color 150ms ease, background 150ms ease;
+  backdrop-filter: none;
 }
 .research-artifact-chip:hover {
   border-color: var(--fx-accent);
-  box-shadow: 0 0 calc(12px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 22%, transparent);
+  box-shadow: none;
+  background: var(--background-elevated);
 }
 .research-artifact-chip:focus-visible {
   outline: 2px solid var(--ring);

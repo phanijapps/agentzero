@@ -15,7 +15,7 @@ cd e2e && ./scripts/boot-full-mode.sh simple-qa &
 cd playwright && npx playwright test full-mode/simple-qa.full.spec.ts
 ```
 
-Real zerod + mock-llm + real UI build + scripted browser. Zero-drift report confirms the LLM call shape hasn't changed.
+Real zbotd + mock-llm + real UI build + scripted browser. Drift report confirms the LLM call shape hasn't changed.
 
 ## Key Types
 
@@ -81,7 +81,7 @@ gateway-execution/src/
 
 ## Dependencies
 
-Depends on most other gateway sub-crates: `gateway-events`, `gateway-services`, `gateway-connectors`, `gateway-templates`, `gateway-hooks`, `gateway-bus`. Also depends on `agent-runtime`, `agent-tools`, and `zero-stores-sqlite` (replaces gateway-database).
+Depends on most other gateway sub-crates: `gateway-events`, `gateway-services`, `gateway-connectors`, `gateway-templates`, `gateway-hooks`, `gateway-bus`. Also depends on `agent-runtime`, `agent-tools`, and `zbot-stores-sqlite`.
 
 ## Conventions
 

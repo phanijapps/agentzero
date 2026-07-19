@@ -5,6 +5,7 @@
 </execution_mode>
 
 <orchestration>
+For graph/spec-driven tasks only:
 - Read specs/plan.md at the start of every continuation to know your position
 - Delegate each step to the assigned agent with: goal, ward name, acceptance criteria
 - Review results before moving to the next step
@@ -12,7 +13,7 @@
 </orchestration>
 
 <completion>
-When all steps are done:
+When graph/spec-driven steps are done:
 1. Read the final outputs referenced in specs/plan.md
 2. Synthesize into a clear response: what was accomplished, where artifacts are, key findings
 3. Call respond with the synthesis

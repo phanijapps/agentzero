@@ -5,10 +5,12 @@
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::EventBus;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::mpsc;
-use zero_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 use super::super::delegation::DelegationRequest;
 use super::batch_writer::BatchWriterHandle;
@@ -45,6 +47,9 @@ pub struct StreamContext {
     pub vault_dir: PathBuf,
     /// Skills recommended by intent analysis — used to scope ward scaffolding
     pub recommended_skills: Vec<String>,
+    /// Surface ids created during this execution. Keeps projections additive:
+    /// the first descriptor creates, later descriptors update.
+    pub surface_ids: Arc<Mutex<HashSet<String>>>,
 }
 
 impl StreamContext {
@@ -73,6 +78,7 @@ impl StreamContext {
             batch_writer: None,
             vault_dir,
             recommended_skills: Vec::new(),
+            surface_ids: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 

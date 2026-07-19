@@ -7,10 +7,10 @@
 
 mod common;
 
-use common::{make_episode_repo, make_procedure_repo, make_wiki_repo, now_iso, setup};
+use common::{insert_episode, now_iso, setup, upsert_procedure, upsert_wiki_article};
 use gateway::AppState;
 use serde_json::{json, Value};
-use zero_stores_domain::{MemoryFact, Procedure, SessionEpisode, WikiArticle};
+use zbot_stores_domain::{MemoryFact, Procedure, SessionEpisode, WikiArticle};
 
 const TEST_WARD: &str = "maritime-vessel-tracking";
 
@@ -52,7 +52,6 @@ fn seed_all_four_types(state: &AppState) {
     )
     .expect("upsert fact");
 
-    let wiki = make_wiki_repo(state);
     let article = WikiArticle {
         id: "wiki-hormuz".to_string(),
         ward_id: TEST_WARD.to_string(),
@@ -66,9 +65,8 @@ fn seed_all_four_types(state: &AppState) {
         created_at: now.clone(),
         updated_at: now.clone(),
     };
-    wiki.upsert_article(&article).expect("upsert wiki");
+    upsert_wiki_article(state, &article);
 
-    let proc_repo = make_procedure_repo(state);
     let proc = Procedure {
         id: "proc-hormuz".to_string(),
         agent_id: "agent:root".to_string(),
@@ -87,9 +85,8 @@ fn seed_all_four_types(state: &AppState) {
         created_at: now.clone(),
         updated_at: now.clone(),
     };
-    proc_repo.upsert_procedure(&proc).expect("upsert proc");
+    upsert_procedure(state, &proc);
 
-    let ep_repo = make_episode_repo(state);
     let ep = SessionEpisode {
         id: "ep-hormuz".to_string(),
         session_id: "sess-h".to_string(),
@@ -103,7 +100,7 @@ fn seed_all_four_types(state: &AppState) {
         embedding: None,
         created_at: now.clone(),
     };
-    ep_repo.insert(&ep).expect("insert episode");
+    insert_episode(state, &ep);
 }
 
 fn assert_block(body: &Value, key: &str) {
@@ -179,4 +176,92 @@ async fn mode_fts_skips_procedures_and_returns_empty() {
     assert!(!facts.is_empty(), "facts should have hits via FTS");
     let wiki = body["wiki"]["hits"].as_array().expect("wiki arr");
     assert!(!wiki.is_empty(), "wiki should have hits via FTS");
+}
+
+#[tokio::test]
+async fn facts_lane_filters_internal_reserved_categories() {
+    let (server, _dir, state) = setup();
+    let now = now_iso();
+
+    for category in ["ctx", "instruction", "correction"] {
+        let fact = MemoryFact {
+            id: format!("fact-internal-{category}"),
+            session_id: Some("sess-internal".to_string()),
+            agent_id: "agent:root".to_string(),
+            scope: "session".to_string(),
+            category: category.to_string(),
+            key: format!("{category}.private"),
+            content: "reserved-private-sentinel must not be public".to_string(),
+            confidence: 1.0,
+            mention_count: 1,
+            source_summary: None,
+            embedding: None,
+            ward_id: TEST_WARD.to_string(),
+            contradicted_by: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            expires_at: None,
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            pinned: true,
+            epistemic_class: Some("current".to_string()),
+            source_episode_id: None,
+            source_ref: None,
+        };
+        let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
+        futures::executor::block_on(
+            state
+                .memory_store
+                .as_ref()
+                .expect("memory_store")
+                .upsert_typed_fact(fact_v, None),
+        )
+        .expect("upsert internal fact");
+    }
+
+    let response = server
+        .post("/api/memory/search")
+        .json(&json!({
+            "query": "reserved-private-sentinel",
+            "mode": "fts",
+            "types": ["facts"],
+            "ward_ids": [TEST_WARD],
+            "limit": 10
+        }))
+        .await;
+
+    response.assert_status_ok();
+    let body: Value = response.json();
+    let facts = body["facts"]["hits"].as_array().expect("facts hits");
+    assert!(
+        facts.is_empty(),
+        "reserved internal facts must not appear in unified public search: {facts:?}"
+    );
+}
+
+#[tokio::test]
+async fn invalid_mode_returns_bad_request() {
+    let (server, _dir, state) = setup();
+    seed_all_four_types(&state);
+
+    let response = server
+        .post("/api/memory/search")
+        .json(&json!({
+            "query": "hormuz",
+            "mode": "surprise",
+            "types": ["wiki", "episodes"],
+            "ward_ids": [TEST_WARD],
+            "limit": 10
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: Value = response.json();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("unsupported memory search mode")),
+        "unexpected error body: {body}"
+    );
 }

@@ -25,7 +25,7 @@ use gateway_memory::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use zero_stores_domain::{BeliefContradiction, ContradictionType, Resolution};
+use zbot_stores_domain::{BeliefContradiction, ContradictionType, Resolution};
 
 // ============================================================================
 // CONSTANTS
@@ -383,7 +383,7 @@ fn is_resolved(c: &BeliefContradiction) -> bool {
 // ============================================================================
 
 async fn push_belief_events(
-    store: &Arc<dyn zero_stores::BeliefStore>,
+    store: &Arc<dyn zbot_stores::BeliefStore>,
     pull: usize,
     out: &mut Vec<BeliefActivityEvent>,
 ) {
@@ -422,7 +422,7 @@ async fn push_belief_events(
 }
 
 async fn push_contradiction_events(
-    store: &Arc<dyn zero_stores::BeliefContradictionStore>,
+    store: &Arc<dyn zbot_stores::BeliefContradictionStore>,
     pull: usize,
     out: &mut Vec<BeliefActivityEvent>,
 ) {
@@ -459,7 +459,7 @@ async fn push_contradiction_events(
     }
 }
 
-fn belief_to_event(b: &zero_stores_domain::Belief) -> BeliefActivityEvent {
+fn belief_to_event(b: &zbot_stores_domain::Belief) -> BeliefActivityEvent {
     BeliefActivityEvent {
         kind: BeliefActivityKind::Synthesized,
         timestamp: b.created_at.to_rfc3339(),
@@ -478,7 +478,7 @@ fn belief_to_event(b: &zero_stores_domain::Belief) -> BeliefActivityEvent {
     }
 }
 
-fn classify_termination(b: &zero_stores_domain::Belief) -> BeliefActivityKind {
+fn classify_termination(b: &zbot_stores_domain::Belief) -> BeliefActivityKind {
     if b.superseded_by.is_some() {
         BeliefActivityKind::PropagationCascade
     } else {
@@ -486,7 +486,7 @@ fn classify_termination(b: &zero_stores_domain::Belief) -> BeliefActivityKind {
     }
 }
 
-fn termination_summary(b: &zero_stores_domain::Belief) -> String {
+fn termination_summary(b: &zbot_stores_domain::Belief) -> String {
     if b.superseded_by.is_some() {
         format!("Belief about \"{}\" superseded", b.subject)
     } else {
@@ -626,8 +626,8 @@ mod tests {
         }
     }
 
-    fn sample_belief() -> zero_stores_domain::Belief {
-        zero_stores_domain::Belief {
+    fn sample_belief() -> zbot_stores_domain::Belief {
+        zbot_stores_domain::Belief {
             id: "b1".into(),
             partition_id: "root".into(),
             subject: "user.location".into(),

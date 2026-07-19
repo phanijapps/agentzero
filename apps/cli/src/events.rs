@@ -94,7 +94,11 @@ impl EventStream {
             }
         });
 
-        Ok(Self { outbound: out_tx, inbound: in_rx, pump })
+        Ok(Self {
+            outbound: out_tx,
+            inbound: in_rx,
+            pump,
+        })
     }
 
     /// Queue a ClientMessage for the server. Non-blocking.

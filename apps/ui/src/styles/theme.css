@@ -1,7 +1,6 @@
 /* ============================================================================
-   DESIGN TOKENS — Futuristic Dark
-   Single dark theme inspired by the z-Bot Design System (claude.ai/design).
-   Cyan/violet accent stack on a deep void background. Holo borders, glow halos.
+   DESIGN TOKENS — Quiet Instrument
+   Neutral operational surfaces with a single configurable signal accent.
 
    The four `--fx-*` vars are runtime-tunable from the AccentPicker UI:
      --fx-accent  master accent color (cyan default; violet/amber/magenta presets)
@@ -17,36 +16,46 @@
      RUNTIME-TUNABLE EFFECTS
      ======================================================================== */
   --fx-accent: #7df9ff;
-  --fx-glow: 1;
-  --fx-grid: 0.04;
-  --fx-scan: 0.3;
+  --fx-glow: 0;
+  --fx-grid: 0;
+  --fx-scan: 0;
 
   /* ========================================================================
      COLORS — Semantic palette
      ======================================================================== */
 
   /* Backgrounds (deep void → holo surface → elevated) */
-  --background: #07080d;
-  --background-surface: #0d1018;
-  --background-elevated: #131826;
-  --sidebar: rgba(7, 9, 18, 0.85);
+  --background: #090b10;
+  --background-surface: #10141d;
+  --background-elevated: #151b26;
+  --sidebar: rgba(9, 11, 16, 0.94);
 
   /* Foreground hierarchy (4 stops) */
-  --foreground: #e6f0ff;
-  --muted-foreground: #7d8db0;
-  --subtle-foreground: #5a6788;
-  --dim-foreground: #3e4868;
+  --foreground: #eef3ff;
+  --muted-foreground: #92a0b7;
+  --subtle-foreground: #6f7c91;
+  --dim-foreground: #4c586c;
 
   /* Borders — barely-there, accent-tinted */
-  --border: rgba(120, 160, 255, 0.10);
+  --border: #273043;
   --border-hover: var(--fx-accent);
 
   /* Primary accent — driven by --fx-accent (live-mutated by picker) */
   --primary: var(--fx-accent);
-  --primary-foreground: #03060f;
+  --primary-foreground: #031014;
   --primary-hover: color-mix(in srgb, var(--fx-accent) 80%, white);
   --primary-muted: color-mix(in srgb, var(--fx-accent) 14%, transparent);
   --primary-subtle: color-mix(in srgb, var(--fx-accent) 6%, transparent);
+
+  /* Attention Radar hierarchy — these describe the calm operational canvas
+     shared by workbench routes. `--primary` remains user-configurable. */
+  --attention-panel: #10141d;
+  --attention-panel-raised: #151b26;
+  --attention-line-soft: #1d2635;
+  --attention-soft: #c5d0e4;
+  --attention-violet: #ae7bff;
+  --attention-violet-muted: #38285c;
+  --attention-cyan: #54d9ec;
 
   /* Semantic colors — bright on dark */
   --success: #4cf2c2;
@@ -57,10 +66,10 @@
   --destructive-muted: rgba(255, 93, 122, 0.12);
 
   /* Additional palette — agent avatar tints */
-  --blue: #6aa9ff;
-  --blue-muted: rgba(106, 169, 255, 0.14);
-  --purple: #c08bff;
-  --purple-muted: rgba(192, 139, 255, 0.14);
+  --blue: #60a5fa;
+  --blue-muted: rgba(96, 165, 250, 0.14);
+  --purple: #a78bfa;
+  --purple-muted: rgba(167, 139, 250, 0.14);
   --teal: var(--fx-accent);
   --teal-muted: color-mix(in srgb, var(--fx-accent) 14%, transparent);
 
@@ -88,16 +97,16 @@
   --success-hover: color-mix(in srgb, var(--success) 80%, white);
   --warning-foreground: #03060f;
   --warning-hover: color-mix(in srgb, var(--warning) 80%, white);
-  --sidebar-foreground: #e6f0ff;
+  --sidebar-foreground: #fafafa;
   --sidebar-accent: var(--primary-muted);
   --sidebar-accent-hover: var(--primary-subtle);
-  --sidebar-muted: #95a5c8;
-  --sidebar-border: rgba(120, 160, 255, 0.12);
+  --sidebar-muted: #a1a1aa;
+  --sidebar-border: rgba(255, 255, 255, 0.10);
 
   /* ========================================================================
      TYPOGRAPHY
      ======================================================================== */
-  --font-display: 'Fraunces', serif;
+  --font-display: 'IBM Plex Sans', sans-serif;
   --font-body: 'IBM Plex Sans', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   --font-sans: var(--font-body);
@@ -140,7 +149,7 @@
      accent-tinted glow halos are layered separately in components)
      ======================================================================== */
   --shadow-card: none;
-  --shadow-card-hover: 0 0 calc(20px * var(--fx-glow)) color-mix(in srgb, var(--fx-accent) 8%, transparent);
+  --shadow-card-hover: 0 12px 24px rgba(0, 0, 0, 0.16);
   --shadow-modal: 0 4px 24px rgba(0, 0, 0, 0.5);
   --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.4);
 
@@ -148,7 +157,7 @@
      LAYOUT DIMENSIONS
      ======================================================================== */
   --sidebar-width: 14rem;           /* 224px (legacy — top-bar shell uses --topbar-height) */
-  --topbar-height: 44px;
+  --topbar-height: 56px;
   --panel-sidebar-width: 18rem;     /* 288px */
   --content-max-width: 64rem;       /* 1024px */
   --content-narrow-width: 32rem;    /* 512px */

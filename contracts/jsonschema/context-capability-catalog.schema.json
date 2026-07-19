@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zbot.local/contracts/context-capability-catalog.schema.json",
+  "title": "Context Capability Catalog",
+  "description": "Actor-filtered catalog of zbot actions, resources, context graph builders, and UI-visible capability metadata.",
+  "type": "object",
+  "x-spec": "docs/specs/context-capability-registry/spec.md",
+  "required": ["version", "actor_kind", "capabilities"],
+  "properties": {
+    "version": {
+      "type": "string"
+    },
+    "actor_kind": {
+      "type": "string",
+      "enum": ["root", "delegated_executor", "delegated_reviewer", "ward_agent"]
+    },
+    "session_id": {
+      "type": ["string", "null"]
+    },
+    "agent_id": {
+      "type": ["string", "null"]
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/capability"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "display_name",
+        "actor_policy",
+        "risk_level",
+        "side_effects",
+        "health",
+        "default_visible",
+        "visibility_policy"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["tool", "resource", "context_graph", "catalog"]
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "actor_policy": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["root", "delegated_executor", "delegated_reviewer", "ward_agent"]
+          },
+          "uniqueItems": true
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": ["low", "moderate", "high", "critical"]
+        },
+        "side_effects": {
+          "type": "string",
+          "enum": ["none", "read_external", "write_local", "write_external", "execute"]
+        },
+        "input_schema": {
+          "type": ["object", "null"]
+        },
+        "output_schema": {
+          "type": ["object", "null"]
+        },
+        "resource_uri_template": {
+          "type": ["string", "null"]
+        },
+        "cost_hint": {
+          "type": ["string", "null"],
+          "enum": ["free", "cheap", "moderate", "expensive", null]
+        },
+        "latency_hint": {
+          "type": ["string", "null"],
+          "enum": ["local", "fast", "slow", "background", null]
+        },
+        "token_hint": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "health": {
+          "type": "string",
+          "enum": ["available", "degraded", "unsupported", "disabled"]
+        },
+        "owner_crate": {
+          "type": ["string", "null"]
+        },
+        "audit_policy": {
+          "type": ["string", "null"]
+        },
+        "default_visible": {
+          "type": "boolean"
+        },
+        "visibility_policy": {
+          "type": "string"
+        },
+        "split_target": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

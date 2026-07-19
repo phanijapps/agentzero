@@ -7,7 +7,7 @@
 //! contributions.
 
 use std::collections::HashMap;
-use zero_stores_domain::RouteHint;
+use zbot_stores_domain::RouteHint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ItemKind {

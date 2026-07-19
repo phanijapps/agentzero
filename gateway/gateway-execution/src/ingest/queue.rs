@@ -10,8 +10,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
 
 use crate::ingest::extractor::Extractor;
-use zero_stores::KnowledgeGraphStore;
-use zero_stores_traits::KgEpisodeStore;
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_traits::KgEpisodeStore;
 
 const WAKE_CHANNEL_CAPACITY: usize = 256;
 const CLAIM_FAILURE_BACKOFF: Duration = Duration::from_millis(500);

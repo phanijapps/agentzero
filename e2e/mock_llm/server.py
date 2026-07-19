@@ -37,6 +37,19 @@ def _is_intent_analysis_request(messages: list[dict]) -> bool:
     return content.startswith("you are an intent analyzer")
 
 
+def _is_handoff_summary_request(messages: list[dict]) -> bool:
+    """Heuristic for the sleep handoff summarizer.
+
+    Full-mode fixtures record the agent turn itself. Handoff summarization is
+    post-turn bookkeeping, so return a stable stub instead of consuming replay
+    records and creating drift.
+    """
+    if not messages or messages[0].get("role") != "system":
+        return False
+    content = str(messages[0].get("content", "")).lstrip().lower()
+    return content.startswith("you are a concise session summarizer")
+
+
 def _stream_chunk(completion_id: str, delta: dict, finish_reason=None) -> str:
     """Render one SSE `data:` line holding an OpenAI streaming chunk."""
     payload = {
@@ -119,6 +132,23 @@ def _empty_intent_response() -> dict:
     }
 
 
+def _handoff_summary_response() -> dict:
+    return {
+        "id": "chatcmpl-handoff-stub",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "The session answered the user's simple arithmetic question with 4.",
+                },
+            }
+        ],
+    }
+
+
 def create_app(
     fixture_dir: Path, *, strict_hashing: bool = False
 ) -> FastAPI:
@@ -157,6 +187,13 @@ def create_app(
             # the fixture doesn't record. Serve an empty intent so zerod
             # falls through to the real agent turn.
             response = _empty_intent_response()
+            if streaming:
+                return StreamingResponse(
+                    _stream_response(response), media_type="text/event-stream",
+                )
+            return JSONResponse(response)
+        if _is_handoff_summary_request(messages):
+            response = _handoff_summary_response()
             if streaming:
                 return StreamingResponse(
                     _stream_response(response), media_type="text/event-stream",

@@ -19,11 +19,8 @@ use axum_test::TestServer;
 use execution_state::StateService;
 use gateway::{http::create_http_router, websocket::WebSocketHandler, AppState, GatewayConfig};
 use tempfile::TempDir;
-use zero_stores_sqlite::DatabaseManager;
-use zero_stores_sqlite::{
-    vector_index::VectorIndex, EpisodeRepository, ProcedureRepository, SqliteVecIndex,
-    WardWikiRepository,
-};
+use zbot_runtime_sqlite::DatabaseManager;
+use zbot_stores_domain::{Procedure, SessionEpisode, WikiArticle};
 
 /// Current time as RFC3339 string — the form persisted alongside seeded rows.
 pub fn now_iso() -> String {
@@ -68,59 +65,41 @@ pub fn setup_with_state_service() -> (TestServer, Arc<StateService<DatabaseManag
 }
 
 // ---------------------------------------------------------------------------
-// Vector-indexed repos — same shape for all three content types.
+// Semantic-store seed helpers.
 // ---------------------------------------------------------------------------
 
-pub fn make_wiki_repo(state: &AppState) -> Arc<WardWikiRepository> {
-    let vec: Arc<dyn VectorIndex> = Arc::new(
-        SqliteVecIndex::new(
-            state
-                .knowledge_db
-                .clone()
-                .expect("test path: SQLite-mode AppState (knowledge_db wired)"),
-            "wiki_articles_index",
-            "article_id",
-        )
-        .expect("wiki vec"),
-    );
-    Arc::new(WardWikiRepository::new(
-        state.knowledge_db.clone().expect("test path: SQLite-mode"),
-        vec,
-    ))
+pub fn upsert_wiki_article(state: &AppState, article: &WikiArticle) {
+    let value = serde_json::to_value(article).expect("encode WikiArticle");
+    futures::executor::block_on(
+        state
+            .wiki_store
+            .as_ref()
+            .expect("wiki_store")
+            .upsert_article(value, None),
+    )
+    .expect("upsert wiki");
 }
 
-pub fn make_procedure_repo(state: &AppState) -> Arc<ProcedureRepository> {
-    let vec: Arc<dyn VectorIndex> = Arc::new(
-        SqliteVecIndex::new(
-            state
-                .knowledge_db
-                .clone()
-                .expect("test path: SQLite-mode AppState (knowledge_db wired)"),
-            "procedures_index",
-            "procedure_id",
-        )
-        .expect("proc vec"),
-    );
-    Arc::new(ProcedureRepository::new(
-        state.knowledge_db.clone().expect("test path: SQLite-mode"),
-        vec,
-    ))
+pub fn upsert_procedure(state: &AppState, procedure: &Procedure) {
+    let value = serde_json::to_value(procedure).expect("encode Procedure");
+    futures::executor::block_on(
+        state
+            .procedure_store
+            .as_ref()
+            .expect("procedure_store")
+            .upsert_procedure(value, None),
+    )
+    .expect("upsert procedure");
 }
 
-pub fn make_episode_repo(state: &AppState) -> Arc<EpisodeRepository> {
-    let vec: Arc<dyn VectorIndex> = Arc::new(
-        SqliteVecIndex::new(
-            state
-                .knowledge_db
-                .clone()
-                .expect("test path: SQLite-mode AppState (knowledge_db wired)"),
-            "session_episodes_index",
-            "episode_id",
-        )
-        .expect("episode vec"),
-    );
-    Arc::new(EpisodeRepository::new(
-        state.knowledge_db.clone().expect("test path: SQLite-mode"),
-        vec,
-    ))
+pub fn insert_episode(state: &AppState, episode: &SessionEpisode) {
+    let value = serde_json::to_value(episode).expect("encode SessionEpisode");
+    futures::executor::block_on(
+        state
+            .episode_store
+            .as_ref()
+            .expect("episode_store")
+            .insert_episode(value, None),
+    )
+    .expect("insert episode");
 }

@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from "react";
-import { Square, Trash2 } from "lucide-react";
+import { Paperclip, Square, Trash2 } from "lucide-react";
 import { Markdown } from "../shared/markdown";
 import { ChatInput } from "../chat/ChatInput";
 import { StatusPill } from "../shared/statusPill";
@@ -10,6 +10,7 @@ import { useQuickChat } from "./useQuickChat";
 import { CopyButton } from "../shared/copyButton";
 import type { QuickChatArtifactRef, QuickChatMessage } from "./types";
 import type { Artifact } from "@/services/transport/types";
+import { A2uiSurfaceRenderer } from "../surfaces/A2uiSurfaceRenderer";
 import "./quick-chat.css";
 
 function AssistantBubble({ message }: { message: QuickChatMessage }) {
@@ -33,7 +34,26 @@ function MessageRow({ message }: { message: QuickChatMessage }) {
       data-copy-host="true"
     >
       {message.role === "user"
-        ? <div className="quick-chat__user-bubble">{message.content}</div>
+        ? (
+          <div className="quick-chat__user-bubble">
+            <div>{message.content}</div>
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="quick-chat__attachments" aria-label="Attachments">
+                {message.attachments.map((attachment) => (
+                  <span
+                    className="quick-chat__attachment"
+                    data-testid="quick-chat-attachment"
+                    key={`${attachment.name}-${attachment.sizeLabel}`}
+                    title={`${attachment.mimeType} · ${attachment.sizeLabel}`}
+                  >
+                    <Paperclip size={12} aria-hidden="true" />
+                    {attachment.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
         : <AssistantBubble message={message} />}
       <CopyButton text={message.content} label={label} />
     </div>
@@ -79,7 +99,7 @@ function ArtifactCard({ artifact, onOpen }: ArtifactCardProps) {
 
 /**
  * Lightweight ref → full Artifact shim. `ArtifactSlideOut` expects the
- * full shape (sessionId + filePath + createdAt) but for the preview we
+ * full shape (sessionId + createdAt) but for the preview we
  * only need id / fileName / fileType; the slide-out re-fetches via the
  * /artifacts/:id/content URL so the stub fields are never read.
  */
@@ -100,7 +120,7 @@ const CLEAR_CONFIRM =
   "Clear this chat and start a new session? Past messages remain in Logs.";
 
 export function QuickChat() {
-  const { state, pillState, sendMessage, stopAgent, clearSession } = useQuickChat();
+  const { state, pillState, surfaces, sendMessage, stopAgent, clearSession } = useQuickChat();
   const endRef = useRef<HTMLDivElement | null>(null);
   const [viewing, setViewing] = useState<Artifact | null>(null);
 
@@ -157,12 +177,19 @@ export function QuickChat() {
         <div className="quick-chat__scroll">
           <div className="quick-chat__messages">
             {state.messages.map((m) => <MessageRow key={m.id} message={m} />)}
+            {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
             {hasArtifacts && (
-              <div className="quick-chat__artifacts" data-testid="quick-chat-artifacts">
-                {state.artifacts.map((a) => (
-                  <ArtifactCard key={a.id} artifact={a} onOpen={openArtifact} />
-                ))}
-              </div>
+              <section className="quick-chat__deliverables" aria-labelledby="quick-chat-deliverables-heading">
+                <div className="quick-chat__deliverables-heading">
+                  <h2 id="quick-chat-deliverables-heading">Deliverables</h2>
+                  <span>Up to 24 final outputs per chat session</span>
+                </div>
+                <div className="quick-chat__artifacts" data-testid="quick-chat-artifacts">
+                  {state.artifacts.map((a) => (
+                    <ArtifactCard key={a.id} artifact={a} onOpen={openArtifact} />
+                  ))}
+                </div>
+              </section>
             )}
             <div ref={endRef} />
           </div>

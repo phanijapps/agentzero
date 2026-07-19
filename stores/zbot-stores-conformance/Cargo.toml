@@ -1,0 +1,16 @@
+[package]
+name = "zbot-stores-conformance"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+zbot-stores = { path = "../zbot-stores" }
+zbot-stores-traits = { path = "../zbot-stores-traits" }
+knowledge-graph = { path = "../../services/knowledge-graph" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

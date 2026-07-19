@@ -31,15 +31,15 @@ pub(crate) struct ProgressTracker {
     pub(crate) tool_name_window: VecDeque<String>,
     /// Count of tool calls in current scoring window (for periodic diversity scoring)
     pub(crate) window_tool_calls: u32,
-    /// Whether the agent has created a plan via todos(action="add")
+    /// Whether the agent has created a plan via update_plan.
     pub(crate) has_plan: bool,
-    /// Number of todo items the agent has added
+    /// Number of plan items the agent has added.
     pub(crate) plan_items_created: u32,
-    /// Number of todo items completed via todos(action="update", completed=true)
+    /// Number of plan items completed via update_plan.
     pub(crate) plan_items_completed: u32,
     /// Whether the planning nudge has been injected (max 1)
     pub(crate) planning_nudge_sent: bool,
-    /// Non-todo tool calls made before first todos(action="add")
+    /// Non-planning tool calls made before first update_plan.
     pub(crate) tool_calls_before_plan: u32,
     /// Per-path count of `write_file` overwrites. Catches the "rewrite the
     /// same file over and over" loop — each rewrite carries different
@@ -81,56 +81,30 @@ impl ProgressTracker {
 
     /// Record a tool call and update the progress score.
     pub(crate) fn record_tool_call(&mut self, name: &str, args: &Value, succeeded: bool) {
-        // Planning enforcement: detect todo/update_plan tool usage
-        if (name == "todos" || name == "update_plan") && succeeded {
-            if name == "update_plan" {
-                // update_plan uses {plan: [{step, status}]} — lightweight, fire-and-forget
-                if let Some(plan) = args.get("plan").and_then(|v| v.as_array()) {
-                    let step_count = plan.len() as u32;
-                    let completed_count = plan
-                        .iter()
-                        .filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("completed"))
-                        .count() as u32;
-                    if !self.has_plan {
-                        self.plan_items_created = step_count;
-                        self.has_plan = true;
-                        self.score += 3 + step_count.min(5) as i32;
-                    }
-                    // Reward completed steps
-                    if completed_count > self.plan_items_completed {
-                        let new_completions = completed_count - self.plan_items_completed;
-                        self.plan_items_completed = completed_count;
-                        self.score += (new_completions * 2) as i32;
-                    }
+        // Planning enforcement: detect update_plan usage.
+        if name == "update_plan" && succeeded {
+            // update_plan uses {plan: [{step, status}]} — lightweight, fire-and-forget.
+            if let Some(plan) = args.get("plan").and_then(|v| v.as_array()) {
+                let step_count = plan.len() as u32;
+                let completed_count = plan
+                    .iter()
+                    .filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("completed"))
+                    .count() as u32;
+                if !self.has_plan {
+                    self.plan_items_created = step_count;
+                    self.has_plan = true;
+                    self.score += 3 + step_count.min(5) as i32;
                 }
-            } else if let Some(action) = args.get("action").and_then(|v| v.as_str()) {
-                // todos tool uses {action: "add"/"update"/"list"/"delete", ...}
-                match action {
-                    "add" => {
-                        let item_count = args
-                            .get("items")
-                            .and_then(|v| v.as_array())
-                            .map_or(1, |arr| arr.len() as u32);
-                        self.plan_items_created += item_count;
-                        self.has_plan = true;
-                        self.score += 3 + item_count.min(5) as i32; // +3 base + 1/item (max +5)
-                    }
-                    "update" => {
-                        if args
-                            .get("completed")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false)
-                        {
-                            self.plan_items_completed += 1;
-                            self.score += 2; // Reward working the plan
-                        }
-                    }
-                    _ => {} // list, delete — neutral
+                // Reward completed steps.
+                if completed_count > self.plan_items_completed {
+                    let new_completions = completed_count - self.plan_items_completed;
+                    self.plan_items_completed = completed_count;
+                    self.score += (new_completions * 2) as i32;
                 }
             }
         }
 
-        if !self.has_plan && name != "todos" && name != "update_plan" {
+        if !self.has_plan && name != "update_plan" {
             self.tool_calls_before_plan += 1;
         }
 
@@ -354,8 +328,8 @@ mod progress_tracker_tests {
     use crate::context_management::compact_messages;
     use crate::executor::ExecutorConfig;
     use crate::types::ChatMessage;
+    use agent_primitives::types::Part;
     use serde_json::json;
-    use zero_core::types::Part;
 
     #[test]
     fn test_new_tracker_no_extension() {
@@ -504,7 +478,16 @@ mod progress_tracker_tests {
         let mut tracker = ProgressTracker::new(3);
         // Use 10 unique tools in 10 calls (all succeed)
         let tools = [
-            "read", "write", "shell", "edit", "grep", "glob", "memory", "todo", "ward", "respond",
+            "read",
+            "write",
+            "shell",
+            "edit",
+            "glob",
+            "memory",
+            "update_plan",
+            "ward",
+            "respond",
+            "load_skill",
         ];
         for (i, tool) in tools.iter().enumerate() {
             tracker.record_tool_call(tool, &json!({"i": i}), true);
@@ -586,22 +569,26 @@ mod progress_tracker_tests {
     // ========================================================================
 
     #[test]
-    fn test_todo_add_sets_has_plan() {
+    fn test_update_plan_sets_has_plan() {
         let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("todos", &json!({"action": "add", "title": "step 1"}), true);
+        tracker.record_tool_call(
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
+            true,
+        );
         assert!(tracker.has_plan);
         assert_eq!(tracker.plan_items_created, 1);
     }
 
     #[test]
-    fn test_todo_add_batch_counts_items() {
+    fn test_update_plan_counts_items() {
         let mut tracker = ProgressTracker::new(3);
         tracker.record_tool_call(
-            "todos",
-            &json!({"action": "add", "items": [
-                {"title": "step 1"},
-                {"title": "step 2"},
-                {"title": "step 3"}
+            "update_plan",
+            &json!({"plan": [
+                {"step": "step 1", "status": "pending"},
+                {"step": "step 2", "status": "pending"},
+                {"step": "step 3", "status": "pending"}
             ]}),
             true,
         );
@@ -610,13 +597,13 @@ mod progress_tracker_tests {
     }
 
     #[test]
-    fn test_todo_add_boosts_score() {
+    fn test_update_plan_boosts_score() {
         let mut tracker = ProgressTracker::new(3);
         tracker.record_tool_call(
-            "todos",
-            &json!({"action": "add", "items": [
-                {"title": "step 1"},
-                {"title": "step 2"}
+            "update_plan",
+            &json!({"plan": [
+                {"step": "step 1", "status": "pending"},
+                {"step": "step 2", "status": "pending"}
             ]}),
             true,
         );
@@ -625,15 +612,19 @@ mod progress_tracker_tests {
     }
 
     #[test]
-    fn test_todo_update_completed_boosts_score() {
+    fn test_update_plan_completed_boosts_score() {
         let mut tracker = ProgressTracker::new(3);
-        // First add a plan so we have context
-        tracker.record_tool_call("todos", &json!({"action": "add", "title": "step 1"}), true);
-        let score_after_add = tracker.score;
-        // Complete the item
+        // First add a plan so we have context.
         tracker.record_tool_call(
-            "todos",
-            &json!({"action": "update", "id": "1", "completed": true}),
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
+            true,
+        );
+        let score_after_add = tracker.score;
+        // Complete the item.
+        tracker.record_tool_call(
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "completed"}]}),
             true,
         );
         // +2 completion bonus + 1 success (unique tool bonus already used)
@@ -642,22 +633,26 @@ mod progress_tracker_tests {
     }
 
     #[test]
-    fn test_todo_update_incomplete_no_bonus() {
+    fn test_update_plan_incomplete_no_completion_bonus() {
         let mut tracker = ProgressTracker::new(3);
         tracker.record_tool_call(
-            "todos",
-            &json!({"action": "update", "id": "1", "completed": false}),
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
             true,
         );
-        // +1 unique tool + 1 success = 2, no completion bonus
-        assert_eq!(tracker.score, 2);
+        // +3 plan base + 1 item + 1 unique tool + 1 success = 6, no completion bonus.
+        assert_eq!(tracker.score, 6);
         assert_eq!(tracker.plan_items_completed, 0);
     }
 
     #[test]
-    fn test_failed_todo_call_not_counted() {
+    fn test_failed_update_plan_not_counted() {
         let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("todos", &json!({"action": "add", "title": "step 1"}), false);
+        tracker.record_tool_call(
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
+            false,
+        );
         assert!(!tracker.has_plan);
         assert_eq!(tracker.plan_items_created, 0);
     }
@@ -670,7 +665,11 @@ mod progress_tracker_tests {
         assert_eq!(tracker.tool_calls_before_plan, 2);
 
         // Create plan
-        tracker.record_tool_call("todos", &json!({"action": "add", "title": "step 1"}), true);
+        tracker.record_tool_call(
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
+            true,
+        );
         assert_eq!(tracker.tool_calls_before_plan, 2); // Frozen
 
         // More tool calls after plan — counter should not increase
@@ -704,8 +703,12 @@ mod progress_tracker_tests {
     #[test]
     fn test_no_nudge_if_plan_exists() {
         let mut tracker = ProgressTracker::new(3);
-        // Create plan first
-        tracker.record_tool_call("todos", &json!({"action": "add", "title": "step 1"}), true);
+        // Create plan first.
+        tracker.record_tool_call(
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
+            true,
+        );
         // Then do 10 tool calls
         for i in 0..10 {
             tracker.record_tool_call("read", &json!({"path": format!("/{}", i)}), true);
@@ -753,7 +756,11 @@ mod progress_tracker_tests {
     #[test]
     fn test_should_extend_no_penalty_with_plan() {
         let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("todos", &json!({"action": "add", "title": "step 1"}), true);
+        tracker.record_tool_call(
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
+            true,
+        );
         tracker.record_tool_call("read", &json!({}), true);
         tracker.record_tool_call("write", &json!({}), true);
         assert!(tracker.has_plan);
@@ -767,10 +774,14 @@ mod progress_tracker_tests {
     #[test]
     fn test_planning_state_survives_grant_extension() {
         let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("todos", &json!({"action": "add", "title": "step 1"}), true);
         tracker.record_tool_call(
-            "todos",
-            &json!({"action": "update", "id": "1", "completed": true}),
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
+            true,
+        );
+        tracker.record_tool_call(
+            "update_plan",
+            &json!({"plan": [{"step": "step 1", "status": "completed"}]}),
             true,
         );
         // Force a nudge scenario before plan (won't fire since has_plan=true, but set for test)
@@ -797,13 +808,19 @@ mod progress_tracker_tests {
     fn test_diagnosis_includes_plan_status() {
         let mut tracker = ProgressTracker::new(3);
         tracker.record_tool_call(
-            "todos",
-            &json!({"action": "add", "items": [{"title": "a"}, {"title": "b"}]}),
+            "update_plan",
+            &json!({"plan": [
+                {"step": "a", "status": "pending"},
+                {"step": "b", "status": "pending"}
+            ]}),
             true,
         );
         tracker.record_tool_call(
-            "todos",
-            &json!({"action": "update", "id": "1", "completed": true}),
+            "update_plan",
+            &json!({"plan": [
+                {"step": "a", "status": "completed"},
+                {"step": "b", "status": "pending"}
+            ]}),
             true,
         );
         let diagnosis = tracker.diagnosis();

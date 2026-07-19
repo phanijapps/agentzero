@@ -86,10 +86,10 @@ describe("EmbeddingProgressModal", () => {
     );
     await waitForProgress();
     act(() => {
-      capturedProgress!({ kind: "reindexing", table: "memory_facts_index", current: 50, total: 200 });
+      capturedProgress!({ kind: "reindexing", table: "engram_vectors", current: 50, total: 200 });
     });
     expect(screen.getByTestId("phase-reindexing")).toBeInTheDocument();
-    expect(screen.getByTestId("phase-reindexing").textContent).toMatch(/memory_facts_index: 50 \/ 200/);
+    expect(screen.getByTestId("phase-reindexing").textContent).toMatch(/engram_vectors: 50 \/ 200/);
   });
 
   it("shows ready state with Close button on success", async () => {

@@ -1,7 +1,7 @@
 # Plan: GitHub Release Installer
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Draft
+- **Status:** Closed
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as you learn. When it changes substantially
@@ -209,7 +209,7 @@ archives plus `checksums.sha256`.
 **Depends on:** T1-T5
 
 **Touches:** `README.md`, `memory-bank/PUBLISHING.md`,
-`memory-bank/future-state/path-to-release.md`, `docs/specs/github-release-installer/*`
+`docs/architecture/future-state/path-to-release.md`, `docs/specs/github-release-installer/*`
 
 **Mode:** Goal-based check
 

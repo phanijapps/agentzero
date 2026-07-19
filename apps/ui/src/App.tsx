@@ -20,9 +20,10 @@ import {
   MessageSquare,
   Menu,
   Search,
+  Archive,
 } from "lucide-react";
 import { initializeTransport, getTransport } from "@/services/transport";
-import { SetupWizard, SetupGuard } from "./features/setup";
+import { CommissioningGuard, CommissioningScreen } from "./features/commissioning";
 import { WebAgentsPanel } from "./features/agent/WebAgentsPanel";
 import { WebSettingsPanel } from "./features/settings/WebSettingsPanel";
 import { WebIntegrationsPanel } from "./features/integrations/WebIntegrationsPanel";
@@ -32,6 +33,7 @@ import { ObservatoryV2Page } from "./features/observatory-v2";
 import { QuickChat } from "./features/chat-v2";
 import { ResearchPage } from "./features/research-v2";
 import { MissionControlPage } from "./features/mission-control";
+import { VaultPage } from "./features/vault";
 import { AccentPicker } from "./components/AccentPicker";
 
 // ============================================================================
@@ -47,6 +49,8 @@ interface AppInitResult {
   connected: boolean;
   error?: string;
   version?: string;
+  buildDate?: string;
+  buildTimestamp?: string;
 }
 
 // ============================================================================
@@ -64,17 +68,35 @@ function ResearchV2Redirect() {
  * daemon's reported version. Hidden while the fetch is in flight or on
  * failure (rather than showing a placeholder) so the bar stays clean.
  *
- * Branch-suffixed versions (e.g. `2026.5.3.develop`) come straight from
- * the build.rs that runs on `make install` / `scripts/install.sh`. Plain
- * `cargo build` reports the bare `2026.5.3`.
+ * Branch-suffixed versions and build metadata come from the daemon's
+ * compile-time `/api/health` response.
  */
-function VersionBadge({ version }: { version?: string | null }) {
+function VersionBadge({
+  version,
+  buildDate,
+  buildTimestamp,
+}: {
+  version?: string | null;
+  buildDate?: string | null;
+  buildTimestamp?: string | null;
+}) {
   if (!version) return null;
+  const buildLabel = buildTimestamp ? formatBuildTimestamp(buildTimestamp) : buildDate;
+  const label = buildLabel ? `v${version} (${buildLabel})` : `v${version}`;
+  const title = buildTimestamp
+    ? `z-bot ${version} built ${buildTimestamp}`
+    : buildDate
+      ? `z-bot ${version} built ${buildDate}`
+      : `z-bot ${version}`;
   return (
-    <span className="topbar__version" title={`z-bot ${version}`}>
-      v{version}
+    <span className="topbar__version" title={title}>
+      {label}
     </span>
   );
+}
+
+function formatBuildTimestamp(value: string) {
+  return value.replace("T", " ");
 }
 
 function App() {
@@ -85,6 +107,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [daemonVersion, setDaemonVersion] = useState<string | null>(null);
+  const [daemonBuildDate, setDaemonBuildDate] = useState<string | null>(null);
+  const [daemonBuildTimestamp, setDaemonBuildTimestamp] = useState<string | null>(null);
   const initPromiseRef = useRef<Promise<AppInitResult> | null>(null);
 
   useEffect(() => {
@@ -106,6 +130,8 @@ function App() {
       return {
         connected: true,
         version: healthResult.data?.version,
+        buildDate: healthResult.data?.buildDate,
+        buildTimestamp: healthResult.data?.buildTimestamp,
       };
     };
 
@@ -125,6 +151,8 @@ function App() {
         setError(null);
         setConnectionStatus({ connected: true });
         setDaemonVersion(result.version ?? null);
+        setDaemonBuildDate(result.buildDate ?? null);
+        setDaemonBuildTimestamp(result.buildTimestamp ?? null);
       }
       setIsInitializing(false);
     });
@@ -137,6 +165,8 @@ function App() {
   const handleRetry = () => {
     setError(null);
     setDaemonVersion(null);
+    setDaemonBuildDate(null);
+    setDaemonBuildTimestamp(null);
     setIsInitializing(true);
     initPromiseRef.current = null;
     setRetryCount(c => c + 1);
@@ -196,13 +226,19 @@ function App() {
         }}
       />
       <Routes>
-          {/* Setup wizard — renders without app shell */}
-          <Route path="/setup" element={<SetupWizard />} />
+          {/* Commissioning renders without the application shell. */}
+          <Route path="/commission" element={<CommissioningScreen />} />
+          <Route path="/setup" element={<Navigate to="/commission" replace />} />
 
           {/* Main app with sidebar */}
           <Route path="/*" element={
-            <SetupGuard>
-              <WebAppShell connectionStatus={connectionStatus} version={daemonVersion}>
+            <CommissioningGuard>
+              <WebAppShell
+                connectionStatus={connectionStatus}
+                version={daemonVersion}
+                buildDate={daemonBuildDate}
+                buildTimestamp={daemonBuildTimestamp}
+              >
                 <Routes>
                   <Route path="/" element={<Navigate to="/research" replace />} />
                   <Route path="/mission-control" element={<MissionControlPage />} />
@@ -213,6 +249,7 @@ function App() {
                   <Route path="/observatory" element={<ObservatoryPage />} />
                   <Route path="/observatory-v2" element={<ObservatoryV2Page />} />
                   <Route path="/agents" element={<WebAgentsPanel />} />
+                  <Route path="/vault" element={<VaultPage />} />
                   <Route path="/integrations" element={<WebIntegrationsPanel />} />
                   <Route path="/settings" element={<WebSettingsPanel />} />
                   <Route path="/chat" element={<QuickChat />} />
@@ -230,7 +267,7 @@ function App() {
                   <Route path="/mcps" element={<Navigate to="/integrations" replace />} />
                 </Routes>
               </WebAppShell>
-            </SetupGuard>
+            </CommissioningGuard>
           } />
         </Routes>
     </BrowserRouter>
@@ -245,6 +282,8 @@ interface WebAppShellProps {
   children: React.ReactNode;
   connectionStatus: ConnectionStatus;
   version?: string | null;
+  buildDate?: string | null;
+  buildTimestamp?: string | null;
 }
 
 // Flat top-bar nav — no groups, no Main/Manage/System split.
@@ -263,13 +302,20 @@ export const navItems: NavItem[] = [
   { to: "/mission-control", label: "Mission Control", icon: LayoutDashboard },
   { to: "/agents", label: "Agents", icon: Bot },
   { to: "/memory", label: "Memory", icon: Brain },
+  { to: "/vault", label: "Vault", icon: Archive },
   { to: "/observatory", label: "Observatory", icon: Network },
   { to: "/observatory-v2", label: "Graph", icon: Layers },
   { to: "/integrations", label: "Integrations", icon: Plug },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
-export function WebAppShell({ children, connectionStatus, version }: WebAppShellProps) {
+export function WebAppShell({
+  children,
+  connectionStatus,
+  version,
+  buildDate,
+  buildTimestamp,
+}: WebAppShellProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const location = useLocation();
   // Close the mobile sheet whenever the route changes.
@@ -277,11 +323,6 @@ export function WebAppShell({ children, connectionStatus, version }: WebAppShell
 
   return (
     <div className="app-shell">
-      <span className="app-shell__reticle app-shell__reticle--tl" aria-hidden="true" />
-      <span className="app-shell__reticle app-shell__reticle--tr" aria-hidden="true" />
-      <span className="app-shell__reticle app-shell__reticle--bl" aria-hidden="true" />
-      <span className="app-shell__reticle app-shell__reticle--br" aria-hidden="true" />
-
       <header className="topbar">
         <Link to="/research" className="topbar__brand" aria-label="z-Bot home">
           <span className="topbar__brand-mark">z</span>
@@ -305,7 +346,7 @@ export function WebAppShell({ children, connectionStatus, version }: WebAppShell
         </nav>
 
         <div className="topbar__right">
-          <VersionBadge version={version} />
+          <VersionBadge version={version} buildDate={buildDate} buildTimestamp={buildTimestamp} />
           <AccentPicker />
           <div className="connection-status">
             <div className={`connection-status__dot ${

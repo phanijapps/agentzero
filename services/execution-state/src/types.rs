@@ -3,6 +3,7 @@
 //! Core types for session tracking, agent executions, and checkpointing.
 
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 
 // ============================================================================
 // SESSION STATUS
@@ -316,6 +317,17 @@ pub struct Session {
     /// When set, overrides per-invoke mode so continuations keep the same behavior.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+}
+
+/// Result of atomically binding an initially wardless session to a workspace.
+///
+/// The caller must use the contained effective ward for its own execution
+/// context. `Existing` means another invocation or an earlier lifecycle event
+/// already established the session workspace and must not be overwritten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionWardClaim {
+    Claimed(String),
+    Existing(String),
 }
 
 impl Session {
@@ -656,6 +668,243 @@ pub struct MissionControlSessionTokens {
     pub total_tokens_in: u64,
     pub total_tokens_out: u64,
     pub executions: Vec<MissionControlExecutionSummary>,
+    /// Latest validated plan for this selected session. This is intentionally
+    /// absent from the bounded session-list response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_plan: Option<SessionPlanSnapshot>,
+}
+
+// ============================================================================
+// CURRENT SESSION PLAN
+// ============================================================================
+
+/// Maximum number of structured steps accepted from `update_plan`.
+pub const MAX_SESSION_PLAN_STEPS: usize = 20;
+/// Maximum UTF-8 byte length of one plan step.
+pub const MAX_SESSION_PLAN_STEP_BYTES: usize = 512;
+/// Maximum UTF-8 byte length of an optional plan explanation.
+pub const MAX_SESSION_PLAN_EXPLANATION_BYTES: usize = 1_000;
+/// Maximum serialized byte length of model-owned plan data.
+pub const MAX_SESSION_PLAN_PAYLOAD_BYTES: usize = 16 * 1024;
+
+/// The only statuses persisted for a current session plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPlanStepStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+/// One normalized current-plan step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPlanStep {
+    pub step: String,
+    pub status: SessionPlanStepStatus,
+}
+
+/// Strict model-owned portion of an `update_plan` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPlanInput {
+    pub plan: Vec<SessionPlanStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BorrowedSessionPlanInput<'a> {
+    plan: &'a serde_json::Value,
+    explanation: Option<&'a str>,
+}
+
+struct BoundedJsonCounter {
+    remaining: usize,
+}
+
+impl BoundedJsonCounter {
+    const fn new(limit: usize) -> Self {
+        Self { remaining: limit }
+    }
+}
+
+impl Write for BoundedJsonCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.len() > self.remaining {
+            return Err(io::Error::other("serialized plan exceeds byte budget"));
+        }
+        self.remaining -= buffer.len();
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A reason code for rejecting model-owned plan input. It deliberately contains
+/// no user or model text so callers can log it safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPlanRejection {
+    InvalidStructure,
+    EmptyPlan,
+    TooManySteps,
+    EmptyStep,
+    StepTooLong,
+    ExplanationTooLong,
+    PayloadTooLarge,
+    ExecutionSessionMismatch,
+    StaleSequence,
+}
+
+impl SessionPlanRejection {
+    /// Stable, safe-to-log rejection code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidStructure => "invalid_structure",
+            Self::EmptyPlan => "empty_plan",
+            Self::TooManySteps => "too_many_steps",
+            Self::EmptyStep => "empty_step",
+            Self::StepTooLong => "step_too_long",
+            Self::ExplanationTooLong => "explanation_too_long",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::ExecutionSessionMismatch => "execution_session_mismatch",
+            Self::StaleSequence => "stale_sequence",
+        }
+    }
+}
+
+impl SessionPlanInput {
+    /// Check an untrusted update without cloning its JSON or deserializing it
+    /// into owned plan-step strings. This guard runs at the stream boundary and
+    /// again before persistence as defence in depth.
+    pub fn preflight_update(
+        plan: &serde_json::Value,
+        explanation: Option<&str>,
+    ) -> Result<(), SessionPlanRejection> {
+        let steps = plan
+            .as_array()
+            .ok_or(SessionPlanRejection::InvalidStructure)?;
+        if steps.is_empty() {
+            return Err(SessionPlanRejection::EmptyPlan);
+        }
+        if steps.len() > MAX_SESSION_PLAN_STEPS {
+            return Err(SessionPlanRejection::TooManySteps);
+        }
+        for raw_step in steps {
+            let object = raw_step
+                .as_object()
+                .ok_or(SessionPlanRejection::InvalidStructure)?;
+            if object.len() != 2 || !object.contains_key("step") || !object.contains_key("status") {
+                return Err(SessionPlanRejection::InvalidStructure);
+            }
+            let step = object
+                .get("step")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(SessionPlanRejection::InvalidStructure)?;
+            if step.trim().is_empty() {
+                return Err(SessionPlanRejection::EmptyStep);
+            }
+            if step.len() > MAX_SESSION_PLAN_STEP_BYTES {
+                return Err(SessionPlanRejection::StepTooLong);
+            }
+            match object.get("status").and_then(serde_json::Value::as_str) {
+                Some("pending" | "in_progress" | "completed" | "failed") => {}
+                Some(_) | None => return Err(SessionPlanRejection::InvalidStructure),
+            }
+        }
+        if explanation.is_some_and(|value| value.len() > MAX_SESSION_PLAN_EXPLANATION_BYTES) {
+            return Err(SessionPlanRejection::ExplanationTooLong);
+        }
+
+        let mut counter = BoundedJsonCounter::new(MAX_SESSION_PLAN_PAYLOAD_BYTES);
+        serde_json::to_writer(
+            &mut counter,
+            &BorrowedSessionPlanInput { plan, explanation },
+        )
+        .map_err(|_| SessionPlanRejection::PayloadTooLarge)?;
+        Ok(())
+    }
+
+    /// Deserialize and validate the model-owned fields before any database
+    /// operation. Trusted ownership and ordering data are supplied separately.
+    pub fn from_update(
+        plan: serde_json::Value,
+        explanation: Option<String>,
+    ) -> Result<Self, SessionPlanRejection> {
+        Self::preflight_update(&plan, explanation.as_deref())?;
+        let input = serde_json::from_value::<Self>(serde_json::json!({
+            "plan": plan,
+            "explanation": explanation,
+        }))
+        .map_err(|_| SessionPlanRejection::InvalidStructure)?;
+
+        input.validate()?;
+        Ok(input)
+    }
+
+    fn validate(&self) -> Result<(), SessionPlanRejection> {
+        if self.plan.is_empty() {
+            return Err(SessionPlanRejection::EmptyPlan);
+        }
+        if self.plan.len() > MAX_SESSION_PLAN_STEPS {
+            return Err(SessionPlanRejection::TooManySteps);
+        }
+        for step in &self.plan {
+            if step.step.trim().is_empty() {
+                return Err(SessionPlanRejection::EmptyStep);
+            }
+            if step.step.len() > MAX_SESSION_PLAN_STEP_BYTES {
+                return Err(SessionPlanRejection::StepTooLong);
+            }
+        }
+        if self
+            .explanation
+            .as_deref()
+            .is_some_and(|value| value.len() > MAX_SESSION_PLAN_EXPLANATION_BYTES)
+        {
+            return Err(SessionPlanRejection::ExplanationTooLong);
+        }
+        Ok(())
+    }
+}
+
+/// One persisted, selected-session plan snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPlanSnapshot {
+    pub execution_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    pub plan: Vec<SessionPlanStep>,
+    pub updated_at: String,
+    /// Internal ordering metadata. It is not part of the public Mission
+    /// Control response.
+    #[serde(skip_serializing)]
+    pub source_event_timestamp: u64,
+    /// Internal ordering metadata. It is not part of the public Mission
+    /// Control response.
+    #[serde(skip_serializing)]
+    pub source_event_sequence: u64,
+}
+
+/// Outcome of attempting to save a plan snapshot. Rejections are expected model
+/// input outcomes, while database failures are returned separately as errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionPlanSaveOutcome {
+    Accepted(SessionPlanSnapshot),
+    Rejected(SessionPlanRejection),
+}
+
+impl SessionPlanSaveOutcome {
+    #[must_use]
+    pub fn accepted(self) -> Option<SessionPlanSnapshot> {
+        match self {
+            Self::Accepted(snapshot) => Some(snapshot),
+            Self::Rejected(_) => None,
+        }
+    }
 }
 
 // ============================================================================
@@ -884,6 +1133,7 @@ pub struct Artifact {
     pub file_type: Option<String>,
     pub file_size: Option<i64>,
     pub label: Option<String>,
+    pub is_goal_artifact: bool,
     pub created_at: String,
 }
 
@@ -904,6 +1154,7 @@ impl Artifact {
             file_type: None,
             file_size: None,
             label: None,
+            is_goal_artifact: false,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }
@@ -1370,5 +1621,48 @@ mod tests {
         assert_eq!(exec.agent_id, "writer-agent");
         assert_eq!(exec.status, ExecutionStatus::Queued);
         assert_eq!(exec.parent_execution_id, Some("exec-parent".to_string()));
+    }
+
+    #[test]
+    fn session_plan_input_rejects_unknown_fields_and_overlong_content() {
+        let unknown_field = SessionPlanInput::from_update(
+            serde_json::json!([{
+                "step": "Inspect the setup",
+                "status": "pending",
+                "untrusted": true,
+            }]),
+            None,
+        );
+        assert_eq!(unknown_field, Err(SessionPlanRejection::InvalidStructure));
+
+        let long_step = "x".repeat(MAX_SESSION_PLAN_STEP_BYTES + 1);
+        let overlong = SessionPlanInput::from_update(
+            serde_json::json!([{"step": long_step, "status": "pending"}]),
+            None,
+        );
+        assert_eq!(overlong, Err(SessionPlanRejection::StepTooLong));
+
+        let too_many_steps = serde_json::Value::Array(
+            (0..=MAX_SESSION_PLAN_STEPS)
+                .map(|_| serde_json::json!({"step": "bounded", "status": "pending"}))
+                .collect(),
+        );
+        assert_eq!(
+            SessionPlanInput::preflight_update(&too_many_steps, None),
+            Err(SessionPlanRejection::TooManySteps)
+        );
+
+        let escape_heavy_step = "\0".repeat(MAX_SESSION_PLAN_STEP_BYTES);
+        let escape_heavy_plan = serde_json::Value::Array(
+            (0..MAX_SESSION_PLAN_STEPS)
+                .map(
+                    |_| serde_json::json!({"step": escape_heavy_step.clone(), "status": "pending"}),
+                )
+                .collect(),
+        );
+        assert_eq!(
+            SessionPlanInput::preflight_update(&escape_heavy_plan, None),
+            Err(SessionPlanRejection::PayloadTooLarge)
+        );
     }
 }

@@ -94,6 +94,22 @@ describe("mapGatewayEventToResearchAction", () => {
     } as any)).toEqual({ type: "SESSION_BOUND", sessionId: "sess-x", conversationId: "conv-x" });
   });
 
+  it("agent_started retains the server session identity when invoke_accepted is absent", () => {
+    expect(mapGatewayEventToResearchAction({
+      type: "agent_started",
+      execution_id: "exec-root",
+      agent_id: "root",
+      parent_execution_id: null,
+      session_id: "sess-root",
+      conversation_id: "research-client",
+    } as any)).toMatchObject({
+      type: "AGENT_STARTED",
+      turnId: "exec-root",
+      sessionId: "sess-root",
+      conversationId: "research-client",
+    });
+  });
+
   it("session_initialized maps to SESSION_BOUND (forward-compat)", () => {
     expect(mapGatewayEventToResearchAction({
       type: "session_initialized", session_id: "sess-y", conversation_id: "conv-y",
@@ -149,10 +165,17 @@ describe("mapGatewayEventToResearchAction", () => {
     ).toEqual({ type: "TURN_COMPLETE", turnId: "exec-1" });
   });
 
-  it("agent_completed maps", () => {
-    const a = mapGatewayEventToResearchAction({ type: "agent_completed", execution_id: "exec-1" } as any);
-    expect(a?.type).toBe("AGENT_COMPLETED");
-    expect((a as any).turnId).toBe("exec-1");
+  it("agent_completed retains its final result as a response fallback", () => {
+    const a = mapGatewayEventToResearchAction({
+      type: "agent_completed",
+      execution_id: "exec-1",
+      result: "final response",
+    } as any);
+    expect(a).toMatchObject({
+      type: "AGENT_COMPLETED",
+      turnId: "exec-1",
+      result: "final response",
+    });
   });
 
   it("agent_stopped maps", () => {

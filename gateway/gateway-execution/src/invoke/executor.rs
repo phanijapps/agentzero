@@ -2,20 +2,23 @@
 //!
 //! Builds agent executors with all required components.
 
+use agent_primitives::{ConnectorResourceProvider, FileSystemContext};
 use agent_runtime::{
-    AgentExecutor, ContextEditingConfig, ContextEditingMiddleware, DelegateTool, ExecutorConfig,
-    KeepPolicy, LlmClient, LlmConfig, McpManager, MiddlewarePipeline, OpenAiClient,
-    PlanBlockMiddleware, RespondTool, RetryPolicy, RetryingLlmClient, SummarizationConfig,
-    SummarizationMiddleware, ToolCallDecision, ToolRegistry, TriggerCondition,
+    AgentExecutor, BoxedAgentEngine, ContextActorKind, ContextCapability, ContextCapabilityCatalog,
+    ContextCapabilityHealth, ContextCapabilityKind, ContextCostHint, ContextEditingConfig,
+    ContextEditingMiddleware, ContextLatencyHint, ContextRiskLevel, ContextSideEffects,
+    DelegateTool, ExecutorConfig, KeepPolicy, LlmClient, LlmConfig, McpManager, MiddlewarePipeline,
+    OpenAiClient, PlanBlockMiddleware, RespondTool, RetryPolicy, RetryingLlmClient, RigAgentConfig,
+    RigModelConfig, SummarizationConfig, SummarizationMiddleware, ToolCallDecision, ToolRegistry,
+    TriggerCondition,
 };
 use agent_tools::{
+    ConnectorInvokeTool,
+    ConnectorResourceTool,
     EditFileTool,
     GlobTool,
     // Knowledge graph query tool
     GraphQueryTool,
-    GrepTool,
-    ListMcpsTool,
-    ListSkillsTool,
     LoadSkillTool,
     // Root orchestrator tools
     MemoryTool,
@@ -24,7 +27,7 @@ use agent_tools::{
     QueryResourceTool,
     // Optional file reading tools
     ReadTool,
-    SetSessionTitleTool,
+    RecallAuthorizationContext,
     // Subagent tools
     ShellTool,
     ToolSettings,
@@ -32,16 +35,18 @@ use agent_tools::{
     WardTool,
     WriteFileTool,
 };
+use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
 use gateway_services::agents::Agent;
-use gateway_services::models::ModelRegistry;
+use gateway_services::models::{ModelRegistry, DEFAULT_MAX_INPUT_TOKENS};
 use gateway_services::providers::Provider;
-use gateway_services::{McpService, SettingsService, SkillService};
+use gateway_services::{McpService, SettingsService, SkillService, VaultPaths};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use zero_core::{ConnectorResourceProvider, FileSystemContext};
-use zero_stores::MemoryFactStore;
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use zbot_conversation::MessageStore;
+use zbot_runtime_sqlite::DatabaseManager;
+use zbot_stores::MemoryFactStore;
 
 use super::setup::SubagentRole;
 use crate::agent_pool::AgentResultBus;
@@ -62,6 +67,123 @@ use crate::config::GatewayFileSystem;
 /// changing the public signature.
 pub fn resolve_thinking_flag(user_flag: bool, _model: &str) -> bool {
     user_flag
+}
+
+/// Build the Rig-facing agent config from already-resolved gateway settings.
+pub fn build_rig_agent_config(
+    agent: &Agent,
+    llm_config: &LlmConfig,
+    context_window_tokens: u64,
+) -> RigAgentConfig {
+    RigAgentConfig::new(
+        agent.id.clone(),
+        agent.display_name.clone(),
+        agent.description.clone(),
+        agent.instructions.clone(),
+        RigModelConfig::from_llm_config(llm_config, context_window_tokens),
+    )
+}
+
+/// Select the execution engine for a built [`AgentExecutor`].
+///
+/// Default: the legacy [`AgentExecutor`] (boxed). When `ZBOT_ENGINE=rig` is
+/// set, a [`RigAgentConfig`] was resolved, and **no MCP servers are
+/// configured**, the Rig-backed engine drives instead — same `LlmClient`, same
+/// actor-filtered tool inventory, same shared context, and the same
+/// before/after-tool hooks.
+///
+/// # Current limitations of the Rig path (live A/B validation only)
+/// - No middleware/compaction (long conversations can overflow the context
+///   window); live context control is not yet wired into the Rig loop.
+/// - No token-usage events.
+/// - No mid-session recall or steering hooks.
+/// - MCP is intentionally unsupported here (falls back to legacy) until the MCP
+///   lifecycle is bridged — `McpManager` has no `Drop` cleanup, so routing an
+///   MCP-bearing session through Rig would orphan the subprocesses.
+pub fn select_engine(executor: AgentExecutor) -> BoxedAgentEngine {
+    let use_rig = std::env::var("ZBOT_ENGINE")
+        .map(|v| v.eq_ignore_ascii_case("rig"))
+        .unwrap_or(false);
+    select_engine_with(executor, use_rig)
+}
+
+/// Pure routing core of [`select_engine`], testable without touching the
+/// process environment.
+fn select_engine_with(executor: AgentExecutor, use_rig: bool) -> BoxedAgentEngine {
+    use agent_runtime::rig_adapter::engine::RigAgentEngine;
+    use agent_runtime::rig_adapter::model::LlmCompletionModel;
+    use agent_runtime::rig_adapter::RigToolAdapter;
+    use agent_runtime::tools::ToolContext;
+
+    if !use_rig {
+        return Box::new(executor);
+    }
+
+    // Extract everything needed from the config up front so the immutable
+    // borrow ends before any branch moves `executor`.
+    let cfg = executor.config();
+    let mcps_empty = cfg.mcps.is_empty();
+    let agent_id = cfg.agent_id.clone();
+    let conversation_id = cfg.conversation_id.clone();
+    let skills = cfg.skills.clone();
+    let initial_state = cfg.initial_state.clone();
+    let model_name = cfg.model.clone();
+    let before = cfg.before_tool_call.clone();
+    let after = cfg.after_tool_call.clone();
+    let rig_config = cfg.rig_agent_config.clone();
+
+    if !mcps_empty {
+        tracing::warn!(
+            target: "rig_cutover",
+            agent = %agent_id,
+            "ZBOT_ENGINE=rig ignored: MCP servers are configured and the Rig path does not yet bridge the MCP lifecycle; using legacy executor"
+        );
+        return Box::new(executor);
+    }
+    let Some(rig_config) = rig_config else {
+        tracing::warn!(
+            target: "rig_cutover",
+            agent = %agent_id,
+            "ZBOT_ENGINE=rig ignored: no RigAgentConfig resolved; using legacy executor"
+        );
+        return Box::new(executor);
+    };
+
+    // `tools` is inferred as `Vec<Box<dyn ToolDyn>>` from `RigToolAdapter::boxed`
+    // — the Rig `ToolDyn` type is never named here (Rig stays confined to
+    // `agent-runtime`; gateway-execution does not depend on it).
+    let tools: Vec<_> = executor
+        .model_visible_tools()
+        .into_iter()
+        .map(RigToolAdapter::boxed)
+        .collect();
+    let shared = Arc::new(ToolContext::full_with_state(
+        agent_id.clone(),
+        conversation_id,
+        skills,
+        initial_state,
+    ));
+    let model = LlmCompletionModel::new(executor.llm_client(), model_name);
+
+    tracing::info!(
+        target: "rig_cutover",
+        agent = %agent_id,
+        "ZBOT_ENGINE=rig: driving RigAgentEngine"
+    );
+    Box::new(RigAgentEngine::with_tool_hooks(
+        rig_config, model, tools, shared, before, after,
+    ))
+}
+
+fn resolve_effective_max_input(agent: &Agent, provider: &Provider) -> u64 {
+    let provider_max_input = provider
+        .effective_max_input(&agent.model)
+        .or(provider.context_window);
+    if agent.max_input_tokens_explicit && agent.max_input_tokens > 0 {
+        agent.max_input_tokens
+    } else {
+        provider_max_input.unwrap_or(DEFAULT_MAX_INPUT_TOKENS)
+    }
 }
 
 /// Runtime actor profile used to derive first-party tool capabilities.
@@ -113,22 +235,21 @@ impl From<SubagentRole> for RuntimeActorKind {
 enum ToolCapability {
     AgentControl,
     AgentDelegate,
+    ConnectorInvoke,
     ConnectorQuery,
+    ConnectorResourceRead,
     FileRead,
     FileWrite,
     GoalWrite,
     GraphRead,
     IngestWrite,
-    McpList,
     MemoryRead,
     MemoryWrite,
     MultimodalAnalyze,
     PlanWrite,
     ProcedureRun,
     Respond,
-    SessionTitleWrite,
     Shell,
-    SkillList,
     SkillLoad,
     WardRead,
     WardWrite,
@@ -139,22 +260,21 @@ impl ToolCapability {
         match self {
             Self::AgentControl => "agent.control",
             Self::AgentDelegate => "agent.delegate",
+            Self::ConnectorInvoke => "connector.invoke",
             Self::ConnectorQuery => "connector.query",
+            Self::ConnectorResourceRead => "connector.resource.read",
             Self::FileRead => "fs.read",
             Self::FileWrite => "fs.write",
             Self::GoalWrite => "goal.write",
             Self::GraphRead => "graph.read",
             Self::IngestWrite => "ingest.write",
-            Self::McpList => "mcp.list",
             Self::MemoryRead => "memory.read",
             Self::MemoryWrite => "memory.write",
             Self::MultimodalAnalyze => "multimodal.analyze",
             Self::PlanWrite => "plan.write",
             Self::ProcedureRun => "procedure.run",
             Self::Respond => "respond",
-            Self::SessionTitleWrite => "session_title.write",
             Self::Shell => "process.shell",
-            Self::SkillList => "skill.list",
             Self::SkillLoad => "skill.load",
             Self::WardRead => "ward.read",
             Self::WardWrite => "ward.write",
@@ -168,7 +288,9 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::ConnectorInvoke
                 | ToolCapability::ConnectorQuery
+                | ToolCapability::ConnectorResourceRead
                 | ToolCapability::FileRead
                 | ToolCapability::GoalWrite
                 | ToolCapability::GraphRead
@@ -179,7 +301,6 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::PlanWrite
                 | ToolCapability::ProcedureRun
                 | ToolCapability::Respond
-                | ToolCapability::SessionTitleWrite
                 | ToolCapability::Shell
                 | ToolCapability::WardRead
                 | ToolCapability::WardWrite
@@ -191,13 +312,11 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::GoalWrite
                 | ToolCapability::GraphRead
                 | ToolCapability::IngestWrite
-                | ToolCapability::McpList
                 | ToolCapability::MemoryRead
                 | ToolCapability::MemoryWrite
                 | ToolCapability::MultimodalAnalyze
                 | ToolCapability::Respond
                 | ToolCapability::Shell
-                | ToolCapability::SkillList
                 | ToolCapability::SkillLoad
                 | ToolCapability::WardRead
                 | ToolCapability::WardWrite
@@ -206,11 +325,9 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
             capability,
             ToolCapability::FileRead
                 | ToolCapability::GraphRead
-                | ToolCapability::McpList
                 | ToolCapability::MemoryRead
                 | ToolCapability::MultimodalAnalyze
                 | ToolCapability::Respond
-                | ToolCapability::SkillList
                 | ToolCapability::SkillLoad
                 | ToolCapability::WardRead
         ),
@@ -229,22 +346,21 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
     const ALL: &[ToolCapability] = &[
         ToolCapability::AgentControl,
         ToolCapability::AgentDelegate,
+        ToolCapability::ConnectorInvoke,
         ToolCapability::ConnectorQuery,
+        ToolCapability::ConnectorResourceRead,
         ToolCapability::FileRead,
         ToolCapability::FileWrite,
         ToolCapability::GoalWrite,
         ToolCapability::GraphRead,
         ToolCapability::IngestWrite,
-        ToolCapability::McpList,
         ToolCapability::MemoryRead,
         ToolCapability::MemoryWrite,
         ToolCapability::MultimodalAnalyze,
         ToolCapability::PlanWrite,
         ToolCapability::ProcedureRun,
         ToolCapability::Respond,
-        ToolCapability::SessionTitleWrite,
         ToolCapability::Shell,
-        ToolCapability::SkillList,
         ToolCapability::SkillLoad,
         ToolCapability::WardRead,
         ToolCapability::WardWrite,
@@ -255,6 +371,334 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
         .filter(|capability| actor_allows(actor, *capability))
         .map(ToolCapability::as_state_value)
         .collect()
+}
+
+/// Build an actor-filtered context capability catalog from the live tool
+/// registry. This is descriptive metadata only; `build_tool_registry` and
+/// `actor_allows` remain the enforcement path.
+pub fn build_context_capability_catalog(
+    actor: RuntimeActorKind,
+    registry: &ToolRegistry,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+) -> ContextCapabilityCatalog {
+    let mut seen = BTreeSet::new();
+    let mut capabilities = Vec::new();
+    for tool in registry.get_all() {
+        if !seen.insert(tool.name().to_string()) {
+            continue;
+        }
+        let tool_caps = tool_capabilities(tool.name());
+        if !tool_caps.is_empty() && !actor_allows_all(actor, &tool_caps) {
+            continue;
+        }
+        capabilities.push(ContextCapability {
+            id: tool.name().to_string(),
+            kind: ContextCapabilityKind::Tool,
+            display_name: display_name(tool.name()),
+            description: tool.description().to_string(),
+            actor_policy: actor_policy_for_capabilities(actor, &tool_caps),
+            risk_level: risk_level_for_tool(tool.name(), &tool_caps),
+            side_effects: side_effects_for_tool(tool.name(), &tool_caps),
+            input_schema: tool.parameters_schema(),
+            output_schema: None,
+            resource_uri_template: None,
+            cost_hint: Some(cost_hint_for_tool(tool.name(), &tool_caps)),
+            latency_hint: Some(latency_hint_for_tool(tool.name(), &tool_caps)),
+            token_hint: token_hint_for_tool(tool.name()),
+            health: ContextCapabilityHealth::Available,
+            owner_crate: Some(owner_crate_for_tool(tool.name()).to_string()),
+            audit_policy: Some(audit_policy_for_tool(tool.name(), &tool_caps).to_string()),
+            default_visible: default_visible_for_tool(tool.name(), actor),
+            visibility_policy: visibility_policy_for_tool(tool.name(), actor).to_string(),
+            split_target: split_target_for_tool(tool.name()).map(str::to_string),
+        });
+    }
+
+    ContextCapabilityCatalog {
+        version: "2026-07-07".to_string(),
+        actor_kind: context_actor_kind(actor),
+        session_id,
+        agent_id,
+        capabilities,
+    }
+}
+
+fn recall_catalog_capability(
+    actor: RuntimeActorKind,
+    health: ContextCapabilityHealth,
+) -> ContextCapability {
+    let capabilities = [ToolCapability::MemoryRead];
+    let available = health == ContextCapabilityHealth::Available;
+    ContextCapability {
+        id: "recall".to_string(),
+        kind: ContextCapabilityKind::Tool,
+        display_name: display_name("recall"),
+        description: "Retrieve bounded untrusted reference data from configured unified recall."
+            .to_string(),
+        actor_policy: actor_policy_for_capabilities(actor, &capabilities),
+        risk_level: risk_level_for_tool("recall", &capabilities),
+        side_effects: side_effects_for_tool("recall", &capabilities),
+        input_schema: Some(agent_tools::recall_parameters_schema()),
+        output_schema: None,
+        resource_uri_template: None,
+        cost_hint: Some(cost_hint_for_tool("recall", &capabilities)),
+        latency_hint: Some(latency_hint_for_tool("recall", &capabilities)),
+        token_hint: token_hint_for_tool("recall"),
+        health,
+        owner_crate: Some(owner_crate_for_tool("recall").to_string()),
+        audit_policy: Some(audit_policy_for_tool("recall", &capabilities).to_string()),
+        default_visible: available,
+        visibility_policy: if available {
+            "default_visible_unified_recall_exception".to_string()
+        } else {
+            "catalog_only_unavailable".to_string()
+        },
+        split_target: split_target_for_tool("recall").map(str::to_string),
+    }
+}
+
+fn context_actor_kind(actor: RuntimeActorKind) -> ContextActorKind {
+    match actor {
+        RuntimeActorKind::Root => ContextActorKind::Root,
+        RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
+        RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
+        RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
+    }
+}
+
+fn actor_policy_for_capabilities(
+    fallback_actor: RuntimeActorKind,
+    capabilities: &[ToolCapability],
+) -> Vec<ContextActorKind> {
+    if capabilities.is_empty() {
+        return vec![context_actor_kind(fallback_actor)];
+    }
+
+    [
+        RuntimeActorKind::Root,
+        RuntimeActorKind::DelegatedExecutor,
+        RuntimeActorKind::DelegatedReviewer,
+        RuntimeActorKind::WardAgent,
+    ]
+    .into_iter()
+    .filter(|actor| actor_allows_all(*actor, capabilities))
+    .map(context_actor_kind)
+    .collect()
+}
+
+fn display_name(tool_name: &str) -> String {
+    tool_name
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
+    match name {
+        "delegate_to_agent" => vec![ToolCapability::AgentDelegate],
+        "connector_invoke" => vec![ToolCapability::ConnectorInvoke],
+        "connector_resource" => vec![ToolCapability::ConnectorResourceRead],
+        "edit" | "edit_file" | "write" | "write_file" => vec![ToolCapability::FileWrite],
+        "glob" | "read" => vec![ToolCapability::FileRead],
+        "goal" => vec![ToolCapability::GoalWrite],
+        "graph_query" => vec![ToolCapability::GraphRead],
+        "handoff_to_agent"
+        | "kill_agent"
+        | "list_session_agents"
+        | "steer_agent"
+        | "wait_agent" => vec![ToolCapability::AgentControl],
+        "ingest" => vec![ToolCapability::IngestWrite],
+        "load_skill" => vec![ToolCapability::SkillLoad],
+        "memory" => vec![ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
+        "recall" => vec![ToolCapability::MemoryRead],
+        "memory_write" => vec![ToolCapability::MemoryWrite],
+        "multimodal_analyze" => vec![ToolCapability::MultimodalAnalyze],
+        "query_resource" => vec![ToolCapability::ConnectorQuery],
+        "respond" => vec![ToolCapability::Respond],
+        "run_procedure" => vec![ToolCapability::ProcedureRun],
+        "shell" => vec![ToolCapability::Shell],
+        "update_plan" => vec![ToolCapability::PlanWrite],
+        "ward" => vec![ToolCapability::WardRead, ToolCapability::WardWrite],
+        _ => Vec::new(),
+    }
+}
+
+fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextSideEffects {
+    if name == "wait_agent" || name == "list_session_agents" {
+        return ContextSideEffects::ReadExternal;
+    }
+    if capabilities.contains(&ToolCapability::Shell) {
+        return ContextSideEffects::Execute;
+    }
+    if capabilities.contains(&ToolCapability::ConnectorInvoke) {
+        return ContextSideEffects::WriteExternal;
+    }
+    if capabilities.contains(&ToolCapability::Respond) {
+        return ContextSideEffects::WriteExternal;
+    }
+    if capabilities.iter().any(|capability| {
+        matches!(
+            capability,
+            ToolCapability::AgentControl
+                | ToolCapability::AgentDelegate
+                | ToolCapability::FileWrite
+                | ToolCapability::GoalWrite
+                | ToolCapability::IngestWrite
+                | ToolCapability::MemoryWrite
+                | ToolCapability::PlanWrite
+                | ToolCapability::WardWrite
+        )
+    }) {
+        return ContextSideEffects::WriteLocal;
+    }
+    if capabilities.is_empty() {
+        ContextSideEffects::None
+    } else {
+        ContextSideEffects::ReadExternal
+    }
+}
+
+fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRiskLevel {
+    if name == "wait_agent" || name == "list_session_agents" {
+        return ContextRiskLevel::Low;
+    }
+    if capabilities.contains(&ToolCapability::Shell) {
+        return ContextRiskLevel::High;
+    }
+    if capabilities.contains(&ToolCapability::ConnectorInvoke) {
+        return ContextRiskLevel::Moderate;
+    }
+    if capabilities.iter().any(|capability| {
+        matches!(
+            capability,
+            ToolCapability::AgentControl
+                | ToolCapability::AgentDelegate
+                | ToolCapability::FileWrite
+                | ToolCapability::IngestWrite
+                | ToolCapability::WardWrite
+        )
+    }) {
+        return ContextRiskLevel::Moderate;
+    }
+    ContextRiskLevel::Low
+}
+
+fn cost_hint_for_tool(_name: &str, capabilities: &[ToolCapability]) -> ContextCostHint {
+    if capabilities.contains(&ToolCapability::MultimodalAnalyze)
+        || capabilities.contains(&ToolCapability::ConnectorQuery)
+        || capabilities.contains(&ToolCapability::ConnectorResourceRead)
+        || capabilities.contains(&ToolCapability::ConnectorInvoke)
+    {
+        ContextCostHint::Moderate
+    } else {
+        ContextCostHint::Cheap
+    }
+}
+
+fn latency_hint_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextLatencyHint {
+    if name == "wait_agent" {
+        return ContextLatencyHint::Background;
+    }
+    if capabilities.contains(&ToolCapability::ConnectorQuery)
+        || capabilities.contains(&ToolCapability::ConnectorResourceRead)
+        || capabilities.contains(&ToolCapability::ConnectorInvoke)
+        || capabilities.contains(&ToolCapability::MultimodalAnalyze)
+    {
+        ContextLatencyHint::Slow
+    } else {
+        ContextLatencyHint::Local
+    }
+}
+
+fn token_hint_for_tool(name: &str) -> Option<u32> {
+    match name {
+        "load_skill" => Some(1200),
+        "memory" | "recall" | "graph_query" | "query_resource" | "connector_resource" => Some(800),
+        "connector_invoke" => Some(300),
+        "shell" | "read" => Some(400),
+        "wait_agent" => Some(120),
+        _ => Some(200),
+    }
+}
+
+fn owner_crate_for_tool(name: &str) -> &'static str {
+    match name {
+        "delegate_to_agent" | "respond" | "run_procedure" => "agent-runtime",
+        "handoff_to_agent"
+        | "kill_agent"
+        | "list_session_agents"
+        | "steer_agent"
+        | "wait_agent" => "gateway-execution",
+        _ => "agent-tools",
+    }
+}
+
+fn audit_policy_for_tool(name: &str, capabilities: &[ToolCapability]) -> &'static str {
+    if name == "wait_agent" {
+        "join_audit"
+    } else if capabilities.contains(&ToolCapability::Shell) {
+        "execution_audit"
+    } else if matches!(
+        side_effects_for_tool(name, capabilities),
+        ContextSideEffects::None | ContextSideEffects::ReadExternal
+    ) {
+        "read_audit"
+    } else {
+        "mutation_audit"
+    }
+}
+
+fn default_visible_for_tool(name: &str, _actor: RuntimeActorKind) -> bool {
+    !matches!(
+        name,
+        "edit" | "write" | "wait_agent" | "memory" | "graph_query" | "query_resource"
+    )
+}
+
+fn visibility_policy_for_tool(name: &str, _actor: RuntimeActorKind) -> &'static str {
+    match name {
+        "wait_agent" => "visible_when_parallel_children_active",
+        "edit" | "write" => "legacy_alias_hidden",
+        "memory" | "graph_query" => "hidden_from_model_use_context_resources",
+        "recall" => "default_visible_unified_recall_exception",
+        "query_resource" => "hidden_from_model_use_connector_split",
+        "memory_write" => "default_visible_memory_write_action",
+        "connector_resource" => "default_visible_connector_resource_read",
+        "connector_invoke" => "default_visible_connector_invoke_action",
+        "load_skill" => "default_visible_bounded_packet",
+        "shell" | "ward" => "default_visible_action_tool",
+        _ => "default_visible",
+    }
+}
+
+fn split_target_for_tool(name: &str) -> Option<&'static str> {
+    match name {
+        "memory" => Some("action:memory_write; resources:memory_recall/context_atoms"),
+        "recall" => Some("resources:memory_recall/context_atoms"),
+        "memory_write" => Some("action:memory_write"),
+        "query_resource" => Some("action:connector_invoke; resources:connector_resource"),
+        "connector_resource" => Some("resources:connector_resource"),
+        "connector_invoke" => Some("action:connector_invoke"),
+        "graph_query" => Some("resources:context_graph_retrieval"),
+        "shell" => Some("actions:shell_execute; resources:command_result_handles"),
+        "ward" => Some("actions:ward_lifecycle; resources:ward_context"),
+        "load_skill" => Some("resources:skill_packet/skill_section_handles"),
+        "wait_agent" => Some("action:parallel_join"),
+        _ => None,
+    }
+}
+
+fn model_hidden_tools_for_actor(_actor: RuntimeActorKind) -> Vec<&'static str> {
+    vec!["memory", "graph_query", "query_resource"]
 }
 
 fn build_runtime_middleware_pipeline(
@@ -279,6 +723,9 @@ fn build_runtime_middleware_pipeline(
                 keep_tool_results: keep_results,
                 min_reclaim: 500,
                 clear_tool_inputs: true,
+                // Loaded skills are behavioral context; keep them resident rather than
+                // replacing them with reload placeholders during context editing.
+                exclude_tools: vec!["load_skill".to_string()],
                 cascade_unload: true,
                 skill_aware_placeholders: true,
                 ..Default::default()
@@ -328,7 +775,7 @@ fn build_runtime_middleware_pipeline(
 /// Encapsulates the complex setup process for creating an executor
 /// with all required components (LLM client, tools, MCP, middleware).
 pub struct ExecutorBuilder {
-    config_dir: PathBuf,
+    vault_dir: PathBuf,
     tool_settings: ToolSettings,
     fact_store: Option<Arc<dyn MemoryFactStore>>,
     connector_provider: Option<Arc<dyn ConnectorResourceProvider>>,
@@ -337,7 +784,7 @@ pub struct ExecutorBuilder {
     actor_kind: RuntimeActorKind,
     subagent_non_streaming: bool,
     /// Trait-routed kg store for the `graph_query` tool.
-    kg_store: Option<Arc<dyn zero_stores::KnowledgeGraphStore>>,
+    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     /// Observer for ward-tool creation events — bumps the curator sidecar's
@@ -346,18 +793,20 @@ pub struct ExecutorBuilder {
     steering_registry: Option<Arc<agent_runtime::SteeringRegistry>>,
     agent_result_bus: Option<Arc<AgentResultBus>>,
     state_service: Option<Arc<StateService<DatabaseManager>>>,
-    conversation_repo: Option<Arc<ConversationRepository>>,
+    messages: Option<Arc<dyn MessageStore>>,
     /// Trait-routed procedure store for the `run_procedure` tool.
-    procedure_store: Option<Arc<dyn zero_stores_traits::ProcedureStore>>,
+    procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
+    memory_recall: Option<Arc<gateway_memory::MemoryRecall>>,
+    mcp_startup_failure_observer: Option<agent_runtime::mcp::McpStartupFailureObserver>,
     extra_initial_state: Option<Vec<(String, serde_json::Value)>>,
     chat_mode: bool,
 }
 
 impl ExecutorBuilder {
     /// Create a new executor builder.
-    pub fn new(config_dir: PathBuf, tool_settings: ToolSettings) -> Self {
+    pub fn new(vault_dir: PathBuf, tool_settings: ToolSettings) -> Self {
         Self {
-            config_dir,
+            vault_dir,
             tool_settings,
             fact_store: None,
             connector_provider: None,
@@ -372,8 +821,10 @@ impl ExecutorBuilder {
             steering_registry: None,
             agent_result_bus: None,
             state_service: None,
-            conversation_repo: None,
+            messages: None,
             procedure_store: None,
+            memory_recall: None,
+            mcp_startup_failure_observer: None,
             extra_initial_state: None,
             chat_mode: false,
         }
@@ -388,13 +839,30 @@ impl ExecutorBuilder {
     /// Set the trait-routed procedure store for the `run_procedure` tool.
     pub fn with_procedure_store(
         mut self,
-        procedure_store: Arc<dyn zero_stores_traits::ProcedureStore>,
+        procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore>,
     ) -> Self {
         self.procedure_store = Some(procedure_store);
         self
     }
 
-    /// Set the connector resource provider for query_resource tool.
+    /// Wire model-visible unified recall for this executor when memory recall
+    /// is available in the gateway composition root.
+    pub fn with_memory_recall(mut self, memory_recall: Arc<gateway_memory::MemoryRecall>) -> Self {
+        self.memory_recall = Some(memory_recall);
+        self
+    }
+
+    /// Persist a safe host-side event if MCP startup or discovery fails. The
+    /// observer receives only a canonical configured ID, never client errors.
+    pub fn with_mcp_startup_failure_observer(
+        mut self,
+        observer: agent_runtime::mcp::McpStartupFailureObserver,
+    ) -> Self {
+        self.mcp_startup_failure_observer = Some(observer);
+        self
+    }
+
+    /// Set the connector resource provider for connector tools.
     pub fn with_connector_provider(mut self, provider: Arc<dyn ConnectorResourceProvider>) -> Self {
         self.connector_provider = Some(provider);
         self
@@ -437,14 +905,14 @@ impl ExecutorBuilder {
         self
     }
 
-    /// Set the model registry for capability lookups and context window resolution.
+    /// Set the fallback-only model metadata registry.
     pub fn with_model_registry(mut self, registry: Arc<ModelRegistry>) -> Self {
         self.model_registry = Some(registry);
         self
     }
 
     /// Set the trait-routed kg store for the `graph_query` tool.
-    pub fn with_kg_store(mut self, store: Arc<dyn zero_stores::KnowledgeGraphStore>) -> Self {
+    pub fn with_kg_store(mut self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) -> Self {
         self.kg_store = Some(store);
         self
     }
@@ -491,9 +959,9 @@ impl ExecutorBuilder {
         self
     }
 
-    /// Set the conversation repo used by `wait_agent` fast-path.
-    pub fn with_conversation_repo(mut self, repo: Arc<ConversationRepository>) -> Self {
-        self.conversation_repo = Some(repo);
+    /// Set the message store used by `wait_agent` fast-path.
+    pub fn with_message_store(mut self, messages: Arc<dyn MessageStore>) -> Self {
+        self.messages = Some(messages);
         self
     }
 
@@ -512,6 +980,53 @@ impl ExecutorBuilder {
         self
     }
 
+    fn has_planner_capability_catalog(&self) -> bool {
+        self.extra_initial_state.as_ref().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|(key, _)| key == agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE)
+        })
+    }
+
+    /// Build a descriptive context capability catalog from the same registry
+    /// construction path used for execution.
+    pub fn build_context_capability_catalog(
+        &self,
+        session_id: Option<String>,
+        agent_id: Option<String>,
+    ) -> ContextCapabilityCatalog {
+        let fs_context: Arc<dyn FileSystemContext> =
+            Arc::new(GatewayFileSystem::new(self.vault_dir.clone()));
+        let registry = self.build_tool_registry(fs_context);
+
+        let mut catalog = build_context_capability_catalog(
+            self.actor_kind,
+            registry.as_ref(),
+            session_id,
+            agent_id,
+        );
+        if actor_allows(self.actor_kind, ToolCapability::MemoryRead)
+            && !catalog
+                .capabilities
+                .iter()
+                .any(|capability| capability.id == "recall")
+        {
+            let health = if self
+                .memory_recall
+                .as_ref()
+                .is_some_and(|recall| recall.provider_scope().is_some())
+            {
+                ContextCapabilityHealth::Available
+            } else {
+                ContextCapabilityHealth::Unavailable
+            };
+            catalog
+                .capabilities
+                .push(recall_catalog_capability(self.actor_kind, health));
+        }
+        catalog
+    }
+
     /// Build an executor for the given agent and provider.
     ///
     /// # Arguments
@@ -520,7 +1035,7 @@ impl ExecutorBuilder {
     /// * `conversation_id` - The conversation ID for this execution
     /// * `session_id` - The session ID for this execution
     /// * `available_agents` - List of available agents (for list_agents tool)
-    /// * `available_skills` - List of available skills (for list_skills tool)
+    /// * `available_skills` - List of available skills (for runtime context/catalog metadata)
     /// * `hook_context` - Optional hook context for initial state
     /// * `mcp_service` - MCP service for starting servers
     /// * `ward_id` - Optional active ward from existing session
@@ -542,7 +1057,8 @@ impl ExecutorBuilder {
             agent.id.clone(),
             provider.id.clone().unwrap_or_else(|| provider.name.clone()),
             agent.model.clone(),
-        );
+        )
+        .with_model_hidden_tools(model_hidden_tools_for_actor(self.actor_kind));
 
         // Add hook context to initial state if present
         if let Some(hook_ctx) = hook_context {
@@ -557,7 +1073,7 @@ impl ExecutorBuilder {
             );
         }
 
-        // Cache available skills for list_skills tool
+        // Cache available skills for runtime context/catalog metadata.
         if !available_skills.is_empty() {
             executor_config = executor_config.with_initial_state(
                 "available_skills",
@@ -612,12 +1128,12 @@ impl ExecutorBuilder {
         }
 
         // Inject multimodal config for the multimodal_analyze tool
-        let settings_service = SettingsService::new_legacy(self.config_dir.clone());
+        let settings_service = SettingsService::from_vault_dir(self.vault_dir.clone());
         if let Ok(settings) = settings_service.load() {
             let mm = &settings.execution.multimodal;
             if let (Some(provider_id), Some(model)) = (&mm.provider_id, &mm.model) {
                 // Resolve the provider to get base_url and api_key
-                let providers_path = self.config_dir.join("config/providers.json");
+                let providers_path = VaultPaths::new(self.vault_dir.clone()).providers();
                 let provider_creds = std::fs::read_to_string(&providers_path)
                     .ok()
                     .and_then(|content| {
@@ -652,6 +1168,22 @@ impl ExecutorBuilder {
         // through the normal tool_error path.
         let thinking_enabled = resolve_thinking_flag(agent.thinking_enabled, &agent.model);
 
+        let mut effective_max_output = agent.max_tokens;
+        if let Some(provider_max) = provider.effective_max_output(&agent.model) {
+            if provider_max > 0 && (effective_max_output as u64) > provider_max {
+                tracing::warn!(
+                    agent = %agent.id,
+                    model = %agent.model,
+                    requested = effective_max_output,
+                    clamped_to = provider_max,
+                    "Clamped max_tokens to provider model config limit"
+                );
+                effective_max_output = provider_max as u32;
+            }
+        }
+
+        let effective_max_input = resolve_effective_max_input(agent, provider);
+
         // Create LLM client using provider config
         let llm_config = LlmConfig::new(
             provider.base_url.clone(),
@@ -660,8 +1192,10 @@ impl ExecutorBuilder {
             provider.id.clone().unwrap_or_else(|| provider.name.clone()),
         )
         .with_temperature(agent.temperature)
-        .with_max_tokens(agent.max_tokens)
+        .with_max_tokens(effective_max_output)
         .with_thinking(thinking_enabled);
+
+        let rig_agent_config = build_rig_agent_config(agent, &llm_config, effective_max_input);
 
         let raw_client: Arc<dyn agent_runtime::LlmClient> = Arc::new(
             OpenAiClient::new(llm_config)
@@ -687,10 +1221,20 @@ impl ExecutorBuilder {
 
         // Create file system context for tools
         let fs_context: Arc<dyn FileSystemContext> =
-            Arc::new(GatewayFileSystem::new(self.config_dir.clone()));
+            Arc::new(GatewayFileSystem::new(self.vault_dir.clone()));
 
-        // Build tool registry
-        let tool_registry = self.build_tool_registry(fs_context);
+        // Build tool registry. The authorization context is constructed from
+        // immutable executor/session inputs, not model-controlled tool state.
+        let recall_authorization = self.memory_recall.as_ref().and_then(|recall| {
+            crate::invoke::unified_recall_adapter::recall_authorization_context(
+                recall,
+                agent.id.clone(),
+                self.actor_kind.as_state_value(),
+                session_id,
+                ward_id,
+            )
+        });
+        let tool_registry = self.build_tool_registry_with_recall(fs_context, recall_authorization);
 
         // Build MCP manager
         let mcp_manager = self.build_mcp_manager(agent, mcp_service).await;
@@ -699,52 +1243,10 @@ impl ExecutorBuilder {
         executor_config.system_instruction = Some(agent.instructions.clone());
         executor_config.conversation_id = Some(conversation_id.to_string());
         executor_config.temperature = agent.temperature;
-        executor_config.max_tokens = agent.max_tokens;
-
-        // Clamp max_tokens to model's actual output limit (prevents API errors)
-        // Priority: provider model config → model registry → no clamping
-        let mut clamped = false;
-
-        // Check provider-level model config (user overrides)
-        if let Some(provider_max) = provider.effective_max_output(&agent.model) {
-            if provider_max > 0 && (executor_config.max_tokens as u64) > provider_max {
-                tracing::warn!(
-                    agent = %agent.id,
-                    model = %agent.model,
-                    requested = executor_config.max_tokens,
-                    clamped_to = provider_max,
-                    "Clamped max_tokens to provider model config limit"
-                );
-                executor_config.max_tokens = provider_max as u32;
-                clamped = true;
-            }
-        }
-
-        // Check model registry (bundled + local overrides)
-        if !clamped {
-            if let Some(ref registry) = self.model_registry {
-                let model_output = registry.context_window(&agent.model).resolved_output();
-                if model_output > 0 && (executor_config.max_tokens as u64) > model_output {
-                    tracing::warn!(
-                        agent = %agent.id,
-                        model = %agent.model,
-                        requested = executor_config.max_tokens,
-                        clamped_to = model_output,
-                        "Clamped max_tokens to model registry output limit"
-                    );
-                    executor_config.max_tokens = model_output as u32;
-                }
-            }
-        }
-
-        // Resolve context window: provider override > model registry > default 8192
-        executor_config.context_window_tokens = provider.context_window.unwrap_or_else(|| {
-            self.model_registry
-                .as_ref()
-                .map(|r| r.context_window(&agent.model).input)
-                .unwrap_or(8192)
-        });
+        executor_config.max_tokens = effective_max_output;
+        executor_config.context_window_tokens = effective_max_input;
         executor_config.mcps = agent.mcps.clone();
+        executor_config.rig_agent_config = Some(rig_agent_config);
 
         // Create middleware pipeline after context_window_tokens is resolved.
         let middleware_pipeline = build_runtime_middleware_pipeline(
@@ -809,7 +1311,7 @@ impl ExecutorBuilder {
         // Configure tool result offload settings
         executor_config.offload_large_results = self.tool_settings.offload_large_results;
         executor_config.offload_threshold_chars = self.tool_settings.offload_threshold_tokens * 4;
-        executor_config.offload_dir = Some(self.config_dir.join("temp"));
+        executor_config.offload_dir = Some(self.vault_dir.join("temp"));
 
         AgentExecutor::new(
             executor_config,
@@ -821,8 +1323,17 @@ impl ExecutorBuilder {
         .map_err(|e| format!("Failed to create executor: {}", e))
     }
 
-    /// Build the tool registry with core and optional tools.
+    /// Build a registry without session-scoped model recall (catalog/tests).
     fn build_tool_registry(&self, fs_context: Arc<dyn FileSystemContext>) -> Arc<ToolRegistry> {
+        self.build_tool_registry_with_recall(fs_context, None)
+    }
+
+    /// Build the tool registry with core and optional tools.
+    fn build_tool_registry_with_recall(
+        &self,
+        fs_context: Arc<dyn FileSystemContext>,
+        recall_authorization: Option<RecallAuthorizationContext>,
+    ) -> Arc<ToolRegistry> {
         let mut tool_registry = ToolRegistry::new();
         let actor = self.actor_kind;
 
@@ -830,13 +1341,18 @@ impl ExecutorBuilder {
             registry: &mut ToolRegistry,
             actor: RuntimeActorKind,
             capabilities: &[ToolCapability],
-            tool: Arc<dyn zero_core::Tool>,
+            tool: Arc<dyn agent_primitives::Tool>,
         ) {
             if actor_allows_all(actor, capabilities) {
                 registry.register(tool);
             }
         }
 
+        let unified_recall_binding = self
+            .memory_recall
+            .clone()
+            .zip(recall_authorization)
+            .filter(|(recall, _)| recall.provider_scope().is_some());
         register_if_allowed(
             &mut tool_registry,
             actor,
@@ -876,20 +1392,8 @@ impl ExecutorBuilder {
         register_if_allowed(
             &mut tool_registry,
             actor,
-            &[ToolCapability::SkillList],
-            Arc::new(ListSkillsTool::new(fs_context.clone())),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::McpList],
-            Arc::new(ListMcpsTool::new(fs_context.clone())),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
             &[ToolCapability::FileRead],
-            Arc::new(GrepTool),
+            Arc::new(ReadTool::new(fs_context.clone())),
         );
         register_if_allowed(
             &mut tool_registry,
@@ -905,19 +1409,49 @@ impl ExecutorBuilder {
             &mut tool_registry,
             actor,
             &[ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
-            Arc::new(MemoryTool::new(fs_context.clone(), self.fact_store.clone())),
+            Arc::new({
+                let tool = MemoryTool::new(fs_context.clone(), self.fact_store.clone())
+                    .with_optional_evidence_intake(self.ingestion_adapter.clone());
+                match &unified_recall_binding {
+                    Some((recall, authorization)) => tool.with_unified_recall(
+                        crate::invoke::unified_recall_adapter::unified_recall_binding_with_goals(
+                            recall.clone(),
+                            self.goal_adapter.clone(),
+                            authorization.clone(),
+                        ),
+                    ),
+                    None => tool,
+                }
+            }),
+        );
+        if let Some((recall, authorization)) = unified_recall_binding {
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::MemoryRead],
+                Arc::new(
+                    crate::invoke::unified_recall_adapter::unified_recall_tool_with_goals(
+                        recall,
+                        self.goal_adapter.clone(),
+                        authorization,
+                    ),
+                ),
+            );
+        }
+        register_if_allowed(
+            &mut tool_registry,
+            actor,
+            &[ToolCapability::MemoryWrite],
+            Arc::new(
+                agent_tools::MemoryWriteTool::new(fs_context.clone(), self.fact_store.clone())
+                    .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+            ),
         );
         register_if_allowed(
             &mut tool_registry,
             actor,
             &[ToolCapability::PlanWrite],
             Arc::new(UpdatePlanTool::new()),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::SessionTitleWrite],
-            Arc::new(SetSessionTitleTool::new()),
         );
         register_if_allowed(
             &mut tool_registry,
@@ -931,6 +1465,9 @@ impl ExecutorBuilder {
             &[ToolCapability::AgentDelegate],
             Arc::new(DelegateTool::new()),
         );
+        if self.has_planner_capability_catalog() {
+            tool_registry.register(Arc::new(agent_runtime::tools::CapabilityCatalogTool::new()));
+        }
         register_if_allowed(
             &mut tool_registry,
             actor,
@@ -971,15 +1508,13 @@ impl ExecutorBuilder {
                 tool_registry.register(Arc::new(crate::tools::SteerAgentTool::new(sr.clone())));
             }
 
-            if let (Some(ref bus), Some(ref svc), Some(ref repo)) = (
-                &self.agent_result_bus,
-                &self.state_service,
-                &self.conversation_repo,
-            ) {
+            if let (Some(ref bus), Some(ref svc), Some(ref messages)) =
+                (&self.agent_result_bus, &self.state_service, &self.messages)
+            {
                 tool_registry.register(Arc::new(crate::tools::WaitAgentTool::new(
                     bus.clone(),
                     svc.clone(),
-                    repo.clone(),
+                    messages.clone(),
                 )));
                 tool_registry.register(Arc::new(crate::tools::KillAgentTool::new(bus.clone())));
             }
@@ -1014,7 +1549,7 @@ impl ExecutorBuilder {
                 &mut tool_registry,
                 actor,
                 &[ToolCapability::FileRead],
-                Arc::new(ReadTool),
+                Arc::new(ReadTool::new(fs_context.clone())),
             );
             register_if_allowed(
                 &mut tool_registry,
@@ -1029,7 +1564,25 @@ impl ExecutorBuilder {
                 &mut tool_registry,
                 actor,
                 &[ToolCapability::ConnectorQuery],
-                Arc::new(QueryResourceTool::new(provider.clone())),
+                Arc::new(
+                    QueryResourceTool::new(provider.clone())
+                        .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+                ),
+            );
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::ConnectorResourceRead],
+                Arc::new(
+                    ConnectorResourceTool::new(provider.clone())
+                        .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+                ),
+            );
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::ConnectorInvoke],
+                Arc::new(ConnectorInvokeTool::new(provider.clone())),
             );
         }
 
@@ -1038,22 +1591,67 @@ impl ExecutorBuilder {
 
     /// Build the MCP manager and start configured servers.
     async fn build_mcp_manager(&self, agent: &Agent, mcp_service: &McpService) -> Arc<McpManager> {
-        let mcp_manager = Arc::new(McpManager::new());
+        let mut mcp_manager = McpManager::new();
+        if let Some(observer) = self.mcp_startup_failure_observer.clone() {
+            mcp_manager = mcp_manager.with_startup_failure_observer(observer);
+        }
+        let mcp_manager = Arc::new(mcp_manager);
 
         // Load and start MCP servers configured for this agent
         if !agent.mcps.is_empty() {
-            let mcp_configs = mcp_service.get_multiple(&agent.mcps);
+            let mcp_configs = mcp_service.get_multiple_for_runtime(&agent.mcps);
             for mcp_config in mcp_configs {
                 let server_id = mcp_config.id();
                 tracing::info!("Starting MCP server: {}", server_id);
-                if let Err(e) = mcp_manager.start_server(mcp_config).await {
-                    tracing::warn!("Failed to start MCP server {}: {}", server_id, e);
+                if mcp_manager.start_server(mcp_config).await.is_err() {
+                    // Fail closed for this executor: no tool registration and
+                    // no retry. Keep provider/error details out of logs.
+                    tracing::warn!(
+                        mcp_id = %server_id,
+                        rejection_code = "startup_failed",
+                        "MCP server startup failed; continuing without its tools"
+                    );
+                    mcp_manager.notify_startup_failure(&server_id);
                 }
             }
         }
 
         mcp_manager
     }
+}
+
+/// Build a host-side audit observer for MCP startup/discovery failures. The
+/// runtime boundary supplies a canonical ID only, so config errors, commands,
+/// URLs, and server stderr cannot enter execution logs.
+pub(crate) fn mcp_startup_failure_observer(
+    log_service: Arc<LogService<DatabaseManager>>,
+    execution_id: impl Into<String>,
+    session_id: impl Into<String>,
+    agent_id: impl Into<String>,
+) -> agent_runtime::mcp::McpStartupFailureObserver {
+    let execution_id = execution_id.into();
+    let session_id = session_id.into();
+    let agent_id = agent_id.into();
+    Arc::new(move |mcp_id| {
+        let entry = ExecutionLog::new(
+            &execution_id,
+            &session_id,
+            &agent_id,
+            LogLevel::Info,
+            LogCategory::Intent,
+            "MCP capability startup failed",
+        )
+        .with_metadata(serde_json::json!({
+            "origin": "mcp_startup",
+            "effective_mcps": [],
+            "startup_failed_mcps": [mcp_id],
+            "unresolved_count": 1,
+            "rejection_codes": ["startup_failed"],
+        }));
+        if log_service.log(entry).is_err() {
+            tracing::debug!(mcp_id, "Failed to persist MCP startup audit event");
+        }
+    })
 }
 
 /// Helper to collect available agents summary for executor state.
@@ -1094,12 +1692,57 @@ pub async fn collect_skills_summary(skill_service: &SkillService) -> Vec<serde_j
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
     use agent_runtime::llm::{ChatResponse, LlmError, StreamCallback};
+    use agent_tools::RecallVisibilityScope;
     use async_trait::async_trait;
     use serde_json::Value;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
 
     struct StubSummaryClient;
+
+    struct MockConnectorProvider;
+
+    #[async_trait]
+    impl ConnectorResourceProvider for MockConnectorProvider {
+        async fn list_connectors(&self) -> std::result::Result<Vec<ConnectorInfo>, String> {
+            Ok(vec![ConnectorInfo {
+                id: "signal".to_string(),
+                name: "Signal Bridge".to_string(),
+                resources: vec![ResourceInfo {
+                    name: "aliases".to_string(),
+                    uri: "http://localhost/aliases".to_string(),
+                    method: "GET".to_string(),
+                    description: Some("List aliases".to_string()),
+                }],
+                capabilities: vec![CapabilityInfo {
+                    name: "send_message".to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: Some("Send message".to_string()),
+                }],
+            }])
+        }
+
+        async fn query_resource(
+            &self,
+            _connector_id: &str,
+            _resource_name: &str,
+            _params: Option<HashMap<String, String>>,
+        ) -> std::result::Result<Value, String> {
+            Ok(serde_json::json!([]))
+        }
+
+        async fn invoke_capability(
+            &self,
+            _connector_id: &str,
+            _capability: &str,
+            _payload: Value,
+            _session_id: &str,
+            _agent_id: &str,
+        ) -> std::result::Result<Value, String> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
 
     #[async_trait]
     impl LlmClient for StubSummaryClient {
@@ -1159,6 +1802,412 @@ mod tests {
         assert_eq!(pipeline.pre_processor_names(), vec!["plan_block"]);
     }
 
+    fn sample_agent() -> Agent {
+        Agent {
+            id: "agent-1".to_string(),
+            name: "code-agent".to_string(),
+            display_name: "Code Agent".to_string(),
+            description: "Writes code".to_string(),
+            agent_type: Some("specialist".to_string()),
+            provider_id: "provider-1".to_string(),
+            model: "gpt-test".to_string(),
+            temperature: 0.25,
+            max_input_tokens: 64_000,
+            max_input_tokens_explicit: true,
+            max_tokens: 4_096,
+            thinking_enabled: true,
+            voice_recording_enabled: false,
+            system_instruction: None,
+            instructions: "Follow the project rules.".to_string(),
+            mcps: vec!["filesystem".to_string()],
+            skills: vec!["rust".to_string()],
+            middleware: None,
+            created_at: None,
+        }
+    }
+
+    fn sample_provider() -> Provider {
+        Provider {
+            id: Some("provider-1".to_string()),
+            name: "Provider One".to_string(),
+            description: "OpenAI-compatible test provider".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "http://localhost:9999/v1".to_string(),
+            models: vec!["gpt-test".to_string()],
+            embedding_models: None,
+            embedding_dimensions: None,
+            verified: None,
+            is_default: true,
+            created_at: None,
+            max_concurrent_requests: None,
+            context_window: Some(32_000),
+            default_model: Some("gpt-test".to_string()),
+            rate_limits: None,
+            model_configs: Some(HashMap::from([(
+                "gpt-test".to_string(),
+                gateway_services::providers::ModelConfig {
+                    capabilities: gateway_services::models::ModelCapabilities::default(),
+                    max_input: Some(24_576),
+                    max_output: Some(2_048),
+                    source: "user".to_string(),
+                },
+            )])),
+        }
+    }
+
+    #[tokio::test]
+    async fn root_executor_uses_the_effective_active_ward_as_tool_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("financial-analysis"),
+            )
+            .await
+            .expect("executor build");
+
+        assert_eq!(
+            executor.config().initial_state.get("ward_id"),
+            Some(&serde_json::Value::String("financial-analysis".to_string()))
+        );
+    }
+
+    #[test]
+    fn effective_max_input_uses_provider_limit_for_legacy_default() {
+        let mut agent = sample_agent();
+        agent.max_input_tokens = DEFAULT_MAX_INPUT_TOKENS;
+        agent.max_input_tokens_explicit = false;
+        let provider = sample_provider();
+
+        assert_eq!(resolve_effective_max_input(&agent, &provider), 24_576);
+    }
+
+    #[test]
+    fn effective_max_input_keeps_explicit_agent_limit() {
+        let mut agent = sample_agent();
+        agent.max_input_tokens = 64_000;
+        agent.max_input_tokens_explicit = true;
+        let provider = sample_provider();
+
+        assert_eq!(resolve_effective_max_input(&agent, &provider), 64_000);
+    }
+
+    #[test]
+    fn effective_max_input_keeps_explicit_default_value() {
+        let mut agent = sample_agent();
+        agent.max_input_tokens = DEFAULT_MAX_INPUT_TOKENS;
+        agent.max_input_tokens_explicit = true;
+        let provider = sample_provider();
+
+        assert_eq!(
+            resolve_effective_max_input(&agent, &provider),
+            DEFAULT_MAX_INPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn rig_agent_config_preserves_gateway_agent_and_model_settings() {
+        let agent = sample_agent();
+        let llm = LlmConfig::new(
+            "https://llm.local/v1".to_string(),
+            "sk-test".to_string(),
+            agent.model.clone(),
+            agent.provider_id.clone(),
+        )
+        .with_temperature(agent.temperature)
+        .with_max_tokens(agent.max_tokens)
+        .with_thinking(agent.thinking_enabled)
+        .with_provider_params(serde_json::json!({"parallel_tool_calls": false}));
+
+        let mapped = build_rig_agent_config(&agent, &llm, agent.max_input_tokens);
+
+        assert_eq!(mapped.agent_id, "agent-1");
+        assert_eq!(mapped.name, "Code Agent");
+        assert_eq!(mapped.description, "Writes code");
+        assert_eq!(mapped.instructions, "Follow the project rules.");
+        assert_eq!(mapped.model.provider_id, "provider-1");
+        assert_eq!(mapped.model.base_url, "https://llm.local/v1");
+        assert_eq!(mapped.model.api_key, "sk-test");
+        assert_eq!(mapped.model.model, "gpt-test");
+        assert_eq!(mapped.model.temperature, 0.25);
+        assert_eq!(mapped.model.max_tokens, 4_096);
+        assert_eq!(mapped.model.context_window_tokens, 64_000);
+        assert_eq!(
+            mapped.model.completion_additional_params(),
+            Ok(Some(serde_json::json!({
+                "parallel_tool_calls": false,
+                "thinking": {"type": "enabled"}
+            })))
+        );
+    }
+
+    #[tokio::test]
+    async fn select_engine_defaults_to_legacy_and_routes_to_rig_when_enabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.max_input_tokens = DEFAULT_MAX_INPUT_TOKENS;
+        agent.max_input_tokens_explicit = false;
+        agent.max_tokens = 4_096;
+        agent.mcps.clear(); // no MCP → clears the Rig path's MCP safety gate
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        async fn build(
+            dir: &tempfile::TempDir,
+            agent: &Agent,
+            provider: &Provider,
+            mcp_service: &McpService,
+        ) -> AgentExecutor {
+            ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+                .build(agent, provider, "c", "s", &[], &[], None, mcp_service, None)
+                .await
+                .expect("executor build")
+        }
+
+        // Default: legacy executor.
+        let legacy = build(&dir, &agent, &provider, &mcp_service).await;
+        assert_eq!(
+            select_engine_with(legacy, false).engine_name(),
+            "agent-executor"
+        );
+
+        // ZBOT_ENGINE=rig + no MCP + rig_agent_config present → RigAgentEngine.
+        let rig = build(&dir, &agent, &provider, &mcp_service).await;
+        assert_eq!(select_engine_with(rig, true).engine_name(), "rig");
+    }
+
+    #[tokio::test]
+    async fn select_engine_falls_back_when_mcp_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps = vec!["filesystem".to_string()]; // MCP configured → safety gate fires
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &provider,
+                "c",
+                "s",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        // Rig requested but MCP present → must fall back to legacy (no orphan).
+        assert_eq!(
+            select_engine_with(executor, true).engine_name(),
+            "agent-executor"
+        );
+    }
+
+    #[tokio::test]
+    async fn builder_attaches_rig_agent_config_from_production_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.max_input_tokens = DEFAULT_MAX_INPUT_TOKENS;
+        agent.max_input_tokens_explicit = false;
+        agent.max_tokens = 4_096;
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        let rig = executor
+            .config()
+            .rig_agent_config
+            .as_ref()
+            .expect("rig config should be attached");
+        assert_eq!(rig.agent_id, "agent-1");
+        assert_eq!(rig.name, "Code Agent");
+        assert_eq!(rig.instructions, "Follow the project rules.");
+        assert_eq!(rig.model.provider_id, "provider-1");
+        assert_eq!(rig.model.base_url, "http://localhost:9999/v1");
+        assert_eq!(rig.model.api_key, "sk-test");
+        assert_eq!(rig.model.model, "gpt-test");
+        assert_eq!(rig.model.temperature, 0.25);
+        assert_eq!(rig.model.max_tokens, 2_048);
+        assert_eq!(rig.model.context_window_tokens, 24_576);
+        assert!(rig.model.thinking_enabled);
+    }
+
+    #[tokio::test]
+    async fn builder_hides_broad_context_pull_tools_from_model_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        assert!(executor.tool_registry().contains("memory"));
+        assert!(executor.tool_registry().contains("memory_write"));
+        assert!(executor.config().model_hidden_tools.contains("memory"));
+        assert!(executor.config().model_hidden_tools.contains("graph_query"));
+        assert!(executor
+            .config()
+            .model_hidden_tools
+            .contains("query_resource"));
+        let visible_names = executor
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(!visible_names.contains("memory"));
+        assert!(visible_names.contains("memory_write"));
+        assert!(visible_names.contains("shell"));
+        assert!(visible_names.contains("ward"));
+    }
+
+    #[tokio::test]
+    async fn builder_exposes_narrow_recall_when_memory_recall_is_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+        let mut recall = gateway_memory::MemoryRecall::new(
+            None,
+            Arc::new(gateway_memory::RecallConfig::default()),
+        );
+        recall.set_provider_scope(gateway_memory::RecallProviderScope::new(
+            "tenant-a".to_string(),
+            true,
+            false,
+        ));
+        let recall = Arc::new(recall);
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_memory_recall(recall)
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        let visible_names = executor
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(visible_names.contains("recall"));
+        assert!(!visible_names.contains("memory"));
+        assert!(!visible_names.contains("graph_query"));
+        assert!(!visible_names.contains("query_resource"));
+    }
+
+    #[tokio::test]
+    async fn builder_exposes_connector_split_and_hides_query_resource_from_model_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+        let provider = sample_provider();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_connector_provider(Arc::new(MockConnectorProvider))
+            .build(
+                &agent,
+                &provider,
+                "conversation-1",
+                "session-1",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                None,
+            )
+            .await
+            .expect("executor build");
+
+        assert!(executor.tool_registry().contains("query_resource"));
+        assert!(executor.tool_registry().contains("connector_resource"));
+        assert!(executor.tool_registry().contains("connector_invoke"));
+
+        let visible_names = executor
+            .model_visible_tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(!visible_names.contains("query_resource"));
+        assert!(visible_names.contains("connector_resource"));
+        assert!(visible_names.contains("connector_invoke"));
+    }
+
     fn registry_names(actor_kind: RuntimeActorKind) -> BTreeSet<String> {
         let dir = tempfile::tempdir().expect("tempdir");
         let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
@@ -1169,6 +2218,88 @@ mod tests {
             .iter()
             .map(|tool| tool.name().to_string())
             .collect()
+    }
+
+    #[test]
+    fn session_scoped_registry_exposes_recall_but_keeps_memory_hidden() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let mut recall = gateway_memory::MemoryRecall::new(
+            None,
+            Arc::new(gateway_memory::RecallConfig::default()),
+        );
+        recall.set_provider_scope(gateway_memory::RecallProviderScope::new(
+            "tenant-a".to_string(),
+            true,
+            false,
+        ));
+        let recall = Arc::new(recall);
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_memory_recall(recall)
+            .build_tool_registry_with_recall(
+                fs_context,
+                Some(RecallAuthorizationContext {
+                    user_id: "default".to_string(),
+                    agent_id: "root".to_string(),
+                    actor_kind: "root".to_string(),
+                    session_id: Some("sess-a".to_string()),
+                    ward_id: Some("ward-a".to_string()),
+                    visibility: RecallVisibilityScope {
+                        tenant_id: None,
+                        workspace_id: None,
+                        allowed_ward_ids: vec!["ward-a".to_string()],
+                        allowed_session_ids: vec!["sess-a".to_string()],
+                        allowed_global_sources: Vec::new(),
+                    },
+                }),
+            );
+        assert!(registry.contains("recall"));
+        assert!(registry.contains("memory"));
+    }
+
+    #[test]
+    fn recall_catalog_is_available_only_when_the_adapter_is_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let unavailable = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build_context_capability_catalog(
+                Some("session-1".to_string()),
+                Some("root".to_string()),
+            );
+        let unavailable_recall = catalog_capability(&unavailable, "recall");
+        assert_eq!(
+            unavailable_recall.health,
+            ContextCapabilityHealth::Unavailable
+        );
+        assert!(!unavailable_recall.default_visible);
+        assert_eq!(
+            unavailable_recall.visibility_policy,
+            "catalog_only_unavailable"
+        );
+        assert!(unavailable_recall.input_schema.is_some());
+
+        let mut recall = gateway_memory::MemoryRecall::new(
+            None,
+            Arc::new(gateway_memory::RecallConfig::default()),
+        );
+        recall.set_provider_scope(gateway_memory::RecallProviderScope::new(
+            "tenant-a".to_string(),
+            true,
+            false,
+        ));
+        let recall = Arc::new(recall);
+        let available = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_memory_recall(recall)
+            .build_context_capability_catalog(
+                Some("session-1".to_string()),
+                Some("root".to_string()),
+            );
+        let available_recall = catalog_capability(&available, "recall");
+        assert_eq!(available_recall.health, ContextCapabilityHealth::Available);
+        assert!(available_recall.default_visible);
+        assert_eq!(
+            available_recall.visibility_policy,
+            "default_visible_unified_recall_exception"
+        );
     }
 
     fn registry_names_with_agent_control_deps(actor_kind: RuntimeActorKind) -> BTreeSet<String> {
@@ -1189,6 +2320,82 @@ mod tests {
             .collect()
     }
 
+    fn catalog_for_actor(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .build_tool_registry(fs_context);
+
+        build_context_capability_catalog(
+            actor_kind,
+            registry.as_ref(),
+            Some("session-1".to_string()),
+            Some("agent-1".to_string()),
+        )
+    }
+
+    fn catalog_for_actor_with_connector(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .with_connector_provider(Arc::new(MockConnectorProvider))
+            .build_tool_registry(fs_context);
+
+        build_context_capability_catalog(
+            actor_kind,
+            registry.as_ref(),
+            Some("session-1".to_string()),
+            Some("agent-1".to_string()),
+        )
+    }
+
+    fn catalog_for_actor_with_join_deps(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("ensure vault dirs");
+        let db = Arc::new(DatabaseManager::new(paths.clone()).expect("db init"));
+        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(
+            zbot_conversation::open_conversation_pool(&paths.conversations_db())
+                .expect("conversation pool"),
+        ));
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .with_agent_result_bus(Arc::new(AgentResultBus::new()))
+            .with_state_service(Arc::new(StateService::new(db.clone())))
+            .with_message_store(messages)
+            .build_tool_registry(fs_context);
+
+        build_context_capability_catalog(
+            actor_kind,
+            registry.as_ref(),
+            Some("session-1".to_string()),
+            Some("agent-1".to_string()),
+        )
+    }
+
+    fn catalog_ids(catalog: &ContextCapabilityCatalog) -> BTreeSet<String> {
+        catalog
+            .capabilities
+            .iter()
+            .map(|capability| capability.id.clone())
+            .collect()
+    }
+
+    fn catalog_capability<'a>(
+        catalog: &'a ContextCapabilityCatalog,
+        id: &str,
+    ) -> &'a ContextCapability {
+        catalog
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == id)
+            .unwrap_or_else(|| panic!("expected catalog capability {id}"))
+    }
+
     fn assert_has(names: &BTreeSet<String>, expected: &[&str]) {
         for name in expected {
             assert!(names.contains(*name), "expected tool {name}");
@@ -1202,6 +2409,131 @@ mod tests {
     }
 
     #[test]
+    fn root_context_catalog_reflects_current_actor_policy() {
+        let catalog = catalog_for_actor(RuntimeActorKind::Root);
+        let ids = catalog_ids(&catalog);
+
+        assert_eq!(catalog.actor_kind, ContextActorKind::Root);
+        assert_has(
+            &ids,
+            &[
+                "shell",
+                "memory",
+                "memory_write",
+                "ward",
+                "respond",
+                "delegate_to_agent",
+            ],
+        );
+        assert_missing(
+            &ids,
+            &[
+                "write_file",
+                "edit_file",
+                "load_skill",
+                "list_mcps",
+                "set_session_title",
+            ],
+        );
+
+        let shell = catalog_capability(&catalog, "shell");
+        assert_eq!(shell.kind, ContextCapabilityKind::Tool);
+        assert_eq!(shell.side_effects, ContextSideEffects::Execute);
+        assert_eq!(shell.risk_level, ContextRiskLevel::High);
+        assert_eq!(shell.owner_crate.as_deref(), Some("agent-tools"));
+        assert!(shell.input_schema.is_some());
+        assert!(shell.actor_policy.contains(&ContextActorKind::Root));
+        assert!(shell
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedExecutor));
+        assert!(shell.actor_policy.contains(&ContextActorKind::WardAgent));
+        assert!(!shell
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedReviewer));
+        assert!(shell.default_visible);
+        assert_eq!(
+            shell.split_target.as_deref(),
+            Some("actions:shell_execute; resources:command_result_handles")
+        );
+    }
+
+    #[test]
+    fn delegated_reviewer_catalog_is_read_only_and_review_safe() {
+        let catalog = catalog_for_actor(RuntimeActorKind::DelegatedReviewer);
+        let ids = catalog_ids(&catalog);
+
+        assert_eq!(catalog.actor_kind, ContextActorKind::DelegatedReviewer);
+        assert_has(&ids, &["read", "glob", "respond", "load_skill"]);
+        assert_missing(
+            &ids,
+            &[
+                "grep",
+                "shell",
+                "write_file",
+                "edit_file",
+                "ward",
+                "memory",
+                "memory_write",
+                "delegate_to_agent",
+                "wait_agent",
+                "set_session_title",
+                "list_skills",
+                "list_mcps",
+            ],
+        );
+        assert_eq!(
+            catalog.capabilities.len(),
+            ids.len(),
+            "catalog de-duplicates duplicate registry entries"
+        );
+
+        let read = catalog_capability(&catalog, "read");
+        assert_eq!(read.side_effects, ContextSideEffects::ReadExternal);
+        assert!(read
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedReviewer));
+    }
+
+    #[test]
+    fn wait_agent_catalog_metadata_marks_parallel_join_action() {
+        let root_catalog = catalog_for_actor_with_join_deps(RuntimeActorKind::Root);
+        let wait_agent = catalog_capability(&root_catalog, "wait_agent");
+
+        assert_eq!(wait_agent.kind, ContextCapabilityKind::Tool);
+        assert_eq!(wait_agent.side_effects, ContextSideEffects::ReadExternal);
+        assert_eq!(wait_agent.risk_level, ContextRiskLevel::Low);
+        assert_eq!(
+            wait_agent.latency_hint,
+            Some(ContextLatencyHint::Background)
+        );
+        assert_eq!(wait_agent.owner_crate.as_deref(), Some("gateway-execution"));
+        assert_eq!(wait_agent.audit_policy.as_deref(), Some("join_audit"));
+        assert!(!wait_agent.default_visible);
+        assert_eq!(
+            wait_agent.visibility_policy,
+            "visible_when_parallel_children_active"
+        );
+        assert_eq!(
+            wait_agent.split_target.as_deref(),
+            Some("action:parallel_join")
+        );
+        assert!(wait_agent.actor_policy.contains(&ContextActorKind::Root));
+        assert!(wait_agent
+            .actor_policy
+            .contains(&ContextActorKind::WardAgent));
+        assert!(!wait_agent
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedExecutor));
+        assert!(!wait_agent
+            .actor_policy
+            .contains(&ContextActorKind::DelegatedReviewer));
+
+        let executor_catalog =
+            catalog_for_actor_with_join_deps(RuntimeActorKind::DelegatedExecutor);
+        assert_missing(&catalog_ids(&executor_catalog), &["wait_agent"]);
+    }
+
+    #[test]
     fn delegated_executor_keeps_implementation_tools_without_orchestration() {
         let names = registry_names(RuntimeActorKind::DelegatedExecutor);
 
@@ -1211,24 +2543,26 @@ mod tests {
                 "shell",
                 "write_file",
                 "edit_file",
-                "grep",
+                "read",
                 "ward",
                 "memory",
+                "memory_write",
                 "respond",
                 "load_skill",
-                "list_skills",
-                "list_mcps",
             ],
         );
         assert_missing(
             &names,
             &[
                 "delegate_to_agent",
+                "grep",
                 "wait_agent",
                 "kill_agent",
                 "steer_agent",
                 "update_plan",
                 "set_session_title",
+                "list_skills",
+                "list_mcps",
             ],
         );
     }
@@ -1237,32 +2571,25 @@ mod tests {
     fn delegated_reviewer_is_read_only_and_non_orchestrating() {
         let names = registry_names(RuntimeActorKind::DelegatedReviewer);
 
-        assert_has(
-            &names,
-            &[
-                "read",
-                "glob",
-                "grep",
-                "respond",
-                "load_skill",
-                "list_skills",
-                "list_mcps",
-            ],
-        );
+        assert_has(&names, &["read", "glob", "respond", "load_skill"]);
         assert_missing(
             &names,
             &[
+                "grep",
                 "shell",
                 "write_file",
                 "edit_file",
                 "ward",
                 "memory",
+                "memory_write",
                 "delegate_to_agent",
                 "wait_agent",
                 "kill_agent",
                 "steer_agent",
                 "update_plan",
                 "set_session_title",
+                "list_skills",
+                "list_mcps",
             ],
         );
     }
@@ -1276,10 +2603,10 @@ mod tests {
             &[
                 "shell",
                 "memory",
+                "memory_write",
                 "ward",
                 "update_plan",
-                "set_session_title",
-                "grep",
+                "read",
                 "respond",
                 "delegate_to_agent",
             ],
@@ -1289,9 +2616,11 @@ mod tests {
             &[
                 "write_file",
                 "edit_file",
+                "grep",
                 "load_skill",
                 "list_skills",
                 "list_mcps",
+                "set_session_title",
             ],
         );
     }
@@ -1308,17 +2637,126 @@ mod tests {
                 "edit_file",
                 "read",
                 "glob",
-                "grep",
                 "ward",
                 "memory",
+                "memory_write",
                 "update_plan",
-                "set_session_title",
                 "respond",
                 "delegate_to_agent",
                 "load_skill",
-                "list_skills",
-                "list_mcps",
             ],
+        );
+        assert_missing(
+            &names,
+            &["grep", "set_session_title", "list_skills", "list_mcps"],
+        );
+    }
+
+    #[test]
+    fn broad_tools_expose_split_target_metadata() {
+        let catalog = catalog_for_actor(RuntimeActorKind::Root);
+        let name = "memory";
+        let capability = catalog_capability(&catalog, name);
+        assert!(
+            !capability.default_visible,
+            "{name} should move behind resource/context packet lanes"
+        );
+        assert!(
+            capability.split_target.is_some(),
+            "{name} must name its split target"
+        );
+        assert_eq!(
+            capability.visibility_policy,
+            "hidden_from_model_use_context_resources"
+        );
+
+        let memory_write = catalog_capability(&catalog, "memory_write");
+        assert!(memory_write.default_visible);
+        assert_eq!(
+            memory_write.visibility_policy,
+            "default_visible_memory_write_action"
+        );
+        assert_eq!(
+            memory_write.split_target.as_deref(),
+            Some("action:memory_write")
+        );
+
+        let name = "graph_query";
+        assert!(
+            !default_visible_for_tool(name, RuntimeActorKind::Root),
+            "{name} should move behind resource/context packet lanes"
+        );
+        assert_eq!(
+            visibility_policy_for_tool(name, RuntimeActorKind::Root),
+            "hidden_from_model_use_context_resources"
+        );
+        assert!(split_target_for_tool(name).is_some());
+
+        assert!(!default_visible_for_tool(
+            "query_resource",
+            RuntimeActorKind::Root
+        ));
+        assert_eq!(
+            visibility_policy_for_tool("query_resource", RuntimeActorKind::Root),
+            "hidden_from_model_use_connector_split"
+        );
+        assert!(split_target_for_tool("query_resource").is_some());
+
+        let connector_catalog = catalog_for_actor_with_connector(RuntimeActorKind::Root);
+        let query_resource = catalog_capability(&connector_catalog, "query_resource");
+        assert!(!query_resource.default_visible);
+        assert_eq!(
+            query_resource.visibility_policy,
+            "hidden_from_model_use_connector_split"
+        );
+        assert_eq!(
+            query_resource.split_target.as_deref(),
+            Some("action:connector_invoke; resources:connector_resource")
+        );
+        let connector_resource = catalog_capability(&connector_catalog, "connector_resource");
+        assert!(connector_resource.default_visible);
+        assert_eq!(
+            connector_resource.visibility_policy,
+            "default_visible_connector_resource_read"
+        );
+        assert_eq!(
+            connector_resource.side_effects,
+            ContextSideEffects::ReadExternal
+        );
+        let connector_invoke = catalog_capability(&connector_catalog, "connector_invoke");
+        assert!(connector_invoke.default_visible);
+        assert_eq!(
+            connector_invoke.visibility_policy,
+            "default_visible_connector_invoke_action"
+        );
+        assert_eq!(
+            connector_invoke.side_effects,
+            ContextSideEffects::WriteExternal
+        );
+
+        for name in ["shell", "ward"] {
+            let capability = catalog_capability(&catalog, name);
+            assert!(
+                capability.default_visible,
+                "{name} remains a default-visible action tool"
+            );
+            assert!(
+                capability.split_target.is_some(),
+                "{name} must name its split target"
+            );
+            assert_eq!(capability.visibility_policy, "default_visible_action_tool");
+        }
+
+        let ward_catalog = catalog_for_actor(RuntimeActorKind::WardAgent);
+        let load_skill = catalog_capability(&ward_catalog, "load_skill");
+        assert!(load_skill.default_visible);
+        assert_eq!(
+            load_skill.split_target.as_deref(),
+            Some("resources:skill_packet/skill_section_handles")
+        );
+        assert_eq!(
+            load_skill.visibility_policy,
+            "default_visible_bounded_packet"
         );
     }
 
@@ -1375,5 +2813,54 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, "app:delegation_mode");
         assert_eq!(entries[0].1, "direct_artifact");
+    }
+
+    #[test]
+    fn planner_capability_lookup_requires_host_catalog_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let ordinary = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build_tool_registry(fs_context.clone())
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !ordinary.contains("lookup_capabilities"),
+            "ordinary workers must not receive planner lookup"
+        );
+
+        let root_handoff = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::Root)
+            .with_initial_state(
+                agent_runtime::tools::PLANNING_CAPABILITY_CATALOG_STATE,
+                serde_json::json!({"skills": [], "mcps": []}),
+            )
+            .build_tool_registry(fs_context.clone())
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !root_handoff.contains("lookup_capabilities"),
+            "root may carry a host handoff but must not receive planner lookup"
+        );
+
+        let planner = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .with_initial_state(
+                agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE,
+                serde_json::json!({"skills": [], "mcps": []}),
+            )
+            .build_tool_registry(fs_context)
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planner.contains("lookup_capabilities"),
+            "a host-attached planner catalog enables lookup"
+        );
     }
 }

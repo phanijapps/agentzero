@@ -80,10 +80,7 @@ mod tests {
 
     #[test]
     fn unknown_keeps_head() {
-        assert_eq!(
-            parse("/foo bar"),
-            Some(SlashCommand::Unknown("foo".into()))
-        );
+        assert_eq!(parse("/foo bar"), Some(SlashCommand::Unknown("foo".into())));
     }
 
     #[test]

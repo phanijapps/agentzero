@@ -35,7 +35,10 @@ pub async fn run(
     events.subscribe(&chat.conversation_id)?;
 
     // Welcome banner (printed once, then untouched).
-    println!("{}", style::welcome_banner(&daemon_url, &chat.session_id, color));
+    println!(
+        "{}",
+        style::welcome_banner(&daemon_url, &chat.session_id, color)
+    );
     println!();
 
     let mut session_id = chat.session_id.clone();
@@ -88,10 +91,7 @@ pub async fn run(
         println!();
         println!("{}", style::label("assistant", color, Style::BoldSecondary));
         if let Err(e) = run_turn(&mut events, &conv, &session_id, trimmed, stream_cfg).await {
-            eprintln!(
-                "  {}",
-                style::paint(&format!("⚠ {e}"), color, Style::Error)
-            );
+            eprintln!("  {}", style::paint(&format!("⚠ {e}"), color, Style::Error));
         }
         println!();
     }
@@ -133,7 +133,10 @@ async fn handle_slash(
                     Ok(chat) => {
                         *session_id = chat.session_id.clone();
                         print_system(
-                            &format!("session cleared. new session: {}", short_id(&chat.session_id)),
+                            &format!(
+                                "session cleared. new session: {}",
+                                short_id(&chat.session_id)
+                            ),
                             color,
                         );
                     }
@@ -191,7 +194,12 @@ fn print_error(text: &str, color: bool) {
 }
 
 fn short_id(id: &str) -> String {
-    id.rsplit('-').next().unwrap_or(id).chars().take(8).collect()
+    id.rsplit('-')
+        .next()
+        .unwrap_or(id)
+        .chars()
+        .take(8)
+        .collect()
 }
 
 fn format_conversations(v: &Value) -> String {
@@ -202,7 +210,10 @@ fn format_conversations(v: &Value) -> String {
     let mut out = String::from("recent conversations:\n");
     for c in arr.iter().take(10) {
         let id = c.get("id").and_then(Value::as_str).unwrap_or("?");
-        let title = c.get("title").and_then(Value::as_str).unwrap_or("(untitled)");
+        let title = c
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("(untitled)");
         let updated = c
             .get("updatedAt")
             .or_else(|| c.get("updated_at"))

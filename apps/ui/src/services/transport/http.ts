@@ -27,6 +27,9 @@ import type {
   McpServerConfig,
   CreateMcpRequest,
   McpTestResult,
+  McpOAuthStatusResponse,
+  McpOAuthStartRequest,
+  McpOAuthStartResponse,
   MessageResponse,
   ChatSessionInit,
   SessionMessage,
@@ -47,6 +50,10 @@ import type {
   MissionControlSessionSummary,
   MissionControlSessionTokens,
   MissionControlFilter,
+  AutonomyItem,
+  AutonomyItemDetail,
+  AutonomyResumeResult,
+  AutonomyState,
   DashboardStats,
   // Legacy types (for backwards compatibility)
   ExecutionSession,
@@ -72,10 +79,16 @@ import type {
   UpdateCronJobRequest,
   CronTriggerResult,
   // Memory types
+  CreatableMemoryCategory,
   MemoryFact,
   MemoryFilter,
   MemoryListResponse,
   WardContent,
+  VaultFileResponse,
+  VaultOfficeFileResponse,
+  VaultSearchResponse,
+  VaultTreeResponse,
+  VaultWardsResponse,
   HybridSearchRequest,
   HybridSearchResponse,
   // Graph types
@@ -88,9 +101,12 @@ import type {
   GraphSubgraphResponse,
   GraphNeighborOptions,
   GraphSubgraphOptions,
-  SetupStatus,
+  CommissioningStatus,
+  CommissioningRequest,
+  LocalDiagnosis,
   SessionState,
   Artifact,
+  ArtifactListOptions,
   EmbeddingsHealth,
   CuratedModel,
   EmbeddingConfig,
@@ -293,6 +309,27 @@ export class HttpTransport implements Transport {
     return this.post<McpTestResult>(`/api/mcps/${encodeURIComponent(id)}/test`, {});
   }
 
+  async getMcpOAuthStatus(id: string): Promise<TransportResult<McpOAuthStatusResponse>> {
+    return this.get<McpOAuthStatusResponse>(`/api/mcps/${encodeURIComponent(id)}/oauth/status`);
+  }
+
+  async startMcpOAuth(
+    id: string,
+    request: McpOAuthStartRequest = {},
+  ): Promise<TransportResult<McpOAuthStartResponse>> {
+    return this.post<McpOAuthStartResponse>(
+      `/api/mcps/${encodeURIComponent(id)}/oauth/start`,
+      request,
+    );
+  }
+
+  async disconnectMcpOAuth(id: string): Promise<TransportResult<McpOAuthStatusResponse>> {
+    return this.post<McpOAuthStatusResponse>(
+      `/api/mcps/${encodeURIComponent(id)}/oauth/disconnect`,
+      {},
+    );
+  }
+
   // =========================================================================
   // Conversation Operations
   // =========================================================================
@@ -404,12 +441,16 @@ export class HttpTransport implements Transport {
     return { success: false, error: result.error || result.data?.error || "Failed to update execution settings" };
   }
 
-  async getSetupStatus(): Promise<TransportResult<SetupStatus>> {
-    return this.get<SetupStatus>("/api/setup/status");
+  async getCommissioningStatus(): Promise<TransportResult<CommissioningStatus>> {
+    return this.get<CommissioningStatus>("/api/commissioning/status");
   }
 
-  async getMcpDefaults(): Promise<TransportResult<McpServerConfig[]>> {
-    return this.get<McpServerConfig[]>("/api/setup/mcp-defaults");
+  async diagnoseLocalRuntime(): Promise<TransportResult<LocalDiagnosis>> {
+    return this.post<LocalDiagnosis>("/api/commissioning/local/diagnose", {});
+  }
+
+  async completeCommissioning(request: CommissioningRequest): Promise<TransportResult<CommissioningStatus>> {
+    return this.post<CommissioningStatus>("/api/commissioning/complete", request);
   }
 
   // =========================================================================
@@ -419,6 +460,7 @@ export class HttpTransport implements Transport {
   async listLogSessions(filter?: LogFilter): Promise<TransportResult<LogSession[]>> {
     const params = new URLSearchParams();
     if (filter?.agent_id) params.set("agent_id", filter.agent_id);
+    if (filter?.conversation_id) params.set("conversation_id", filter.conversation_id);
     if (filter?.level) params.set("level", filter.level);
     if (filter?.from_time) params.set("from_time", filter.from_time);
     if (filter?.to_time) params.set("to_time", filter.to_time);
@@ -508,6 +550,26 @@ export class HttpTransport implements Transport {
     return this.get<MissionControlSessionTokens>(
       `/api/executions/v2/mission-control/sessions/${encodeURIComponent(sessionId)}/tokens`,
     );
+  }
+
+  async listAutonomyItems(): Promise<TransportResult<AutonomyItem[]>> {
+    return this.get<AutonomyItem[]>("/api/autonomy");
+  }
+
+  async getAutonomyItem(id: string): Promise<TransportResult<AutonomyItemDetail>> {
+    return this.get<AutonomyItemDetail>(`/api/autonomy/${encodeURIComponent(id)}`);
+  }
+
+  async transitionAutonomyItem(
+    id: string,
+    state: AutonomyState,
+    outcome?: string,
+  ): Promise<TransportResult<AutonomyItemDetail>> {
+    return this.post<AutonomyItemDetail>(`/api/autonomy/${encodeURIComponent(id)}/transition`, { state, outcome });
+  }
+
+  async resumeAutonomyItem(id: string): Promise<TransportResult<AutonomyResumeResult>> {
+    return this.post<AutonomyResumeResult>(`/api/autonomy/${encodeURIComponent(id)}/resume`, {});
   }
 
   /** Get a single session with executions (V2 API) */
@@ -679,7 +741,8 @@ export class HttpTransport implements Transport {
     conversationId: string,
     message: string,
     sessionId?: string,
-    mode?: string
+    mode?: string,
+    clientMessageId?: string,
   ): Promise<TransportResult<{ conversationId: string; sessionId?: string }>> {
     // Send execute command via WebSocket
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -701,6 +764,10 @@ export class HttpTransport implements Transport {
     // Include mode for fast chat
     if (mode) {
       command.mode = mode;
+    }
+
+    if (clientMessageId) {
+      command.metadata = { client_message_id: clientMessageId };
     }
 
 
@@ -782,6 +849,12 @@ export class HttpTransport implements Transport {
           this.setConnectionState({ status: "connected" });
           this.startHeartbeat();
           this.setupBrowserEventHandlers();
+          // Opt in after every connect/reconnect. Older gateways ignore this
+          // additive frame; gateways with surfaces keep all legacy traffic intact.
+          this.ws?.send(JSON.stringify({
+            type: "presentation_capabilities",
+            catalogs: ["zbot/work-surface/v1"],
+          }));
           this.resubscribeAll();
           resolve({ success: true });
         };
@@ -1486,6 +1559,69 @@ export class HttpTransport implements Transport {
     );
   }
 
+  async listVaultWards(): Promise<TransportResult<VaultWardsResponse>> {
+    return this.get<VaultWardsResponse>("/api/vault/wards");
+  }
+
+  async getVaultTree(wardId: string, path = ""): Promise<TransportResult<VaultTreeResponse>> {
+    const params = new URLSearchParams();
+    if (path) params.set("path", path);
+    const query = params.toString();
+    return this.get<VaultTreeResponse>(
+      `/api/vault/wards/${encodeURIComponent(wardId)}/tree${query ? `?${query}` : ""}`
+    );
+  }
+
+  async searchVaultFiles(wardId: string, query: string, limit = 30): Promise<TransportResult<VaultSearchResponse>> {
+    const params = new URLSearchParams({ q: query });
+    if (limit > 0) params.set("limit", String(limit));
+    return this.get<VaultSearchResponse>(
+      `/api/vault/wards/${encodeURIComponent(wardId)}/search?${params.toString()}`
+    );
+  }
+
+  async getVaultFile(wardId: string, path: string): Promise<TransportResult<VaultFileResponse>> {
+    if (!this.config) {
+      return { success: false, error: "Transport not initialized" };
+    }
+    const params = new URLSearchParams({ path });
+    const url = `${this.config.httpUrl}/api/vault/wards/${encodeURIComponent(wardId)}/file?${params.toString()}`;
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `HTTP ${response.status}: ${response.statusText}`,
+        };
+      }
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        return { success: true, data: await response.json() as VaultFileResponse };
+      }
+      const extension = path.split(".").pop()?.toLowerCase();
+      if (extension !== "docx" && extension !== "pptx") {
+        return { success: false, error: "Unsupported Vault binary file response" };
+      }
+      const office: VaultOfficeFileResponse = {
+        kind: "office",
+        ward_id: response.headers.get("x-vault-ward-id") || wardId,
+        path: response.headers.get("x-vault-path") || path,
+        extension,
+        contentType,
+        data: await response.arrayBuffer(),
+      };
+      return { success: true, data: office };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   async openWard(wardId: string): Promise<TransportResult<{ path: string }>> {
     return this.post<{ path: string }>(
       `/api/wards/${encodeURIComponent(wardId)}/open`,
@@ -1500,7 +1636,7 @@ export class HttpTransport implements Transport {
   }
 
   async createMemory(agentId: string, fact: {
-    category: string;
+    category: CreatableMemoryCategory;
     key: string;
     content: string;
     confidence?: number;
@@ -1604,13 +1740,21 @@ export class HttpTransport implements Transport {
   // Artifact Operations
   // ─────────────────────────────────────────────────────────────────────────
 
-  async listSessionArtifacts(sessionId: string): Promise<TransportResult<Artifact[]>> {
-    return this.get<Artifact[]>(`/api/sessions/${encodeURIComponent(sessionId)}/artifacts`);
+  async listSessionArtifacts(
+    sessionId: string,
+    options?: ArtifactListOptions,
+  ): Promise<TransportResult<Artifact[]>> {
+    const params = new URLSearchParams();
+    if (options?.goalArtifactsOnly) params.set("goal_artifacts_only", "true");
+    if (options?.limit !== undefined) params.set("limit", options.limit.toString());
+    const query = params.toString();
+    const path = `/api/sessions/${encodeURIComponent(sessionId)}/artifacts${query ? `?${query}` : ""}`;
+    return this.get<Artifact[]>(path);
   }
 
-  getArtifactContentUrl(artifactId: string): string {
+  getArtifactContentUrl(artifactId: string, sessionId: string): string {
     const base = this.config?.httpUrl ?? "";
-    return `${base}/api/artifacts/${encodeURIComponent(artifactId)}/content`;
+    return `${base}/api/artifacts/${encodeURIComponent(artifactId)}/content?session_id=${encodeURIComponent(sessionId)}`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────

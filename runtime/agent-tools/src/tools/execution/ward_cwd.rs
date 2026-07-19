@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use zero_core::{FileSystemContext, ToolContext};
+use agent_primitives::{FileSystemContext, ToolContext};
 
 /// Resolve the working directory for file operations.
 ///

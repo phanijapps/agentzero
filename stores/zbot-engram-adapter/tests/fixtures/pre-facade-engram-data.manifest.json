@@ -1,0 +1,22 @@
+{
+  "formatVersion": 1,
+  "capturedThrough": "zbot-engram-adapter EngramProvider::open using engram_conformance::bootstrap_provider before the provider-facade cutover",
+  "sha256": "315beb2e8758ae8763342a4407d3497fc8a179f9466066533880c4e28e65c876",
+  "syntheticOnly": true,
+  "expectedRecords": {
+    "memoryFact": {
+      "agentId": "fixture-agent",
+      "category": "pre-facade",
+      "key": "compatibility",
+      "content": "Synthetic pre-facade memory fact"
+    },
+    "contextFact": {
+      "wardId": "fixture-ward",
+      "key": "ctx.fixture.intent",
+      "content": "Synthetic pre-facade sidecar"
+    }
+  },
+  "knownLimitations": [
+    "The pre-cutover provider reports the policy-facing knowledge graph capability unsupported, so this baseline contains only records reachable through existing supported adapter stores."
+  ]
+}

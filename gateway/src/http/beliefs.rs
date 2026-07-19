@@ -21,7 +21,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use zero_stores_traits::{Belief, BeliefContradiction, ContradictionType, Resolution};
+use zbot_stores_traits::{Belief, BeliefContradiction, ContradictionType, Resolution};
 
 // ============================================================================
 // REQUEST / RESPONSE TYPES
@@ -320,7 +320,7 @@ pub async fn resolve_contradiction(
 
 fn require_belief_store(
     state: &AppState,
-) -> Result<&std::sync::Arc<dyn zero_stores_traits::BeliefStore>, (StatusCode, Json<ErrorResponse>)>
+) -> Result<&std::sync::Arc<dyn zbot_stores_traits::BeliefStore>, (StatusCode, Json<ErrorResponse>)>
 {
     state.belief_store.as_ref().ok_or_else(|| {
         (
@@ -335,7 +335,7 @@ fn require_belief_store(
 fn require_contradiction_store(
     state: &AppState,
 ) -> Result<
-    &std::sync::Arc<dyn zero_stores_traits::BeliefContradictionStore>,
+    &std::sync::Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
     (StatusCode, Json<ErrorResponse>),
 > {
     state.belief_contradiction_store.as_ref().ok_or_else(|| {
@@ -535,7 +535,7 @@ mod tests {
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use std::sync::Arc;
-    use zero_stores_traits::{BeliefStore, ScoredBelief};
+    use zbot_stores_traits::{BeliefStore, ScoredBelief};
 
     struct StubBeliefStore {
         beliefs: Vec<Belief>,

@@ -78,5 +78,16 @@
     "description": "Create software and process diagrams via server-sent events",
     "url": "https://mcp.draw.io/mcp",
     "enabled": false
+  },
+  {
+    "type": "streamable-http",
+    "id": "robinhood-trading",
+    "name": "Robinhood Trading",
+    "description": "Connect to the Robinhood Trading MCP through an explicit OAuth flow",
+    "url": "https://agent.robinhood.com/mcp/trading",
+    "auth": {
+      "type": "oauth2"
+    },
+    "enabled": false
   }
 ]

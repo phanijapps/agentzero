@@ -4,13 +4,54 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Autonomy Ledger](autonomy-ledger/spec.md) | Shipped | Adds durable, approved cross-session decision threads with bounded resume context, Mission Control visibility, and read-only trigger eligibility. |
+| [Agent-Driven Surfaces](agent-driven-surfaces/spec.md) | Draft | Adds capability-gated, catalog-constrained agent work surfaces with channel-neutral results and server-owned actions. |
+| [Agent Commissioning](agent-commissioning/spec.md) | Shipped | Replaces the legacy setup wizard with durable, personalized model commissioning and a portable semantic profile. |
+| [Commissioning Memory Profile](commissioning-memory-profile/spec.md) | Shipped | Adds an explicit recommended Full Zbot memory choice with built-in embeddings, pinned recall/governance files, and restart-verified activation. |
+| [Engram Provider Adoption](engram-provider-adoption/spec.md) | Implementing | Makes the semantic-memory adapter use Engram's provider facade and expose capability-gated services without changing agent or UI behavior. |
+| [Research Terminal State Reconciliation](research-terminal-state-reconciliation/spec.md) | Shipped | Makes successful Research completion deterministically reconcile the plan surface and final response. |
+| [Vault Layout Standardization](vault-layout-standardization/spec.md) | Shipped | Makes vault paths, configuration names, runtime directories, and prompt loading consistent while retiring dormant OKF material. |
+| [SQLite Runtime Store Split](sqlite-runtime-store-split/spec.md) | Shipped | Separates unchanged runtime conversation persistence from quarantined legacy semantic SQLite as Engram owns the active memory layer. |
+| [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Implementing | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
+| [Quick Chat Terminal Response Deduplication](quick-chat-terminal-response-dedup/spec.md) | Shipped | Prevents a root terminal fallback from rendering a second Quick Chat answer. |
+| [Quick Chat Recall Ranking](quick-chat-recall-ranking/spec.md) | Shipped | Preserves hybrid recall ranking and supplies query-scoped profile facts from durable memory. |
+| [Graph Planning Gate](graph-planning-gate/spec.md) | Implementing | Enforces cold graph work as ward setup → planner-agent → plan-step execution. |
+| [Execution Capabilities](execution-capabilities/spec.md) | Implementing | Makes skills and MCPs dynamically assigned to root and subagent executions by intent and planning, while retaining static agent mappings as a compatibility fallback. |
+| [MCP ID Normalization](mcp-id-normalization/spec.md) | Shipped | Derives stable IDs for API-managed MCPs and gives the active Blender MCP its canonical `blender-mcp` ID. |
+| [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Implementing | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |
+| [Research Context Inspector](research-context-inspector/spec.md) | Implementing | Moves existing intent analysis and delegated-agent context into Research's real right inspector without adding dashboard metrics. |
+| [YFinance Market Analysis Skill Consolidation](yfinance-market-analysis-skill/spec.md) | Shipped | Consolidates bundled yfinance workflows into one primary skill while keeping old `yf-*` IDs as compatibility wrappers. |
 | [Tool Waste Visibility](tool-waste-visibility/spec.md) | Done | Makes blocked hooks, invalid tool arguments, planner skill drift, and tool durations visible in existing session telemetry. |
-| [Mission Control Performance](mission-control-performance/spec.md) | Draft | Makes Mission Control load bounded summary data first, then lazy-load selected-session detail as the database grows. |
-| [GitHub Release Installer](github-release-installer/spec.md) | Draft | Defines GitHub Release installers and artifact packaging for Linux, macOS, and Windows. |
-| [Release On Main](release-on-main/spec.md) | Implementing | Automates the daily CalVer release bump and tag when changes land on `main`, while preserving the manual release script. |
-| [Agent Handoff Notes](agent-handoff-notes/spec.md) | Implementing | Adds current-session agent discovery and one-way handoff notes over existing steering without implementing full Pattern 4 peer messaging. |
-| [Runtime Context Control](runtime-context-control/spec.md) | Draft | Consolidates live conversation compaction into runtime middleware while preserving `knowledge.db` durable memory. |
-| [Memory Hygiene](memory-hygiene/spec.md) | Draft | Adds durable-memory guards for recall embedding input, handoff persistence, KG relationship integrity, and hygiene observability. |
-| [Durable Ward Memory](durable-ward-memory/spec.md) | Draft | Defines Layer 4 as `knowledge.db` first-level indexing over durable executable ward workspaces, with preserved ward/file/artifact route hints. |
-| [Subagent Capability Policy](subagent-role-gating/spec.md) | Implementing | Enforces root, executor, reviewer, and ward-agent tool capabilities with an explicit reviewer-agent identity. |
-| [Builder Delegation Hygiene](builder-delegation-hygiene/spec.md) | Implementing | Adds delegation modes so builder-agent can distinguish direct artifacts, ward hygiene, ward-backed builds, and step execution. |
+| [Mission Control Performance](mission-control-performance/spec.md) | Shipped | Makes Mission Control load bounded summary data first, then lazy-load selected-session detail as the database grows. |
+| [Mission Control Attention Radar](mission-control-attention-radar/spec.md) | Implementing | Replaces Mission Control polling with a bounded live Attention Radar and focused, on-demand observability. |
+| [GitHub Release Installer](github-release-installer/spec.md) | Closed | Defines GitHub Release installers and artifact packaging for Linux, macOS, and Windows. |
+| [Release On Main](release-on-main/spec.md) | Done for now | Automates the daily CalVer release bump and tag when changes land on `main`, while preserving the manual release script. |
+| [Agent Handoff Notes](agent-handoff-notes/spec.md) | Done | Adds current-session agent discovery and one-way handoff notes over existing steering without implementing full Pattern 4 peer messaging. |
+| [Runtime Context Control](runtime-context-control/spec.md) | Shipped | Consolidates live conversation compaction into runtime middleware while preserving durable memory boundaries. |
+| [Rig Engine Migration](rig-engine-migration/spec.md) | Shipped | Replaces the legacy execution engine with a Rig-backed execution facade while preserving gateway/UI, config, memory, and parity contracts. |
+| [Memory Hygiene](memory-hygiene/spec.md) | Closed | Superseded by Engram memory cutover, embedding-backed recall, context capability registry, and runtime context control. |
+| [Durable Ward Memory](durable-ward-memory/spec.md) | Closed | Defines Layer 4 as `knowledge.db` first-level indexing over durable executable ward workspaces, with preserved ward/file/artifact route hints. |
+| [Engram Memory Engine Cutover](engram-memory-engine-cutover/spec.md) | Shipped | Switches durable memory, knowledge, graph, belief, hierarchy, and recall backing to Engram through a fail-closed AgentZero adapter while preserving gateway/UI/sleep-cycle contracts. |
+| [Dynamic Ontology and SKOS Taxonomy](dynamic-ontology-skos-taxonomy/spec.md) | Implementing | Adds zbot-owned dynamic ontology policy and durable SKOS-style taxonomy classification over Engram without changing gateway/UI contracts. |
+| [Context Capability Registry](context-capability-registry/spec.md) | Implementing | Implements RFC-0014 with an actor-filtered capability catalog, bounded context packets, structured recall/micro-recall, and staged tool-surface cleanup. |
+| [Unified Recall Default](unified-recall-default/spec.md) | Shipped | Makes a bounded model-visible recall surface use unified semantic retrieval, dynamic taxonomy expansion, and a quality gate before ontology-aware ranking. |
+| [Research Submit Visibility](research-submit-visibility/spec.md) | Shipped | Keeps submitted Research requests visible across intent analysis, snapshots, and delegation. |
+| [Research Live Artifact Refresh](research-live-artifact-refresh/spec.md) | Shipped | Makes newly completed Research artifacts appear in the open session without a page reload. |
+| [Research Goal Deliverables](research-goal-deliverables/spec.md) | Shipped | Shows only explicitly designated goal deliverables in Research attachments while leaving working files in the ward explorer. |
+| [Memory Command Deck Density](memory-command-deck-density/spec.md) | Shipped | Makes Memory's gallery-aligned scope, evidence, and curation panes remain compact and independently scrollable with large datasets. |
+| [Intent Ward Execution Binding](intent-ward-execution-binding/spec.md) | Shipped | Makes intent-selected existing wards actual session and tool workspaces rather than display-only recommendations. |
+| [Research Session Switching](research-session-switching/spec.md) | Shipped | Prevents stale Research state from overwriting a selected completed-session route. |
+| [Goal Artifacts](goal-artifacts/spec.md) | Shipped | Makes Quick Chat show only explicitly designated, safely served goal deliverables. |
+| [Session Plan Monitoring](session-plan-monitoring/spec.md) | Shipped | Separates live session plans from durable decision threads in Research and Mission Control. |
+| [Connector Resource Invoke Split](connector-resource-invoke-split/spec.md) | Shipped | Splits broad connector resource querying from side-effecting connector invocation in the model-visible tool surface. |
+| [Conversation Store Revamp](conversation-store-revamp/spec.md) | Complete | Splits conversations.db into zbot-conversation (messages/checkpoints/thread_summaries) + zbot-trace (slim execution_logs + streamed .jsonl.zst + DuckDB analytics); promotes a real versioned checkpoint (replay→O(1)); clean cutover + dead-code deletion. |
+| [Conversation Compatibility Retirement](conversation-compat-retirement/spec.md) | Complete | Retires the legacy `ConversationRepository`/`ConversationStore` compatibility layer now that Engram owns semantic memory and `zbot-conversation` owns transcripts. |
+| [Embedding-Backed Memory Recall](embedding-backed-memory-recall/spec.md) | Shipped | Makes normal hybrid memory recall use configured FastEmbed/Ollama query embeddings, fail closed on unsafe lexical fallback, and fuse sparse/dense evidence with provenance. |
+| [Vault Ward Browser](vault-ward-browser/spec.md) | Shipped | Adds a read-only Vault tab for browsing ward filesystem trees and previewing common files through bounded local-only APIs. |
+| [Ward Vault In Research](ward-vault-in-research/spec.md) | Done | Embeds a read-only ward-scoped Vault explorer/search pane inside Research after a session has an active ward. |
+| [Simplified Provider Model Configuration](simplified-provider-model-configuration/spec.md) | Implemented | Replaces broad model metadata maintenance with 200k input / 32k output defaults plus agent and Advanced overrides. |
+| [MCP OAuth](mcp-oauth/spec.md) | Done | Adds OAuth metadata, authorization flow endpoints, token storage, and runtime bearer injection for protected remote MCP servers. |
+| [Subagent Capability Policy](subagent-role-gating/spec.md) | Done | Enforces root, executor, reviewer, and ward-agent tool capabilities with an explicit reviewer-agent identity. |
+| [Builder Delegation Hygiene](builder-delegation-hygiene/spec.md) | Done | Adds delegation modes so builder-agent can distinguish direct artifacts, ward hygiene, ward-backed builds, and step execution. |
+| [Agent Tool Surface Cleanup](agent-tool-surface-cleanup/spec.md) | Shipped | Deletes unreachable model-tool implementations, unused factory registry paths, and stale settings/UI toggles so the tool surface matches the live gateway executor. |
+| [Gateway Execution Sleep Shim Cleanup](gateway-execution-sleep-shim-cleanup/spec.md) | Shipped | Removes gateway-execution compatibility shims for sleep maintenance operations now owned by gateway-memory, leaving only execution-specific handoff writing. |

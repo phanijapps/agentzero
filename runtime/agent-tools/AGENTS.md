@@ -1,60 +1,51 @@
 # Agent Tools
 
-Built-in tool implementations for AgentZero agents. Organized by category and registered via `core_tools()`, `optional_tools()`, and `builtin_tools_with_fs()`.
+Concrete model-tool implementations for AgentZero. Runtime registration is owned
+by `gateway/gateway-execution/src/invoke/executor.rs`; this crate should not grow
+a second registry or factory path.
 
 ## Build & Test
 
 ```bash
-cargo test -p agent-tools      # 25 tests
+cargo test -p agent-tools
 ```
 
 ## Tool Modules
 
 | Module | Key Tools |
 |--------|-----------|
-| `execution/shell.rs` | `ShellTool` — shell commands (cwd = ward dir, uses venv) |
-| `execution/write_file.rs` | `WriteFileTool` — create/overwrite files in ward |
-| `execution/edit_file.rs` | `EditFileTool` — targeted find-and-replace |
-| `execution/skills.rs` | `LoadSkillTool`, `ListSkillsTool` |
-| `execution/session_title.rs` | `SetSessionTitleTool` |
-| `execution/update_plan.rs` | `UpdatePlanTool` — lightweight task checklist |
-| `execution/graph.rs` | `ExecutionGraphTool` — DAG workflow engine |
-| `execution/todos.rs` | `TodoTool` (optional) |
-| `file.rs` | `ReadTool`, `WriteTool`, `EditTool` (optional file-tools group) |
-| `search.rs` | `GrepTool`, `GlobTool` |
-| `ward.rs` | `WardTool` — ward use/list/create/info; emits `WardChanged` |
-| `memory.rs` | `MemoryTool` — persistent key-value (shared/agent/ward scopes) |
-| `web.rs` | `WebFetchTool` (optional) |
-| `graph_query.rs` | `GraphQueryTool` — query knowledge graph entities/relationships |
-| `goal.rs` | `GoalTool` — agent intent lifecycle |
-| `ingest.rs` | `IngestTool` — enqueue text for background extraction |
-| `ui.rs` | `RequestInputTool`, `ShowContentTool` (optional) |
-| `agent.rs` | `ListAgentsTool`, `CreateAgentTool` (optional) |
-| `multimodal.rs` | `MultimodalAnalyzeTool` — vision fallback |
-| `introspection.rs` | `ListMcpsTool`, `ListSkillsTool`, `ListToolsTool` (optional) |
-| `connectors.rs` | `QueryResourceTool` — query bridge worker resources |
+| `execution/shell.rs` | `ShellTool` - shell commands |
+| `execution/write_file.rs` | `WriteFileTool` - create or overwrite files |
+| `execution/edit_file.rs` | `EditFileTool` - targeted find-and-replace |
+| `execution/skills.rs` | `LoadSkillTool` |
+| `execution/update_plan.rs` | `UpdatePlanTool` - lightweight task checklist |
+| `file.rs` | `ReadTool` |
+| `search.rs` | `GlobTool` |
+| `ward.rs` | `WardTool` - ward use/list/create/info; emits `WardChanged` |
+| `memory.rs` | `MemoryTool`, `MemoryWriteTool` |
+| `graph_query.rs` | `GraphQueryTool` - query knowledge graph entities/relationships |
+| `goal.rs` | `GoalTool` - agent intent lifecycle |
+| `ingest.rs` | `IngestTool` - enqueue text for background extraction |
+| `multimodal.rs` | `MultimodalAnalyzeTool` - vision fallback |
+| `connectors.rs` | `ConnectorResourceTool`, `ConnectorInvokeTool`, `QueryResourceTool` compatibility wrapper |
 
-## Registration Functions
+## Settings
 
-```rust
-pub fn core_tools(fs: Arc<dyn FileSystemContext>, fact_store: Option<Arc<dyn MemoryFactStore>>)
-    -> Vec<Arc<dyn Tool>>
-pub fn optional_tools(fs: Arc<dyn FileSystemContext>, settings: &ToolSettings)
-    -> Vec<Arc<dyn Tool>>
-pub fn builtin_tools_with_fs(fs: Arc<dyn FileSystemContext>) -> Vec<Arc<dyn Tool>>
-```
+`ToolSettings` only contains settings consumed by live gateway code:
+`file_tools`, `offload_large_results`, and `offload_threshold_tokens`.
 
-Core tools are always enabled. Optional tools depend on `ToolSettings` boolean flags:
-`file_tools`, `todos`, `python`, `web_fetch`, `ui_tools`, `create_agent`, `introspection`.
+Do not add toggles for tools unless `gateway-execution` actually reads them.
 
 ## Security / Guards
 
-`tools/guards.rs` (re-exported from crate root):
-- Path sanitization: rejects `..`, absolute paths; resolves relative to ward or agent data dir
-- Network blocking: `WebFetchTool` blocks localhost, private networks, cloud metadata
-- Shell safety: blocks dangerous commands, enforces timeouts
+`tools/guards.rs` is re-exported from the crate root so gateway bootstrap and
+tool implementations share the same checks:
+
+- Path sanitization rejects `..` and absolute paths and resolves relative paths
+  to ward or agent data directories where appropriate.
+- Shell safety blocks dangerous commands and enforces timeouts.
 
 ## Key Intra-Repo Dependencies
 
-- `zero-core` — `Tool`, `ToolContext`, `FileSystemContext`
-- `zero-stores-traits` — `MemoryFactStore` (for `MemoryTool`, `WardTool`)
+- `agent-primitives` - `Tool`, `ToolContext`, `FileSystemContext`
+- `zbot-stores-traits` - `MemoryFactStore` for memory and ward tools

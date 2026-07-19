@@ -5,8 +5,128 @@
 
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use crate::types::ChatMessage;
+
+/// Default maximum characters retained for a tool result sent back to the
+/// model after optional offload.
+pub const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 30_000;
+
+/// Configuration for preparing a tool result for model context or durable
+/// replay.
+#[derive(Debug, Clone)]
+pub struct ToolResultContextConfig {
+    /// Maximum characters kept in context after optional offload. `0` disables
+    /// truncation.
+    pub max_tool_result_chars: usize,
+    /// Save large successful results to a file and return a pointer instead of
+    /// replaying the full result.
+    pub offload_large_results: bool,
+    /// Character threshold for offloading.
+    pub offload_threshold_chars: usize,
+    /// Directory where offloaded raw results are written.
+    pub offload_dir: Option<PathBuf>,
+}
+
+impl Default for ToolResultContextConfig {
+    fn default() -> Self {
+        Self {
+            max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
+            offload_large_results: false,
+            offload_threshold_chars: 20_000,
+            offload_dir: None,
+        }
+    }
+}
+
+/// Prepare a successful tool result for insertion into model-visible context.
+///
+/// Large results are optionally offloaded to disk first, then the context text
+/// is truncated as a safety net. The returned value is safe to persist in
+/// replayable message history; the original raw result remains in the offload
+/// file when offloading succeeds.
+pub fn prepare_tool_result_for_context(
+    tool_name: &str,
+    result: String,
+    config: &ToolResultContextConfig,
+) -> String {
+    let processed = offload_tool_result_for_context(tool_name, result, config);
+    truncate_tool_result(processed, config.max_tool_result_chars)
+}
+
+pub(crate) fn offload_tool_result_for_context(
+    tool_name: &str,
+    result: String,
+    config: &ToolResultContextConfig,
+) -> String {
+    if !config.offload_large_results {
+        return result;
+    }
+
+    if result.len() <= config.offload_threshold_chars {
+        return result;
+    }
+
+    let offload_dir = match &config.offload_dir {
+        Some(dir) => dir.clone(),
+        None => {
+            if let Some(home) = dirs::home_dir() {
+                home.join("Documents").join("zbot").join("temp")
+            } else {
+                tracing::warn!("Could not determine home directory for offload");
+                return result;
+            }
+        }
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&offload_dir) {
+        tracing::warn!("Failed to create offload directory: {}", e);
+        return result;
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let sanitized_tool = tool_name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let uuid = uuid::Uuid::new_v4().as_simple().to_string();
+    let offload_id = &uuid[..16];
+    let filename = format!("{sanitized_tool}_{timestamp}_{offload_id}.txt");
+    let file_path = offload_dir.join(&filename);
+
+    if let Err(e) = std::fs::write(&file_path, &result) {
+        tracing::warn!("Failed to write offloaded result: {}", e);
+        return result;
+    }
+
+    let result_size = result.len();
+    let result_tokens = result_size / 4;
+
+    tracing::info!(
+        "Offloaded large tool result ({} chars, ~{} tokens) to: {}",
+        result_size,
+        result_tokens,
+        file_path.display()
+    );
+
+    format!(
+        "Tool result was too large for context ({} chars, ~{} tokens).\n\
+        Offload id: {}\n\
+        Result saved to: {}\n\n\
+        To access the full result, use the `read` tool with this exact path:\n\
+        ```json\n\
+        {{\"path\":\"{}\",\"offset\":0,\"limit\":200}}\n\
+        ```\n\n\
+        For shell fallback, copy the path exactly:\n\
+        `head -100 \"{}\"`\n\
+        `grep \"pattern\" \"{}\"`",
+        result_size,
+        result_tokens,
+        offload_id,
+        file_path.display(),
+        file_path.display(),
+        file_path.display(),
+        file_path.display()
+    )
+}
 
 /// Extract key info (file paths, URLs) from a tool result for restorable compression.
 #[cfg(test)]
@@ -49,7 +169,7 @@ fn extract_key_info(content: &str) -> String {
 /// 3. Only drop messages if still over budget after compression
 #[cfg(test)]
 pub(crate) fn compact_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    use zero_core::types::Part;
+    use agent_primitives::types::Part;
 
     const KEEP_RECENT: usize = 20;
 
@@ -194,7 +314,7 @@ fn truncate_tool_args(args: &Value, max_chars: usize) -> Value {
                         key.clone(),
                         Value::String(format!(
                             "{}... [truncated, {} chars]",
-                            zero_core::truncate_str(s, 200),
+                            agent_primitives::truncate_str(s, 200),
                             s.len()
                         )),
                     );
@@ -389,6 +509,77 @@ mod truncation_tests {
     }
 
     #[test]
+    fn test_prepare_tool_result_for_context_uses_distinct_offload_files() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agent-runtime-tool-result-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&tmp).expect("tempdir");
+        let config = ToolResultContextConfig {
+            offload_large_results: true,
+            offload_threshold_chars: 1,
+            offload_dir: Some(tmp.clone()),
+            ..ToolResultContextConfig::default()
+        };
+
+        let first = "first-result".repeat(10);
+        let second = "second-result".repeat(10);
+
+        let first_notice = prepare_tool_result_for_context("shell", first.clone(), &config);
+        let second_notice = prepare_tool_result_for_context("shell", second.clone(), &config);
+
+        assert_ne!(first_notice, second_notice);
+        let mut saved: Vec<String> = std::fs::read_dir(&tmp)
+            .expect("offload dir")
+            .map(|entry| {
+                let entry = entry.expect("entry");
+                std::fs::read_to_string(entry.path()).expect("saved result")
+            })
+            .collect();
+        saved.sort();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(saved, expected);
+        std::fs::remove_dir_all(&tmp).expect("cleanup");
+    }
+
+    #[test]
+    fn test_offload_notice_has_short_id_and_read_call() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agent-runtime-tool-result-notice-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&tmp).expect("tempdir");
+        let config = ToolResultContextConfig {
+            offload_large_results: true,
+            offload_threshold_chars: 1,
+            offload_dir: Some(tmp.clone()),
+            ..ToolResultContextConfig::default()
+        };
+
+        let notice = prepare_tool_result_for_context("shell", "large-result".repeat(20), &config);
+        let entry = std::fs::read_dir(&tmp)
+            .expect("offload dir")
+            .next()
+            .expect("offload entry")
+            .expect("entry");
+        let filename = entry.file_name().to_string_lossy().to_string();
+        let id = filename
+            .trim_end_matches(".txt")
+            .rsplit('_')
+            .next()
+            .expect("id segment");
+
+        assert_eq!(id.len(), 16);
+        assert!(id.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(notice.contains(&format!("Offload id: {id}")));
+        assert!(notice.contains("\"offset\":0,\"limit\":200"));
+        assert!(!filename.contains('-'));
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup");
+    }
+
+    #[test]
     fn test_truncate_tool_args_small() {
         let args = json!({"key": "value"});
         let result = truncate_tool_args(&args, 500);
@@ -408,8 +599,8 @@ mod truncation_tests {
 mod compaction_tests {
     use super::*;
     use crate::types::ToolCall;
+    use agent_primitives::types::Part;
     use serde_json::json;
-    use zero_core::types::Part;
 
     #[test]
     fn test_compact_compresses_before_dropping() {
@@ -494,7 +685,7 @@ mod compaction_tests {
 
     // ========================================================================
     // Phase 2 minimal-patch regression tests — these target the two bugs
-    // documented in memory-bank/future-state/compaction-strategy.md:
+    // documented in docs/architecture/future-state/compaction-strategy.md:
     //   1. `total_tokens_in` accumulator overcount (executor.rs:498, :852)
     //   2. `compact_messages` no-op on short high-token conversations
     // ========================================================================
@@ -646,8 +837,8 @@ mod compaction_tests {
 mod helper_coverage_tests {
     use super::*;
     use crate::types::ToolCall;
+    use agent_primitives::types::Part;
     use serde_json::Value;
-    use zero_core::types::Part;
 
     // ------------- sanitize_messages -------------
     #[test]

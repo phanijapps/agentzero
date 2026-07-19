@@ -16,9 +16,12 @@ use std::sync::Arc;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
-use serde::Deserialize;
-use zero_stores::{KnowledgeGraphStore, StrategyCandidate};
-use zero_stores_traits::{CompactionStore, EpisodeStore, MemoryFactStore, StrategyFactInsert};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use zbot_stores::{KnowledgeGraphStore, StrategyCandidate};
+use zbot_stores_traits::{
+    CompactionStore, EmbeddingQueryIdentity, EpisodeStore, MemoryFactStore, StrategyFactInsert,
+};
 
 use crate::util::parse_llm_json;
 use crate::{CachedLlmClient, LlmClientConfig, MemoryLlmFactory};
@@ -46,7 +49,7 @@ pub struct SynthesisStats {
 }
 
 /// Parsed LLM response shape.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct SynthesisResponse {
     pub strategy: String,
     pub confidence: f64,
@@ -179,11 +182,13 @@ impl Synthesizer {
         // Dedup step (optional — requires embedder)
         let embedding = self.embed_content(&resp.key_fact).await;
         if let Some(ref emb) = embedding {
+            let query_identity = self.embedding_query_identity();
             match self
                 .memory_store
-                .find_strategy_fact_by_similarity(
+                .find_strategy_fact_by_similarity_with_identity(
                     &cand.agent_id,
                     emb,
+                    query_identity.as_ref(),
                     DEDUP_COSINE_THRESHOLD as f32,
                     50,
                 )
@@ -276,6 +281,17 @@ impl Synthesizer {
                 None
             }
         }
+    }
+
+    fn embedding_query_identity(&self) -> Option<EmbeddingQueryIdentity> {
+        let client = self.embedder.as_ref()?;
+        Some(EmbeddingQueryIdentity {
+            provider_type: client.provider_type(),
+            model: client.model_name(),
+            dimensions: client.dimensions() as u32,
+            prompt_profile: client.prompt_profile(),
+            normalization: client.normalization(),
+        })
     }
 
     async fn build_input(&self, cand: &StrategyCandidate) -> Result<SynthesisInput, String> {
@@ -395,6 +411,10 @@ impl SynthesisLlm for LlmSynthesizer {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
+        // Plain chat + parse — the `submit`-tool/extractor approach was tried
+        // but the tool's presence made the model return short non-JSON on Z.AI
+        // (same failure mode as intent analysis). The existing "Return ONLY
+        // JSON" prompt + plain chat is reliable.
         let messages = vec![
             ChatMessage::system("You return only valid JSON.".to_string()),
             ChatMessage::user(prompt),
@@ -417,10 +437,10 @@ mod tests {
     use gateway_services::VaultPaths;
     use rusqlite::params;
     use std::sync::Mutex;
-    use zero_stores_sqlite::kg::storage::GraphStorage;
-    use zero_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zero_stores_sqlite::EpisodeRepository;
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
+    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
+    use zbot_stores_sqlite::EpisodeRepository;
+    use zbot_stores_sqlite::{
         CompactionRepository, GatewayCompactionStore, GatewayEpisodeStore, GatewayMemoryFactStore,
         KnowledgeDatabase, MemoryRepository, SqliteKgStore,
     };

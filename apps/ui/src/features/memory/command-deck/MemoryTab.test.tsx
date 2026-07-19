@@ -91,6 +91,20 @@ describe("MemoryTab — delete fact wiring", () => {
     confirmSpy.mockRestore();
   });
 
+  it("renders the labelled scope, evidence, and curation workbench", async () => {
+    render(<MemoryTab agentId="root" />);
+
+    expect(
+      screen.getByRole("region", { name: "Memory command deck" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Memory scope" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Memory evidence" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Memory curation" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Memory", level: 1 })
+    ).toBeInTheDocument();
+  });
+
   it("renders a delete button on each fact row in the Facts tab", async () => {
     render(<MemoryTab agentId="root" />);
     await waitFor(() => {

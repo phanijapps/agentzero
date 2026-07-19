@@ -15,6 +15,8 @@ UI_BUILD_DIR := dist
 # line in the file is `[workspace.package].version` — every other crate
 # inherits it via `version.workspace = true`.
 VERSION := $(shell awk -F\" '/^version[[:space:]]*=/ {print $$2; exit}' Cargo.toml)
+BUILD_DATE := $(shell date -u +%Y-%m-%d)
+BUILD_TIMESTAMP := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Resolve a vault path that mirrors the daemon's runtime resolution
 # (`dirs::document_dir().or_else(home_dir).join("zbot")`). Used for the
@@ -37,7 +39,7 @@ help:
 	@echo "  make clean      - cargo clean + rm -rf $(UI_BUILD_DIR)"
 
 build:
-	cargo build --release
+	ZBOT_BUILD_DATE=$(BUILD_DATE) ZBOT_BUILD_TIMESTAMP=$(BUILD_TIMESTAMP) cargo build --release
 	cd apps/ui && npm install && npm run build
 
 # Same as `build` but exports `ZBOT_INSTALL=1` so the daemon's and CLI's
@@ -45,21 +47,24 @@ build:
 # version. Resulting binary reports e.g. `2026.5.3.develop` instead of
 # the bare `2026.5.3` a plain `cargo build` produces.
 install-build:
-	ZBOT_INSTALL=1 cargo build --release
+	ZBOT_INSTALL=1 ZBOT_BUILD_DATE=$(BUILD_DATE) ZBOT_BUILD_TIMESTAMP=$(BUILD_TIMESTAMP) cargo build --release
 	cd apps/ui && npm install && npm run build
 
 install: install-build
-	install -d $(BIN_DIR) $(DIST_DIR) $(UNIT_DIR)
+	install -d $(BIN_DIR) $(DIST_DIR) $(UNIT_DIR) $(VAULT_DIR)/logs
 	install -m 755 target/release/zbotd $(BIN_DIR)/zbotd
 	install -m 755 target/release/zbot $(BIN_DIR)/zbot
 	rm -rf $(DIST_DIR)/* && cp -r $(UI_BUILD_DIR)/* $(DIST_DIR)/
-	@sed 's|@@BIN@@|$(BIN_DIR)/zbotd|g; s|@@DIST@@|$(DIST_DIR)|g; s|@@VERSION@@|$(VERSION)|g' \
+	@sed 's|@@BIN@@|$(BIN_DIR)/zbotd|g; s|@@DIST@@|$(DIST_DIR)|g; s|@@LOG_DIR@@|$(VAULT_DIR)/logs|g; s|@@VERSION@@|$(VERSION)|g' \
 	    scripts/zbot.service.in > $(UNIT_DIR)/zbot.service
 	@# Migrate from the legacy `agentzero.service` if present.
 	@if systemctl --user is-enabled agentzero.service >/dev/null 2>&1; then \
 	    echo "Migrating from agentzero.service → zbot.service"; \
 	    systemctl --user disable --now agentzero.service || true; \
 	    rm -f $(UNIT_DIR)/agentzero.service; \
+	fi
+	@if command -v loginctl >/dev/null 2>&1; then \
+	    loginctl enable-linger "$(USER)" || true; \
 	fi
 	systemctl --user daemon-reload
 	systemctl --user enable --now zbot

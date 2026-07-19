@@ -200,7 +200,14 @@ describe('HttpTransport — executeAgent() / stopAgent()', () => {
     wsMock.simulateOpen();
     await c;
 
-    const res = await t.executeAgent('root', 'conv-1', 'hello', 'sess-1', 'chat');
+    const res = await t.executeAgent(
+      'root',
+      'conv-1',
+      'hello',
+      'sess-1',
+      'chat',
+      'msg-550e8400-e29b-41d4-a716-446655440000',
+    );
     expect(res.success).toBe(true);
     const cmd = JSON.parse(wsMock.send.mock.calls.at(-1)?.[0]);
     expect(cmd.type).toBe('invoke');
@@ -209,6 +216,9 @@ describe('HttpTransport — executeAgent() / stopAgent()', () => {
     expect(cmd.message).toBe('hello');
     expect(cmd.session_id).toBe('sess-1');
     expect(cmd.mode).toBe('chat');
+    expect(cmd.metadata).toEqual({
+      client_message_id: 'msg-550e8400-e29b-41d4-a716-446655440000',
+    });
   });
 
   it('stopAgent sends stop command', async () => {

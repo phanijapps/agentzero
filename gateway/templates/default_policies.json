@@ -51,7 +51,7 @@
   {
     "category": "correction",
     "key": "policy.skill_first_routing",
-    "content": "Skills and agents registered in the system are the SOURCE OF TRUTH for capability routing. When the user's intent matches a skill's description (e.g. 'read a book' → book-reader, 'promote to vault' → wiki, 'stock analysis' → stock-analysis), the plan has ONE skill-executing step — do not re-decompose the skill's internal workflow, even if recall returns pattern facts describing a manual pipeline from a prior session. Pattern facts are REFERENCE, not doctrine: they describe how a past session happened to solve a problem (possibly before the skill existed), and can go stale. Skill descriptions in memory (category 'skill') beat pattern.* facts, every time. Discover skills with list_skills or by recalling category='skill'; use pattern.* facts only as context for edge cases a skill does not cover.",
+    "content": "Skills and agents registered in the system are the SOURCE OF TRUTH for capability routing. When the user's intent matches a skill's description (e.g. 'read a book' → book-reader, 'promote to vault' → wiki, 'stock analysis' → stock-analysis), the plan has ONE skill-executing step — do not re-decompose the skill's internal workflow, even if context returns pattern facts describing a manual pipeline from a prior session. Pattern facts are REFERENCE, not doctrine: they describe how a past session happened to solve a problem (possibly before the skill existed), and can go stale. Skill descriptions in injected context (category 'skill') beat pattern.* facts, every time. Discover skills through injected context or the context capability catalog, then load a known relevant skill with load_skill; use pattern.* facts only as context for edge cases a skill does not cover.",
     "confidence": 1.0,
     "pinned": true
   },
@@ -75,12 +75,5 @@
     "content": "Default output is markdown or plain text. Generate HTML/Tailwind ONLY when the user explicitly asks for a report, dashboard, or visual deliverable — and only after the planner has emitted an HTML step. For analysis questions ('is X overvalued?', 'summarize Y'), never generate HTML. Ambiguity defaults to markdown.",
     "confidence": 0.7,
     "pinned": false
-  },
-  {
-    "category": "user",
-    "key": "user.profile",
-    "content": "I am a private person, just call me Mr Z.",
-    "confidence": 0.95,
-    "pinned": true
   }
 ]

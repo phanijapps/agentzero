@@ -3,6 +3,7 @@
 // Events emitted during agent execution
 // ============================================================================
 
+use agent_surfaces::WorkSurface;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -54,6 +55,8 @@ pub enum StreamEvent {
         timestamp: u64,
         tool_id: String,
         result: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_result: Option<String>,
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<i64>,
@@ -103,6 +106,21 @@ pub enum StreamEvent {
         submit_button: Option<String>,
     },
 
+    /// A bounded, declarative work surface. Gateway validation determines
+    /// whether it is published; normal execution never depends on it.
+    #[serde(rename = "work_surface")]
+    WorkSurface {
+        timestamp: u64,
+        surface: WorkSurface,
+    },
+    #[serde(rename = "work_surface_updated")]
+    WorkSurfaceUpdated {
+        timestamp: u64,
+        surface: WorkSurface,
+    },
+    #[serde(rename = "work_surface_deleted")]
+    WorkSurfaceDeleted { timestamp: u64, surface_id: String },
+
     // ========================================================================
     // ACTION EVENTS
     // ========================================================================
@@ -117,7 +135,7 @@ pub enum StreamEvent {
         session_id: Option<String>,
         /// Artifacts declared by the agent in its response.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        artifacts: Vec<zero_core::event::ArtifactDeclaration>,
+        artifacts: Vec<agent_primitives::event::ArtifactDeclaration>,
     },
 
     /// Delegate action from the delegate tool.
@@ -132,6 +150,10 @@ pub enum StreamEvent {
         max_iterations: Option<u32>,
         output_schema: Option<Value>,
         skills: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability_assignment: Option<agent_primitives::event::AgentCapabilityAssignment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        planning_capability_catalog: Option<Value>,
         complexity: Option<String>,
         mode: Option<String>,
         parallel: bool,
@@ -208,7 +230,7 @@ pub enum StreamEvent {
     // ========================================================================
     // SESSION EVENTS
     // ========================================================================
-    /// Session title changed via `set_session_title` tool.
+    /// Session title changed by runtime title derivation or legacy log replay.
     #[serde(rename = "session_title_changed")]
     SessionTitleChanged {
         timestamp: u64,
@@ -232,6 +254,9 @@ impl StreamEvent {
             | Self::Error { timestamp, .. }
             | Self::ShowContent { timestamp, .. }
             | Self::RequestInput { timestamp, .. }
+            | Self::WorkSurface { timestamp, .. }
+            | Self::WorkSurfaceUpdated { timestamp, .. }
+            | Self::WorkSurfaceDeleted { timestamp, .. }
             | Self::ActionRespond { timestamp, .. }
             | Self::ActionDelegate { timestamp, .. }
             | Self::ActionPlanUpdate { timestamp, .. }
@@ -332,6 +357,7 @@ mod tests {
                 timestamp: 6,
                 tool_id: "id".into(),
                 result: "r".into(),
+                context_result: Some("context r".into()),
                 error: None,
                 duration_ms: Some(10),
             },
@@ -381,6 +407,8 @@ mod tests {
                 max_iterations: None,
                 output_schema: None,
                 skills: vec![],
+                capability_assignment: None,
+                planning_capability_catalog: None,
                 complexity: None,
                 mode: None,
                 parallel: false,

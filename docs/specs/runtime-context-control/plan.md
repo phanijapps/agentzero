@@ -1,7 +1,7 @@
 # Plan: Runtime Context Control
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Drafting
+- **Status:** Done
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as you learn. When it changes substantially
@@ -158,7 +158,7 @@ output, the stable prefix, the plan block, or prior summaries.
 
 **Touches:** `gateway/gateway-memory/src/sleep/compactor.rs`,
 `gateway/gateway-memory/src/sleep/worker.rs`,
-`memory-bank/future-state/compaction-strategy.md`
+`docs/architecture/future-state/compaction-strategy.md`
 
 **Tests:**
 - TDD: a verifier-enabled compactor skips a candidate when either entity cannot
@@ -209,7 +209,7 @@ without both entity records and an affirmative verifier result.
 
 **Touches:** `runtime/agent-runtime/src/llm/openai.rs`,
 `gateway/src/state/mod.rs`,
-`stores/zero-stores-sqlite/src/*`,
+`stores/zbot-stores-sqlite/src/*`,
 `docs/specs/runtime-context-control/spec.md`
 
 **Tests:**

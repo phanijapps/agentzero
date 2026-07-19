@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use zero_core::Tool;
+use agent_primitives::Tool;
 
 /// Registry of all available tools
 pub struct ToolRegistry {
@@ -81,9 +81,9 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::ToolContext as ZcToolContext;
     use async_trait::async_trait;
     use serde_json::Value;
-    use zero_core::ToolContext as ZcToolContext;
 
     struct DummyTool {
         n: &'static str,
@@ -104,7 +104,7 @@ mod tests {
             &self,
             _ctx: Arc<dyn ZcToolContext>,
             _args: Value,
-        ) -> zero_core::Result<Value> {
+        ) -> agent_primitives::Result<Value> {
             Ok(Value::Null)
         }
     }

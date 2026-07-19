@@ -154,6 +154,7 @@ struct Client {
     subscription_count: usize,
     /// Track if channel has failed (for cleanup)
     channel_healthy: bool,
+    surface_catalogs: HashSet<String>,
 }
 
 /// Per-subscription state including scope and cached identifiers.
@@ -259,10 +260,20 @@ impl SubscriptionManager {
                 last_activity: Instant::now(),
                 subscription_count: 0,
                 channel_healthy: true,
+                surface_catalogs: HashSet::new(),
             },
         );
         state.client_subscriptions.insert(client_id, HashSet::new());
         self.metrics.total_clients.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Replace a client's explicitly advertised work-surface catalogs.
+    pub async fn set_surface_catalogs(&self, client_id: &ClientId, catalogs: HashSet<String>) {
+        let mut state = self.state.write().await;
+        if let Some(client) = state.clients.get_mut(client_id) {
+            client.surface_catalogs = catalogs;
+            client.last_activity = Instant::now();
+        }
     }
 
     /// Update client's last activity timestamp to prevent stale cleanup.
@@ -617,6 +628,21 @@ impl SubscriptionManager {
                     scope_state_roots = ?scope_state.as_ref().map(|s| &s.root_execution_ids),
                     "Filtered event due to scope"
                 );
+                continue;
+            }
+
+            if matches!(
+                message_with_seq,
+                ServerMessage::SurfaceCreated { .. }
+                    | ServerMessage::SurfaceUpdated { .. }
+                    | ServerMessage::SurfaceDeleted { .. }
+                    | ServerMessage::SurfaceValidationFailed { .. }
+            ) && !state
+                .clients
+                .get(&client_id)
+                .is_some_and(|client| client.surface_catalogs.contains("zbot/work-surface/v1"))
+            {
+                filtered += 1;
                 continue;
             }
 

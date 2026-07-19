@@ -10,7 +10,8 @@
 // =============================================================================
 
 import type { LogSession, SessionMessage } from "@/services/transport/types";
-import type { AgentTurn, AgentTurnStatus, SessionTurn } from "./types";
+import type { AgentTurn, AgentTurnStatus, SessionTurn, TimelineEntry } from "./types";
+import { splitMessageAttachments, type MessageAttachment } from "../chat/attachments";
 import { turnFromLogRow } from "./session-snapshot";
 
 const TOOL_CALLS_PLACEHOLDER = "[tool calls]";
@@ -22,7 +23,12 @@ const DELEGATE_TOOL_NAME = "delegate_to_agent";
 // -----------------------------------------------------------------------------
 
 export interface TurnBoundary {
-  userMessage: { id: string; content: string; createdAt: string };
+  userMessage: {
+    id: string;
+    content: string;
+    createdAt: string;
+    attachments?: MessageAttachment[];
+  };
   startedAt: string;
   endedAt: string | null;
 }
@@ -48,8 +54,14 @@ export function findTurnBoundaries(
   const userMessages = sorted.filter((m) => m.role === "user");
   return userMessages.map((m, i) => {
     const nextStart = userMessages[i + 1]?.created_at ?? null;
+    const parsed = splitMessageAttachments(m.content);
     return {
-      userMessage: { id: m.id, content: m.content, createdAt: m.created_at },
+      userMessage: {
+        id: m.id,
+        content: parsed.content,
+        createdAt: m.created_at,
+        ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
+      },
       startedAt: m.created_at,
       endedAt: nextStart,
     };
@@ -103,26 +115,29 @@ export function extractAssistantReplyForTurn(
   const sorted = [...windowMessages].sort((a, b) =>
     a.created_at.localeCompare(b.created_at),
   );
-  let plain: string | null = null;
-  let respondText: string | null = null;
+  let answer: string | null = null;
   for (const m of sorted) {
     if (m.role !== "assistant") continue;
+    let respondText: string | null = null;
     for (const call of parseToolCalls(m)) {
       if (call?.tool_name !== RESPOND_TOOL_NAME) continue;
-      const message = call.args?.["message"];
+      const message = call.args?.["message"] ?? call.args?.["text"];
       if (typeof message === "string" && message.length > 0) {
         respondText = message;
       }
     }
-    if (
+    const plainText =
       typeof m.content === "string" &&
       m.content.length > 0 &&
       m.content !== TOOL_CALLS_PLACEHOLDER
-    ) {
-      plain = m.content;
-    }
+        ? m.content
+        : null;
+    // Persisted rows are chronological. A later `respond()` result is the
+    // terminal answer and must supersede earlier progress prose; plain text
+    // still wins when both are carried by the same assistant row.
+    answer = plainText ?? respondText ?? answer;
   }
-  return plain ?? respondText;
+  return answer;
 }
 
 interface ToolCall {
@@ -143,6 +158,41 @@ function parseToolCalls(m: SessionMessage): ToolCall[] {
   }
 }
 
+/**
+ * Rebuild the safe, durable part of a root turn's tool timeline from the
+ * persisted assistant-message log. Live WS events contain richer previews,
+ * but a completion re-hydration deliberately rebuilds the UI from storage.
+ * Keep only tool names here: arguments and results can contain sensitive
+ * context and are neither needed nor appropriate for the compact activity
+ * audit row.
+ */
+export function extractToolActivityForTurn(
+  windowMessages: SessionMessage[],
+): TimelineEntry[] {
+  const sorted = [...windowMessages].sort((a, b) =>
+    a.created_at.localeCompare(b.created_at),
+  );
+  const entries: TimelineEntry[] = [];
+  for (const message of sorted) {
+    if (message.role !== "assistant") continue;
+    for (const [index, call] of parseToolCalls(message).entries()) {
+      const toolName = call?.tool_name;
+      // `respond` is rendered as the assistant message, not duplicate tool
+      // activity. Empty/unrecognized names have no safe user-facing label.
+      if (!toolName || toolName === RESPOND_TOOL_NAME) continue;
+      const at = Date.parse(message.created_at);
+      entries.push({
+        id: `snapshot-tool-${message.id}-${index}`,
+        at: Number.isFinite(at) ? at : 0,
+        kind: "tool_call",
+        text: toolName,
+        toolName,
+      });
+    }
+  }
+  return entries;
+}
+
 // -----------------------------------------------------------------------------
 // Composition
 // -----------------------------------------------------------------------------
@@ -153,6 +203,8 @@ export interface BuildSessionTurnsInput {
   rootStatus: AgentTurnStatus;
   /** Messages whose `execution_id == rootSessionId`. */
   rootMessages: SessionMessage[];
+  /** All session messages, used to rehydrate each delegated execution. */
+  allMessages?: SessionMessage[];
   /** Child execution rows whose `parent_session_id == rootSessionId`. */
   childRows: LogSession[];
 }
@@ -162,14 +214,29 @@ export interface BuildSessionTurnsInput {
  * per turn → per-turn status.
  */
 export function buildSessionTurns(input: BuildSessionTurnsInput): SessionTurn[] {
-  const { rootSessionId, rootEndedAt, rootStatus, rootMessages, childRows } = input;
+  const {
+    rootSessionId,
+    rootEndedAt,
+    rootStatus,
+    rootMessages,
+    allMessages = rootMessages,
+    childRows,
+  } = input;
   const boundaries = findTurnBoundaries(rootMessages, rootEndedAt);
   const buckets = bucketSubagents(boundaries, childRows);
+  const messagesByExecution = groupMessagesByExecution(allMessages);
 
   return boundaries.map((b, i) => {
     const subRows = buckets.get(i) ?? [];
     const baseSubagents: AgentTurn[] = subRows
-      .map((row) => turnFromLogRow(row, rootSessionId))
+      .map((row) => {
+        const subagentMessages = messagesByExecution.get(row.session_id) ?? [];
+        return {
+          ...turnFromLogRow(row, row.parent_session_id || rootSessionId),
+          timeline: extractToolActivityForTurn(subagentMessages),
+          respond: extractAssistantReplyForTurn(subagentMessages),
+        };
+      })
       .sort((a, b2) => a.startedAt - b2.startedAt);
 
     const windowMessages = rootMessages.filter((m) => {
@@ -187,6 +254,7 @@ export function buildSessionTurns(input: BuildSessionTurnsInput): SessionTurn[] 
     }));
 
     const assistantText = extractAssistantReplyForTurn(windowMessages);
+    const timeline = extractToolActivityForTurn(windowMessages);
 
     const status = deriveTurnStatus({
       isLast: i === boundaries.length - 1,
@@ -213,13 +281,25 @@ export function buildSessionTurns(input: BuildSessionTurnsInput): SessionTurn[] 
       subagents,
       assistantText,
       assistantStreaming: "",
-      timeline: [],
+      timeline,
       status,
       startedAt: b.startedAt,
       endedAt: b.endedAt,
       durationMs,
     };
   });
+}
+
+function groupMessagesByExecution(
+  messages: SessionMessage[],
+): Map<string, SessionMessage[]> {
+  const grouped = new Map<string, SessionMessage[]>();
+  for (const message of messages) {
+    const existing = grouped.get(message.execution_id);
+    if (existing) existing.push(message);
+    else grouped.set(message.execution_id, [message]);
+  }
+  return grouped;
 }
 
 /**

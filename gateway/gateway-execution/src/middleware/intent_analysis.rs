@@ -1,40 +1,92 @@
-use agent_runtime::{ChatMessage, LlmClient};
-use gateway_services::{AgentService, SharedVaultPaths, SkillService, SkillSource};
+use agent_primitives::event::AgentCapabilityAssignment;
+use agent_runtime::{ContextActorKind, LlmClient};
+use agent_tools::{GoalAccess, RecallAuthorizationContext};
+use gateway_services::{AgentService, McpService, SharedVaultPaths, SkillService, SkillSource};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use zero_stores::{MemoryFactStore, SkillIndexRow};
+use zbot_stores::{MemoryFactStore, SkillIndexRow};
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IntentAnalysis {
     pub primary_intent: String,
     pub hidden_intents: Vec<String>,
     pub recommended_skills: Vec<String>,
     pub recommended_agents: Vec<String>,
+    /// Capability recommendations grouped by the exact agent that may use
+    /// them. MCP IDs are validated again at execution time.
+    #[serde(default)]
+    pub recommended_capabilities: Vec<AgentCapabilityAssignment>,
     pub ward_recommendation: WardRecommendation,
     pub execution_strategy: ExecutionStrategy,
     /// Kept for backward compat with existing logs; no longer requested from LLM.
     #[serde(default)]
+    #[schemars(skip)]
     pub rewritten_prompt: String,
-    /// Pre-rendered "## Recommended action: run_procedure" or legacy
-    /// "## Proven Procedure Available" markdown block, computed in
-    /// `analyze_intent` after the classifier LLM returns. Carried on the
-    /// struct so `format_intent_injection` can render it into the root
-    /// agent's system prompt — the agent that actually decides whether to
-    /// call `run_procedure`. `#[serde(default, skip_serializing)]` because
-    /// it's populated post-deserialization and not requested from the LLM.
+    /// Legacy/manual procedure recommendation block retained for compatible
+    /// serialized analyses. Automatic intent analysis no longer populates it:
+    /// procedures reach the prompt only through scoped, sanitized unified
+    /// recall. `#[serde(default, skip_serializing)]` keeps it out of the LLM
+    /// classifier contract.
     #[serde(default, skip_serializing)]
+    #[schemars(skip)]
     pub procedure_recommendation: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WardAction {
+    UseExisting,
+    CreateNew,
+}
+
+impl WardAction {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::UseExisting => "use_existing",
+            Self::CreateNew => "create_new",
+        }
+    }
+}
+
+impl std::fmt::Display for WardAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionApproach {
+    Simple,
+    Graph,
+}
+
+impl ExecutionApproach {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Simple => "simple",
+            Self::Graph => "graph",
+        }
+    }
+}
+
+impl std::fmt::Display for ExecutionApproach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WardRecommendation {
-    /// "use_existing" or "create_new"
-    pub action: String,
+    pub action: WardAction,
     /// Ward name — domain-level reusable name (e.g., "financial-analysis", "math-tutor")
     pub ward_name: String,
     /// Suggested subdirectory for this specific task (e.g., "stocks/lmnd", "trinomials")
@@ -47,26 +99,29 @@ pub struct WardRecommendation {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionStrategy {
-    pub approach: String,
+    pub approach: ExecutionApproach,
     pub graph: Option<ExecutionGraph>,
     pub explanation: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionGraph {
+    #[serde(default)]
     pub nodes: Vec<GraphNode>,
+    #[serde(default)]
     pub edges: Vec<GraphEdge>,
     /// Kept for backward compat with existing logs; no longer requested from LLM.
     /// Will be derived from nodes/edges in code when UI needs it.
     #[serde(default)]
+    #[schemars(skip)]
     pub mermaid: Option<String>,
     #[serde(default)]
     pub max_cycles: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GraphNode {
     pub id: String,
     pub task: String,
@@ -74,7 +129,7 @@ pub struct GraphNode {
     pub skills: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum GraphEdge {
     Conditional {
@@ -87,7 +142,7 @@ pub enum GraphEdge {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EdgeCondition {
     pub when: String,
     pub to: String,
@@ -98,10 +153,10 @@ pub struct EdgeCondition {
 // ---------------------------------------------------------------------------
 
 /// Default intent-analysis system prompt. Used when no user override exists
-/// at `config/intent_analysis_prompt.md`. The user can copy this into that
+/// at `config/intent-analysis-prompt.md`. The user can copy this into that
 /// file via `load_intent_analysis_prompt` on first run and then customize it.
 /// Load the intent-analysis system prompt from the vault config directory.
-/// Mirrors the distillation prompt pattern: if `config/intent_analysis_prompt.md`
+/// Mirrors the distillation prompt pattern: if `config/intent-analysis-prompt.md`
 /// exists and is non-empty, use it; otherwise materialize the default to disk
 /// so the user can customize it on subsequent runs.
 pub fn load_intent_analysis_prompt(paths: &gateway_services::SharedVaultPaths) -> String {
@@ -134,11 +189,14 @@ pub fn load_intent_analysis_prompt(paths: &gateway_services::SharedVaultPaths) -
 
 pub const DEFAULT_INTENT_ANALYSIS_PROMPT: &str = r#"You are an intent analyzer. Given a user request and available resources, determine intent, ward, and execution approach.
 
+The runtime supplies the structured response schema. Return exactly one schema-conforming response. Do not use tools, do not browse, do not write files, and do not include markdown or explanatory prose.
+
 ## Rules
 - Hidden intents: actionable instructions the user didn't state but expects. Not labels.
 - Skills and agents are DIFFERENT. Skills = load_skill(). Agents = delegate_to_agent(). Never mix them.
 - recommended_skills: from the "Relevant Skills" list only.
 - recommended_agents: from the "Relevant Agents" list or "root" only. Never put skill names as agents.
+- recommended_capabilities: optional assignments of the form {agent_id, skills, mcps}. Use only IDs from the supplied Relevant MCP Servers list, and only for `root` or a Relevant Agent. Keep skills and mcps as [] when no capability is needed.
 - ward_name MUST be a reusable domain category, NEVER task-specific or ticker-specific.
   GOOD: "financial-analysis", "stock-analysis", "market-research", "personal-life", "homework"
   BAD: "amd-stock-analysis", "spy-options-trade", "math-homework-ch5"
@@ -146,28 +204,21 @@ pub const DEFAULT_INTENT_ANALYSIS_PROMPT: &str = r#"You are an intent analyzer. 
 - The "Existing Wards" list shows wards that ALREADY EXIST, with their scope. If one
   covers this task's domain, set action "use_existing" and ward_name to its EXACT listed
   name — never invent a near-duplicate. Use "create_new" only when no listed ward fits.
-- approach "simple" for greetings, quick questions, single-step tasks.
-- approach "graph" when the task needs multiple agents, code, or multi-step orchestration.
+- approach "simple" for greetings, quick questions, one-shot answers, and single-domain analyses that root can finish with memory, graph, tools, or one relevant skill.
+- Do NOT choose "graph" merely because the answer needs current data, calculations, research, or a skill.
+- approach "graph" only when the task needs multiple agents, reusable code or pipeline work, spec/plan artifacts, user-requested files, or explicit multi-step orchestration.
 - When approach is "graph", ALWAYS include "coding" in recommended_skills — it provides the ward structure and task runner.
 
-## Output Format
-Respond with ONLY a JSON object (no markdown fences):
-{
-  "primary_intent": "string",
-  "hidden_intents": ["actionable instruction for each hidden intent"],
-  "recommended_skills": ["skill-name"],
-  "recommended_agents": ["agent-name"],
-  "ward_recommendation": {
-    "action": "use_existing | create_new",
-    "ward_name": "domain-level reusable name (e.g. financial-analysis, NOT amd-analysis)",
-    "subdirectory": "task-specific subdir or null",
-    "reason": "why"
-  },
-  "execution_strategy": {
-    "approach": "simple | graph",
-    "explanation": "one sentence — why this approach"
-  }
-}"#;
+## Structured Response Contract
+Return one top-level object matching these field names. Do not wrap it in "intent", "analysis", "result", or any other envelope.
+- primary_intent: concise kebab-case or short phrase describing the user's main goal.
+- hidden_intents: array of actionable implicit requirements; use [] when none.
+- recommended_skills: array of skill names from Relevant Skills only; use [] when none.
+- recommended_agents: array of agent names from Relevant Agents or "root" only; use [] when none.
+- recommended_capabilities: array of {agent_id, skills, mcps}; use [] when none. MCPs must be canonical IDs from Relevant MCP Servers only.
+- ward_recommendation: object with action ("use_existing" or "create_new"), ward_name, subdirectory (string or null), structure (object; use {} when none), and reason.
+- execution_strategy: object with approach ("simple" or "graph"), graph (prefer null; planner builds executable graphs later), and explanation.
+"#;
 
 // ---------------------------------------------------------------------------
 // format_intent_injection — appended to agent instructions so the agent
@@ -203,18 +254,60 @@ pub fn format_intent_injection(
         }
     }
 
-    // WARM PATH — the task belongs to an existing, graduated ward: delegate
-    // the WHOLE task to that ward-agent in one call. The ward-agent plans and
+    let es = &analysis.execution_strategy;
+    if es.approach == ExecutionApproach::Simple {
+        out.push_str(
+            "\n**Fast path:** This is a simple one-shot task. The task analysis \
+             overrides the generic first-turn orchestration shard for this request. \
+             Work in the root execution and answer directly.\n\
+             Do NOT call `ward`, `delegate_to_agent`, `planner-agent`, `wait_agent`, \
+             `run_procedure`, or read `specs/plan.md` unless the user explicitly asks \
+             for multi-agent/spec/build work. Use memory, graph, direct tools, and \
+             relevant skills as needed, then call `respond` when the answer is ready.\n",
+        );
+
+        if !analysis.recommended_skills.is_empty() || !analysis.recommended_agents.is_empty() {
+            out.push_str("\n**Available Resources:**\n");
+            for skill in &analysis.recommended_skills {
+                out.push_str(&format!("- skill: `{}` (load with load_skill)\n", skill));
+            }
+            for agent in &analysis.recommended_agents {
+                out.push_str(&format!(
+                    "- agent: `{}` (do not delegate on the fast path unless the task escalates)\n",
+                    agent
+                ));
+            }
+        }
+
+        if let Some(root_assignment) = analysis
+            .recommended_capabilities
+            .iter()
+            .find(|assignment| assignment.agent_id == "root" && !assignment.mcps.is_empty())
+        {
+            out.push_str("\n**Selected MCP servers:**\n");
+            for mcp in &root_assignment.mcps {
+                out.push_str(&format!("- `{mcp}` is already mounted for this request.\n"));
+            }
+        }
+
+        if !es.explanation.is_empty() {
+            out.push_str(&format!("\n**Approach:** {}\n", es.explanation));
+        }
+        return out;
+    }
+
+    // WARM PATH — the task belongs to an existing, graduated ward and needs
+    // multi-step orchestration: delegate the WHOLE task to that ward-agent in
+    // one call. The ward-agent plans and
     // executes internally (see `synthesize_ward_agent` / the ward-as-agent
     // design). The root does not enter the ward or run the planner itself.
     //
-    // Gated on `action == "use_existing"` ALONE — not on `approach`. The
-    // intent classifier's graph/simple call is unreliable (it labels
-    // identical multi-step tasks both ways), so it cannot gate routing.
-    // `use_existing` is authoritative: callers (invoke_bootstrap's
-    // graduation gate) set it only when the ward directory exists on disk
-    // and carries a real doctrine, so it always points at a genuine ward.
-    if analysis.ward_recommendation.action == "use_existing" {
+    // Simple one-shot work returns through the fast path above before ward
+    // routing. For graph work, `use_existing` is authoritative: callers
+    // (invoke_bootstrap's graduation gate) set it only when the ward directory
+    // exists on disk and carries a real doctrine, so it always points at a
+    // genuine ward.
+    if analysis.ward_recommendation.action == WardAction::UseExisting {
         let ward = analysis.ward_recommendation.ward_name.as_str();
         let mut ward_task = String::new();
         match original_message {
@@ -224,13 +317,23 @@ pub fn format_intent_injection(
         for h in &analysis.hidden_intents {
             ward_task.push_str(&format!("\\n- also: {}", h));
         }
+        let assignment = analysis
+            .recommended_capabilities
+            .iter()
+            .find(|assignment| assignment.agent_id == format!("ward:{ward}"));
+        let capability_args = assignment.map_or_else(String::new, |assignment| {
+            format!(
+                ", skills={}, mcps={}",
+                serde_json::to_string(&assignment.skills).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&assignment.mcps).unwrap_or_else(|_| "[]".to_string()),
+            )
+        });
         out.push_str(&format!(
             "\n**Required action:** This task belongs to the existing `{ward}` ward.\n\
-             1. Call `set_session_title` with a concise 2-8 word title.\n\
-             2. Then delegate the ENTIRE task to the ward-agent in ONE call and wait \
+             1. Delegate the ENTIRE task to the ward-agent in ONE call and wait \
              for its result:\n\
              ```\n\
-             delegate_to_agent(agent_id=\"ward:{ward}\", task=\"{ward_task}\", wait_for_result=true)\n\
+             delegate_to_agent(agent_id=\"ward:{ward}\", task=\"{ward_task}\", wait_for_result=true{capability_args})\n\
              ```\n\
              The `ward:{ward}` agent plans and executes the whole task internally and returns \
              a finished result. Do NOT call `ward(action=\"use\")`. Do NOT delegate to \
@@ -240,27 +343,38 @@ pub fn format_intent_injection(
         return out;
     }
 
-    // Ward — phrased as a directive, not a suggestion. The agent has
-    // historically paraphrased the ward name to match task-specific
-    // terminology (e.g. "geopolitical-analysis" → "india-pok-analysis")
-    // which violates the reusable-domain rule. Show the exact tool call.
+    // No filesystem-validated ward was available. Do not propagate an
+    // untrusted model-suggested name into the ward tool; it is responsible
+    // for listing existing workspaces or creating a safe new one.
     let wr = &analysis.ward_recommendation;
-    let action_verb = if wr.action == "use_existing" {
-        "use"
+    if wr.ward_name == "unassigned" {
+        out.push_str(
+            "\n**Required workspace:** No existing workspace was selected. Before writing task files, \
+             call `ward(action=\"list\")` and then use an appropriate existing ward or create a \
+             reusable domain ward with a safe single-component name.\n",
+        );
     } else {
-        "create"
-    };
-    out.push_str(&format!(
-        "\n**Required workspace:** Your first tool call MUST be \
-         `ward(action=\"{}\", name=\"{}\")`. The ward name `{}` is mandatory — \
-         do not rename it to a task-specific alternative. Reason: {}\n",
-        action_verb, wr.ward_name, wr.ward_name, wr.reason
-    ));
-    if let Some(ref sub) = wr.subdirectory {
+        // Ward — phrased as a directive, not a suggestion. The agent has
+        // historically paraphrased the ward name to match task-specific
+        // terminology (e.g. "geopolitical-analysis" → "india-pok-analysis")
+        // which violates the reusable-domain rule. Show the exact tool call.
+        let action_verb = if wr.action == WardAction::UseExisting {
+            "use"
+        } else {
+            "create"
+        };
         out.push_str(&format!(
-            "  Place task-specific work under subdirectory `{}/` within that ward.\n",
-            sub
+            "\n**Required workspace:** Your first tool call MUST be \
+             `ward(action=\"{}\", name=\"{}\")`. The ward name `{}` is mandatory — \
+             do not rename it to a task-specific alternative. Reason: {}\n",
+            action_verb, wr.ward_name, wr.ward_name, wr.reason
         ));
+        if let Some(ref sub) = wr.subdirectory {
+            out.push_str(&format!(
+                "  Place task-specific work under subdirectory `{}/` within that ward.\n",
+                sub
+            ));
+        }
     }
 
     // Available resources
@@ -278,60 +392,16 @@ pub fn format_intent_injection(
     }
 
     // Execution approach
-    let es = &analysis.execution_strategy;
-    if es.approach == "graph" {
-        // Build a rich delegation task so planner sees the original request,
-        // intent, ward context, hidden requirements, and available resources
-        // — not just the bare goal.
-        let mut planner_task = String::new();
-        planner_task.push_str("Plan this goal.\\n\\n");
-        if let Some(msg) = original_message {
-            planner_task.push_str(&format!("Original request: {}\\n", msg));
-        }
-        planner_task.push_str(&format!("Intent: {}\\n", analysis.primary_intent));
-        planner_task.push_str(&format!(
-            "Ward: {} ({}) — {}",
-            wr.ward_name, wr.action, wr.reason
-        ));
-        if let Some(ref sub) = wr.subdirectory {
-            planner_task.push_str(&format!("; subdirectory: {}", sub));
-        }
-        planner_task.push_str(".\\n");
-        if !analysis.hidden_intents.is_empty() {
-            planner_task.push_str("Hidden requirements:\\n");
-            for h in &analysis.hidden_intents {
-                planner_task.push_str(&format!("- {}\\n", h));
-            }
-        }
-        if !analysis.recommended_skills.is_empty() {
-            planner_task.push_str(&format!(
-                "Recommended skills: {}.\\n",
-                analysis.recommended_skills.join(", ")
-            ));
-        }
-        if !analysis.recommended_agents.is_empty() {
-            let specialists: Vec<String> = analysis
-                .recommended_agents
-                .iter()
-                .filter(|a| a.as_str() != "planner-agent")
-                .cloned()
-                .collect();
-            if !specialists.is_empty() {
-                planner_task.push_str(&format!(
-                    "Recommended specialist agents: {}.\\n",
-                    specialists.join(", ")
-                ));
-            }
-        }
+    if es.approach == ExecutionApproach::Graph {
+        let planner_task = format_planner_task(analysis, original_message);
 
         out.push_str(&format!(
             "\n**Approach:** Complex task requiring multi-step execution.\n\
-             \n**First step:** Delegate to `planner-agent` with the full intent context:\n\
-             ```\n\
-             delegate_to_agent(agent_id=\"planner-agent\", task=\"{}\")\n\
-             ```\n\
+             \n**First step:** Establish the required workspace. The system then starts `planner-agent` with the full intent context.\n\
+             Do NOT delegate to a worker, planner, or ward-agent manually and do NOT create a root checklist before that transition.\n\
              The planner will read the ward, check existing code and specs, and return a structured execution plan.\n\
-             Then execute each step from the plan by delegating to the assigned agent.\n",
+             Then read every step briefing and execute it by delegating to its assigned agent with `mode=\"step_executor\"`. Pass each briefing's exact `## Skills` and `## MCPs` canonical IDs as the `skills` and `mcps` arguments to `delegate_to_agent`; an explicit `none` means pass an empty list.\n\
+             \nPlanner context:\n{}\n",
             planner_task
         ));
     } else if !es.explanation.is_empty() {
@@ -343,15 +413,83 @@ pub fn format_intent_injection(
 **Ward Rule:** All file-producing work happens inside the ward. Enter it before delegating. Read AGENTS.md to know what exists — reuse before creating.
 "#);
 
-    // Surface the procedure recommendation last so it sits near the agent's
-    // first decision point in the prompt. The block already carries its own
-    // markdown heading ("## Recommended action: run_procedure" or "## Proven
-    // Procedure Available") and a leading newline.
+    // Preserve rendering for callers that supply the legacy/manual procedure
+    // field. The automatic path leaves it empty; automatic procedure context
+    // is rendered by the unified-recall output policy instead.
     if let Some(block) = analysis.procedure_recommendation.as_ref() {
         out.push_str(block);
     }
 
     out
+}
+
+/// Build the planner's stable task context from structured intent output.
+///
+/// The root prompt renders this for transparency while bootstrap stores the
+/// same content in the cold-graph planning gate. WardTool appends the actual
+/// active ward when it consumes that gate, so a provisional recommendation can
+/// never override the root's successful workspace choice.
+#[must_use]
+pub fn format_planner_task(analysis: &IntentAnalysis, original_message: Option<&str>) -> String {
+    let wr = &analysis.ward_recommendation;
+    let mut planner_task = String::from("Plan this goal.\\n\\n");
+    if let Some(msg) = original_message {
+        planner_task.push_str(&format!("Original request: {}\\n", msg));
+    }
+    planner_task.push_str(&format!("Intent: {}\\n", analysis.primary_intent));
+    planner_task.push_str(&format!(
+        "Ward recommendation: {} ({}) — {}",
+        wr.ward_name, wr.action, wr.reason
+    ));
+    if let Some(sub) = &wr.subdirectory {
+        planner_task.push_str(&format!("; subdirectory: {}", sub));
+    }
+    planner_task.push_str(".\\n");
+    if !analysis.hidden_intents.is_empty() {
+        planner_task.push_str("Hidden requirements:\\n");
+        for requirement in &analysis.hidden_intents {
+            planner_task.push_str(&format!("- {}\\n", requirement));
+        }
+    }
+    if !analysis.recommended_skills.is_empty() {
+        planner_task.push_str(&format!(
+            "Recommended skills: {}.\\n",
+            analysis.recommended_skills.join(", ")
+        ));
+    }
+    if !analysis.recommended_capabilities.is_empty() {
+        planner_task.push_str(
+            "Capability guidance from intent (planner may revise it). Use lookup_capabilities to search the complete catalog before assigning skills or MCPs:\n",
+        );
+        for assignment in &analysis.recommended_capabilities {
+            let skills = if assignment.skills.is_empty() {
+                "none".to_string()
+            } else {
+                assignment.skills.join(", ")
+            };
+            let mcps = if assignment.mcps.is_empty() {
+                "none".to_string()
+            } else {
+                assignment.mcps.join(", ")
+            };
+            planner_task.push_str(&format!(
+                "- {}: skills [{}]; MCPs [{}]\n",
+                assignment.agent_id, skills, mcps
+            ));
+        }
+    }
+    let specialists: Vec<&str> = analysis
+        .recommended_agents
+        .iter()
+        .filter_map(|agent| (agent.as_str() != "planner-agent").then_some(agent.as_str()))
+        .collect();
+    if !specialists.is_empty() {
+        planner_task.push_str(&format!(
+            "Recommended specialist agents: {}.\\n",
+            specialists.join(", ")
+        ));
+    }
+    planner_task
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +500,7 @@ pub fn format_user_template(
     message: &str,
     skills: &[Value],
     agents: &[Value],
+    mcps: &[Value],
     wards: &[String],
 ) -> String {
     let skills_list = if skills.is_empty() {
@@ -392,6 +531,20 @@ pub fn format_user_template(
             .join("\n")
     };
 
+    let mcps_list = if mcps.is_empty() {
+        "(none available)".to_string()
+    } else {
+        mcps.iter()
+            .filter_map(|mcp| {
+                let id = mcp.get("id")?.as_str()?;
+                let name = mcp.get("name")?.as_str()?;
+                let desc = mcp.get("description")?.as_str()?;
+                Some(format!("- {} ({}): {}", id, name, desc))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
     let wards_list = if wards.is_empty() {
         "(none — all new)".to_string()
     } else {
@@ -403,8 +556,8 @@ pub fn format_user_template(
     };
 
     format!(
-        "### User Request\n{}\n\n### Available Skills\n{}\n\n### Available Agents\n{}\n\n### Existing Wards\n{}",
-        message, skills_list, agents_list, wards_list
+        "### User Request\n{}\n\n### Available Skills\n{}\n\n### Available Agents\n{}\n\n### Relevant MCP Servers\n{}\n\n### Existing Wards\n{}",
+        message, skills_list, agents_list, mcps_list, wards_list
     )
 }
 
@@ -453,20 +606,70 @@ fn simple_analysis(message: &str) -> IntentAnalysis {
         hidden_intents: vec![],
         recommended_skills: vec![],
         recommended_agents: vec![],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
-            action: "use_existing".to_string(),
+            action: WardAction::UseExisting,
             ward_name: "general".to_string(),
             subdirectory: None,
             structure: std::collections::HashMap::new(),
             reason: "Simple request — no ward needed".to_string(),
         },
         execution_strategy: ExecutionStrategy {
-            approach: "simple".to_string(),
+            approach: ExecutionApproach::Simple,
             graph: None,
             explanation: "Short/simple message — skipped LLM analysis".to_string(),
         },
         rewritten_prompt: String::new(),
         procedure_recommendation: None,
+    }
+}
+
+/// Fallback when the LLM's structured output fails to deserialize: build a
+/// minimal analysis from the semantic-search ward matches so warm routing
+/// survives a malformed response (glm-5.2 occasionally returns invalid JSON:
+/// missing field, wrong type). With a matched ward → `use_existing` (warm);
+/// with none → `create_new` (cold is correct when nothing fits).
+fn fallback_analysis_from_semantic(message: &str, wards: &[String]) -> IntentAnalysis {
+    let mut analysis = simple_analysis(message);
+    match wards.first() {
+        Some(top_ward) => {
+            analysis.ward_recommendation = WardRecommendation {
+                action: WardAction::UseExisting,
+                ward_name: top_ward.clone(),
+                subdirectory: None,
+                structure: std::collections::HashMap::new(),
+                reason:
+                    "LLM structured output failed — warm-routing via top semantic-search ward match"
+                        .to_string(),
+            };
+        }
+        None => {
+            analysis.ward_recommendation.action = WardAction::CreateNew;
+            analysis.ward_recommendation.reason =
+                "LLM structured output failed and no ward matched — create_new".to_string();
+        }
+    }
+    analysis
+}
+
+#[cfg(test)]
+mod fallback_analysis_tests {
+    use super::*;
+
+    #[test]
+    fn routes_warm_to_top_ward_when_matched() {
+        let a = fallback_analysis_from_semantic(
+            "analyze goog",
+            &["financial-analysis".to_string(), "other".to_string()],
+        );
+        assert_eq!(a.ward_recommendation.action, WardAction::UseExisting);
+        assert_eq!(a.ward_recommendation.ward_name, "financial-analysis");
+    }
+
+    #[test]
+    fn routes_cold_when_no_ward_matched() {
+        let a = fallback_analysis_from_semantic("hello", &[]);
+        assert_eq!(a.ward_recommendation.action, WardAction::CreateNew);
     }
 }
 
@@ -478,8 +681,9 @@ fn simple_analysis(message: &str) -> IntentAnalysis {
 ///
 /// Returns `false` for malformed JSON, empty step lists, or any unknown
 /// action name. The check is strict (`all`), not partial.
+#[cfg(test)]
 fn procedure_is_dispatchable(steps_json: &str, known_tool_names: &[&str]) -> bool {
-    let parsed: Vec<zero_stores_domain::PatternStep> = match serde_json::from_str(steps_json) {
+    let parsed: Vec<zbot_stores_domain::PatternStep> = match serde_json::from_str(steps_json) {
         Ok(v) => v,
         Err(_) => return false,
     };
@@ -491,128 +695,6 @@ fn procedure_is_dispatchable(steps_json: &str, known_tool_names: &[&str]) -> boo
         .all(|s| known_tool_names.iter().any(|n| *n == s.action))
 }
 
-/// Recall procedures matching the user's request and render the top hit as a
-/// markdown block destined for the root agent's system prompt.
-///
-/// Graduated three-tier surfacing — first tier whose floors are met wins:
-///   * `promoted` (dispatchable + score+sc clear `cfg.promoted` floors) —
-///     "## Recommended action: run_procedure" with a literal call template.
-///   * `advisory` (score+sc clear `cfg.advisory` floors) — "## Proven
-///     Procedure Available" with the procedure's steps as context.
-///   * `tentative` (score+sc clear `cfg.tentative` floors) — "## Possibly
-///     relevant procedure" gentle FYI for fresh / sc=1 procedures.
-///
-/// Empty `tool_inventory` disables the promoted path only; advisory and
-/// tentative still fire so tests + boot-time degraded mode work. Returns
-/// `None` when recall is unavailable, returns nothing, or no tier matches.
-/// Always emits an info-level log line for observability.
-async fn build_procedure_recommendation(
-    memory_recall: Option<&crate::recall::MemoryRecall>,
-    user_message: &str,
-    tool_inventory: &[String],
-    cfg: &gateway_memory::ProcedureRecommendationConfig,
-) -> Option<String> {
-    if !cfg.enabled {
-        return None;
-    }
-
-    let recall = memory_recall?;
-    let procedures = match recall
-        .recall_procedures(user_message, "root", None, 3)
-        .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "recall_procedures failed in intent_analysis");
-            return None;
-        }
-    };
-
-    let top_score = procedures.first().map(|(_, s)| *s).unwrap_or(0.0);
-    let known_tools_owned: Vec<&str> = tool_inventory.iter().map(|s| s.as_str()).collect();
-    let mut emitted_kind: &str = "none";
-    let mut out: Option<String> = None;
-
-    for (proc, score) in &procedures {
-        let total = (proc.success_count + proc.failure_count).max(1) as f64;
-        let success_rate = proc.success_count as f64 / total;
-
-        let dispatchable = !known_tools_owned.is_empty()
-            && procedure_is_dispatchable(&proc.steps, &known_tools_owned);
-
-        // Tier 1 — promoted (call-to-action). Requires dispatchability so the
-        // suggested run_procedure(...) call is guaranteed to resolve.
-        if dispatchable
-            && *score > cfg.promoted.score_floor
-            && proc.success_count >= cfg.promoted.success_floor
-        {
-            out = Some(format!(
-                "\n## Recommended action: run_procedure\n\
-                 A learned procedure matches this request.\n\
-                 - Name: `{}`\n\
-                 - Description: {}\n\
-                 - Success rate: {:.0}% across {} uses\n\
-                 - Parameters: {}\n\n\
-                 Suggested call:\n\
-                 ```\n\
-                 run_procedure(name=\"{}\", args={{...fill from user request...}})\n\
-                 ```\n\
-                 If the procedure doesn't fit, ignore this recommendation and proceed normally.\n",
-                proc.name,
-                proc.description,
-                success_rate * 100.0,
-                proc.success_count,
-                proc.parameters.as_deref().unwrap_or("[]"),
-                proc.name,
-            ));
-            emitted_kind = "promoted";
-            break;
-        }
-
-        // Tier 2 — advisory ("Proven Procedure"). Doesn't require dispatch
-        // validity; the agent decides whether to invoke or read for context.
-        if *score > cfg.advisory.score_floor && proc.success_count >= cfg.advisory.success_floor {
-            out = Some(format!(
-                "\n## Proven Procedure Available: {}\n{}\nSteps: {}\nSuccess rate: {:.0}% ({} uses)\n",
-                proc.name,
-                proc.description,
-                proc.steps,
-                success_rate * 100.0,
-                proc.success_count,
-            ));
-            emitted_kind = "advisory";
-            break;
-        }
-
-        // Tier 3 — tentative (gentle FYI). Bootstraps sc=1 procedures into
-        // the recommendation surface; successful invocation auto-promotes
-        // them to advisory on the next similar request.
-        if *score > cfg.tentative.score_floor && proc.success_count >= cfg.tentative.success_floor {
-            out = Some(format!(
-                "\n## Possibly relevant procedure: {}\n\
-                 A previously-recorded procedure may apply here. Treat as a hint, not a directive.\n\
-                 - Description: {}\n\
-                 - Evidence: {} successful use(s), {} failure(s)\n",
-                proc.name,
-                proc.description,
-                proc.success_count,
-                proc.failure_count,
-            ));
-            emitted_kind = "tentative";
-            break;
-        }
-    }
-
-    tracing::info!(
-        matched = procedures.len(),
-        top_score = top_score,
-        emitted = emitted_kind,
-        "Procedure recall and gate decision"
-    );
-
-    out
-}
-
 /// Analyze user intent: searches semantically for resources, calls LLM.
 ///
 /// Resource indexing must happen before this call (see `index_resources`).
@@ -620,31 +702,54 @@ async fn build_procedure_recommendation(
 /// Short/trivial messages (greetings, 1-3 word phrases) skip the LLM call
 /// entirely and return a default "simple" analysis to avoid 5-30s latency.
 ///
-/// `tool_inventory` is the live root-agent tool name list; used only to
-/// gate promotion of recalled procedures to an actionable `run_procedure`
-/// recommendation. Pass `&[]` from tests / call sites without a registry
-/// snapshot — the promotion gate stays off and the legacy advisory
-/// surfacing still fires for medium-confidence matches.
 // Established orchestration entry point: each parameter is an independent
 // input (LLM client, message, stores, prompt, tool inventory, procedure
 // config, existing wards). Bundling into a struct would obscure call sites
 // without reducing coupling.
 #[allow(clippy::too_many_arguments)]
 pub async fn analyze_intent(
-    llm_client: &dyn LlmClient,
+    llm_client: std::sync::Arc<dyn LlmClient>,
     user_message: &str,
     fact_store: &dyn MemoryFactStore,
-    memory_recall: Option<&crate::recall::MemoryRecall>,
+    memory_recall: Option<&std::sync::Arc<crate::recall::MemoryRecall>>,
+    goal_access: Option<std::sync::Arc<dyn GoalAccess>>,
+    recall_authorization: Option<RecallAuthorizationContext>,
     system_prompt: &str,
-    tool_inventory: &[String],
-    procedure_recommendation_cfg: Option<&gateway_memory::ProcedureRecommendationConfig>,
+    _tool_inventory: &[String],
+    _procedure_recommendation_cfg: Option<&gateway_memory::ProcedureRecommendationConfig>,
     existing_wards: &[String],
 ) -> Result<IntentAnalysis, String> {
-    // Use the supplied config or fall back to defaults. Callers that don't
-    // wire settings (tests, simple invocations) get the canonical tier
-    // thresholds without ceremony.
-    let cfg_owned = gateway_memory::ProcedureRecommendationConfig::default();
-    let cfg = procedure_recommendation_cfg.unwrap_or(&cfg_owned);
+    analyze_intent_with_capabilities(
+        llm_client,
+        user_message,
+        fact_store,
+        memory_recall,
+        goal_access,
+        recall_authorization,
+        system_prompt,
+        _tool_inventory,
+        _procedure_recommendation_cfg,
+        existing_wards,
+        &[],
+    )
+    .await
+}
+
+/// Analyze intent with a bounded, sanitized MCP candidate list.
+#[allow(clippy::too_many_arguments)]
+pub async fn analyze_intent_with_capabilities(
+    llm_client: std::sync::Arc<dyn LlmClient>,
+    user_message: &str,
+    fact_store: &dyn MemoryFactStore,
+    memory_recall: Option<&std::sync::Arc<crate::recall::MemoryRecall>>,
+    goal_access: Option<std::sync::Arc<dyn GoalAccess>>,
+    recall_authorization: Option<RecallAuthorizationContext>,
+    system_prompt: &str,
+    _tool_inventory: &[String],
+    _procedure_recommendation_cfg: Option<&gateway_memory::ProcedureRecommendationConfig>,
+    existing_wards: &[String],
+    available_mcps: &[Value],
+) -> Result<IntentAnalysis, String> {
     // Fast path: skip LLM for trivial messages
     if is_simple_message(user_message) {
         tracing::info!(
@@ -659,28 +764,42 @@ pub async fn analyze_intent(
     // Step 0: Query memory for relevant past context via the unified recall pool.
     // Intent analysis runs at root level before a specific agent is selected, so
     // we use "root" as the agent_id. No ward is available at this site yet.
-    let memory_context = if let Some(recall) = memory_recall {
-        match recall
-            .recall_unified("root", user_message, None, &[], 10)
+    let memory_context =
+        if let (Some(recall), Some(authorization)) = (memory_recall, recall_authorization) {
+            match crate::invoke::unified_recall_adapter::automatic_unified_recall(
+                recall.clone(),
+                goal_access,
+                authorization,
+                user_message,
+                10,
+            )
             .await
-        {
-            Ok(items) if !items.is_empty() => {
-                let formatted = crate::recall::format_scored_items(&items);
-                tracing::info!(
-                    count = items.len(),
-                    "Recalled unified context for intent analysis"
-                );
-                formatted
+            {
+                Ok(response) if !response.results.is_empty() => {
+                    let formatted = crate::recall::format_unified_recall_response_with_options(
+                        &response,
+                        crate::recall::ContextPacketBuildOptions::new(
+                            "intent-analysis-recall",
+                            "root",
+                            ContextActorKind::Root,
+                            900,
+                        ),
+                    );
+                    tracing::info!(
+                        count = response.count,
+                        "Recalled unified context for intent analysis"
+                    );
+                    formatted
+                }
+                Ok(_) => String::new(),
+                Err(e) => {
+                    tracing::warn!(reason = ?e.code, "Intent-analysis unified recall failed");
+                    String::new()
+                }
             }
-            Ok(_) => String::new(),
-            Err(e) => {
-                tracing::warn!("Intent-analysis unified recall failed: {}", e);
-                String::new()
-            }
-        }
-    } else {
-        String::new()
-    };
+        } else {
+            String::new()
+        };
 
     // Step 0b: Recall proven procedures that match the user's request.
     //
@@ -722,6 +841,7 @@ pub async fn analyze_intent(
         skills_matched = results.skills.len(),
         agents_matched = results.agents.len(),
         wards_matched = results.wards.len(),
+        mcps_matched = results.mcps.len(),
         "Semantic search complete"
     );
 
@@ -730,10 +850,39 @@ pub async fn analyze_intent(
     // not from `results.wards`, which relies on a `category:"ward"` fact recall
     // that returns nothing. Showing the real ward list is what stops the
     // classifier inventing near-duplicate ward names (P5 anti-fragmentation).
+    // MCP facts are indexed and semantically retrieved like skills. Intersect
+    // them with the just-read runtime-safe catalog so stale facts can never
+    // surface a deleted, disabled, or OAuth-unavailable server. If retrieval
+    // is unavailable, retain a small safe fallback list rather than sending
+    // the full runtime catalog to the intent model.
+    let available_mcp_ids = available_mcps
+        .iter()
+        .filter_map(|mcp| mcp.get("id").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    let relevant_mcps = results
+        .mcps
+        .iter()
+        .filter(|mcp| {
+            mcp.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| available_mcp_ids.contains(id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mcp_prompt_candidates = if relevant_mcps.is_empty() {
+        available_mcps
+            .iter()
+            .take(MAX_MCPS)
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        relevant_mcps
+    };
     let user_template = format_user_template(
         user_message,
         &results.skills,
         &results.agents,
+        &mcp_prompt_candidates,
         existing_wards,
     );
 
@@ -744,39 +893,55 @@ pub async fn analyze_intent(
         format!("{}\n\n{}", memory_context, user_template)
     };
 
-    let messages = vec![
-        ChatMessage::system(system_prompt.to_string()),
-        ChatMessage::user(user_content),
-    ];
-
     tracing::info!(
         skills = results.skills.len(),
         agents = results.agents.len(),
         wards = results.wards.len(),
+        mcps = mcp_prompt_candidates.len(),
         "LLM call — sending relevant resources"
     );
 
-    // Step 4: Call LLM
-    let response = llm_client
-        .chat(messages, None)
-        .await
-        .map_err(|e| format!("Intent analysis LLM call failed: {}", e))?;
+    let mut analysis: IntentAnalysis = match agent_runtime::rig_adapter::prompt_typed(
+        llm_client.clone(),
+        system_prompt,
+        user_content.as_str(),
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(first_err) => {
+            // LLM structured output is occasionally malformed (glm-5.2). Retry
+            // once before falling back — the second attempt usually succeeds,
+            // preserving the FULL analysis (primary_intent, execution_strategy)
+            // instead of degrading to the simple fallback.
+            tracing::warn!(
+                error = %first_err,
+                "Intent analysis structured output failed on first attempt — retrying once"
+            );
+            match agent_runtime::rig_adapter::prompt_typed(
+                llm_client,
+                system_prompt,
+                user_content.as_str(),
+            )
+            .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        matched_wards = ?results.wards,
+                        "Intent analysis structured output failed twice — falling back to semantic-search ward match (warm-routing preserved)"
+                    );
+                    fallback_analysis_from_semantic(user_message, &results.wards)
+                }
+            }
+        }
+    };
 
-    tracing::debug!(raw_response = %response.content, "LLM raw response");
-
-    let content = strip_markdown_fences(&response.content);
-
-    // Step 5: Parse response
-    let mut analysis: IntentAnalysis = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse intent analysis JSON: {}", e))?;
-
-    // Step 6: Compute procedure recommendation and attach to the analysis.
-    // This block is what `format_intent_injection` will render into the root
-    // agent's system prompt downstream — the LLM that actually decides
-    // whether to call `run_procedure`. Failures here log a warning and leave
-    // the field None (request still succeeds without the surfacing).
-    analysis.procedure_recommendation =
-        build_procedure_recommendation(memory_recall, user_message, tool_inventory, cfg).await;
+    // Procedures are now present only through the scoped, sanitized unified
+    // recall context above. The old standalone recommender injected raw
+    // procedure fields outside the shared authorization and output boundary.
+    analysis.procedure_recommendation = None;
 
     tracing::info!(
         primary_intent = %analysis.primary_intent,
@@ -952,12 +1117,17 @@ pub async fn index_resources(
     fact_store: &dyn MemoryFactStore,
     skill_service: &SkillService,
     agent_service: &AgentService,
+    mcp_service: &McpService,
     vault_paths: &SharedVaultPaths,
 ) {
     // 1. Skills — incremental, per-row diff.
     reindex_skills(fact_store, skill_service).await;
 
-    // 2. Agents + wards — count-based.
+    // 2. MCPs — always refresh the small, mutable safe catalog. The agent/
+    // ward marker below must not suppress a newly configured MCP.
+    index_mcps(fact_store, mcp_service).await;
+
+    // 3. Agents + wards — count-based.
     let aw_count = count_agent_and_ward_resources(agent_service, vault_paths).await;
     let temp_dir = vault_paths.vault_dir().join("temp");
     let index_marker = temp_dir.join(".aw_index_count");
@@ -1046,11 +1216,57 @@ pub async fn index_resources(
     let _ = std::fs::write(&index_marker, aw_count.to_string());
 }
 
+/// Index the safe MCP metadata used by semantic intent retrieval.
+async fn index_mcps(fact_store: &dyn MemoryFactStore, mcp_service: &McpService) {
+    // Runtime service filtering prevents disabled/OAuth-blocked entries from
+    // entering semantic recall. Only ID, name, and description are stored—
+    // never commands, URLs, headers, or credentials.
+    match mcp_service.list_summaries() {
+        Ok(summaries) => {
+            let summaries = summaries
+                .into_iter()
+                .filter(|summary| {
+                    summary.enabled
+                        && matches!(
+                            summary.auth_status.as_deref(),
+                            None | Some("not_configured") | Some("connected")
+                        )
+                })
+                .collect::<Vec<_>>();
+            tracing::info!(count = summaries.len(), "Indexing MCPs into memory");
+            for summary in summaries {
+                let key = format!("mcp:{}", summary.id);
+                let description = summary
+                    .description
+                    .chars()
+                    .take(MAX_MCP_DESCRIPTION_CHARS)
+                    .map(|character| {
+                        if character.is_control() {
+                            ' '
+                        } else {
+                            character
+                        }
+                    })
+                    .collect::<String>();
+                let content = format!("{} | {} | {}", summary.id, summary.name, description);
+                if let Err(e) = fact_store
+                    .save_fact("root", "mcp", &key, &content, 1.0, None, None)
+                    .await
+                {
+                    tracing::debug!("Failed to index MCP {}: {}", summary.id, e);
+                }
+            }
+        }
+        Err(e) => tracing::warn!("Failed to list MCPs for indexing: {}", e),
+    }
+}
+
 /// Semantic search result grouped by resource type.
 struct SearchResults {
     skills: Vec<Value>,
     agents: Vec<Value>,
     wards: Vec<String>,
+    mcps: Vec<Value>,
 }
 
 /// Minimum relevance score to include a result (filters noise).
@@ -1067,12 +1283,16 @@ const MAX_SKILLS: usize = 8;
 const MAX_AGENTS: usize = 5;
 /// Maximum wards to send to the LLM.
 const MAX_WARDS: usize = 5;
+/// Maximum semantically relevant MCPs to show to the intent model.
+const MAX_MCPS: usize = 8;
+const MAX_MCP_DESCRIPTION_CHARS: usize = 512;
 
 /// Search memory_facts for resources semantically relevant to the user message.
 async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) -> SearchResults {
     let mut skills = Vec::new();
     let mut agents = Vec::new();
     let mut wards = Vec::new();
+    let mut mcps = Vec::new();
 
     // Recall with generous fetch limit, then filter by score and cap per category
     match fact_store.recall_facts("root", user_message, 50).await {
@@ -1110,6 +1330,17 @@ async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) 
                         "ward" if wards.len() < MAX_WARDS => {
                             wards.push(content.to_string());
                         }
+                        "mcp" if mcps.len() < MAX_MCPS => {
+                            let id = key.strip_prefix("mcp:").unwrap_or(key);
+                            let parts: Vec<&str> = content.splitn(3, " | ").collect();
+                            let name = parts.get(1).copied().unwrap_or(id);
+                            let desc = parts.get(2).copied().unwrap_or("");
+                            mcps.push(serde_json::json!({
+                                "id": id,
+                                "name": name,
+                                "description": desc,
+                            }));
+                        }
                         _ => {}
                     }
                 }
@@ -1122,6 +1353,7 @@ async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) 
         skills_above_threshold = skills.len(),
         agents_above_threshold = agents.len(),
         wards_above_threshold = wards.len(),
+        mcps_above_threshold = mcps.len(),
         min_score = MIN_RELEVANCE_SCORE,
         "Filtered by relevance score"
     );
@@ -1130,22 +1362,8 @@ async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) 
         skills,
         agents,
         wards,
+        mcps,
     }
-}
-
-/// Strip optional markdown code-fences that LLMs sometimes wrap around JSON.
-fn strip_markdown_fences(content: &str) -> String {
-    let trimmed = content.trim();
-    if trimmed.starts_with("```") {
-        let without_start = trimmed
-            .trim_start_matches("```json")
-            .trim_start_matches("```JSON")
-            .trim_start_matches("```");
-        if let Some(end) = without_start.rfind("```") {
-            return without_start[..end].trim().to_string();
-        }
-    }
-    trimmed.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,7 +1394,10 @@ mod tests {
         assert!(analysis.hidden_intents.is_empty());
         assert!(analysis.recommended_skills.is_empty());
         assert!(analysis.recommended_agents.is_empty());
-        assert_eq!(analysis.execution_strategy.approach, "simple");
+        assert_eq!(
+            analysis.execution_strategy.approach,
+            ExecutionApproach::Simple
+        );
         assert!(analysis.execution_strategy.graph.is_none());
         // rewritten_prompt defaults to empty when not present
         assert!(analysis.rewritten_prompt.is_empty());
@@ -1250,7 +1471,10 @@ mod tests {
         assert_eq!(analysis.hidden_intents.len(), 2);
         assert_eq!(analysis.recommended_skills, vec!["code-gen", "testing"]);
         assert_eq!(analysis.recommended_agents, vec!["coder", "reviewer"]);
-        assert_eq!(analysis.execution_strategy.approach, "graph");
+        assert_eq!(
+            analysis.execution_strategy.approach,
+            ExecutionApproach::Graph
+        );
 
         let graph = analysis.execution_strategy.graph.as_ref().unwrap();
         assert_eq!(graph.nodes.len(), 3);
@@ -1287,29 +1511,84 @@ mod tests {
     }
 
     #[test]
+    fn partial_graph_object_does_not_break_intent_deserialization() {
+        let json = r#"{
+            "primary_intent": "memory-knowledge-architecture",
+            "hidden_intents": ["Use cited research", "Produce markdown and diagrams"],
+            "recommended_skills": ["coding"],
+            "recommended_agents": ["planner-agent"],
+            "ward_recommendation": {
+                "action": "create_new",
+                "ward_name": "memory-knowledge-architecture",
+                "subdirectory": null,
+                "reason": "Architecture research and documentation task"
+            },
+            "execution_strategy": {
+                "approach": "graph",
+                "graph": {
+                    "max_cycles": 1
+                },
+                "explanation": "Requires research, synthesis, architecture design, and documentation"
+            }
+        }"#;
+
+        let analysis: IntentAnalysis = serde_json::from_str(json)
+            .expect("partial optional graph should not force intent fallback");
+        let graph = analysis
+            .execution_strategy
+            .graph
+            .expect("graph object should deserialize");
+        assert!(graph.nodes.is_empty());
+        assert!(graph.edges.is_empty());
+        assert_eq!(graph.max_cycles, Some(1));
+    }
+
+    #[test]
     fn test_format_user_template() {
         let skills = vec![
             json!({"name": "code-gen", "description": "Generates code from specs"}),
             json!({"name": "testing", "description": "Runs unit tests"}),
         ];
         let agents = vec![json!({"name": "coder", "description": "Writes production code"})];
+        let mcps = vec![json!({"id": "web", "name": "Web", "description": "Searches the web"})];
 
-        let result = format_user_template("Build a REST API", &skills, &agents, &[]);
+        let result = format_user_template("Build a REST API", &skills, &agents, &mcps, &[]);
 
         assert!(result.contains("### User Request\nBuild a REST API"));
         assert!(result.contains("- code-gen: Generates code from specs"));
         assert!(result.contains("- testing: Runs unit tests"));
         assert!(result.contains("- coder: Writes production code"));
+        assert!(result.contains("- web (Web): Searches the web"));
         assert!(result.contains("### Existing Wards\n(none — all new)"));
     }
 
     #[test]
+    fn default_prompt_names_required_structured_fields_without_json_skeleton() {
+        for field in [
+            "primary_intent",
+            "hidden_intents",
+            "recommended_skills",
+            "recommended_agents",
+            "ward_recommendation",
+            "execution_strategy",
+        ] {
+            assert!(
+                DEFAULT_INTENT_ANALYSIS_PROMPT.contains(field),
+                "default prompt must name required field {field}"
+            );
+        }
+        assert!(DEFAULT_INTENT_ANALYSIS_PROMPT.contains("Do not wrap it"));
+        assert!(!DEFAULT_INTENT_ANALYSIS_PROMPT.contains("Respond with ONLY a JSON object"));
+    }
+
+    #[test]
     fn test_format_user_template_empty_resources() {
-        let result = format_user_template("Hello", &[], &[], &[]);
+        let result = format_user_template("Hello", &[], &[], &[], &[]);
 
         assert!(result.contains("### User Request\nHello"));
         assert!(result.contains("### Available Skills\n(none available)"));
         assert!(result.contains("### Available Agents\n(none available)"));
+        assert!(result.contains("### Relevant MCP Servers\n(none available)"));
         assert!(result.contains("### Existing Wards\n(none — all new)"));
     }
 
@@ -1317,7 +1596,7 @@ mod tests {
     // MockLlmClient, MockFactStore & async tests for analyze_intent
     // -----------------------------------------------------------------------
 
-    use agent_runtime::{ChatResponse, LlmError, StreamCallback};
+    use agent_runtime::{ChatMessage, ChatResponse, LlmError, StreamCallback};
     use async_trait::async_trait;
 
     struct MockLlmClient {
@@ -1359,6 +1638,53 @@ mod tests {
         }
     }
 
+    /// Stateful mock: returns `responses[i]` on the i-th call (for retry tests).
+    struct RetryMockLlmClient {
+        responses: Vec<String>,
+        call: std::sync::Arc<std::sync::Mutex<usize>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for RetryMockLlmClient {
+        fn model(&self) -> &str {
+            "retry-mock"
+        }
+        fn provider(&self) -> &str {
+            "mock"
+        }
+        async fn chat(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Option<Value>,
+        ) -> Result<ChatResponse, LlmError> {
+            let mut c = self.call.lock().unwrap();
+            let idx = *c;
+            *c += 1;
+            Ok(ChatResponse {
+                content: self.responses.get(idx).cloned().unwrap_or_default(),
+                tool_calls: None,
+                reasoning: None,
+                usage: None,
+            })
+        }
+        async fn chat_stream(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Option<Value>,
+            _callback: StreamCallback,
+        ) -> Result<ChatResponse, LlmError> {
+            let mut c = self.call.lock().unwrap();
+            let idx = *c;
+            *c += 1;
+            Ok(ChatResponse {
+                content: self.responses.get(idx).cloned().unwrap_or_default(),
+                tool_calls: None,
+                reasoning: None,
+                usage: None,
+            })
+        }
+    }
+
     /// Minimal mock fact store that accepts writes and returns empty results.
     struct MockFactStore;
 
@@ -1385,6 +1711,55 @@ mod tests {
         ) -> Result<Value, String> {
             Ok(serde_json::json!({"results": [], "count": 0}))
         }
+    }
+
+    struct RecallFactStore {
+        results: Value,
+    }
+
+    #[async_trait]
+    impl MemoryFactStore for RecallFactStore {
+        async fn save_fact(
+            &self,
+            _agent_id: &str,
+            _category: &str,
+            _key: &str,
+            _content: &str,
+            _confidence: f64,
+            _session_id: Option<&str>,
+            _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<Value, String> {
+            Ok(serde_json::json!({"status": "ok"}))
+        }
+
+        async fn recall_facts(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Value, String> {
+            Ok(self.results.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn semantic_search_returns_mcp_candidates_by_canonical_id() {
+        let store = RecallFactStore {
+            results: serde_json::json!({
+                "results": [{
+                    "category": "mcp",
+                    "key": "mcp:blender",
+                    "content": "blender | Blender | Create 3D scenes",
+                    "score": 0.2,
+                }],
+            }),
+        };
+
+        let result = search_resources(&store, "Create a 3D scene").await;
+        assert_eq!(result.mcps.len(), 1);
+        assert_eq!(result.mcps[0]["id"], "blender");
+        assert_eq!(result.mcps[0]["name"], "Blender");
+        assert_eq!(result.mcps[0]["description"], "Create 3D scenes");
     }
 
     // -----------------------------------------------------------------
@@ -1898,9 +2273,11 @@ mod tests {
 
         let fact_store = MockFactStore;
         let result = analyze_intent(
-            &mock,
+            std::sync::Arc::new(mock),
             "Tell me about the weather forecast for tomorrow",
             &fact_store,
+            None,
+            None,
             None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
@@ -1910,7 +2287,10 @@ mod tests {
         .await;
         let analysis = result.expect("should parse simple intent");
         assert_eq!(analysis.primary_intent, "greeting");
-        assert_eq!(analysis.execution_strategy.approach, "simple");
+        assert_eq!(
+            analysis.execution_strategy.approach,
+            ExecutionApproach::Simple
+        );
         assert!(analysis.execution_strategy.graph.is_none());
     }
 
@@ -1941,9 +2321,11 @@ mod tests {
 
         let fact_store = MockFactStore;
         let result = analyze_intent(
-            &mock,
+            std::sync::Arc::new(mock),
             "Write code",
             &fact_store,
+            None,
+            None,
             None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
@@ -1964,16 +2346,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_analyze_intent_malformed_json() {
+    async fn test_analyze_intent_malformed_json_falls_back() {
+        // Malformed LLM output no longer errors — it falls back to a
+        // semantic-search-derived analysis (warm if a ward matched, cold
+        // otherwise) so a bad glm-5.2 response doesn't kill intent analysis
+        // or force cold routing.
         let mock = MockLlmClient {
             response: "This is not valid JSON at all.".to_string(),
         };
 
         let fact_store = MockFactStore;
         let result = analyze_intent(
-            &mock,
+            std::sync::Arc::new(mock),
             "Build me a web scraper for news articles",
             &fact_store,
+            None,
+            None,
             None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
@@ -1981,39 +2369,59 @@ mod tests {
             &[],
         )
         .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
         assert!(
-            err.contains("Failed to parse intent analysis JSON"),
-            "unexpected error: {}",
-            err
+            result.is_ok(),
+            "malformed JSON should fall back, not error: {:?}",
+            result.err()
+        );
+        let analysis = result.unwrap();
+        assert!(
+            matches!(
+                analysis.ward_recommendation.action,
+                WardAction::UseExisting | WardAction::CreateNew
+            ),
+            "fallback produced a valid ward action: {:?}",
+            analysis.ward_recommendation.action
         );
     }
 
     #[tokio::test]
-    async fn test_analyze_intent_strips_markdown_fences() {
-        let mock = MockLlmClient {
-            response: r#"```json
-{
-    "primary_intent": "greeting",
-    "hidden_intents": [],
-    "recommended_skills": [],
-    "recommended_agents": [],
-    "ward_recommendation": {"action": "create_new", "ward_name": "test-ward", "subdirectory": null, "reason": "test"},
-    "execution_strategy": {
-        "approach": "simple",
-        "explanation": "Simple greeting"
-    }
-}
-```"#
-            .to_string(),
+    async fn test_analyze_intent_retries_and_recovers_on_second_attempt() {
+        // First attempt returns malformed JSON; second returns a valid analysis.
+        // Intent analysis should retry once and use the valid second response
+        // (the full analysis), not fall back.
+        let valid = serde_json::to_string(&IntentAnalysis {
+            primary_intent: "stock-valuation".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            recommended_capabilities: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::CreateNew,
+                ward_name: "x".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "r".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Simple,
+                graph: None,
+                explanation: "e".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: None,
+        })
+        .unwrap();
+        let mock = RetryMockLlmClient {
+            responses: vec!["not json".to_string(), valid],
+            call: std::sync::Arc::new(std::sync::Mutex::new(0)),
         };
-
-        let fact_store = MockFactStore;
         let result = analyze_intent(
-            &mock,
-            "Analyze this dataset and create visualizations",
-            &fact_store,
+            std::sync::Arc::new(mock),
+            "analyze goog",
+            &MockFactStore,
+            None,
+            None,
             None,
             DEFAULT_INTENT_ANALYSIS_PROMPT,
             &[],
@@ -2021,9 +2429,16 @@ mod tests {
             &[],
         )
         .await;
-        let analysis = result.expect("should strip fences and parse");
-        assert_eq!(analysis.primary_intent, "greeting");
+        assert!(
+            result.is_ok(),
+            "should recover on retry: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().primary_intent, "stock-valuation");
     }
+
+    // NOTE: `test_analyze_intent_strips_markdown_fences` was removed — markdown
+    // fence stripping is gone now that intent analysis uses Rig typed output.
 
     #[test]
     fn test_format_intent_injection() {
@@ -2032,15 +2447,20 @@ mod tests {
             hidden_intents: vec!["Save results to output/".to_string()],
             recommended_skills: vec!["coding".to_string(), "web-search".to_string()],
             recommended_agents: vec!["code-agent".to_string()],
+            recommended_capabilities: vec![AgentCapabilityAssignment {
+                agent_id: "code-agent".to_string(),
+                skills: vec!["coding".to_string()],
+                mcps: vec!["blender".to_string()],
+            }],
             ward_recommendation: WardRecommendation {
-                action: "create_new".to_string(),
+                action: WardAction::CreateNew,
                 ward_name: "financial-analysis".to_string(),
                 subdirectory: Some("stocks/spy".to_string()),
                 structure: Default::default(),
                 reason: "Domain-level ward for all financial work".to_string(),
             },
             execution_strategy: ExecutionStrategy {
-                approach: "graph".to_string(),
+                approach: ExecutionApproach::Graph,
                 graph: None,
                 explanation: "Research then analyze".to_string(),
             },
@@ -2054,6 +2474,10 @@ mod tests {
         assert!(injection.contains("stocks/spy"));
         assert!(injection.contains("coding"));
         assert!(injection.contains("code-agent"));
+        assert!(injection.contains("Capability guidance from intent"));
+        assert!(injection.contains("lookup_capabilities"));
+        assert!(injection.contains("mode=\"step_executor\""));
+        assert!(injection.contains("exact `## Skills` and `## MCPs` canonical IDs"));
         assert!(injection.contains("Ward Rule:"));
     }
 
@@ -2064,15 +2488,16 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
-                action: "create_new".to_string(),
+                action: WardAction::CreateNew,
                 ward_name: "test-ward".to_string(),
                 subdirectory: None,
                 structure: Default::default(),
                 reason: "test".to_string(),
             },
             execution_strategy: ExecutionStrategy {
-                approach: "graph".to_string(),
+                approach: ExecutionApproach::Graph,
                 graph: None,
                 explanation: "test".to_string(),
             },
@@ -2086,6 +2511,72 @@ mod tests {
     }
 
     #[test]
+    fn format_intent_injection_never_turns_unassigned_into_a_path() {
+        let analysis = IntentAnalysis {
+            primary_intent: "research".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            recommended_capabilities: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::CreateNew,
+                ward_name: "unassigned".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "No validated existing ward was available".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Graph,
+                graph: None,
+                explanation: "Requires research".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: None,
+        };
+
+        let injection = format_intent_injection(&analysis, None, None);
+        assert!(injection.contains("ward(action=\"list\")"));
+        assert!(!injection.contains("ward(action=\"create\", name="));
+    }
+
+    #[test]
+    fn format_intent_injection_requires_the_named_new_ward_before_procedures() {
+        let analysis = IntentAnalysis {
+            primary_intent: "interview candidate analysis".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            recommended_capabilities: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::CreateNew,
+                ward_name: "hiring-analysis".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "Reusable hiring domain".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Graph,
+                graph: None,
+                explanation: "Requires structured analysis".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: Some(
+                "\n## Recommended action: run_procedure\nrun_procedure(name=\"candidate_analysis\")\n"
+                    .to_string(),
+            ),
+        };
+
+        let injection = format_intent_injection(&analysis, None, Some("Analyze this interview"));
+        let create_at = injection
+            .find("ward(action=\"create\", name=\"hiring-analysis\")")
+            .expect("named ward creation must be required");
+        let procedure_at = injection
+            .find("run_procedure(name=\"candidate_analysis\")")
+            .expect("procedure recommendation should remain visible");
+        assert!(create_at < procedure_at);
+    }
+
+    #[test]
     fn test_format_intent_injection_spec_guidance_ignored() {
         // spec_guidance is no longer injected — root decides its own approach
         let analysis = IntentAnalysis {
@@ -2093,15 +2584,16 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
-                action: "create_new".to_string(),
+                action: WardAction::CreateNew,
                 ward_name: "test-ward".to_string(),
                 subdirectory: None,
                 structure: Default::default(),
                 reason: "test".to_string(),
             },
             execution_strategy: ExecutionStrategy {
-                approach: "graph".to_string(),
+                approach: ExecutionApproach::Graph,
                 graph: None,
                 explanation: "test".to_string(),
             },
@@ -2122,10 +2614,7 @@ mod tests {
             {"action": "shell", "args": {}, "binds": []},
             {"action": "read_file", "args": {}, "binds": []}
         ]"#;
-        assert!(procedure_is_dispatchable(
-            steps,
-            &["shell", "read_file", "grep"]
-        ));
+        assert!(procedure_is_dispatchable(steps, &["shell", "read_file"]));
     }
 
     #[test]
@@ -2161,15 +2650,16 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
-                action: "create_new".to_string(),
+                action: WardAction::CreateNew,
                 ward_name: "test-ward".to_string(),
                 subdirectory: None,
                 structure: Default::default(),
                 reason: "test".to_string(),
             },
             execution_strategy: ExecutionStrategy {
-                approach: "graph".to_string(),
+                approach: ExecutionApproach::Graph,
                 graph: None,
                 explanation: "test".to_string(),
             },
@@ -2192,15 +2682,16 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
-                action: "create_new".to_string(),
+                action: WardAction::CreateNew,
                 ward_name: "financial-analysis".to_string(),
                 subdirectory: None,
                 structure: Default::default(),
                 reason: "test".to_string(),
             },
             execution_strategy: ExecutionStrategy {
-                approach: "graph".to_string(),
+                approach: ExecutionApproach::Graph,
                 graph: None,
                 explanation: "test".to_string(),
             },
@@ -2219,37 +2710,66 @@ mod tests {
     }
 
     #[test]
-    fn format_intent_injection_warm_path_fires_regardless_of_approach() {
-        // The classifier's graph/simple label must NOT gate warm routing —
-        // an existing graduated ward is delegated to either way.
-        for approach in ["graph", "simple"] {
-            let analysis = IntentAnalysis {
-                primary_intent: "city itinerary".to_string(),
-                hidden_intents: vec![],
-                recommended_skills: vec![],
-                recommended_agents: vec![],
-                ward_recommendation: WardRecommendation {
-                    action: "use_existing".to_string(),
-                    ward_name: "travel-planning".to_string(),
-                    subdirectory: None,
-                    structure: Default::default(),
-                    reason: "existing ward".to_string(),
-                },
-                execution_strategy: ExecutionStrategy {
-                    approach: approach.to_string(),
-                    graph: None,
-                    explanation: "x".to_string(),
-                },
-                rewritten_prompt: String::new(),
-                procedure_recommendation: None,
-            };
-            let injection = format_intent_injection(&analysis, None, Some("Barcelona itinerary"));
-            assert!(
-                injection.contains("delegate_to_agent(agent_id=\"ward:travel-planning\""),
-                "warm path should fire for approach={approach}"
-            );
-            assert!(!injection.contains("delegate_to_agent(agent_id=\"planner-agent\""));
-        }
+    fn format_intent_injection_simple_existing_ward_stays_direct() {
+        // Fast path: a simple one-shot request should not be promoted into the
+        // warm ward-agent route just because it belongs to an existing ward.
+        let analysis = IntentAnalysis {
+            primary_intent: "city itinerary".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            recommended_capabilities: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::UseExisting,
+                ward_name: "travel-planning".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "existing ward".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Simple,
+                graph: None,
+                explanation: "one-shot answer".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: Some(
+                "\n## Recommended action: run_procedure\nrun_procedure(name=\"x\")\n".to_string(),
+            ),
+        };
+        let injection = format_intent_injection(&analysis, None, Some("Barcelona itinerary"));
+        assert!(injection.contains("**Fast path:**"));
+        assert!(!injection.contains("delegate_to_agent(agent_id=\"ward:travel-planning\""));
+        assert!(!injection.contains("delegate_to_agent(agent_id=\"planner-agent\""));
+        assert!(!injection.contains("ward(action="));
+        assert!(!injection.contains("Recommended action: run_procedure"));
+    }
+
+    #[test]
+    fn format_intent_injection_warm_path_requires_graph_approach() {
+        let analysis = IntentAnalysis {
+            primary_intent: "city itinerary".to_string(),
+            hidden_intents: vec![],
+            recommended_skills: vec![],
+            recommended_agents: vec![],
+            recommended_capabilities: vec![],
+            ward_recommendation: WardRecommendation {
+                action: WardAction::UseExisting,
+                ward_name: "travel-planning".to_string(),
+                subdirectory: None,
+                structure: Default::default(),
+                reason: "existing ward".to_string(),
+            },
+            execution_strategy: ExecutionStrategy {
+                approach: ExecutionApproach::Graph,
+                graph: None,
+                explanation: "multi-step itinerary".to_string(),
+            },
+            rewritten_prompt: String::new(),
+            procedure_recommendation: None,
+        };
+        let injection = format_intent_injection(&analysis, None, Some("Barcelona itinerary"));
+        assert!(injection.contains("delegate_to_agent(agent_id=\"ward:travel-planning\""));
+        assert!(!injection.contains("delegate_to_agent(agent_id=\"planner-agent\""));
     }
 
     #[test]
@@ -2261,15 +2781,16 @@ mod tests {
             hidden_intents: vec!["save the report".to_string()],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
-                action: "use_existing".to_string(),
+                action: WardAction::UseExisting,
                 ward_name: "financial-analysis".to_string(),
                 subdirectory: None,
                 structure: Default::default(),
                 reason: "existing financial ward".to_string(),
             },
             execution_strategy: ExecutionStrategy {
-                approach: "graph".to_string(),
+                approach: ExecutionApproach::Graph,
                 graph: None,
                 explanation: "multi-step".to_string(),
             },
@@ -2282,8 +2803,8 @@ mod tests {
         // Warm path: delegate the whole task to the ward-agent and wait.
         assert!(injection.contains("delegate_to_agent(agent_id=\"ward:financial-analysis\""));
         assert!(injection.contains("wait_for_result=true"));
-        // The root must still set the session title before delegating.
-        assert!(injection.contains("set_session_title"));
+        // Session title is now runtime-derived, not a required model-visible tool call.
+        assert!(!injection.contains("set_session_title"));
         // Warm path must NOT emit the planner-delegation call (the cold path's
         // routing). The text may *mention* planner-agent in a "do NOT" line —
         // assert on the actual call string instead.
@@ -2299,15 +2820,16 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
-                action: "use_existing".to_string(),
+                action: WardAction::UseExisting,
                 ward_name: "x".to_string(),
                 subdirectory: None,
                 structure: Default::default(),
                 reason: "test".to_string(),
             },
             execution_strategy: ExecutionStrategy {
-                approach: "simple".to_string(),
+                approach: ExecutionApproach::Simple,
                 graph: None,
                 explanation: "test".to_string(),
             },

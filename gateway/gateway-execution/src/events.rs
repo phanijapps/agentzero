@@ -3,7 +3,9 @@
 //! Event conversion and emission helpers for agent execution.
 
 use agent_runtime::StreamEvent;
+use agent_surfaces::{SurfaceValidator, ZbotWorkSurfaceCatalog};
 use gateway_events::GatewayEvent;
+use sha2::{Digest, Sha256};
 
 /// Convert an agent runtime stream event to a gateway event.
 ///
@@ -20,6 +22,9 @@ pub fn convert_stream_event(
     execution_id: &str,
 ) -> Option<GatewayEvent> {
     match event {
+        StreamEvent::WorkSurface { surface, .. } => validated_surface_event(surface, session_id, execution_id, false),
+        StreamEvent::WorkSurfaceUpdated { surface, .. } => validated_surface_event(surface, session_id, execution_id, true),
+        StreamEvent::WorkSurfaceDeleted { surface_id, .. } => Some(GatewayEvent::SurfaceDeleted { session_id: session_id.to_string(), execution_id: execution_id.to_string(), surface_id }),
         StreamEvent::Metadata { .. } => Some(GatewayEvent::AgentStarted {
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
@@ -140,9 +145,49 @@ pub fn convert_stream_event(
     }
 }
 
+fn validated_surface_event(
+    surface: agent_surfaces::WorkSurface,
+    session_id: &str,
+    execution_id: &str,
+    is_update: bool,
+) -> Option<GatewayEvent> {
+    let descriptor_hash = serde_json::to_vec(&surface)
+        .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+        .unwrap_or_else(|_| "serialization_failed".to_owned());
+    match ZbotWorkSurfaceCatalog.validate(&surface) {
+        Ok(()) => {
+            tracing::info!(surface_id = %surface.surface_id, catalog_id = %surface.catalog_id, descriptor_hash = %descriptor_hash, update = is_update, "validated work surface");
+            Some(if is_update {
+                GatewayEvent::SurfaceUpdated {
+                    session_id: session_id.to_string(),
+                    execution_id: execution_id.to_string(),
+                    surface,
+                }
+            } else {
+                GatewayEvent::SurfaceCreated {
+                    session_id: session_id.to_string(),
+                    execution_id: execution_id.to_string(),
+                    surface,
+                }
+            })
+        }
+        Err(error) => {
+            tracing::warn!(surface_id = %surface.surface_id, catalog_id = %surface.catalog_id, descriptor_hash = %descriptor_hash, reason = %error, "rejected work surface");
+            Some(GatewayEvent::SurfaceValidationFailed {
+                session_id: session_id.to_string(),
+                execution_id: execution_id.to_string(),
+                surface_id: surface.surface_id,
+                reason: error.to_string(),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_surfaces::{ComponentType, SurfaceComponent, WorkSurface, ZBOT_WORK_SURFACE_CATALOG};
+    use std::collections::BTreeMap;
 
     fn convert(event: StreamEvent) -> Option<GatewayEvent> {
         convert_stream_event(event, "agent-1", "conv-1", "session-1", "exec-1")
@@ -236,6 +281,7 @@ mod tests {
             timestamp: 0,
             tool_id: "t1".into(),
             result: "42".into(),
+            context_result: None,
             error: Some("soft fail".into()),
             duration_ms: Some(12),
         });
@@ -423,6 +469,8 @@ mod tests {
             max_iterations: None,
             output_schema: None,
             skills: vec![],
+            capability_assignment: None,
+            planning_capability_catalog: None,
             complexity: None,
             mode: None,
             parallel: false,
@@ -479,5 +527,57 @@ mod tests {
             tokens_out: 20,
         })
         .is_none());
+    }
+
+    #[test]
+    fn work_surface_events_are_validated_and_projected() {
+        let surface = WorkSurface {
+            surface_id: "surface-1".into(),
+            catalog_id: ZBOT_WORK_SURFACE_CATALOG.into(),
+            components: vec![SurfaceComponent {
+                id: "loops".into(),
+                component_type: ComponentType::OpenLoops,
+                props: BTreeMap::new(),
+            }],
+            data: serde_json::json!({}),
+        };
+        assert!(matches!(
+            convert(StreamEvent::WorkSurface {
+                timestamp: 0,
+                surface: surface.clone()
+            }),
+            Some(GatewayEvent::SurfaceCreated { .. })
+        ));
+        assert!(matches!(
+            convert(StreamEvent::WorkSurfaceUpdated {
+                timestamp: 0,
+                surface
+            }),
+            Some(GatewayEvent::SurfaceUpdated { .. })
+        ));
+        assert!(matches!(
+            convert(StreamEvent::WorkSurfaceDeleted {
+                timestamp: 0,
+                surface_id: "surface-1".into()
+            }),
+            Some(GatewayEvent::SurfaceDeleted { .. })
+        ));
+    }
+
+    #[test]
+    fn invalid_work_surface_fails_closed() {
+        let surface = WorkSurface {
+            surface_id: "surface-1".into(),
+            catalog_id: "invalid".into(),
+            components: vec![],
+            data: serde_json::json!({}),
+        };
+        assert!(matches!(
+            convert(StreamEvent::WorkSurface {
+                timestamp: 0,
+                surface
+            }),
+            Some(GatewayEvent::SurfaceValidationFailed { .. })
+        ));
     }
 }

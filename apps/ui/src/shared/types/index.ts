@@ -142,7 +142,7 @@ export interface AgentChannel {
 // DOMAIN: Agents
 // ============================================================================
 
-/** Agent type from zero-app framework */
+/** Agent type from the gateway API */
 export type AgentType =
   | "llm"
   | "sequential"
@@ -161,6 +161,9 @@ export interface Agent {
   providerId: string;
   model: string;
   temperature: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
   thinkingEnabled?: boolean;
   voiceRecordingEnabled?: boolean;

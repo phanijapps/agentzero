@@ -1,12 +1,10 @@
 name: Security checks
 
-# DISABLED while focusing on code quality. To re-enable, restore the
-# `pull_request`, `push`, and weekly `schedule` triggers below.
 on:
+  pull_request:
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
-  # pull_request:
-  # push:
-  #   branches: [ "main" ]
   # schedule:
   #   - cron: "23 6 * * 1" # Mondays 06:23 UTC (weekly)
 
@@ -41,6 +39,15 @@ jobs:
 
       - name: Rust dependency vulnerabilities (cargo audit)
         run: cargo audit
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Rust dependency policy (cargo deny)
+        run: cargo deny check
+
+      - name: Rig dependency boundary
+        run: python scripts/rig_boundary_check.py
 
       # ---------- Node / React ----------
       - name: Setup Node

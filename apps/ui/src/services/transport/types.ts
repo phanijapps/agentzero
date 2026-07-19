@@ -36,6 +36,9 @@ export interface AgentResponse {
   providerId: string;
   model: string;
   temperature: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
   thinkingEnabled: boolean;
   voiceRecordingEnabled: boolean;
@@ -53,6 +56,9 @@ export interface CreateAgentRequest {
   providerId: string;
   model: string;
   temperature?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens?: number;
   instructions?: string;
   mcps?: string[];
@@ -66,6 +72,9 @@ export interface UpdateAgentRequest {
   providerId?: string;
   model?: string;
   temperature?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens?: number;
   thinkingEnabled?: boolean;
   voiceRecordingEnabled?: boolean;
@@ -109,6 +118,7 @@ export interface SessionMessage {
   content: string;
   created_at: string;
   tool_calls?: unknown;
+  tool_call_id?: string | null;
   tool_results?: unknown;
 }
 
@@ -148,11 +158,16 @@ export interface SessionMessagesQuery {
 export interface HealthResponse {
   status: string;
   version: string;
+  buildDate?: string;
+  buildTimestamp?: string;
   uptime: number;
 }
 
 export interface StatusResponse {
   status: string;
+  version?: string;
+  buildDate?: string;
+  buildTimestamp?: string;
   websocket_port: number;
   http_port: number;
   active_connections: number;
@@ -302,6 +317,7 @@ export interface McpServerSummary {
   description: string;
   type: string;
   enabled: boolean;
+  authStatus?: "not_configured" | "not_connected" | "connected" | "reauth_required";
 }
 
 export interface McpListResponse {
@@ -320,6 +336,7 @@ export interface CreateMcpRequest {
   // http/sse/streamable-http fields
   url?: string;
   headers?: Record<string, string>;
+  auth?: McpAuthConfig;
   enabled?: boolean;
 }
 
@@ -333,8 +350,15 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  auth?: McpAuthConfig;
   enabled: boolean;
   validated?: boolean;
+}
+
+export interface McpAuthConfig {
+  type: "oauth2";
+  clientId?: string;
+  scopes?: string[];
 }
 
 export interface McpTestResult {
@@ -343,25 +367,26 @@ export interface McpTestResult {
   tools?: string[];
 }
 
+export interface McpOAuthStatusResponse {
+  status: "not_configured" | "not_connected" | "connected" | "reauth_required";
+}
+
+export interface McpOAuthStartRequest {
+  redirectUri?: string;
+}
+
+export interface McpOAuthStartResponse {
+  authUrl: string;
+  state: string;
+}
+
 // ============================================================================
 // Settings Types
 // ============================================================================
 
 export interface ToolSettings {
-  /** Enable python tool (run Python scripts) */
-  python: boolean;
-  /** Enable web_fetch tool (HTTP requests — large responses can cause context explosion) */
-  webFetch: boolean;
-  /** Enable UI tools (request_input, show_content) */
-  uiTools: boolean;
-  /** Enable create_agent tool */
-  createAgent: boolean;
-  /** Enable introspection tools (list_tools, list_mcps) */
-  introspection: boolean;
-  /** Enable file tools (read, write, edit, glob) as separate tools */
+  /** Enable optional file-discovery tools such as glob */
   fileTools: boolean;
-  /** Enable heavyweight todos tool (SQLite-like task persistence) */
-  todos: boolean;
   /** Offload large tool results to filesystem instead of keeping in context */
   offloadLargeResults: boolean;
   /** Token threshold for offloading (default: 5000 tokens ≈ 20000 chars) */
@@ -415,7 +440,11 @@ export interface OrchestratorConfig {
   model?: string | null;
   /** Temperature (0-2). Default: 0.7 */
   temperature: number;
-  /** Max output tokens. Default: 16384 */
+  /** Max input tokens. Default: 200000 */
+  maxInputTokens?: number;
+  /** Max output tokens. Default: 32000 */
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
   /** Enable extended thinking/reasoning. Default: true */
   thinkingEnabled: boolean;
@@ -427,6 +456,12 @@ export interface DistillationConfig {
   providerId?: string | null;
   /** Model override. null = inherit from orchestrator */
   model?: string | null;
+  /** Max input tokens override. null/undefined = inherit from orchestrator */
+  maxInputTokens?: number | null;
+  /** Max output tokens override. null/undefined = inherit from orchestrator */
+  maxOutputTokens?: number | null;
+  /** Legacy alias for maxOutputTokens. */
+  maxTokens?: number | null;
 }
 
 /** Ward-curator model configuration (Phase C consolidation LLM call) */
@@ -435,6 +470,12 @@ export interface CuratorConfig {
   providerId?: string | null;
   /** Model override. null = inherit from orchestrator */
   model?: string | null;
+  /** Max input tokens override. null/undefined = inherit from orchestrator */
+  maxInputTokens?: number | null;
+  /** Max output tokens override. null/undefined = inherit from orchestrator */
+  maxOutputTokens?: number | null;
+  /** Legacy alias for maxOutputTokens. */
+  maxTokens?: number | null;
 }
 
 /** Intent-analysis model configuration (every root prompt) */
@@ -443,6 +484,12 @@ export interface IntentAnalysisConfig {
   providerId?: string | null;
   /** Model override. null = inherit from orchestrator */
   model?: string | null;
+  /** Max input tokens override. null/undefined = inherit from orchestrator */
+  maxInputTokens?: number | null;
+  /** Max output tokens override. null/undefined = inherit from orchestrator */
+  maxOutputTokens?: number | null;
+  /** Legacy alias for maxOutputTokens. */
+  maxTokens?: number | null;
 }
 
 // ============================================================================
@@ -497,7 +544,11 @@ export interface MultimodalConfig {
   model?: string | null;
   /** Temperature for analysis calls (default: 0.3) */
   temperature: number;
-  /** Max output tokens (default: 4096) */
+  /** Max input tokens (default: 200000) */
+  maxInputTokens?: number;
+  /** Max output tokens (default: 32000) */
+  maxOutputTokens?: number;
+  /** Legacy alias for maxOutputTokens. */
   maxTokens: number;
 }
 
@@ -529,10 +580,48 @@ export interface ExecutionSettingsResponse {
   error?: string;
 }
 
-/** Setup wizard status check */
-export interface SetupStatus {
-  setupComplete: boolean;
-  hasProviders: boolean;
+export type CommissioningState = "not_started" | "in_progress" | "needs_attention" | "complete";
+export type LocalRuntimeState = "unavailable" | "unreachable" | "no_model" | "ready";
+
+export interface SemanticProfile {
+  version: number;
+  basePackIds: string[];
+  domainPackIds: string[];
+  provisioning: "deferred";
+}
+
+export interface CommissioningStatus {
+  state: CommissioningState;
+  recoveryCode?: string | null;
+  semanticProfile: SemanticProfile;
+  restartRequired: boolean;
+}
+
+export interface LocalDiagnosis {
+  state: LocalRuntimeState;
+  recoveryCode: string;
+  models?: string[];
+}
+
+export interface CommissioningRequest {
+  displayName: string;
+  profile?: string;
+  /** Stored only in local z-Bot data; commissioning never adds it to model instructions. */
+  userName: string;
+  interests: string[];
+  hobbies?: string[];
+  /** Optional ISO-8601 calendar date stored only in local z-Bot data. */
+  dateOfBirth?: string;
+  primaryFocus: "think_organize" | "build_code" | "research_learn" | "run_work";
+  domains: Array<"personal_knowledge" | "software" | "writing" | "learning" | "planning">;
+  memoryProfile: "safe_baseline" | "zbot_recommended_v1";
+  provider: {
+    kind: "cloud" | "local";
+    presetId?: "openai" | "deepseek" | "openrouter" | "z-ai" | "mistral";
+    model: string;
+    /** Write-only. Never place this in component state after submit. */
+    apiKey?: string;
+  };
 }
 
 // ============================================================================
@@ -545,12 +634,22 @@ export interface Artifact {
   wardId?: string;
   executionId?: string;
   agentId?: string;
-  filePath: string;
+  /** Server-internal path; never returned by the artifact manifest. */
+  filePath?: string;
   fileName: string;
   fileType?: string;
   fileSize?: number;
   label?: string;
+  /** Explicit opt-in for a final user-facing goal deliverable. */
+  isGoalArtifact?: boolean;
   createdAt: string;
+}
+
+export interface ArtifactListOptions {
+  /** Request only explicitly marked final goal deliverables. */
+  goalArtifactsOnly?: boolean;
+  /** Bounded by the server to 1 through 24. */
+  limit?: number;
 }
 
 // ============================================================================
@@ -561,6 +660,26 @@ export interface StreamEvent {
   type: string;
   timestamp: number;
   [key: string]: unknown;
+}
+
+export interface WorkSurfaceComponent {
+  id: string;
+  type: "DecisionMatrix" | "EvidenceTable" | "AssumptionRegister" | "PlanChecklist" | "ApprovalGate" | "OpenLoops";
+  props?: Record<string, unknown>;
+}
+
+export interface WorkSurface {
+  surface_id: string;
+  catalog_id: "zbot/work-surface/v1";
+  components: WorkSurfaceComponent[];
+  data: Record<string, unknown>;
+}
+
+export interface SurfaceCreatedEvent extends StreamEvent {
+  type: "surface_created";
+  session_id: string;
+  execution_id: string;
+  surface: WorkSurface;
 }
 
 export type EventCallback = (event: StreamEvent) => void;
@@ -626,6 +745,8 @@ export interface SessionDetail {
 /** Filter for querying logs */
 export interface LogFilter {
   agent_id?: string;
+  /** Restrict results to one durable conversation/session. */
+  conversation_id?: string;
   level?: LogLevel;
   from_time?: string;
   to_time?: string;
@@ -734,6 +855,16 @@ export interface MissionControlSessionSummary {
   mode?: string | null;
 }
 
+export type SessionPlanStepStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/** Latest validated operational plan for one selected session. */
+export interface CurrentSessionPlan {
+  execution_id: string;
+  explanation?: string;
+  plan: Array<{ step: string; status: SessionPlanStepStatus }>;
+  updated_at: string;
+}
+
 /** Per-execution token slices for one selected Mission Control session */
 export interface MissionControlSessionTokens {
   conversation_id: string;
@@ -741,6 +872,43 @@ export interface MissionControlSessionTokens {
   total_tokens_in: number;
   total_tokens_out: number;
   executions: MissionControlExecutionSummary[];
+  current_plan?: CurrentSessionPlan;
+}
+
+/** Durable, user-controlled operational thread. This is not semantic memory. */
+export type AutonomyState = "proposed" | "approved" | "blocked" | "complete" | "stale";
+
+export interface AutonomyEvidence {
+  id: string;
+  item_id: string;
+  kind: string;
+  reference_id: string;
+  label?: string | null;
+  created_at: string;
+}
+
+export interface AutonomyItem {
+  id: string;
+  title: string;
+  objective: string;
+  next_action: string;
+  state: AutonomyState;
+  approval_policy: "manual" | "ask_once" | "auto_readonly";
+  source_session_id?: string | null;
+  dedupe_key: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+export interface AutonomyItemDetail extends AutonomyItem {
+  evidence: AutonomyEvidence[];
+}
+
+/** Result of an explicit, server-validated decision-thread resume. */
+export interface AutonomyResumeResult {
+  item_id: string;
+  session_id: string;
 }
 
 /** Filter for querying sessions */
@@ -1059,6 +1227,12 @@ export type MemoryCategory =
   | "agent"
   | "ward";
 
+/** Public memory categories users can create from the UI/API. */
+export type CreatableMemoryCategory = Exclude<
+  MemoryCategory,
+  "instruction" | "correction"
+>;
+
 /** A memory fact stored in the agent's memory system */
 export interface MemoryFact {
   id: string;
@@ -1275,7 +1449,7 @@ export interface Procedure {
   updated_at: string;
 }
 
-/** Session episode fields from the backend (matches `zero_stores_domain::SessionEpisode`). */
+/** Session episode fields from the backend (matches `zbot_stores_domain::SessionEpisode`). */
 export interface SessionEpisode {
   id: string;
   session_id: string;
@@ -1315,6 +1489,68 @@ export interface WardContent {
   episodes: Array<SessionEpisode & { age_bucket: AgeBucket }>;
   counts: WardContentCounts;
 }
+
+// ============================================================================
+// Vault — read-only ward filesystem browser
+// ============================================================================
+
+export interface VaultWard {
+  id: string;
+  name: string;
+}
+
+export interface VaultWardsResponse {
+  wards: VaultWard[];
+}
+
+export type VaultNodeKind = "directory" | "file";
+
+export interface VaultNode {
+  ward_id: string;
+  path: string;
+  name: string;
+  kind: VaultNodeKind;
+  extension?: string | null;
+  size?: number | null;
+  modified_at?: string | null;
+  previewable: boolean;
+}
+
+export interface VaultTreeResponse {
+  ward_id: string;
+  path: string;
+  children: VaultNode[];
+  truncated: boolean;
+}
+
+export interface VaultSearchResponse {
+  ward_id: string;
+  query: string;
+  matches: VaultNode[];
+  truncated: boolean;
+}
+
+export interface VaultTextFileResponse {
+  kind: "text";
+  ward_id: string;
+  path: string;
+  name: string;
+  extension: string;
+  size: number;
+  modified_at?: string | null;
+  content: string;
+}
+
+export interface VaultOfficeFileResponse {
+  kind: "office";
+  ward_id: string;
+  path: string;
+  extension: "docx" | "pptx";
+  contentType: string;
+  data: ArrayBuffer;
+}
+
+export type VaultFileResponse = VaultTextFileResponse | VaultOfficeFileResponse;
 
 /** Request body for POST /api/memory/search (unified hybrid search). */
 export interface HybridSearchRequest {

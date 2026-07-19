@@ -9,8 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::{FileSystemContext, Result, Tool, ToolContext, ZeroError};
-use zero_stores_traits::MemoryFactStore;
+use agent_primitives::{AgentError, FileSystemContext, Result, Tool, ToolContext};
+use zbot_stores_traits::MemoryFactStore;
 
 use super::ast_hook;
 use super::ward_cwd::resolve_ward_cwd;
@@ -73,24 +73,24 @@ impl Tool for EditFileTool {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'path' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'path' parameter".to_string()))?;
 
         let old_text = args
             .get("old_text")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'old_text' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'old_text' parameter".to_string()))?;
 
         let new_text = args
             .get("new_text")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("Missing 'new_text' parameter".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("Missing 'new_text' parameter".to_string()))?;
 
         if path.is_empty() {
-            return Err(ZeroError::Tool("Path cannot be empty".to_string()));
+            return Err(AgentError::Tool("Path cannot be empty".to_string()));
         }
 
         if old_text.is_empty() {
-            return Err(ZeroError::Tool("old_text cannot be empty".to_string()));
+            return Err(AgentError::Tool("old_text cannot be empty".to_string()));
         }
 
         // Sanitize path
@@ -99,7 +99,7 @@ impl Tool for EditFileTool {
             .trim_start_matches("/")
             .trim_start_matches("./");
         if path.contains("..") {
-            return Err(ZeroError::Tool(
+            return Err(AgentError::Tool(
                 "Path cannot contain '..' — all paths must be relative to the ward".to_string(),
             ));
         }
@@ -117,7 +117,7 @@ impl Tool for EditFileTool {
 
         // Read the file
         let content = std::fs::read_to_string(&full_path)
-            .map_err(|e| ZeroError::Tool(format!("Failed to read {}: {}", path, e)))?;
+            .map_err(|e| AgentError::Tool(format!("Failed to read {}: {}", path, e)))?;
 
         // Count occurrences — old_text MUST be unique in the file
         let count = content.matches(old_text).count();
@@ -130,7 +130,7 @@ impl Tool for EditFileTool {
             if trimmed_count == 1 {
                 let new_content = content.replacen(trimmed_old, new_text, 1);
                 std::fs::write(&full_path, &new_content)
-                    .map_err(|e| ZeroError::Tool(format!("Failed to write {}: {}", path, e)))?;
+                    .map_err(|e| AgentError::Tool(format!("Failed to write {}: {}", path, e)))?;
                 tracing::debug!("edit_file: replaced (trimmed match) in {}", path);
                 return Ok(json!({
                     "success": true,
@@ -148,7 +148,7 @@ impl Tool for EditFileTool {
             return Ok(json!({
                 "success": false,
                 "error": format!("old_text not found in {}. The text must match exactly (including whitespace).", path),
-                "hint": "Use grep to find the exact text first, then copy it precisely."
+                "hint": "Use shell with rg or grep to find the exact text first, then copy it precisely."
             }));
         }
 
@@ -171,7 +171,7 @@ impl Tool for EditFileTool {
         }
 
         std::fs::write(&full_path, &new_content)
-            .map_err(|e| ZeroError::Tool(format!("Failed to write {}: {}", path, e)))?;
+            .map_err(|e| AgentError::Tool(format!("Failed to write {}: {}", path, e)))?;
 
         tracing::debug!("edit_file: replaced unique match in {}", path);
 
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_edit_file_schema() {
-        let tool = EditFileTool::new(Arc::new(zero_core::NoFileSystemContext));
+        let tool = EditFileTool::new(Arc::new(agent_primitives::NoFileSystemContext));
         assert_eq!(tool.name(), "edit_file");
         let schema = tool.parameters_schema().unwrap();
         assert!(schema["properties"]["path"].is_object());

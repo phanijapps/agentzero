@@ -1,2 +1,2 @@
-/* Font imports — Fraunces (display), IBM Plex Sans (body), JetBrains Mono (code) */
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,700&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Font imports — IBM Plex Sans for UI, JetBrains Mono for operational metadata. */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');

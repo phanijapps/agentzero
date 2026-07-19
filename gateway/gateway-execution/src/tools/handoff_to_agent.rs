@@ -1,10 +1,10 @@
+use agent_primitives::{AgentError, Result, Tool, ToolContext};
 use agent_runtime::{SteerResult, SteeringRegistry};
 use async_trait::async_trait;
 use execution_state::{DelegationType, ExecutionStatus, StateService};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zero_core::{Result, Tool, ToolContext, ZeroError};
-use zero_stores_sqlite::DatabaseManager;
+use zbot_runtime_sqlite::DatabaseManager;
 
 const MAX_HANDOFF_CHARS: usize = 1000;
 
@@ -59,14 +59,14 @@ impl Tool for HandoffToAgentTool {
         let execution_id = args
             .get("execution_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("execution_id is required".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("execution_id is required".to_string()))?;
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("message is required".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("message is required".to_string()))?;
 
         if message.len() > MAX_HANDOFF_CHARS {
-            return Err(ZeroError::Tool(format!(
+            return Err(AgentError::Tool(format!(
                 "Handoff message too large ({} chars). Maximum is {}. Be concise.",
                 message.len(),
                 MAX_HANDOFF_CHARS
@@ -76,7 +76,7 @@ impl Tool for HandoffToAgentTool {
         let Some(exec) = self
             .state_service
             .get_execution(execution_id)
-            .map_err(|e| ZeroError::Tool(format!("failed to load execution: {e}")))?
+            .map_err(|e| AgentError::Tool(format!("failed to load execution: {e}")))?
         else {
             return Ok(json!({
                 "status": "target_not_found",
@@ -121,7 +121,7 @@ fn context_session_id(ctx: &dyn ToolContext) -> Result<String> {
     ctx.get_state("session_id")
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .filter(|session_id| !session_id.is_empty())
-        .ok_or_else(|| ZeroError::Tool("session_id is required in tool context".to_string()))
+        .ok_or_else(|| AgentError::Tool("session_id is required in tool context".to_string()))
 }
 
 #[cfg(test)]

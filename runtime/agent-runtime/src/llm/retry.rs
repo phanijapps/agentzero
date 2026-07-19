@@ -164,6 +164,50 @@ impl LlmClient for RetryingLlmClient {
         Err(last_error.unwrap_or(LlmError::ApiError("Max retries exceeded".to_string())))
     }
 
+    async fn chat_with_schema(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Value>,
+        output_schema: Option<Value>,
+    ) -> Result<ChatResponse, LlmError> {
+        let mut last_error = None;
+
+        for attempt in 0..=self.policy.max_retries {
+            if attempt > 0 {
+                let delay = self.policy.delay_for_attempt(attempt - 1);
+                tracing::warn!(
+                    "Retrying chat_with_schema() (attempt {}/{}) after {:?}",
+                    attempt + 1,
+                    self.policy.max_retries + 1,
+                    delay,
+                );
+                tokio::time::sleep(delay).await;
+            }
+
+            match self
+                .inner
+                .chat_with_schema(messages.clone(), tools.clone(), output_schema.clone())
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    if self.policy.should_retry(&e) && attempt < self.policy.max_retries {
+                        tracing::warn!(
+                            "chat_with_schema() failed (attempt {}): {}",
+                            attempt + 1,
+                            e
+                        );
+                        last_error = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or(LlmError::ApiError("Max retries exceeded".to_string())))
+    }
+
     async fn chat_stream(
         &self,
         messages: Vec<ChatMessage>,

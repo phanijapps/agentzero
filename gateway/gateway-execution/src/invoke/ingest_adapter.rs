@@ -14,11 +14,13 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_tools::{IngestionAccess, StructuredCounts, StructuredEntity, StructuredRelationship};
+use agent_tools::{
+    EvidenceRecord, IngestionAccess, StructuredCounts, StructuredEntity, StructuredRelationship,
+};
 use chrono::Utc;
 use knowledge_graph::{Entity, EntityType, Relationship, RelationshipType};
-use zero_stores::KnowledgeGraphStore;
-use zero_stores_traits::KgEpisodeStore;
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_traits::KgEpisodeStore;
 
 use crate::ingest::{
     chunker::{chunk_text, ChunkOptions},
@@ -49,6 +51,29 @@ impl IngestionAdapter {
 
 #[async_trait]
 impl IngestionAccess for IngestionAdapter {
+    async fn record_evidence(&self, record: EvidenceRecord) -> std::result::Result<(), String> {
+        let payload = serde_json::to_string(&record)
+            .map_err(|e| format!("serialize evidence record: {e}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(payload.as_bytes());
+        let content_hash = format!("{:x}", hasher.finalize());
+        let episode_id = self
+            .episode_store
+            .upsert_pending(
+                "evidence_intake",
+                &record.evidence_id,
+                &content_hash,
+                record.session_id.as_deref(),
+                &record.agent_id,
+            )
+            .await?;
+        self.episode_store
+            .set_payload(&episode_id, &payload)
+            .await?;
+        self.episode_store.mark_done(&episode_id).await?;
+        Ok(())
+    }
+
     async fn enqueue(
         &self,
         source_id: &str,
@@ -104,14 +129,14 @@ impl IngestionAccess for IngestionAdapter {
     }
 }
 
-/// Map the generic agent-tools shapes onto `zero_stores::ExtractedKnowledge`.
+/// Map the generic agent-tools shapes onto `zbot_stores::ExtractedKnowledge`.
 /// Returns the trait-side type so the result can be passed straight to
 /// `KnowledgeGraphStore::store_knowledge`.
 fn build_knowledge(
     agent_id: &str,
     entities: Vec<StructuredEntity>,
     relationships: Vec<StructuredRelationship>,
-) -> zero_stores::ExtractedKnowledge {
+) -> zbot_stores::ExtractedKnowledge {
     let now = Utc::now();
 
     let kg_entities: Vec<Entity> = entities
@@ -156,7 +181,7 @@ fn build_knowledge(
         })
         .collect();
 
-    zero_stores::ExtractedKnowledge {
+    zbot_stores::ExtractedKnowledge {
         entities: kg_entities,
         relationships: kg_relationships,
     }
@@ -167,8 +192,8 @@ mod tests {
     use super::*;
     use crate::ingest::extractor::Extractor;
     use gateway_services::VaultPaths;
-    use zero_stores_sqlite::kg::storage::GraphStorage;
-    use zero_stores_sqlite::{
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
+    use zbot_stores_sqlite::{
         GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase, SqliteKgStore,
     };
 
@@ -182,7 +207,7 @@ mod tests {
             &self,
             _episode_id: &str,
             _chunk_text: &str,
-            _kg_store: &Arc<dyn zero_stores::KnowledgeGraphStore>,
+            _kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
         ) -> std::result::Result<(), String> {
             Ok(())
         }
@@ -297,6 +322,44 @@ mod tests {
             pending_rows as usize, count,
             "pending episode count matches enqueued chunk count"
         );
+    }
+
+    #[tokio::test]
+    async fn record_evidence_persists_completed_episode_payload() {
+        let h = setup();
+        let record = EvidenceRecord {
+            evidence_id: "root:memory:domain:valuation.aapl".into(),
+            action: "memory_write".into(),
+            source_id: "valuation.aapl".into(),
+            source_type: "memory_fact:domain".into(),
+            session_id: Some("sess-1".into()),
+            ward_id: Some("ward-1".into()),
+            agent_id: "root".into(),
+            retention_policy: "durable".into(),
+            ontology_labels: vec!["financial_metric".into()],
+            taxonomy_labels: vec!["skos:finance".into()],
+        };
+
+        h.adapter
+            .record_evidence(record.clone())
+            .await
+            .expect("record evidence");
+
+        let episodes = h
+            .episode_repo
+            .list_by_session("sess-1")
+            .expect("list episodes");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].source_type, "evidence_intake");
+        assert_eq!(episodes[0].status, "done");
+        let episode_id = &episodes[0].id;
+        let payload = h
+            .episode_repo
+            .get_payload(episode_id)
+            .expect("payload")
+            .expect("payload present");
+        let stored: EvidenceRecord = serde_json::from_str(&payload).expect("evidence payload");
+        assert_eq!(stored, record);
     }
 
     #[tokio::test]

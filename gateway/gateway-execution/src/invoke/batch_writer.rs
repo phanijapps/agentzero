@@ -11,10 +11,13 @@
 use api_logs::{ExecutionLog, LogService};
 use execution_state::StateService;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use zero_stores_sqlite::{ConversationRepository, DatabaseManager};
+use tokio::sync::{mpsc, oneshot};
+use zbot_conversation::MessageStore;
+use zbot_runtime_sqlite::DatabaseManager;
+use zbot_trace::TraceWriter;
 
 /// An appended row on a session's conversation stream.
 #[derive(Debug, Clone)]
@@ -42,6 +45,22 @@ pub enum BatchWrite {
 
     /// Append a message to a session's conversation stream.
     SessionMessage(SessionMessage),
+
+    /// Append a full-fidelity trace event to the session's `.jsonl.gz`.
+    TraceEvent {
+        session_id: String,
+        event: zbot_trace::TraceEvent,
+    },
+
+    /// Finalize a session's trace writer (called on session end).
+    CloseSessionTrace { session_id: String },
+
+    /// Persist every queued write before acknowledging the caller. This is a
+    /// lifecycle barrier used immediately before terminal events so a client
+    /// snapshot cannot race the final assistant message.
+    Flush {
+        acknowledgement: oneshot::Sender<()>,
+    },
 }
 
 /// Handle for sending writes to the batch writer.
@@ -95,6 +114,38 @@ impl BatchWriterHandle {
             tool_call_id: tool_call_id.map(String::from),
         }));
     }
+
+    /// Convenience: append a full-fidelity trace event to the session's
+    /// `.jsonl.gz` (no-op until a `traces_dir` is wired via
+    /// `spawn_batch_writer_with_traces`).
+    pub fn trace_event(&self, session_id: &str, event: zbot_trace::TraceEvent) {
+        self.send(BatchWrite::TraceEvent {
+            session_id: session_id.to_string(),
+            event,
+        });
+    }
+
+    /// Convenience: finalize a session's trace writer on session end.
+    pub fn close_session_trace(&self, session_id: &str) {
+        self.send(BatchWrite::CloseSessionTrace {
+            session_id: session_id.to_string(),
+        });
+    }
+
+    /// Wait until every write queued before this call has been persisted.
+    ///
+    /// The acknowledgement travels through the same FIFO channel as writes,
+    /// so it cannot overtake the terminal assistant message.
+    pub async fn flush(&self) {
+        let (acknowledgement, received) = oneshot::channel();
+        if self.tx.send(BatchWrite::Flush { acknowledgement }).is_err() {
+            tracing::warn!("BatchWriter channel closed, terminal flush skipped");
+            return;
+        }
+        if received.await.is_err() {
+            tracing::warn!("BatchWriter stopped before terminal flush completed");
+        }
+    }
 }
 
 /// Spawn a batch writer background task.
@@ -105,15 +156,36 @@ impl BatchWriterHandle {
 pub fn spawn_batch_writer(
     state_service: Arc<StateService<DatabaseManager>>,
     log_service: Arc<LogService<DatabaseManager>>,
+    messages: Arc<dyn MessageStore>,
 ) -> BatchWriterHandle {
-    spawn_batch_writer_with_repo(state_service, log_service, None)
+    spawn_batch_writer_inner(state_service, log_service, None, messages)
 }
 
-/// Spawn a batch writer with optional conversation repository for session messages.
-pub fn spawn_batch_writer_with_repo(
+/// Spawn a batch writer that also streams full-fidelity trace events to
+/// per-session `.jsonl.gz` files under `traces_dir`.
+///
+/// Session-message writes route through `MessageStore::append`.
+pub fn spawn_batch_writer_with_traces(
     state_service: Arc<StateService<DatabaseManager>>,
     log_service: Arc<LogService<DatabaseManager>>,
-    conversation_repo: Option<Arc<ConversationRepository>>,
+    traces_dir: PathBuf,
+    messages: Arc<dyn MessageStore>,
+) -> BatchWriterHandle {
+    if let Err(error) = std::fs::create_dir_all(&traces_dir) {
+        tracing::warn!(
+            traces_dir = %traces_dir.display(),
+            %error,
+            "failed to create lazy trace directory"
+        );
+    }
+    spawn_batch_writer_inner(state_service, log_service, Some(traces_dir), messages)
+}
+
+fn spawn_batch_writer_inner(
+    state_service: Arc<StateService<DatabaseManager>>,
+    log_service: Arc<LogService<DatabaseManager>>,
+    traces_dir: Option<PathBuf>,
+    messages: Arc<dyn MessageStore>,
 ) -> BatchWriterHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -121,7 +193,8 @@ pub fn spawn_batch_writer_with_repo(
         rx,
         state_service,
         log_service,
-        conversation_repo,
+        traces_dir,
+        messages,
     ));
 
     BatchWriterHandle { tx }
@@ -132,7 +205,8 @@ async fn batch_writer_loop(
     mut rx: mpsc::UnboundedReceiver<BatchWrite>,
     state_service: Arc<StateService<DatabaseManager>>,
     log_service: Arc<LogService<DatabaseManager>>,
-    conversation_repo: Option<Arc<ConversationRepository>>,
+    traces_dir: Option<PathBuf>,
+    messages: Arc<dyn MessageStore>,
 ) {
     // Pending token updates — coalesced by execution_id (only latest kept)
     let mut token_updates: HashMap<String, (u64, u64)> = HashMap::new();
@@ -140,6 +214,9 @@ async fn batch_writer_loop(
     let mut log_entries: Vec<ExecutionLog> = Vec::new();
     // Pending session messages (NOT coalesced — each is unique)
     let mut session_messages: Vec<SessionMessage> = Vec::new();
+    // Per-session trace writers (`<session_id>.jsonl.gz`). Each append writes a
+    // complete gzip member, so a dropped writer leaves prior events durable.
+    let mut trace_writers: HashMap<String, TraceWriter> = HashMap::new();
 
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     // Don't accumulate ticks while we're busy flushing
@@ -159,9 +236,48 @@ async fn batch_writer_loop(
                     Some(BatchWrite::SessionMessage(msg)) => {
                         session_messages.push(msg);
                     }
+                    Some(BatchWrite::TraceEvent { session_id, event }) => {
+                        if let Some(dir) = traces_dir.as_ref() {
+                            match trace_writers.entry(session_id.clone()) {
+                                std::collections::hash_map::Entry::Occupied(mut e) => {
+                                    if let Err(err) = e.get_mut().append(&event) {
+                                        tracing::warn!(
+                                            "BatchWriter: trace append failed for {session_id}: {err}"
+                                        );
+                                    }
+                                }
+                                std::collections::hash_map::Entry::Vacant(e) => {
+                                    match TraceWriter::open_confined(dir, &session_id) {
+                                        Ok(mut w) => {
+                                            if let Err(err) = w.append(&event) {
+                                                tracing::warn!(
+                                                    "BatchWriter: trace append failed for {session_id}: {err}"
+                                                );
+                                            }
+                                            e.insert(w);
+                                        }
+                                        Err(err) => tracing::warn!(
+                                            "BatchWriter: trace open failed for {session_id}: {err}"
+                                        ),
+                                    }
+                                }
+                            }
+                        } else {
+                            tracing::trace!("BatchWriter: trace event dropped (no traces_dir)");
+                        }
+                    }
+                    Some(BatchWrite::CloseSessionTrace { session_id }) => {
+                        // Dropping the writer finalizes the file; events are
+                        // durable (gzip member-per-event).
+                        trace_writers.remove(&session_id);
+                    }
+                    Some(BatchWrite::Flush { acknowledgement }) => {
+                        flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                        let _ = acknowledgement.send(());
+                    }
                     None => {
                         // Channel closed — flush remaining and exit
-                        flush_all(&state_service, &log_service, conversation_repo.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                        flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
                         tracing::debug!("BatchWriter shutting down after final flush");
                         return;
                     }
@@ -170,13 +286,13 @@ async fn batch_writer_loop(
                 // Flush if we've accumulated enough items
                 let total = token_updates.len() + log_entries.len() + session_messages.len();
                 if total >= 10 {
-                    flush_all(&state_service, &log_service, conversation_repo.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                    flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
                 }
             }
             _ = interval.tick() => {
                 // Periodic flush
                 if !token_updates.is_empty() || !log_entries.is_empty() || !session_messages.is_empty() {
-                    flush_all(&state_service, &log_service, conversation_repo.as_deref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                    flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
                 }
             }
         }
@@ -184,10 +300,12 @@ async fn batch_writer_loop(
 }
 
 /// Flush all pending writes to the database.
+///
+/// Session messages are routed through `MessageStore::append`.
 fn flush_all(
     state_service: &StateService<DatabaseManager>,
     log_service: &LogService<DatabaseManager>,
-    conversation_repo: Option<&ConversationRepository>,
+    messages: &dyn MessageStore,
     token_updates: &mut HashMap<String, (u64, u64)>,
     log_entries: &mut Vec<ExecutionLog>,
     session_messages: &mut Vec<SessionMessage>,
@@ -211,26 +329,25 @@ fn flush_all(
         }
     }
 
-    // Flush session messages (order-preserving)
-    if let Some(repo) = conversation_repo {
-        for msg in session_messages.drain(..) {
-            if let Err(e) = repo.append_session_message(
-                &msg.session_id,
-                &msg.execution_id,
-                &msg.role,
-                &msg.content,
-                msg.tool_calls.as_deref(),
-                msg.tool_call_id.as_deref(),
-            ) {
-                tracing::warn!("BatchWriter: failed to append session message: {}", e);
-            }
+    for msg in session_messages.drain(..) {
+        let message = zbot_conversation::Message {
+            id: format!("msg-{}", uuid::Uuid::new_v4()),
+            execution_id: Some(msg.execution_id.clone()),
+            session_id: msg.session_id.clone(),
+            role: msg.role.clone(),
+            content: msg.content.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            token_count: msg.content.len() as i64 / 4,
+            tool_calls: msg.tool_calls.clone(),
+            tool_call_id: msg.tool_call_id.clone(),
+            seq: 0, // assigned atomically inside append; ignored server-side
+        };
+        if let Err(e) = messages.append(&message) {
+            tracing::warn!(
+                "BatchWriter: failed to append message via MessageStore: {}",
+                e
+            );
         }
-    } else if !session_messages.is_empty() {
-        tracing::warn!(
-            "BatchWriter: {} session messages dropped (no conversation repo)",
-            session_messages.len()
-        );
-        session_messages.clear();
     }
 }
 
@@ -247,7 +364,7 @@ mod tests {
         _tmp: TempDir,
         state: Arc<StateService<DatabaseManager>>,
         logs: Arc<LogService<DatabaseManager>>,
-        convo: Arc<ConversationRepository>,
+        messages: Arc<dyn MessageStore>,
         session_id: String,
         execution_id: String,
     }
@@ -256,16 +373,18 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("ensure vault dirs");
-        let db = Arc::new(DatabaseManager::new(paths).expect("db init"));
+        let db = Arc::new(DatabaseManager::new(paths.clone()).expect("db init"));
         let state = Arc::new(StateService::new(db.clone()));
         let logs = Arc::new(LogService::new(db.clone()));
-        let convo = Arc::new(ConversationRepository::new(db));
+        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db())
+            .expect("conversation pool");
+        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(pool));
         let (session, execution) = state.create_session("agent-test").expect("seed session");
         Harness {
             _tmp: tmp,
             state,
             logs,
-            convo,
+            messages,
             session_id: session.id,
             execution_id: execution.id,
         }
@@ -332,6 +451,27 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn flush_makes_a_queued_session_message_immediately_replayable() {
+        let h = setup();
+        let writer = spawn_batch_writer(h.state.clone(), h.logs.clone(), h.messages.clone());
+
+        writer.session_message(
+            &h.session_id,
+            &h.execution_id,
+            "assistant",
+            "terminal response",
+            None,
+            None,
+        );
+        writer.flush().await;
+
+        let messages = h.messages.replay(&h.session_id, None, 100).expect("replay");
+        assert!(messages
+            .iter()
+            .any(|message| message.content == "terminal response"));
+    }
+
     // ------------------------------------------------------------------
     // Loop: runs until channel closes, flushes on shutdown
     // ------------------------------------------------------------------
@@ -345,7 +485,8 @@ mod tests {
             rx,
             h.state.clone(),
             h.logs.clone(),
-            Some(h.convo.clone()),
+            None,
+            h.messages.clone(),
         ));
 
         // Enqueue a log and a session message. Neither is on the 10-item fast
@@ -373,7 +514,7 @@ mod tests {
         task.await.expect("task joins cleanly");
 
         // Final-flush branch must have written the session message.
-        let msgs = h.convo.get_messages(&h.execution_id).expect("get_messages");
+        let msgs = h.messages.replay(&h.session_id, None, 100).expect("replay");
         assert!(
             msgs.iter().any(|m| m.content == "from-batch"),
             "expected flushed session message in {msgs:?}"
@@ -389,7 +530,8 @@ mod tests {
             rx,
             h.state.clone(),
             h.logs.clone(),
-            Some(h.convo.clone()),
+            None,
+            h.messages.clone(),
         ));
 
         for (tin, tout) in [(1, 2), (3, 4), (5, 6), (7, 8)] {
@@ -427,7 +569,8 @@ mod tests {
             rx,
             h.state.clone(),
             h.logs.clone(),
-            Some(h.convo.clone()),
+            None,
+            h.messages.clone(),
         ));
 
         // Ten session messages pushes the pending-count gate at ≥10. The
@@ -446,7 +589,7 @@ mod tests {
         drop(tx);
         task.await.expect("task joins");
 
-        let msgs = h.convo.get_messages(&h.execution_id).expect("get_messages");
+        let msgs = h.messages.replay(&h.session_id, None, 100).expect("replay");
         // 10 sent, 10 must land. Order preserved by the Vec.
         let batch_msgs: Vec<_> = msgs
             .iter()
@@ -459,42 +602,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_messages_dropped_when_no_conversation_repo() {
-        let h = setup();
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        // Spawn WITHOUT a conversation repo — session messages should be
-        // dropped on flush with a warn!(), not crash.
-        let task = tokio::spawn(batch_writer_loop(rx, h.state.clone(), h.logs.clone(), None));
-
-        tx.send(BatchWrite::SessionMessage(SessionMessage {
-            session_id: h.session_id.clone(),
-            execution_id: h.execution_id.clone(),
-            role: "user".into(),
-            content: "orphaned".into(),
-            tool_calls: None,
-            tool_call_id: None,
-        }))
-        .expect("send");
-        drop(tx);
-        task.await.expect("task joins cleanly");
-
-        // And no row should have been written by any side channel.
-        let msgs = h.convo.get_messages(&h.execution_id).expect("get_messages");
-        assert!(
-            msgs.iter().all(|m| m.content != "orphaned"),
-            "orphaned message must NOT have been written to the DB"
-        );
-    }
-
-    #[tokio::test]
     async fn spawn_batch_writer_returns_working_handle() {
         // Integration smoke test of the public spawn helpers — just covers the
-        // `spawn_batch_writer` and `spawn_batch_writer_with_repo` entry points
-        // so those aren't 0%.
+        // `spawn_batch_writer` entry point so it is not 0%.
         let h = setup();
-        let handle =
-            spawn_batch_writer_with_repo(h.state.clone(), h.logs.clone(), Some(h.convo.clone()));
+        let handle = spawn_batch_writer(h.state.clone(), h.logs.clone(), h.messages.clone());
         handle.token_update(&h.execution_id, 100, 200);
         drop(handle);
 
@@ -509,5 +621,72 @@ mod tests {
             .expect("execution exists");
         assert_eq!(execution.tokens_in, 100);
         assert_eq!(execution.tokens_out, 200);
+    }
+
+    fn trace_ev(span: &str) -> zbot_trace::TraceEvent {
+        zbot_trace::TraceEvent {
+            trace_id: "tr".into(),
+            span_id: span.into(),
+            session_id: "s-trace".into(),
+            execution_id: "e1".into(),
+            agent_id: "root".into(),
+            parent_session_id: None,
+            timestamp: "2026-07-07T00:00:00Z".into(),
+            level: "info".into(),
+            category: "tool_call".into(),
+            message: format!("ev {span}"),
+            duration_ms: None,
+            tool_name: Some("read_file".into()),
+            payload: None,
+            usage: None,
+            model: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn trace_events_stream_to_jsonl_gz() {
+        let h = setup();
+        let traces_dir = h._tmp.path().join("data").join("traces");
+        // `batch_writer_loop` is intentionally lower-level than its public
+        // spawn helper, so this fixture creates the trace sink explicitly.
+        std::fs::create_dir_all(&traces_dir).expect("create lazy trace directory");
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(batch_writer_loop(
+            rx,
+            h.state.clone(),
+            h.logs.clone(),
+            Some(traces_dir.clone()),
+            h.messages.clone(),
+        ));
+
+        tx.send(BatchWrite::TraceEvent {
+            session_id: "s-trace".into(),
+            event: trace_ev("a"),
+        })
+        .expect("send a");
+        tx.send(BatchWrite::TraceEvent {
+            session_id: "s-trace".into(),
+            event: trace_ev("b"),
+        })
+        .expect("send b");
+        tx.send(BatchWrite::CloseSessionTrace {
+            session_id: "s-trace".into(),
+        })
+        .expect("close");
+        drop(tx);
+        task.await.expect("task joins");
+
+        // The session's .jsonl.gz holds both events (gzip member-per-event).
+        let path = traces_dir.join("s-trace.jsonl.gz");
+        let bytes = std::fs::read(&path).expect("trace file exists");
+        use std::io::Read;
+        let mut dec = flate2::read::MultiGzDecoder::new(&bytes[..]);
+        let mut out = String::new();
+        dec.read_to_string(&mut out).expect("decode");
+        let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2, "two trace events decoded");
+        assert!(lines[0].contains(r#""span_id":"a""#));
+        assert!(lines[1].contains(r#""span_id":"b""#));
     }
 }

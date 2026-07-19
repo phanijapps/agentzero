@@ -70,7 +70,7 @@ pub trait Extractor: Send + Sync {
         &self,
         episode_id: &str,
         chunk_text: &str,
-        kg_store: &Arc<dyn zero_stores::KnowledgeGraphStore>,
+        kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
     ) -> Result<(), String>;
 }
 
@@ -99,7 +99,7 @@ impl Extractor for NoopExtractor {
         &self,
         episode_id: &str,
         _chunk_text: &str,
-        _kg_store: &Arc<dyn zero_stores::KnowledgeGraphStore>,
+        _kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
     ) -> Result<(), String> {
         self.seen.lock().await.push(episode_id.to_string());
         Ok(())
@@ -229,7 +229,7 @@ impl Extractor for LlmExtractor {
         &self,
         episode_id: &str,
         chunk_text: &str,
-        kg_store: &Arc<dyn zero_stores::KnowledgeGraphStore>,
+        kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
     ) -> Result<(), String> {
         if chunk_text.trim().is_empty() {
             return Ok(());
@@ -301,10 +301,10 @@ impl Extractor for LlmExtractor {
         }
 
         // Phase B2: write through the trait surface so SurrealDB
-        // is honored. The trait wants `zero_stores::ExtractedKnowledge`;
+        // is honored. The trait wants `zbot_stores::ExtractedKnowledge`;
         // the local `knowledge_graph::ExtractedKnowledge` converts via
-        // the `From` impl in zero-stores.
-        let extracted = zero_stores::ExtractedKnowledge {
+        // the `From` impl in zbot-stores.
+        let extracted = zbot_stores::ExtractedKnowledge {
             entities,
             relationships: candidate_rels,
         };

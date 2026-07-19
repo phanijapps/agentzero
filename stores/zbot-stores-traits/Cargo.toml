@@ -1,0 +1,27 @@
+[package]
+name = "zbot-stores-traits"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+# Tiny dependency-light crate that holds the `MemoryFactStore` trait and
+# `SkillIndexRow`. Lives separately from `zbot-stores` so consumers like
+# `agent-tools` can pull in the trait without inheriting `zbot-stores`'
+# transitive dependency on `knowledge-graph`.
+#
+# The full `zbot-stores` crate re-exports `MemoryFactStore` and
+# `SkillIndexRow` from here, so the design's public surface
+# (`zbot_stores::MemoryFactStore`) is preserved for callers that already
+# depend on `zbot-stores`.
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+# Pure-data domain types — port request/response shapes live there so
+# the trait surface stays decoupled from concrete backends but consumers
+# don't pay the round-trip-through-Value tax.
+zbot-stores-domain = { path = "../zbot-stores-domain" }
+
+[lints]
+workspace = true

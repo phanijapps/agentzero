@@ -135,6 +135,7 @@ src-tauri/tauri.conf.json.default
 # Superpowers working files
 .superpowers/
 docs/*
+!docs/project-graph.html
 !docs/specs/
 !docs/specs/**
 !docs/rfc/
@@ -147,3 +148,6 @@ mempalace.yaml
 entities.json
 mcp.json
 .playwright-mcp/
+
+## Environment variables
+.env

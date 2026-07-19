@@ -406,31 +406,31 @@ mod tests {
     use gateway_services::VaultPaths;
     use std::sync::Mutex;
     use tempfile::tempdir;
-    use zero_stores::KnowledgeGraphStore;
-    use zero_stores_sqlite::SqliteKgStore;
-    use zero_stores_sqlite::kg::storage::GraphStorage;
-    use zero_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zero_stores_sqlite::{
-        CompactionRepository, DatabaseManager, KnowledgeDatabase, MemoryRepository,
-        ProcedureRepository,
+    use zbot_stores::KnowledgeGraphStore;
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
+    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
+    use zbot_stores_sqlite::SqliteKgStore;
+    use zbot_stores_sqlite::{
+        CompactionRepository, KnowledgeDatabase, MemoryRepository, ProcedureRepository,
     };
 
     struct Harness {
         _tmp: tempfile::TempDir,
         db: Arc<KnowledgeDatabase>,
-        convo: Arc<DatabaseManager>,
         graph: Arc<GraphStorage>,
         compaction_repo: Arc<CompactionRepository>,
         memory_repo: Arc<MemoryRepository>,
         procedure_repo: Arc<ProcedureRepository>,
+        message_store: Arc<dyn zbot_conversation::MessageStore>,
     }
 
     fn harness() -> Harness {
         let tmp = tempdir().unwrap();
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
+        let conversation_pool =
+            zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
         let db = Arc::new(KnowledgeDatabase::new(paths.clone()).unwrap());
-        let convo = Arc::new(DatabaseManager::new(paths).unwrap());
         let graph = Arc::new(GraphStorage::new(db.clone()).unwrap());
         let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
         let mem_vec: Arc<dyn VectorIndex> = Arc::new(
@@ -443,21 +443,24 @@ mod tests {
                 .expect("vec index init"),
         );
         let procedure_repo = Arc::new(ProcedureRepository::new(db.clone(), proc_vec));
+        let message_store: Arc<dyn zbot_conversation::MessageStore> = Arc::new(
+            zbot_conversation::SqliteMessageStore::new(conversation_pool),
+        );
         Harness {
             _tmp: tmp,
             db,
-            convo,
             graph,
             compaction_repo,
             memory_repo,
             procedure_repo,
+            message_store,
         }
     }
 
     fn build_core(h: &Harness) -> (Arc<Compactor>, Arc<DecayEngine>, Arc<Pruner>) {
         use crate::sleep::{DecayConfig, Pruner as Pr};
-        use zero_stores_sqlite::GatewayCompactionStore;
-        use zero_stores_traits::CompactionStore;
+        use zbot_stores_sqlite::GatewayCompactionStore;
+        use zbot_stores_traits::CompactionStore;
         let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
         let compaction_store: Arc<dyn CompactionStore> =
             Arc::new(GatewayCompactionStore::new(h.compaction_repo.clone()));
@@ -527,25 +530,25 @@ mod tests {
         let h = harness();
         let (c, d, p) = build_core(&h);
         let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let episode_vec: Arc<dyn zero_stores_sqlite::vector_index::VectorIndex> = Arc::new(
-            zero_stores_sqlite::vector_index::SqliteVecIndex::new(
+        let episode_vec: Arc<dyn zbot_stores_sqlite::vector_index::VectorIndex> = Arc::new(
+            zbot_stores_sqlite::vector_index::SqliteVecIndex::new(
                 h.db.clone(),
                 "session_episodes_index",
                 "episode_id",
             )
             .expect("vec idx"),
         );
-        let episode_repo = Arc::new(zero_stores_sqlite::EpisodeRepository::new(
+        let episode_repo = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
             h.db.clone(),
             episode_vec,
         ));
-        let episode_store: Arc<dyn zero_stores_traits::EpisodeStore> =
-            Arc::new(zero_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
-        let memory_store: Arc<dyn zero_stores::MemoryFactStore> = Arc::new(
-            zero_stores_sqlite::GatewayMemoryFactStore::new(h.memory_repo.clone(), None),
+        let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
+            Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
+        let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(
+            zbot_stores_sqlite::GatewayMemoryFactStore::new(h.memory_repo.clone(), None),
         );
-        let compaction_store: Arc<dyn zero_stores_traits::CompactionStore> = Arc::new(
-            zero_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
+        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
+            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
         );
         let synth = Arc::new(Synthesizer::new(
             kg_store.clone(),
@@ -558,16 +561,12 @@ mod tests {
             }),
             None,
         ));
-        let conv_repo = Arc::new(zero_stores_sqlite::ConversationRepository::new(
-            h.convo.clone(),
-        ));
-        let conversation_store: Arc<dyn zero_stores_traits::ConversationStore> = conv_repo;
-        let procedure_store: Arc<dyn zero_stores_traits::ProcedureStore> = Arc::new(
-            zero_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
+        let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(
+            zbot_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
         );
         let px = Arc::new(PatternExtractor::new(
             episode_store.clone(),
-            conversation_store,
+            h.message_store.clone(),
             procedure_store,
             compaction_store.clone(),
             Arc::new(RecordingPatternLlm),
@@ -576,8 +575,8 @@ mod tests {
         ));
         let archiver_kg_store: Arc<dyn KnowledgeGraphStore> =
             Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let archiver_compaction_store: Arc<dyn zero_stores_traits::CompactionStore> = Arc::new(
-            zero_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
+        let archiver_compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
+            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
         );
         let archiver = Arc::new(crate::sleep::OrphanArchiver::new(
             archiver_kg_store,
@@ -642,25 +641,25 @@ mod tests {
         let h = harness();
         let (c, d, p) = build_core(&h);
         let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let episode_vec: Arc<dyn zero_stores_sqlite::vector_index::VectorIndex> = Arc::new(
-            zero_stores_sqlite::vector_index::SqliteVecIndex::new(
+        let episode_vec: Arc<dyn zbot_stores_sqlite::vector_index::VectorIndex> = Arc::new(
+            zbot_stores_sqlite::vector_index::SqliteVecIndex::new(
                 h.db.clone(),
                 "session_episodes_index",
                 "episode_id",
             )
             .expect("vec idx"),
         );
-        let episode_repo = Arc::new(zero_stores_sqlite::EpisodeRepository::new(
+        let episode_repo = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
             h.db.clone(),
             episode_vec,
         ));
-        let episode_store: Arc<dyn zero_stores_traits::EpisodeStore> =
-            Arc::new(zero_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
-        let memory_store: Arc<dyn zero_stores::MemoryFactStore> = Arc::new(
-            zero_stores_sqlite::GatewayMemoryFactStore::new(h.memory_repo.clone(), None),
+        let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
+            Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
+        let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(
+            zbot_stores_sqlite::GatewayMemoryFactStore::new(h.memory_repo.clone(), None),
         );
-        let compaction_store: Arc<dyn zero_stores_traits::CompactionStore> = Arc::new(
-            zero_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
+        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
+            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
         );
         let synth = Arc::new(Synthesizer::new(
             kg_store,
@@ -676,16 +675,12 @@ mod tests {
         let counter = Arc::new(CountingPatternLlm {
             calls: Mutex::new(0),
         });
-        let conv_repo = Arc::new(zero_stores_sqlite::ConversationRepository::new(
-            h.convo.clone(),
-        ));
-        let conversation_store: Arc<dyn zero_stores_traits::ConversationStore> = conv_repo;
-        let procedure_store: Arc<dyn zero_stores_traits::ProcedureStore> = Arc::new(
-            zero_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
+        let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(
+            zbot_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
         );
         let px = Arc::new(PatternExtractor::new(
             episode_store.clone(),
-            conversation_store,
+            h.message_store.clone(),
             procedure_store,
             compaction_store.clone(),
             counter.clone(),

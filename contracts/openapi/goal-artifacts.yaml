@@ -1,0 +1,161 @@
+openapi: 3.1.0
+info:
+  title: z-Bot Goal Artifact API
+  version: 1.0.0
+  description: Existing artifact manifest and content routes with explicit goal-deliverable metadata.
+x-spec: docs/specs/goal-artifacts/spec.md
+paths:
+  /api/sessions/{sessionId}/artifacts:
+    get:
+      summary: List every persisted artifact for one session
+      parameters:
+        - $ref: '#/components/parameters/sessionId'
+        - $ref: '#/components/parameters/goalArtifactsOnly'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Artifact manifest. Resolved server file paths are never returned. Quick Chat uses goal_artifacts_only=true&limit=24.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Artifact'
+        '400':
+          description: limit is outside 1 through 24.
+  /api/artifacts/{artifactId}/content:
+    get:
+      summary: Serve one validated artifact belonging to the provided session
+      parameters:
+        - $ref: '#/components/parameters/artifactId'
+        - $ref: '#/components/parameters/sessionIdQuery'
+      responses:
+        '200':
+          description: Validated artifact bytes, at most 5 MiB. HTML/HTM/SVG is served as a non-executable attachment with nosniff. The session parameter is a local single-owner correlation binding, not multi-user authorization.
+          headers:
+            X-Content-Type-Options:
+              description: Always `nosniff`.
+              schema:
+                type: string
+                enum: [nosniff]
+            Content-Disposition:
+              description: "`attachment` for HTML, HTM, and SVG; absent for other previewable media."
+              schema:
+                type: string
+                enum: [attachment]
+          content:
+            text/*:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: string
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.presentationml.presentation:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+            image/*:
+              schema:
+                type: string
+                format: binary
+            audio/*:
+              schema:
+                type: string
+                format: binary
+            video/*:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Artifact is absent, belongs to another session, or fails confinement revalidation.
+        '400':
+          description: Required session_id is absent.
+        '413':
+          description: Artifact exceeds the safe preview/download size limit.
+components:
+  parameters:
+    sessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+    artifactId:
+      name: artifactId
+      in: path
+      required: true
+      schema:
+        type: string
+    sessionIdQuery:
+      name: session_id
+      in: query
+      required: true
+      schema:
+        type: string
+    goalArtifactsOnly:
+      name: goal_artifacts_only
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+    limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 24
+  schemas:
+    Artifact:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - sessionId
+        - fileName
+        - isGoalArtifact
+        - createdAt
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        wardId:
+          type: [string, 'null']
+        executionId:
+          type: [string, 'null']
+        agentId:
+          type: [string, 'null']
+        fileName:
+          type: string
+        fileType:
+          type: [string, 'null']
+        fileSize:
+          type: [integer, 'null']
+          minimum: 0
+        label:
+          type: [string, 'null']
+        isGoalArtifact:
+          type: boolean
+          description: True only when the producing agent explicitly designated a final, useful output of the user's goal. Omitted or legacy values are false.
+        createdAt:
+          type: string
+          format: date-time

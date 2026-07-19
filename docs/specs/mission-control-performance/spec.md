@@ -1,6 +1,6 @@
 # Spec: Mission Control Performance
 
-- **Status:** Done
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none

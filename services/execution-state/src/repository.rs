@@ -3,7 +3,7 @@
 //! Database operations for sessions and agent executions.
 
 use crate::types::*;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -315,6 +315,7 @@ impl<D: StateDbProvider> StateRepository<D> {
                 child_session_id: e.child_session_id,
             })
             .collect();
+        let current_plan = self.get_session_plan(session_id)?;
 
         Ok(Some(MissionControlSessionTokens {
             conversation_id: session.id,
@@ -322,7 +323,253 @@ impl<D: StateDbProvider> StateRepository<D> {
             total_tokens_in: session.total_tokens_in,
             total_tokens_out: session.total_tokens_out,
             executions: execution_summaries,
+            current_plan,
         }))
+    }
+
+    /// Validate and persist the latest operational plan for one session.
+    ///
+    /// Model-owned JSON is validated before opening a database connection. A
+    /// database transaction then verifies trusted execution ownership, allocates
+    /// the next durable session sequence, and writes the snapshot together.
+    pub fn save_session_plan(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        plan: serde_json::Value,
+        explanation: Option<String>,
+        source_event_timestamp: u64,
+    ) -> Result<SessionPlanSaveOutcome, String> {
+        let input = match SessionPlanInput::from_update(plan, explanation) {
+            Ok(input) => input,
+            Err(reason) => return Ok(SessionPlanSaveOutcome::Rejected(reason)),
+        };
+        let plan_json = serde_json::to_string(&input.plan)
+            .map_err(|_| "failed to serialize validated session plan".to_owned())?;
+        let source_event_timestamp = i64::try_from(source_event_timestamp)
+            .map_err(|_| "source event timestamp exceeds SQLite integer range".to_owned())?;
+
+        self.db.with_connection(|conn| {
+            // An immediate transaction serializes concurrent per-session
+            // sequence allocation before either writer observes the counter.
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let execution_belongs_to_session: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM agent_executions
+                    WHERE id = ?1 AND session_id = ?2
+                )",
+                params![execution_id, session_id],
+                |row| row.get::<_, i64>(0).map(|count| count != 0),
+            )?;
+            if !execution_belongs_to_session {
+                tx.rollback()?;
+                return Ok(SessionPlanSaveOutcome::Rejected(
+                    SessionPlanRejection::ExecutionSessionMismatch,
+                ));
+            }
+
+            tx.execute(
+                "INSERT INTO session_plan_counters (session_id, last_issued_sequence)
+                 VALUES (?1, 0)
+                 ON CONFLICT(session_id) DO NOTHING",
+                params![session_id],
+            )?;
+            tx.execute(
+                "UPDATE session_plan_counters
+                 SET last_issued_sequence = last_issued_sequence + 1
+                 WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            let sequence: i64 = tx.query_row(
+                "SELECT last_issued_sequence
+                 FROM session_plan_counters
+                 WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            let updated_at = chrono::Utc::now().to_rfc3339();
+            let rows_written = tx.execute(
+                "INSERT INTO session_plans (
+                    session_id, execution_id, plan_json, explanation,
+                    source_event_timestamp, source_event_sequence, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    execution_id = excluded.execution_id,
+                    plan_json = excluded.plan_json,
+                    explanation = excluded.explanation,
+                    source_event_timestamp = excluded.source_event_timestamp,
+                    source_event_sequence = excluded.source_event_sequence,
+                    updated_at = excluded.updated_at
+                 WHERE excluded.source_event_sequence > session_plans.source_event_sequence",
+                params![
+                    session_id,
+                    execution_id,
+                    plan_json,
+                    input.explanation,
+                    source_event_timestamp,
+                    sequence,
+                    updated_at,
+                ],
+            )?;
+            if rows_written == 0 {
+                tx.rollback()?;
+                return Ok(SessionPlanSaveOutcome::Rejected(
+                    SessionPlanRejection::StaleSequence,
+                ));
+            }
+            tx.commit()?;
+
+            Ok(SessionPlanSaveOutcome::Accepted(SessionPlanSnapshot {
+                execution_id: execution_id.to_owned(),
+                explanation: input.explanation,
+                plan: input.plan,
+                updated_at,
+                source_event_timestamp: u64::try_from(source_event_timestamp)
+                    .expect("source timestamp is validated before persistence"),
+                source_event_sequence: u64::try_from(sequence)
+                    .expect("sequence is non-negative and starts at one"),
+            }))
+        })
+    }
+
+    /// Mark a session's remaining actionable plan steps as completed after a
+    /// trusted terminal execution. This is deliberately separate from
+    /// `save_session_plan`: it never accepts model-owned JSON and preserves
+    /// failed steps as an honest record of the run.
+    pub fn complete_session_plan(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+    ) -> Result<Option<SessionPlanSnapshot>, String> {
+        let source_event_timestamp = u64::try_from(chrono::Utc::now().timestamp_millis())
+            .map_err(|_| "system clock predates the Unix epoch".to_owned())?;
+        let source_event_timestamp_i64 = i64::try_from(source_event_timestamp)
+            .map_err(|_| "source event timestamp exceeds SQLite integer range".to_owned())?;
+
+        self.db.with_connection(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let execution_belongs_to_session: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM agent_executions
+                    WHERE id = ?1 AND session_id = ?2
+                )",
+                params![execution_id, session_id],
+                |row| row.get::<_, i64>(0).map(|count| count != 0),
+            )?;
+            if !execution_belongs_to_session {
+                tx.rollback()?;
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+
+            // A new user message can reactivate a session while the preceding
+            // turn is unwinding. Never let that prior terminal transition
+            // overwrite the active session's newer plan.
+            let session_is_completed: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sessions
+                    WHERE id = ?1 AND status = 'completed'
+                )",
+                params![session_id],
+                |row| row.get::<_, i64>(0).map(|count| count != 0),
+            )?;
+            if !session_is_completed {
+                tx.rollback()?;
+                return Ok(None);
+            }
+
+            let snapshot = tx
+                .query_row(
+                    "SELECT execution_id, plan_json, explanation, source_event_timestamp,
+                            source_event_sequence, updated_at
+                     FROM session_plans
+                     WHERE session_id = ?1",
+                    params![session_id],
+                    Self::row_to_session_plan,
+                )
+                .optional()?;
+            let Some(mut snapshot) = snapshot else {
+                tx.commit()?;
+                return Ok(None);
+            };
+
+            let mut changed = false;
+            for step in &mut snapshot.plan {
+                if matches!(
+                    step.status,
+                    SessionPlanStepStatus::Pending | SessionPlanStepStatus::InProgress
+                ) {
+                    step.status = SessionPlanStepStatus::Completed;
+                    changed = true;
+                }
+            }
+            if !changed {
+                tx.commit()?;
+                return Ok(None);
+            }
+
+            tx.execute(
+                "INSERT INTO session_plan_counters (session_id, last_issued_sequence)
+                 VALUES (?1, 0)
+                 ON CONFLICT(session_id) DO NOTHING",
+                params![session_id],
+            )?;
+            tx.execute(
+                "UPDATE session_plan_counters
+                 SET last_issued_sequence = last_issued_sequence + 1
+                 WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            let sequence: i64 = tx.query_row(
+                "SELECT last_issued_sequence
+                 FROM session_plan_counters
+                 WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            let updated_at = chrono::Utc::now().to_rfc3339();
+            let plan_json = serde_json::to_string(&snapshot.plan)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            tx.execute(
+                "UPDATE session_plans
+                 SET execution_id = ?2,
+                     plan_json = ?3,
+                     source_event_timestamp = ?4,
+                     source_event_sequence = ?5,
+                     updated_at = ?6
+                 WHERE session_id = ?1",
+                params![
+                    session_id,
+                    execution_id,
+                    plan_json,
+                    source_event_timestamp_i64,
+                    sequence,
+                    updated_at,
+                ],
+            )?;
+            tx.commit()?;
+
+            snapshot.execution_id = execution_id.to_owned();
+            snapshot.updated_at = updated_at;
+            snapshot.source_event_timestamp = source_event_timestamp;
+            snapshot.source_event_sequence =
+                u64::try_from(sequence).expect("sequence is non-negative and starts at one");
+            Ok(Some(snapshot))
+        })
+    }
+
+    /// Return the current plan for one session, if one has been accepted.
+    fn get_session_plan(&self, session_id: &str) -> Result<Option<SessionPlanSnapshot>, String> {
+        self.db.with_connection(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT execution_id, plan_json, explanation, source_event_timestamp,
+                        source_event_sequence, updated_at
+                 FROM session_plans
+                 WHERE session_id = ?1",
+            )?;
+            statement
+                .query_row(params![session_id], Self::row_to_session_plan)
+                .optional()
+        })
     }
 
     fn list_executions_for_sessions(
@@ -451,6 +698,38 @@ impl<D: StateDbProvider> StateRepository<D> {
                 params![ward_id, id],
             )?;
             Ok(())
+        })
+    }
+
+    /// Atomically bind a ward only when the session has not entered one yet.
+    ///
+    /// Unlike [`Self::update_session_ward`], this is safe for concurrent
+    /// bootstrap calls: a later caller receives the first caller's effective
+    /// ward instead of replacing it.
+    pub fn claim_session_ward_if_unset(
+        &self,
+        id: &str,
+        ward_id: &str,
+    ) -> Result<SessionWardClaim, String> {
+        self.db.with_connection(|conn| {
+            let claimed = conn.execute(
+                "UPDATE sessions SET ward_id = ?1 WHERE id = ?2 AND ward_id IS NULL",
+                params![ward_id, id],
+            )?;
+            if claimed == 1 {
+                return Ok(SessionWardClaim::Claimed(ward_id.to_string()));
+            }
+
+            let existing = conn
+                .query_row(
+                    "SELECT ward_id FROM sessions WHERE id = ?1",
+                    params![id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            Ok(SessionWardClaim::Existing(existing))
         })
     }
 
@@ -945,10 +1224,34 @@ impl<D: StateDbProvider> StateRepository<D> {
         tokens_out: u64,
     ) -> Result<(), String> {
         self.db.with_connection(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
                 "UPDATE agent_executions SET tokens_in = ?1, tokens_out = ?2 WHERE id = ?3",
                 params![tokens_in as i64, tokens_out as i64, id],
             )?;
+            tx.execute(
+                "UPDATE sessions
+                 SET
+                    total_tokens_in = (
+                        SELECT COALESCE(SUM(tokens_in), 0)
+                        FROM agent_executions
+                        WHERE session_id = (
+                            SELECT session_id FROM agent_executions WHERE id = ?1
+                        )
+                    ),
+                    total_tokens_out = (
+                        SELECT COALESCE(SUM(tokens_out), 0)
+                        FROM agent_executions
+                        WHERE session_id = (
+                            SELECT session_id FROM agent_executions WHERE id = ?1
+                        )
+                    )
+                 WHERE id = (
+                    SELECT session_id FROM agent_executions WHERE id = ?1
+                 )",
+                params![id],
+            )?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -1166,7 +1469,7 @@ impl<D: StateDbProvider> StateRepository<D> {
             // Base query joining messages with executions
             let mut sql = String::from(
                 "SELECT m.id, m.execution_id, e.agent_id, e.delegation_type,
-                        m.role, m.content, m.created_at, m.tool_calls, m.tool_results
+                        m.role, m.content, m.created_at, m.tool_calls, m.tool_call_id
                  FROM messages m
                  JOIN agent_executions e ON m.execution_id = e.id
                  WHERE e.session_id = ?1",
@@ -1284,14 +1587,25 @@ impl<D: StateDbProvider> StateRepository<D> {
     // ARTIFACTS
     // =========================================================================
 
-    /// Insert a new artifact record.
+    /// Maximum user-facing goal artifacts retained in one session.
+    pub const MAX_GOAL_ARTIFACTS_PER_SESSION: i64 = 24;
+
+    /// Insert a new artifact record. Goal-artifact admission is an atomic
+    /// insert-with-count predicate, so concurrent executions cannot exceed the
+    /// per-session deliverable budget.
     pub fn create_artifact(&self, artifact: &Artifact) -> Result<(), String> {
         self.db.with_connection(|conn| {
-            conn.execute(
+            let inserted = conn.execute(
                 "INSERT INTO artifacts (
                     id, session_id, ward_id, execution_id, agent_id,
-                    file_path, file_name, file_type, file_size, label, created_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    file_path, file_name, file_type, file_size, label,
+                    is_goal_artifact, created_at
+                )
+                SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+                WHERE ?11 = 0 OR (
+                    SELECT COUNT(*) FROM artifacts
+                    WHERE session_id = ?2 AND is_goal_artifact = 1
+                ) < ?13",
                 params![
                     artifact.id,
                     artifact.session_id,
@@ -1303,9 +1617,14 @@ impl<D: StateDbProvider> StateRepository<D> {
                     artifact.file_type,
                     artifact.file_size,
                     artifact.label,
+                    artifact.is_goal_artifact,
                     artifact.created_at,
+                    Self::MAX_GOAL_ARTIFACTS_PER_SESSION,
                 ],
             )?;
+            if inserted == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
             Ok(())
         })
     }
@@ -1315,7 +1634,8 @@ impl<D: StateDbProvider> StateRepository<D> {
         self.db.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, session_id, ward_id, execution_id, agent_id,
-                        file_path, file_name, file_type, file_size, label, created_at
+                        file_path, file_name, file_type, file_size, label,
+                        is_goal_artifact, created_at
                  FROM artifacts
                  WHERE session_id = ?1
                  ORDER BY created_at",
@@ -1333,7 +1653,49 @@ impl<D: StateDbProvider> StateRepository<D> {
                         file_type: row.get(7)?,
                         file_size: row.get(8)?,
                         label: row.get(9)?,
-                        created_at: row.get(10)?,
+                        is_goal_artifact: row.get(10)?,
+                        created_at: row.get(11)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// List the bounded, explicitly designated goal artifacts for a session.
+    /// This is intentionally separate from the full manifest so callers must
+    /// opt into the user-facing deliverables projection.
+    pub fn list_goal_artifacts_by_session(
+        &self,
+        session_id: &str,
+        limit: u32,
+    ) -> Result<Vec<Artifact>, String> {
+        let limit = limit.clamp(1, Self::MAX_GOAL_ARTIFACTS_PER_SESSION as u32);
+        self.db.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, session_id, ward_id, execution_id, agent_id,
+                        file_path, file_name, file_type, file_size, label,
+                        is_goal_artifact, created_at
+                 FROM artifacts
+                 WHERE session_id = ?1 AND is_goal_artifact = 1
+                 ORDER BY created_at
+                 LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(params![session_id, limit], |row| {
+                    Ok(Artifact {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        ward_id: row.get(2)?,
+                        execution_id: row.get(3)?,
+                        agent_id: row.get(4)?,
+                        file_path: row.get(5)?,
+                        file_name: row.get(6)?,
+                        file_type: row.get(7)?,
+                        file_size: row.get(8)?,
+                        label: row.get(9)?,
+                        is_goal_artifact: row.get(10)?,
+                        created_at: row.get(11)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -1347,7 +1709,8 @@ impl<D: StateDbProvider> StateRepository<D> {
             let result = conn
                 .query_row(
                     "SELECT id, session_id, ward_id, execution_id, agent_id,
-                            file_path, file_name, file_type, file_size, label, created_at
+                            file_path, file_name, file_type, file_size, label,
+                            is_goal_artifact, created_at
                      FROM artifacts
                      WHERE id = ?1",
                     params![artifact_id],
@@ -1363,7 +1726,8 @@ impl<D: StateDbProvider> StateRepository<D> {
                             file_type: row.get(7)?,
                             file_size: row.get(8)?,
                             label: row.get(9)?,
-                            created_at: row.get(10)?,
+                            is_goal_artifact: row.get(10)?,
+                            created_at: row.get(11)?,
                         })
                     },
                 )
@@ -1376,7 +1740,7 @@ impl<D: StateDbProvider> StateRepository<D> {
         row: &rusqlite::Row,
     ) -> Result<crate::handlers::SessionMessage, rusqlite::Error> {
         let tool_calls_json: Option<String> = row.get(7)?;
-        let tool_results_json: Option<String> = row.get(8)?;
+        let tool_call_id: Option<String> = row.get(8)?;
 
         Ok(crate::handlers::SessionMessage {
             id: row.get(0)?,
@@ -1387,7 +1751,31 @@ impl<D: StateDbProvider> StateRepository<D> {
             content: row.get(5)?,
             created_at: row.get(6)?,
             tool_calls: tool_calls_json.and_then(|s| serde_json::from_str(&s).ok()),
-            tool_results: tool_results_json.and_then(|s| serde_json::from_str(&s).ok()),
+            tool_call_id,
+            tool_results: None,
+        })
+    }
+
+    fn row_to_session_plan(row: &rusqlite::Row) -> Result<SessionPlanSnapshot, rusqlite::Error> {
+        use rusqlite::types::Type;
+
+        let plan_json: String = row.get(1)?;
+        let plan = serde_json::from_str(&plan_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error))
+        })?;
+        let source_event_timestamp: i64 = row.get(3)?;
+        let source_event_sequence: i64 = row.get(4)?;
+        Ok(SessionPlanSnapshot {
+            execution_id: row.get(0)?,
+            plan,
+            explanation: row.get(2)?,
+            source_event_timestamp: u64::try_from(source_event_timestamp).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(3, Type::Integer, Box::new(error))
+            })?,
+            source_event_sequence: u64::try_from(source_event_sequence).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(4, Type::Integer, Box::new(error))
+            })?,
+            updated_at: row.get(5)?,
         })
     }
 }
@@ -1400,7 +1788,7 @@ impl<D: StateDbProvider> StateRepository<D> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    use std::sync::Mutex;
+    use std::sync::{Barrier, Mutex};
 
     /// Test database provider using in-memory SQLite.
     struct TestDbProvider {
@@ -1452,7 +1840,25 @@ mod tests {
                     error TEXT,
                     log_path TEXT,
                     child_session_id TEXT,
-                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS session_plan_counters (
+                    session_id TEXT PRIMARY KEY,
+                    last_issued_sequence INTEGER NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS session_plans (
+                    session_id TEXT PRIMARY KEY,
+                    execution_id TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    explanation TEXT,
+                    source_event_timestamp INTEGER NOT NULL,
+                    source_event_sequence INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (
@@ -1474,9 +1880,26 @@ mod tests {
                 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
                 CREATE INDEX IF NOT EXISTS idx_messages_execution ON messages(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    ward_id TEXT,
+                    execution_id TEXT,
+                    agent_id TEXT,
+                    file_path TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    file_type TEXT,
+                    file_size INTEGER,
+                    label TEXT,
+                    is_goal_artifact INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
                 "#,
             )
             .expect("Failed to create tables");
+            conn.execute("PRAGMA foreign_keys = ON", [])
+                .expect("enable foreign keys");
 
             Self {
                 conn: Mutex::new(conn),
@@ -1711,6 +2134,407 @@ mod tests {
         assert_eq!(tokens.executions.len(), 2);
         assert_eq!(tokens.executions[0].execution_id, "exec-root");
         assert_eq!(tokens.executions[1].execution_id, "exec-child");
+        assert!(tokens.current_plan.is_none());
+    }
+
+    #[test]
+    fn session_plan_is_saved_and_projected_only_for_the_selected_session() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        repo.create_execution(&root).unwrap();
+
+        let saved = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{
+                    "step": "Inspect the deployment configuration",
+                    "status": "in_progress"
+                }]),
+                Some("Start with the deployed settings".to_owned()),
+                100,
+            )
+            .unwrap();
+
+        let plan = saved.accepted().expect("valid plan should be accepted");
+        assert_eq!(plan.source_event_sequence, 1);
+        assert_eq!(plan.plan[0].status, SessionPlanStepStatus::InProgress);
+
+        let detail = repo
+            .get_mission_control_session_tokens(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.current_plan, Some(plan));
+    }
+
+    #[test]
+    fn terminal_completion_marks_actionable_steps_complete_and_keeps_failures() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        repo.create_execution(&root).unwrap();
+        repo.save_session_plan(
+            &session.id,
+            &root.id,
+            serde_json::json!([
+                {"step": "Gather evidence", "status": "completed"},
+                {"step": "Analyze evidence", "status": "in_progress"},
+                {"step": "Write conclusion", "status": "pending"},
+                {"step": "Unavailable source", "status": "failed"}
+            ]),
+            Some("Preserve this explanation".to_owned()),
+            100,
+        )
+        .unwrap();
+
+        // The method is lifecycle-only: an active session must retain the
+        // model's current progress rather than being force-completed.
+        assert!(repo
+            .complete_session_plan(&session.id, &root.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repo.get_mission_control_session_tokens(&session.id)
+                .unwrap()
+                .unwrap()
+                .current_plan
+                .expect("active plan")
+                .plan[1]
+                .status,
+            SessionPlanStepStatus::InProgress
+        );
+        repo.update_execution_status(&root.id, ExecutionStatus::Completed)
+            .unwrap();
+        repo.update_session_status(&session.id, SessionStatus::Completed)
+            .unwrap();
+
+        let completed = repo
+            .complete_session_plan(&session.id, &root.id)
+            .unwrap()
+            .expect("actionable steps should change");
+        assert_eq!(
+            completed
+                .plan
+                .iter()
+                .map(|step| step.status)
+                .collect::<Vec<_>>(),
+            vec![
+                SessionPlanStepStatus::Completed,
+                SessionPlanStepStatus::Completed,
+                SessionPlanStepStatus::Completed,
+                SessionPlanStepStatus::Failed,
+            ]
+        );
+        assert_eq!(
+            completed.explanation.as_deref(),
+            Some("Preserve this explanation")
+        );
+        assert_eq!(completed.source_event_sequence, 2);
+        assert_eq!(
+            repo.get_mission_control_session_tokens(&session.id)
+                .unwrap()
+                .unwrap()
+                .current_plan,
+            Some(completed)
+        );
+        assert!(repo
+            .complete_session_plan(&session.id, &root.id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn rejected_plan_preserves_the_prior_snapshot_and_session_delete_cascades() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        repo.create_execution(&root).unwrap();
+
+        let first = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "Capture baseline", "status": "pending"}]),
+                None,
+                100,
+            )
+            .unwrap()
+            .accepted()
+            .unwrap();
+        let rejected = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{
+                    "step": "DROP TABLE sessions;",
+                    "status": "not_a_status",
+                    "unknown": true
+                }]),
+                None,
+                101,
+            )
+            .unwrap();
+        assert!(rejected.accepted().is_none());
+
+        let detail = repo
+            .get_mission_control_session_tokens(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.current_plan, Some(first));
+
+        let next = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "Review baseline", "status": "completed"}]),
+                None,
+                102,
+            )
+            .unwrap()
+            .accepted()
+            .unwrap();
+        assert_eq!(
+            next.source_event_sequence, 2,
+            "rejected input must not consume a sequence"
+        );
+
+        repo.delete_session(&session.id).unwrap();
+        let plans_remaining = repo
+            .db
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM session_plans WHERE session_id = ?1",
+                    params![session.id],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(plans_remaining, 0);
+    }
+
+    #[test]
+    fn foreign_execution_cannot_replace_a_session_plan() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        let foreign_session = Session::new("foreign-agent");
+        repo.create_session(&session).unwrap();
+        repo.create_session(&foreign_session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        let foreign_root = AgentExecution::new_root(&foreign_session.id, "foreign-agent");
+        repo.create_execution(&root).unwrap();
+        repo.create_execution(&foreign_root).unwrap();
+
+        let original = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "Keep this plan", "status": "pending"}]),
+                None,
+                100,
+            )
+            .unwrap()
+            .accepted()
+            .unwrap();
+
+        let outcome = repo
+            .save_session_plan(
+                &session.id,
+                &foreign_root.id,
+                serde_json::json!([{"step": "Must not replace", "status": "completed"}]),
+                None,
+                101,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            SessionPlanSaveOutcome::Rejected(SessionPlanRejection::ExecutionSessionMismatch)
+        );
+        let detail = repo
+            .get_mission_control_session_tokens(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.current_plan, Some(original));
+    }
+
+    #[test]
+    fn session_plan_sequence_continues_after_repository_restart() {
+        let db = Arc::new(TestDbProvider::new());
+        let first_repo = StateRepository::new(db.clone());
+        let session = Session::new("root-agent");
+        first_repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        first_repo.create_execution(&root).unwrap();
+
+        let first = first_repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "First update", "status": "pending"}]),
+                None,
+                1,
+            )
+            .unwrap()
+            .accepted()
+            .unwrap();
+        drop(first_repo);
+
+        let restarted_repo = StateRepository::new(db);
+        let second = restarted_repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "Recovered update", "status": "in_progress"}]),
+                None,
+                0,
+            )
+            .unwrap()
+            .accepted()
+            .unwrap();
+
+        assert_eq!(first.source_event_sequence, 1);
+        assert_eq!(second.source_event_sequence, 2);
+        assert_eq!(second.plan[0].step, "Recovered update");
+    }
+
+    #[test]
+    fn equal_timestamps_use_acceptance_sequence_and_replace_the_snapshot() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        repo.create_execution(&root).unwrap();
+
+        let first = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "First", "status": "pending"}]),
+                None,
+                42,
+            )
+            .unwrap()
+            .accepted()
+            .unwrap();
+        let second = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "Second", "status": "completed"}]),
+                None,
+                42,
+            )
+            .unwrap()
+            .accepted()
+            .unwrap();
+
+        assert_eq!(
+            (first.source_event_sequence, second.source_event_sequence),
+            (1, 2)
+        );
+        let detail = repo
+            .get_mission_control_session_tokens(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.current_plan.unwrap().plan[0].step, "Second");
+    }
+
+    #[test]
+    fn concurrent_plan_acceptance_allocates_each_session_sequence_once() {
+        let repo = Arc::new(setup_repo());
+        let session = Session::new("root-agent");
+        repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        repo.create_execution(&root).unwrap();
+
+        const WRITERS: usize = 4;
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let mut writers = Vec::new();
+        for index in 0..WRITERS {
+            let repo = repo.clone();
+            let barrier = barrier.clone();
+            let session_id = session.id.clone();
+            let execution_id = root.id.clone();
+            writers.push(std::thread::spawn(move || {
+                barrier.wait();
+                repo.save_session_plan(
+                    &session_id,
+                    &execution_id,
+                    serde_json::json!([{
+                        "step": format!("Concurrent step {index}"),
+                        "status": "pending"
+                    }]),
+                    None,
+                    1,
+                )
+                .expect("save plan")
+                .accepted()
+                .expect("accepted plan")
+                .source_event_sequence
+            }));
+        }
+
+        let mut sequences: Vec<u64> = writers
+            .into_iter()
+            .map(|writer| writer.join().expect("writer join"))
+            .collect();
+        sequences.sort_unstable();
+        assert_eq!(sequences, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn lower_sequence_at_repository_boundary_preserves_the_existing_plan() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        repo.create_session(&session).unwrap();
+        let root = AgentExecution::new_root(&session.id, "root-agent");
+        repo.create_execution(&root).unwrap();
+        repo.db
+            .with_connection(|conn| {
+                conn.execute(
+                    "INSERT INTO session_plan_counters (session_id, last_issued_sequence)
+                     VALUES (?1, 4)",
+                    params![session.id],
+                )?;
+                conn.execute(
+                    "INSERT INTO session_plans (
+                        session_id, execution_id, plan_json, explanation,
+                        source_event_timestamp, source_event_sequence, updated_at
+                     ) VALUES (?1, ?2, ?3, NULL, 10, 5, ?4)",
+                    params![
+                        session.id,
+                        root.id,
+                        r#"[{"step":"Existing plan","status":"pending"}]"#,
+                        "2026-07-14T00:00:00Z",
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let outcome = repo
+            .save_session_plan(
+                &session.id,
+                &root.id,
+                serde_json::json!([{"step": "Must not replace", "status": "completed"}]),
+                None,
+                11,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            SessionPlanSaveOutcome::Rejected(SessionPlanRejection::StaleSequence)
+        );
+
+        let detail = repo
+            .get_mission_control_session_tokens(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.current_plan.unwrap().plan[0].step, "Existing plan");
     }
 
     #[test]
@@ -1769,7 +2593,7 @@ mod tests {
 
     /// In-memory DB provider with every table `delete_session_cascade` reads
     /// or asserts on. Deliberately mirrors the production column names from
-    /// `gateway/gateway-database/src/schema.rs` so the real cascade SQL runs.
+    /// the conversation schema so the real cascade SQL runs.
     struct CascadeDbProvider {
         conn: Mutex<Connection>,
     }
@@ -1857,6 +2681,7 @@ mod tests {
                     file_type TEXT,
                     file_size INTEGER,
                     label TEXT,
+                    is_goal_artifact INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
 
@@ -2683,6 +3508,42 @@ mod tests {
     }
 
     #[test]
+    fn update_execution_tokens_refreshes_session_totals() {
+        let repo = setup_repo();
+        let session = Session::new("agent");
+        repo.create_session(&session).unwrap();
+
+        let mut root = AgentExecution::new_root(&session.id, "agent");
+        root.id = "exec-root".to_string();
+        root.tokens_in = 10;
+        root.tokens_out = 5;
+        repo.create_execution(&root).unwrap();
+
+        let mut child = AgentExecution::new_delegated(
+            &session.id,
+            "research-agent",
+            &root.id,
+            DelegationType::Sequential,
+            "research",
+        );
+        child.id = "exec-child".to_string();
+        child.tokens_in = 20;
+        child.tokens_out = 7;
+        repo.create_execution(&child).unwrap();
+
+        repo.update_session_tokens(&session.id).unwrap();
+        let before = repo.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(before.total_tokens_in, 30);
+        assert_eq!(before.total_tokens_out, 12);
+
+        repo.update_execution_tokens(&root.id, 100, 50).unwrap();
+
+        let after = repo.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(after.total_tokens_in, 120);
+        assert_eq!(after.total_tokens_out, 57);
+    }
+
+    #[test]
     fn set_execution_error() {
         let repo = setup_repo();
         let session = Session::new("agent");
@@ -3057,5 +3918,44 @@ mod tests {
             .unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].agent_id, "research-agent");
+    }
+
+    #[test]
+    fn goal_artifacts_are_opt_in_bounded_and_queryable() {
+        let repo = setup_repo();
+        let session = Session::new("root-agent");
+        repo.create_session(&session).expect("create session");
+
+        let unmarked = Artifact::new(&session.id, "/ward/working-plan.md", "working-plan.md");
+        repo.create_artifact(&unmarked)
+            .expect("store unmarked artifact");
+
+        for index in 0..StateRepository::<TestDbProvider>::MAX_GOAL_ARTIFACTS_PER_SESSION {
+            let mut artifact = Artifact::new(
+                &session.id,
+                format!("/ward/result-{index}.json"),
+                format!("result-{index}.json"),
+            );
+            artifact.is_goal_artifact = true;
+            repo.create_artifact(&artifact)
+                .expect("store goal artifact within limit");
+        }
+
+        let mut over_limit =
+            Artifact::new(&session.id, "/ward/one-too-many.json", "one-too-many.json");
+        over_limit.is_goal_artifact = true;
+        assert!(repo.create_artifact(&over_limit).is_err());
+
+        let all = repo
+            .list_artifacts_by_session(&session.id)
+            .expect("list all");
+        assert_eq!(all.len(), 25);
+        assert!(!all[0].is_goal_artifact);
+
+        let goals = repo
+            .list_goal_artifacts_by_session(&session.id, 24)
+            .expect("list goals");
+        assert_eq!(goals.len(), 24);
+        assert!(goals.iter().all(|artifact| artifact.is_goal_artifact));
     }
 }

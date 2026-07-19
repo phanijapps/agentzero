@@ -1,6 +1,6 @@
 # knowledge-graph
 
-Entity type definitions, extraction logic, and name resolution for the AgentZero knowledge graph. This crate is **types + extraction only** — SQLite storage lives in `zero-stores-sqlite::kg`.
+Entity type definitions, extraction logic, and name resolution for the AgentZero knowledge graph. This crate is **types + extraction only** — SQLite storage lives in `zbot-stores-sqlite::kg`.
 
 ## Build & Test
 
@@ -39,7 +39,7 @@ pub use types::{Direction, Entity, EntityType, EntityWithConnections, ExtractedK
 
 ## Where Storage Lives
 
-SQLite persistence (`GraphStorage`, `KnowledgeDatabase`, traversal, causal) was relocated to `zero-stores-sqlite::kg` during Slice D6b. Consumers should import via `zero_stores_sqlite::SqliteKgStore` or the trait `zero_stores::KnowledgeGraphStore`.
+SQLite persistence (`GraphStorage`, `KnowledgeDatabase`, traversal, causal) was relocated to `zbot-stores-sqlite::kg` during Slice D6b. Consumers should import via `zbot_stores_sqlite::SqliteKgStore` or the trait `zbot_stores::KnowledgeGraphStore`.
 
 ## Intra-Repo Dependencies
 

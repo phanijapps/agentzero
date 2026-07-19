@@ -1,0 +1,49 @@
+[package]
+name = "zbot-stores-sqlite"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+# Trait surfaces / domain types this crate implements
+zbot-stores = { path = "../zbot-stores" }
+zbot-stores-traits = { path = "../zbot-stores-traits" }
+zbot-stores-domain = { path = "../zbot-stores-domain" }
+knowledge-graph = { path = "../../services/knowledge-graph" }
+
+# Internal crates the per-table stores need (DbProvider trait impls etc.)
+api-logs = { path = "../../services/api-logs" }
+execution-state = { path = "../../services/execution-state" }
+agent-runtime = { path = "../../runtime/agent-runtime" }
+gateway-services = { path = "../../gateway/gateway-services" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
+zbot-runtime-sqlite = { path = "../zbot-runtime-sqlite" }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
+sqlite-vec = "0.1"
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utilities
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+gateway-services = { path = "../../gateway/gateway-services" }
+zbot-stores-conformance = { path = "../zbot-stores-conformance" }
+
+[lints]
+workspace = true

@@ -32,7 +32,10 @@ impl DaemonClient {
             .user_agent(concat!("zbot/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("reqwest::Client should always build");
-        Self { http, base: cfg.daemon_url }
+        Self {
+            http,
+            base: cfg.daemon_url,
+        }
     }
 
     /// `GET /api/health` — startup smoke test.
@@ -68,10 +71,7 @@ impl DaemonClient {
             .await
             .with_context(|| format!("POST {url}"))?;
         if !resp.status().is_success() {
-            return Err(anyhow!(
-                "/api/chat/init returned HTTP {}",
-                resp.status()
-            ));
+            return Err(anyhow!("/api/chat/init returned HTTP {}", resp.status()));
         }
         let body: ChatInit = resp.json().await.context("parse /api/chat/init body")?;
         Ok(body)
@@ -87,10 +87,7 @@ impl DaemonClient {
             .await
             .with_context(|| format!("DELETE {url}"))?;
         if !resp.status().is_success() {
-            return Err(anyhow!(
-                "/api/chat/session returned HTTP {}",
-                resp.status()
-            ));
+            return Err(anyhow!("/api/chat/session returned HTTP {}", resp.status()));
         }
         Ok(())
     }
@@ -149,6 +146,40 @@ impl DaemonClient {
         resp.json::<Value>()
             .await
             .context("parse /api/memory/search body")
+    }
+
+    /// Invoke the gateway-owned surface action registry. This deliberately
+    /// forwards only catalog identifiers; the daemon owns state checks,
+    /// approval policy, and durable audit records.
+    pub async fn invoke_surface_action(
+        &self,
+        action_id: &str,
+        target: &str,
+        expected_state: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/api/surfaces/actions", self.base);
+        let response = self
+            .http
+            .post(&url)
+            .json(&serde_json::json!({
+                "action_id": action_id,
+                "surface_id": format!("cli:{target}"),
+                "target": target,
+                "expected_state": expected_state,
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "/api/surfaces/actions returned HTTP {}",
+                response.status()
+            ));
+        }
+        response
+            .json::<Value>()
+            .await
+            .context("parse surface action response")
     }
 }
 

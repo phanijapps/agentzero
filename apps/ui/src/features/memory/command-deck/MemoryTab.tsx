@@ -7,7 +7,7 @@ import { WriteRail } from "./WriteRail";
 import { SearchResults } from "./SearchResults";
 import { useWards, useWardContent, useHybridSearch, useTimewarp } from "./hooks";
 import { getTransport } from "@/services/transport";
-import type { MemoryCategory } from "@/services/transport/types";
+import type { CreatableMemoryCategory } from "@/services/transport/types";
 import { BeliefsList } from "./beliefs/BeliefsList";
 import { ContradictionList } from "./beliefs/ContradictionList";
 
@@ -28,7 +28,7 @@ const SUB_TAB_LABELS: Record<MemorySubTab, string> = {
 };
 
 interface SaveInput {
-  category: MemoryCategory;
+  category: CreatableMemoryCategory;
   content: string;
   ward_id: string;
 }
@@ -90,7 +90,17 @@ export function MemoryTab({ agentId }: Props) {
   }
 
   return (
-    <div className="memory-tab-deck">
+    <div className="memory-tab-deck" role="region" aria-label="Memory command deck">
+      <header className="memory-tab-deck__masthead">
+        <div>
+          <div className="memory-tab-deck__overline">Durable knowledge / unified recall</div>
+          <h1>Memory</h1>
+          <p>
+            Find useful evidence, understand how it is classified, and curate only when
+            needed.
+          </p>
+        </div>
+      </header>
       <div className="memory-tab-deck__top">
         {subTab === "facts" ? (
           <>
@@ -110,19 +120,21 @@ export function MemoryTab({ agentId }: Props) {
       </div>
       <div className="memory-tab-deck__grid">
         <WardRail wards={wards} activeId={activeId} onSelect={setActiveId} />
-        <CenterPanel
-          subTab={subTab}
-          agentId={agentId}
-          activeId={activeId}
-          searching={searching}
-          query={query}
-          mode={mode}
-          searchData={search.data}
-          searchLoading={search.loading}
-          data={data}
-          days={days}
-          onDeleteFact={deleteFact}
-        />
+        <section className="memory-tab-deck__evidence" aria-label="Memory evidence">
+          <CenterPanel
+            subTab={subTab}
+            agentId={agentId}
+            activeId={activeId}
+            searching={searching}
+            query={query}
+            mode={mode}
+            searchData={search.data}
+            searchLoading={search.loading}
+            data={data}
+            days={days}
+            onDeleteFact={deleteFact}
+          />
+        </section>
         {subTab === "facts" ? (
           <WriteRail
             wardId={activeId}

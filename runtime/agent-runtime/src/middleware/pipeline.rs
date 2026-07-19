@@ -555,8 +555,8 @@ mod tests {
         use crate::middleware::config::ContextEditingConfig;
         use crate::middleware::{ContextEditingMiddleware, PlanBlockMiddleware};
         use crate::types::ToolCall;
+        use agent_primitives::types::Part;
         use serde_json::json;
-        use zero_core::types::Part;
 
         let tool_calls = vec![
             ToolCall::new(

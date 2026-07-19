@@ -134,6 +134,22 @@ impl LlmClient for RateLimitedLlmClient {
         self.inner.chat(messages, tools).await
     }
 
+    async fn chat_with_schema(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Value>,
+        output_schema: Option<Value>,
+    ) -> Result<ChatResponse, LlmError> {
+        let _permit = self.limiter.acquire().await;
+        tracing::debug!(
+            provider = self.inner.provider(),
+            "Rate limit permit acquired for chat_with_schema()"
+        );
+        self.inner
+            .chat_with_schema(messages, tools, output_schema)
+            .await
+    }
+
     async fn chat_stream(
         &self,
         messages: Vec<ChatMessage>,

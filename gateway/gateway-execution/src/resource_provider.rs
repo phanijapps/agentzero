@@ -3,13 +3,13 @@
 //! Implementation of `ConnectorResourceProvider` backed by the gateway's
 //! `ConnectorRegistry`.
 
+use agent_primitives::connectors::{
+    CapabilityInfo, ConnectorInfo, ConnectorResourceProvider, ResourceInfo,
+};
 use async_trait::async_trait;
 use gateway_connectors::ConnectorRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
-use zero_core::connectors::{
-    CapabilityInfo, ConnectorInfo, ConnectorResourceProvider, ResourceInfo,
-};
 
 /// Gateway implementation of `ConnectorResourceProvider`.
 ///

@@ -4,6 +4,7 @@
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Configuration for an LLM client
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,10 @@ pub struct LlmConfig {
     /// Enable reasoning/thinking
     #[serde(default)]
     pub thinking_enabled: bool,
+
+    /// Provider-specific request parameters.
+    #[serde(default, skip_serializing)]
+    pub provider_params: Option<Value>,
 }
 
 const fn default_temperature() -> f64 {
@@ -53,6 +58,7 @@ impl LlmConfig {
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
             thinking_enabled: false,
+            provider_params: None,
         }
     }
 
@@ -76,6 +82,13 @@ impl LlmConfig {
         self.thinking_enabled = thinking_enabled;
         self
     }
+
+    /// Create config with provider-specific request parameters.
+    #[must_use]
+    pub fn with_provider_params(mut self, provider_params: Value) -> Self {
+        self.provider_params = Some(provider_params);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -97,5 +110,6 @@ mod tests {
         assert_eq!(config.temperature, 0.5);
         assert_eq!(config.max_tokens, 1000);
         assert!(config.thinking_enabled);
+        assert_eq!(config.provider_params, None);
     }
 }

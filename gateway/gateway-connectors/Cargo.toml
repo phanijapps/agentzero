@@ -12,7 +12,7 @@ license.workspace = true
 description = "External connector management for AgentZero gateway"
 
 [dependencies]
-zero-core = { path = "../../framework/zero-core" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 gateway-services = { path = "../gateway-services" }
 serde = { workspace = true }
 serde_json = { workspace = true }

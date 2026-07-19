@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use gateway_services::models::{DEFAULT_MAX_INPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS};
 use serde::{Deserialize, Serialize};
 
 /// Agent response (full view for API).
@@ -23,6 +24,12 @@ pub struct AgentResponse {
     pub provider_id: String,
     pub model: String,
     pub temperature: f64,
+    #[serde(rename = "maxInputTokens")]
+    pub max_input_tokens: u64,
+    #[serde(rename = "maxInputTokensExplicit")]
+    pub max_input_tokens_explicit: bool,
+    #[serde(rename = "maxOutputTokens")]
+    pub max_output_tokens: u32,
     #[serde(rename = "maxTokens")]
     pub max_tokens: u32,
     #[serde(rename = "thinkingEnabled")]
@@ -48,6 +55,9 @@ impl From<Agent> for AgentResponse {
             provider_id: agent.provider_id,
             model: agent.model,
             temperature: agent.temperature,
+            max_input_tokens: agent.max_input_tokens,
+            max_input_tokens_explicit: agent.max_input_tokens_explicit,
+            max_output_tokens: agent.max_tokens,
             max_tokens: agent.max_tokens,
             thinking_enabled: agent.thinking_enabled,
             voice_recording_enabled: agent.voice_recording_enabled,
@@ -71,11 +81,23 @@ pub struct CreateAgentRequest {
     pub provider_id: String,
     pub model: String,
     pub temperature: Option<f64>,
+    #[serde(rename = "maxInputTokens")]
+    pub max_input_tokens: Option<u64>,
+    #[serde(rename = "maxInputTokensExplicit")]
+    pub max_input_tokens_explicit: Option<bool>,
+    #[serde(rename = "maxOutputTokens")]
+    pub max_output_tokens: Option<u32>,
     #[serde(rename = "maxTokens")]
-    pub max_tokens: Option<u32>,
+    pub legacy_max_tokens: Option<u32>,
     pub instructions: Option<String>,
     pub mcps: Option<Vec<String>>,
     pub skills: Option<Vec<String>>,
+}
+
+impl CreateAgentRequest {
+    fn effective_max_output_tokens(&self) -> Option<u32> {
+        self.max_output_tokens.or(self.legacy_max_tokens)
+    }
 }
 
 /// Update agent request.
@@ -89,8 +111,14 @@ pub struct UpdateAgentRequest {
     pub provider_id: Option<String>,
     pub model: Option<String>,
     pub temperature: Option<f64>,
+    #[serde(rename = "maxInputTokens")]
+    pub max_input_tokens: Option<u64>,
+    #[serde(rename = "maxInputTokensExplicit")]
+    pub max_input_tokens_explicit: Option<bool>,
+    #[serde(rename = "maxOutputTokens")]
+    pub max_output_tokens: Option<u32>,
     #[serde(rename = "maxTokens")]
-    pub max_tokens: Option<u32>,
+    pub legacy_max_tokens: Option<u32>,
     #[serde(rename = "thinkingEnabled")]
     pub thinking_enabled: Option<bool>,
     #[serde(rename = "voiceRecordingEnabled")]
@@ -99,6 +127,29 @@ pub struct UpdateAgentRequest {
     pub mcps: Option<Vec<String>>,
     pub skills: Option<Vec<String>>,
     pub middleware: Option<String>,
+}
+
+impl UpdateAgentRequest {
+    fn effective_max_output_tokens(&self) -> Option<u32> {
+        self.max_output_tokens.or(self.legacy_max_tokens)
+    }
+}
+
+fn resolve_updated_max_input_tokens(
+    existing_tokens: u64,
+    existing_explicit: bool,
+    requested_tokens: Option<u64>,
+    requested_explicit: Option<bool>,
+) -> (u64, bool) {
+    match requested_explicit {
+        Some(false) => (DEFAULT_MAX_INPUT_TOKENS, false),
+        Some(true) => (requested_tokens.unwrap_or(existing_tokens), true),
+        None => match requested_tokens {
+            Some(tokens) if tokens != existing_tokens => (tokens, true),
+            Some(tokens) => (tokens, existing_explicit),
+            None => (existing_tokens, existing_explicit),
+        },
+    }
 }
 
 /// GET /api/agents - List all agents.
@@ -117,6 +168,15 @@ pub async fn create_agent(
     State(state): State<AppState>,
     Json(request): Json<CreateAgentRequest>,
 ) -> Result<Json<AgentResponse>, StatusCode> {
+    let max_output_tokens = request.effective_max_output_tokens();
+    let max_input_tokens_explicit = request
+        .max_input_tokens_explicit
+        .unwrap_or_else(|| request.max_input_tokens.is_some());
+    let max_input_tokens = if max_input_tokens_explicit {
+        request.max_input_tokens.unwrap_or(DEFAULT_MAX_INPUT_TOKENS)
+    } else {
+        DEFAULT_MAX_INPUT_TOKENS
+    };
     let agent = Agent {
         id: String::new(),
         name: request.name.clone(),
@@ -126,7 +186,9 @@ pub async fn create_agent(
         provider_id: request.provider_id,
         model: request.model,
         temperature: request.temperature.unwrap_or(0.7),
-        max_tokens: request.max_tokens.unwrap_or(2000),
+        max_input_tokens,
+        max_input_tokens_explicit,
+        max_tokens: max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
         thinking_enabled: false,
         voice_recording_enabled: true,
         system_instruction: None,
@@ -173,6 +235,13 @@ pub async fn update_agent(
         Ok(a) => a,
         Err(_) => return Err(StatusCode::NOT_FOUND),
     };
+    let max_output_tokens = request.effective_max_output_tokens();
+    let (max_input_tokens, max_input_tokens_explicit) = resolve_updated_max_input_tokens(
+        existing.max_input_tokens,
+        existing.max_input_tokens_explicit,
+        request.max_input_tokens,
+        request.max_input_tokens_explicit,
+    );
 
     // Merge updates
     let updated = Agent {
@@ -184,7 +253,9 @@ pub async fn update_agent(
         provider_id: request.provider_id.unwrap_or(existing.provider_id),
         model: request.model.unwrap_or(existing.model),
         temperature: request.temperature.unwrap_or(existing.temperature),
-        max_tokens: request.max_tokens.unwrap_or(existing.max_tokens),
+        max_input_tokens,
+        max_input_tokens_explicit,
+        max_tokens: max_output_tokens.unwrap_or(existing.max_tokens),
         thinking_enabled: request
             .thinking_enabled
             .unwrap_or(existing.thinking_enabled),
@@ -216,5 +287,76 @@ pub async fn delete_agent(State(state): State<AppState>, Path(id): Path<String>)
             tracing::warn!("Failed to delete agent: {} - {}", id, e);
             StatusCode::NOT_FOUND
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_agent_request_accepts_canonical_and_legacy_output_tokens() {
+        let request: UpdateAgentRequest = serde_json::from_value(serde_json::json!({
+            "displayName": "Reviewer",
+            "providerId": "provider-ollama",
+            "model": "kimi-k2.6:cloud",
+            "maxInputTokens": 200000,
+            "maxInputTokensExplicit": true,
+            "maxOutputTokens": 16384,
+            "maxTokens": 16384
+        }))
+        .expect("agent update payload with legacy maxTokens should parse");
+
+        assert_eq!(request.max_input_tokens, Some(200000));
+        assert_eq!(request.max_input_tokens_explicit, Some(true));
+        assert_eq!(request.max_output_tokens, Some(16384));
+        assert_eq!(request.legacy_max_tokens, Some(16384));
+        assert_eq!(request.effective_max_output_tokens(), Some(16384));
+    }
+
+    #[test]
+    fn create_agent_request_accepts_legacy_output_tokens() {
+        let request: CreateAgentRequest = serde_json::from_value(serde_json::json!({
+            "name": "reviewer-agent",
+            "providerId": "provider-ollama",
+            "model": "kimi-k2.6:cloud",
+            "maxTokens": 12000
+        }))
+        .expect("legacy agent create payload should parse");
+
+        assert_eq!(request.max_output_tokens, None);
+        assert_eq!(request.legacy_max_tokens, Some(12000));
+        assert_eq!(request.effective_max_output_tokens(), Some(12000));
+    }
+
+    #[test]
+    fn update_roundtrip_preserves_inherited_max_input_tokens() {
+        let (tokens, explicit) =
+            resolve_updated_max_input_tokens(DEFAULT_MAX_INPUT_TOKENS, false, Some(200000), None);
+
+        assert_eq!(tokens, DEFAULT_MAX_INPUT_TOKENS);
+        assert!(!explicit);
+    }
+
+    #[test]
+    fn update_can_explicitly_set_default_max_input_tokens() {
+        let (tokens, explicit) = resolve_updated_max_input_tokens(
+            DEFAULT_MAX_INPUT_TOKENS,
+            false,
+            Some(200000),
+            Some(true),
+        );
+
+        assert_eq!(tokens, DEFAULT_MAX_INPUT_TOKENS);
+        assert!(explicit);
+    }
+
+    #[test]
+    fn update_can_clear_explicit_max_input_tokens() {
+        let (tokens, explicit) =
+            resolve_updated_max_input_tokens(64_000, true, Some(64_000), Some(false));
+
+        assert_eq!(tokens, DEFAULT_MAX_INPUT_TOKENS);
+        assert!(!explicit);
     }
 }

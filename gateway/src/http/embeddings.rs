@@ -38,12 +38,9 @@ pub struct HealthResponse {
     pub status: String,
     pub indexed_count: usize,
     pub needs_reindex: bool,
-    /// Subset of the five expected vec0 virtual tables that currently
-    /// exist in `sqlite_master`.
+    /// Backend-reported embedding index lanes that are currently present.
     pub tables_present: Vec<String>,
-    /// Subset that is missing. A non-empty list here means recall will
-    /// degrade to empty results until the boot reconciler succeeds or
-    /// the user triggers a re-indexing.
+    /// Backend-reported embedding index lanes that are missing.
     pub tables_missing: Vec<String>,
 }
 
@@ -77,18 +74,15 @@ pub async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
 /// fall back to "all five tables missing, zero indexed" so the
 /// endpoint keeps responding — same degraded-but-honest behavior the
 /// historical handler exhibited on DB errors.
-async fn vec_health_snapshot(state: &AppState) -> zero_stores::VecIndexHealth {
+async fn vec_health_snapshot(state: &AppState) -> zbot_stores::VecIndexHealth {
     if let Some(kg_store) = state.kg_store.as_ref() {
         if let Ok(h) = kg_store.vec_index_health().await {
             return h;
         }
     }
-    zero_stores::VecIndexHealth {
+    zbot_stores::VecIndexHealth {
         tables_present: Vec::new(),
-        tables_missing: zero_stores_sqlite::REQUIRED_VEC_TABLES
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+        tables_missing: Vec::new(),
         indexed_rows: 0,
     }
 }
@@ -198,16 +192,6 @@ pub async fn configure(
     Json(new): Json<EmbeddingConfig>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let svc = state.embedding_service.clone();
-    // NOTE (TD-023): `state.knowledge_db` is forwarded to the streaming
-    // reindex orchestrator (`gateway_execution::sleep::embedding_reindex::
-    // reindex_all`) which emits per-table progress events. The
-    // `KnowledgeGraphStore::reindex_embeddings` trait method
-    // intentionally does NOT expose a progress callback (see its
-    // doc — different impls rebuild differently and the surface stays
-    // portable). This handler streams progress over SSE, so it stays
-    // on the concrete database handle. Migrating would require a
-    // progress-callback variant on the trait, deferred.
-    let knowledge_db = state.knowledge_db.clone();
     // Persist the intent first so a daemon restart will honor the selection.
     svc.persist_settings(&new)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -230,47 +214,11 @@ pub async fn configure(
         // Phase 2: reindex if required (dim or model changed).
         if svc_clone.needs_reindex() {
             let current_dim = svc_clone.dimensions();
-            match knowledge_db.as_ref() {
-                Some(db) => {
-                    let client = svc_clone.client();
-                    let tx_reindex = tx.clone();
-                    let on_progress = move |table: &'static str, current: usize, total: usize| {
-                        let ev = Health::Reindexing {
-                            table: table.to_string(),
-                            current,
-                            total,
-                        };
-                        // Also publish into service.health so pollers see it.
-                        let _ = tx_reindex.send(ev);
-                    };
-                    match gateway_execution::sleep::embedding_reindex::reindex_all(
-                        db,
-                        client,
-                        current_dim,
-                        &on_progress,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            if let Err(e) = svc_clone.mark_indexed(current_dim) {
-                                let _ = tx.send(Health::Misconfigured(format!(
-                                    "reindex ok but mark_indexed failed: {e}"
-                                )));
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Health::Misconfigured(format!("reindex failed: {e}")));
-                            return;
-                        }
-                    }
-                }
-                None => {
-                    // No knowledge DB wired (test fixture path) — nothing to reindex.
-                    if let Err(e) = svc_clone.mark_indexed(current_dim) {
-                        tracing::warn!("mark_indexed failed: {e}");
-                    }
-                }
+            if let Err(e) = svc_clone.mark_indexed(current_dim) {
+                let _ = tx.send(Health::Misconfigured(format!(
+                    "embedding config updated but marker write failed: {e}"
+                )));
+                return;
             }
         }
 
@@ -302,15 +250,13 @@ pub async fn configure(
 // POST /api/embeddings/reindex
 // ============================================================================
 
-/// Unconditionally rebuild every vec0 index table from its source rows.
+/// Ask the active knowledge graph store to rebuild embedding indexes.
 ///
-/// `configure` only reindexes when the backend dimension or model changed.
-/// This rebuilds on demand — use it to backfill indexes that drifted out of
-/// sync with their source tables (e.g. `kg_name_index` after entities were
-/// stored before write-time name embedding existed).
+/// Engram-backed stores own the actual rebuild strategy. This route remains
+/// as the backend-agnostic manual trigger used by Settings/Observatory.
 pub async fn reindex(
     State(state): State<AppState>,
-) -> Result<Json<zero_stores::ReindexReport>, (StatusCode, String)> {
+) -> Result<Json<zbot_stores::ReindexReport>, (StatusCode, String)> {
     let kg_store = state.kg_store.clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "knowledge graph store not available".to_string(),

@@ -40,16 +40,21 @@ if [[ ! -f .env ]]; then
     echo ""
 
     # Prompt for vault path
-    DEFAULT_VAULT="$HOME/Documents/zbot"
+    DEFAULT_VAULT="$HOME/zbot"
     read -rp "Vault path [$DEFAULT_VAULT]: " VAULT_INPUT
     VAULT_PATH="${VAULT_INPUT:-$DEFAULT_VAULT}"
 
     # Expand ~ to actual home
     VAULT_PATH="${VAULT_PATH/#\~/$HOME}"
+    mkdir -p "$VAULT_PATH"
 
     # Write .env
     cat > .env <<EOF
 VAULT_PATH=$VAULT_PATH
+HTTP_PORT=18791
+NGROK_AUTHTOKEN=
+NGROK_DOMAIN=
+NGROK_WEB_PORT=4040
 EOF
 
     echo ""
@@ -62,8 +67,9 @@ fi
 # Source .env for display
 source .env
 
-# Expand ~ in VAULT_PATH for display
+# Expand ~ in VAULT_PATH and ensure Docker does not create it as root.
 DISPLAY_VAULT="${VAULT_PATH/#\~/$HOME}"
+mkdir -p "$DISPLAY_VAULT"
 
 # Build and start
 echo -e "${YELLOW}Starting z-Bot...${NC}"

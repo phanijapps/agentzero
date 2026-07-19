@@ -16,6 +16,7 @@ import {
   buildSessionTurns,
   extractAssistantReplyForTurn,
   extractDelegationTasksInWindow,
+  extractToolActivityForTurn,
   findTurnBoundaries,
   type TurnBoundary,
 } from "./turns";
@@ -118,6 +119,21 @@ describe("findTurnBoundaries", () => {
     const boundaries = findTurnBoundaries(msgs, null);
     expect(boundaries.map((b) => b.userMessage.id)).toEqual(["u1", "u2"]);
   });
+
+  it("turns persisted attachment metadata into safe display data", () => {
+    const [boundary] = findTurnBoundaries([
+      userMsg(
+        "u1",
+        "2026-05-03T13:05:34Z",
+        "Analyze this\n\n**Attached files:**\n| File | Type | Size | Path |\n|------|------|------|------|\n| interview.txt | text/plain | 44.7 KB | /private/transcript.txt |",
+      ),
+    ], null);
+
+    expect(boundary.userMessage.content).toBe("Analyze this");
+    expect(boundary.userMessage.attachments).toEqual([
+      { name: "interview.txt", mimeType: "text/plain", sizeLabel: "44.7 KB" },
+    ]);
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -212,6 +228,19 @@ describe("extractAssistantReplyForTurn", () => {
     expect(extractAssistantReplyForTurn(win)).toBe("plain text reply");
   });
 
+  it("uses a later respond() result over earlier progress text", () => {
+    const win = [
+      asstMsg("a1", "2026-05-03T13:06:00Z", "I'll research that now."),
+      asstMsg(
+        "a2",
+        "2026-05-03T13:12:50Z",
+        "[tool calls]",
+        JSON.stringify([{ tool_name: "respond", args: { message: "final report" } }]),
+      ),
+    ];
+    expect(extractAssistantReplyForTurn(win)).toBe("final report");
+  });
+
   it("returns null on an empty window", () => {
     expect(extractAssistantReplyForTurn([])).toBeNull();
   });
@@ -269,6 +298,35 @@ describe("extractDelegationTasksInWindow", () => {
 });
 
 // -----------------------------------------------------------------------------
+// extractToolActivityForTurn
+// -----------------------------------------------------------------------------
+
+describe("extractToolActivityForTurn", () => {
+  it("retains chronological non-response tool names without arguments", () => {
+    const entries = extractToolActivityForTurn([
+      asstMsg(
+        "a1",
+        "2026-05-03T13:05:39Z",
+        "[tool calls]",
+        JSON.stringify([
+          { tool_name: "recall", args: { query: "private query" } },
+          { tool_name: "respond", args: { message: "answer" } },
+        ]),
+      ),
+      asstMsg(
+        "a2",
+        "2026-05-03T13:05:40Z",
+        "[tool calls]",
+        JSON.stringify([{ tool_name: "write_file", args: { path: "/home/private" } }]),
+      ),
+    ]);
+
+    expect(entries.map((entry) => entry.toolName)).toEqual(["recall", "write_file"]);
+    expect(entries.every((entry) => entry.toolArgsPreview === undefined)).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // buildSessionTurns end-to-end
 // -----------------------------------------------------------------------------
 
@@ -312,6 +370,11 @@ describe("buildSessionTurns", () => {
       "write answers",
     ]);
     expect(turns[0].assistantText).toBe("The assignment is fully complete!");
+    expect(turns[0].timeline.map((entry) => entry.toolName)).toEqual([
+      "delegate_to_agent",
+      "delegate_to_agent",
+      "delegate_to_agent",
+    ]);
     expect(turns[0].status).toBe("completed");
     expect(turns[0].index).toBe(0);
     expect(turns[1].userMessage.content).toBe("can you make it into a presentation");

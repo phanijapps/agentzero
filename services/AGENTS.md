@@ -8,7 +8,7 @@ Standalone data services with minimal framework dependencies. Each service is in
 |-------|---------|---------|
 | `execution-state` | Session lifecycle, execution tracking, token consumption, dashboard stats | SQLite (via `StateDbProvider`) |
 | `api-logs` | Execution logging and tracing with categories and filtering | SQLite (via `DbProvider`) |
-| `knowledge-graph` | Entity/relationship type definitions, extraction, name resolution | Types only; SQLite storage in `zero-stores-sqlite` |
+| `knowledge-graph` | Entity/relationship type definitions, extraction, name resolution | Types only; SQLite storage in `zbot-stores-sqlite` |
 | `daily-sessions` | Daily session continuity with message archiving | SQLite + moka cache |
 
 ## Build & Test
@@ -35,7 +35,7 @@ pub trait DbProvider {
     fn get_connection(&self) -> &Connection;
 }
 
-// Gateway's DatabaseManager (in zero-stores-sqlite) implements both traits
+// Gateway's DatabaseManager (in zbot-stores-sqlite) implements both traits
 ```
 
 This inverts dependencies — services don't depend on the gateway; the gateway depends on services.
@@ -63,7 +63,7 @@ Execution tracing with structured log entries. Each entry has level, category, t
 
 ## knowledge-graph
 
-Entity type definitions, extraction, and name resolution. **Storage was relocated to `zero-stores-sqlite::kg`** (Slice D6b).
+Entity type definitions, extraction, and name resolution. **Storage was relocated to `zbot-stores-sqlite::kg`** (Slice D6b).
 
 **Key types**: `Entity`, `Relationship`, `EntityType`, `RelationshipType`, `ExtractedKnowledge`, `ResolveOutcome`
 

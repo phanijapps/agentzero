@@ -7,10 +7,11 @@
 //! 2. The task is passed with optional context
 //! 3. Parent receives a callback when subagent completes
 
+use agent_primitives::{Tool, ToolContext};
+use agent_tools::guards::planning_gate_awaits_ward;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zero_core::{Tool, ToolContext};
 
 /// Tool for delegating tasks to subagents.
 ///
@@ -52,8 +53,10 @@ impl Tool for DelegateTool {
 
     fn description(&self) -> &'static str {
         "Delegate a task to a specialized subagent. The subagent will work on the task \
-         independently. Returns an execution_id you can pass to wait_agent (block until result), \
-         steer_agent (send mid-run instructions), or kill_agent (stop it). \
+         independently. For fire-and-forget delegations, returns an execution_id you can pass \
+         to wait_agent (block until result), steer_agent (send mid-run instructions), or \
+         kill_agent (stop it). For wait_for_result=true, the caller is auto-resumed with the \
+         result and should not call wait_agent. \
          Use this for complex subtasks that require specialized expertise."
     }
 
@@ -67,7 +70,7 @@ impl Tool for DelegateTool {
                 },
                 "task": {
                     "type": "string",
-                    "description": "Task description for the subagent. Be specific about what you need."
+                    "description": "Task description for the subagent. Be specific about what you need. Recommended length: 4000-5000 chars; for longer instructions, reference ward/spec files instead of pasting everything."
                 },
                 "context": {
                     "type": "object",
@@ -89,7 +92,12 @@ impl Tool for DelegateTool {
                 "skills": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Skills to pre-load for the subagent. These are loaded into the agent's context automatically."
+                    "description": "Skills recommended to the subagent. It can load them with load_skill when needed."
+                },
+                "mcps": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Canonical MCP server IDs to mount for this subagent before its first model turn. Omit unless explicitly assigned."
                 },
                 "parallel": {
                     "type": "boolean",
@@ -106,37 +114,54 @@ impl Tool for DelegateTool {
         }))
     }
 
-    async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> zero_core::Result<Value> {
+    async fn execute(
+        &self,
+        ctx: Arc<dyn ToolContext>,
+        args: Value,
+    ) -> agent_primitives::Result<Value> {
         let target_agent_id = args
             .get("agent_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("agent_id is required".to_string()))?;
+            .ok_or_else(|| {
+                agent_primitives::AgentError::Tool("agent_id is required".to_string())
+            })?;
 
         let task = args
             .get("task")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| zero_core::ZeroError::Tool("task is required".to_string()))?;
+            .ok_or_else(|| agent_primitives::AgentError::Tool("task is required".to_string()))?;
 
-        // Guard: Limit task size to prevent context explosion
-        const MAX_TASK_CHARS: usize = 4000;
-        if task.len() > MAX_TASK_CHARS {
-            return Err(zero_core::ZeroError::Tool(format!(
-                "Task too large ({} chars). Maximum is {} chars. Be concise in your delegation.",
+        // Guidance only: long delegation tasks are allowed, but the tool result
+        // nudges agents toward file references before pasted specs get unwieldy.
+        const PREFERRED_TASK_CHARS: usize = 4000;
+        const RECOMMENDED_TASK_CHARS: usize = 5000;
+        let task_warning = if task.len() > RECOMMENDED_TASK_CHARS {
+            Some(format!(
+                "Task is {} chars, above the recommended {} char upper range. Prefer putting long instructions in ward/spec files and reference those paths.",
                 task.len(),
-                MAX_TASK_CHARS
-            )));
-        }
+                RECOMMENDED_TASK_CHARS
+            ))
+        } else if task.len() > PREFERRED_TASK_CHARS {
+            Some(format!(
+                "Task is {} chars. This is acceptable, but delegation tasks are easiest to execute around {}-{} chars.",
+                task.len(),
+                PREFERRED_TASK_CHARS,
+                RECOMMENDED_TASK_CHARS
+            ))
+        } else {
+            None
+        };
 
         let context = args.get("context").cloned();
 
         // Guard: Limit context size
         if let Some(ctx_val) = &context {
             let ctx_str = serde_json::to_string(ctx_val).unwrap_or_default();
-            if ctx_str.len() > MAX_TASK_CHARS {
-                return Err(zero_core::ZeroError::Tool(format!(
+            if ctx_str.len() > RECOMMENDED_TASK_CHARS {
+                return Err(agent_primitives::AgentError::Tool(format!(
                     "Context too large ({} chars). Maximum is {} chars. Only pass essential context.",
                     ctx_str.len(),
-                    MAX_TASK_CHARS
+                    RECOMMENDED_TASK_CHARS
                 )));
             }
         }
@@ -153,15 +178,41 @@ impl Tool for DelegateTool {
 
         let output_schema = args.get("output_schema").cloned();
 
+        const MAX_ASSIGNED_CAPABILITIES: usize = 25;
         let skills: Vec<String> = args
             .get("skills")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                    .take(MAX_ASSIGNED_CAPABILITIES)
                     .collect()
             })
             .unwrap_or_default();
+
+        let mcps: Vec<String> = args
+            .get("mcps")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                    .take(MAX_ASSIGNED_CAPABILITIES)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let capability_assignment = (args.get("skills").is_some() || args.get("mcps").is_some())
+            .then(|| agent_primitives::event::AgentCapabilityAssignment {
+                agent_id: target_agent_id.to_string(),
+                skills: skills.clone(),
+                mcps,
+            });
+        let planning_capability_catalog = (target_agent_id == "planner-agent"
+            || target_agent_id.starts_with("ward:"))
+        .then(|| {
+            ctx.get_state(super::PLANNER_CAPABILITY_CATALOG_STATE)
+                .or_else(|| ctx.get_state(super::PLANNING_CAPABILITY_CATALOG_STATE))
+        })
+        .flatten();
 
         let parallel = args
             .get("parallel")
@@ -181,7 +232,7 @@ impl Tool for DelegateTool {
                 "step_executor",
             ];
             if !ALLOWED_MODES.contains(&mode) {
-                return Err(zero_core::ZeroError::Tool(format!(
+                return Err(agent_primitives::AgentError::Tool(format!(
                     "Invalid delegation mode '{mode}'. Expected one of: {}",
                     ALLOWED_MODES.join(", ")
                 )));
@@ -196,10 +247,21 @@ impl Tool for DelegateTool {
 
         // Guard: Prevent self-delegation
         if target_agent_id == parent_agent_id {
-            return Err(zero_core::ZeroError::Tool(
+            return Err(agent_primitives::AgentError::Tool(
                 "Cannot delegate to yourself. Use a different agent or handle the task directly."
                     .to_string(),
             ));
+        }
+
+        // A cold graph request must establish its ward first. WardTool then
+        // starts planner-agent itself with the authoritative selected ward.
+        // This is a runtime invariant, not merely a prompt instruction, so a
+        // root cannot skip planning by delegating directly to a worker.
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request is awaiting ward(create/use). Do not delegate to a worker or planner manually; entering the ward will automatically start planner-agent."
+            }));
         }
 
         // Guard: Only one sequential delegation at a time per session.
@@ -258,7 +320,9 @@ impl Tool for DelegateTool {
 
         // Enrich task with platform hint so subagents use correct shell syntax
         let platform_hint = match std::env::consts::OS {
-            "windows" => "\n\n[PLATFORM: Windows / PowerShell. Do NOT use bash syntax (head, &&, cat, heredocs). Use Get-Content, ';', python.]",
+            "windows" => {
+                "\n\n[PLATFORM: Windows / PowerShell. Do NOT use bash syntax (head, &&, cat, heredocs). Use Get-Content, ';', python.]"
+            }
             "macos" => "\n\n[PLATFORM: macOS / zsh.]",
             _ => "\n\n[PLATFORM: Linux / bash.]",
         };
@@ -266,7 +330,7 @@ impl Tool for DelegateTool {
 
         // Set delegation action for the executor to pick up
         let mut actions = ctx.actions();
-        actions.delegate = Some(zero_core::event::DelegateAction {
+        actions.delegate = Some(agent_primitives::event::DelegateAction {
             agent_id: target_agent_id.to_string(),
             task: enriched_task,
             context,
@@ -274,6 +338,8 @@ impl Tool for DelegateTool {
             max_iterations,
             output_schema,
             skills,
+            capability_assignment,
+            planning_capability_catalog,
             complexity: None,
             mode,
             parallel,
@@ -281,15 +347,45 @@ impl Tool for DelegateTool {
         });
         ctx.set_actions(actions);
 
-        Ok(json!({
+        let mut result = json!({
             "execution_id": child_execution_id,
             "convid": child_conversation_id,
             "status": "delegated",
             "agent_id": target_agent_id,
             "task": task,
             "parallel": parallel,
-            "message": format!("Task delegated to {}. Use execution_id with wait_agent to block until it completes and get its result, steer_agent to send mid-run instructions, or kill_agent to stop it.", target_agent_id)
-        }))
+            "message": if wait_for_result {
+                // Sequential: the system pauses the caller and resumes it with
+                // the result when the child completes (continuation). Instructing
+                // wait_agent here is redundant and led the model to call it
+                // needlessly after every wait_for_result=true delegation.
+                format!(
+                    "Task delegated to {}. You will be paused and automatically resumed with the result when it completes — do NOT call wait_agent, just wait for the result.",
+                    target_agent_id
+                )
+            } else {
+                // Fire-and-forget (incl. parallel): wait_agent is the intended
+                // way to block for the result later — its actual purpose.
+                format!(
+                    "Task delegated to {} (fire-and-forget). Use execution_id with wait_agent to block until it completes and get its result, steer_agent to send mid-run instructions, or kill_agent to stop it.",
+                    target_agent_id
+                )
+            },
+        });
+        if let Some(warning) = task_warning {
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("warning".to_string(), json!(warning));
+                obj.insert("task_chars".to_string(), json!(task.len()));
+                obj.insert(
+                    "recommended_task_chars".to_string(),
+                    json!({
+                        "preferred": PREFERRED_TASK_CHARS,
+                        "upper": RECOMMENDED_TASK_CHARS,
+                    }),
+                );
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -320,6 +416,7 @@ mod tests {
         assert!(properties.get("context").is_some());
         assert!(properties.get("wait_for_result").is_some());
         assert!(properties.get("mode").is_some());
+        assert!(properties.get("mcps").is_some());
 
         let required = schema.get("required").unwrap().as_array().unwrap();
         assert!(required.iter().any(|v| v == "agent_id"));
@@ -336,7 +433,7 @@ mod tests {
         let ctx = ctx_for("root");
         let res = tool.execute(ctx, json!({ "task": "do thing" })).await;
         let err = res.expect_err("must error");
-        assert!(matches!(err, zero_core::ZeroError::Tool(_)));
+        assert!(matches!(err, agent_primitives::AgentError::Tool(_)));
         assert!(format!("{err}").contains("agent_id"));
     }
 
@@ -352,25 +449,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_task_is_rejected() {
+    async fn task_over_preferred_length_delegates_with_warning() {
         let tool = DelegateTool::new();
         let ctx = ctx_for("root");
         let big = "x".repeat(4001);
         let res = tool
-            .execute(ctx, json!({ "agent_id": "writer-agent", "task": big }))
+            .execute(
+                ctx.clone(),
+                json!({ "agent_id": "writer-agent", "task": big }),
+            )
             .await;
-        let err = res.expect_err("must error on >4000 chars");
-        let msg = format!("{err}");
-        assert!(msg.contains("Task too large"));
-        assert!(msg.contains("4000"));
+        let value = res.expect("task over preferred length should still delegate");
+        assert_eq!(
+            value.get("status").and_then(|v| v.as_str()),
+            Some("delegated")
+        );
+        assert!(
+            value.get("warning").and_then(|v| v.as_str()).is_some(),
+            "long task should include advisory warning: {value}"
+        );
+        assert_eq!(value.get("task_chars").and_then(|v| v.as_u64()), Some(4001));
+        assert!(
+            ctx.actions().delegate.is_some(),
+            "delegation action must still be set for long-but-valid task"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_over_recommended_length_delegates_with_stronger_warning() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("root");
+        let big = "x".repeat(5001);
+        let value = tool
+            .execute(
+                ctx.clone(),
+                json!({ "agent_id": "writer-agent", "task": big }),
+            )
+            .await
+            .expect("task over recommended length should still delegate");
+        assert_eq!(
+            value.get("status").and_then(|v| v.as_str()),
+            Some("delegated")
+        );
+        let warning = value
+            .get("warning")
+            .and_then(|v| v.as_str())
+            .expect("long task should include warning");
+        assert!(warning.contains("above the recommended"));
+        assert_eq!(value.get("task_chars").and_then(|v| v.as_u64()), Some(5001));
+        assert!(
+            ctx.actions().delegate.is_some(),
+            "delegation action must still be set for oversized task"
+        );
     }
 
     #[tokio::test]
     async fn oversized_context_is_rejected() {
         let tool = DelegateTool::new();
         let ctx = ctx_for("root");
-        // Build a context object whose serialized form > 4000 chars.
-        let big_string = "y".repeat(4100);
+        // Build a context object whose serialized form > 5000 chars.
+        let big_string = "y".repeat(5100);
         let res = tool
             .execute(
                 ctx,
@@ -397,6 +535,36 @@ mod tests {
             .await;
         let err = res.expect_err("self-delegation must fail");
         assert!(format!("{err}").contains("Cannot delegate to yourself"));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_direct_worker_delegation() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("root");
+        ctx.set_state(
+            agent_tools::guards::PLANNING_GATE_STATE.to_string(),
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan the research request",
+            ))
+            .unwrap(),
+        );
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({ "agent_id": "builder-agent", "task": "skip planning" }),
+            )
+            .await
+            .expect("planning gate returns a redirect");
+
+        assert_eq!(
+            result.get("status").and_then(Value::as_str),
+            Some("redirect")
+        );
+        assert!(
+            ctx.actions().delegate.is_none(),
+            "a cold graph gate must not emit a worker delegation"
+        );
     }
 
     #[tokio::test]
@@ -531,6 +699,7 @@ mod tests {
                     "agent_id": "writer-agent",
                     "task": "compose summary",
                     "skills": ["html-report"],
+                    "mcps": ["renderer"],
                     "parallel": false,
                 }),
             )
@@ -556,9 +725,38 @@ mod tests {
             "task must be enriched with platform hint"
         );
         assert_eq!(action.skills, vec!["html-report".to_string()]);
+        let assignment = action
+            .capability_assignment
+            .expect("explicit skills or MCPs create a dynamic assignment");
+        assert_eq!(assignment.agent_id, "writer-agent");
+        assert_eq!(assignment.skills, vec!["html-report".to_string()]);
+        assert_eq!(assignment.mcps, vec!["renderer".to_string()]);
         assert_eq!(action.mode, None);
         assert!(!action.parallel);
         assert!(!action.wait_for_result);
+    }
+
+    #[tokio::test]
+    async fn planner_delegate_carries_host_capability_catalog() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("root");
+        ctx.set_state(
+            crate::tools::PLANNING_CAPABILITY_CATALOG_STATE.to_string(),
+            json!({"skills": [], "mcps": [{"id": "blender"}]}),
+        );
+
+        tool.execute(
+            ctx.clone(),
+            json!({"agent_id": "planner-agent", "task": "plan this"}),
+        )
+        .await
+        .expect("planner delegation succeeds");
+
+        let action = ctx.actions().delegate.expect("delegate action set");
+        assert_eq!(
+            action.planning_capability_catalog,
+            Some(json!({"skills": [], "mcps": [{"id": "blender"}]}))
+        );
     }
 
     #[tokio::test]

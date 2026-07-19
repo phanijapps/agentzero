@@ -11,6 +11,7 @@ pub mod context;
 pub use broadcast::EventBus;
 pub use context::{HookContext, HookType};
 
+use agent_surfaces::WorkSurface;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,6 +23,29 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GatewayEvent {
+    /// Validated declarative surface created by an execution.
+    SurfaceCreated {
+        session_id: String,
+        execution_id: String,
+        surface: WorkSurface,
+    },
+    SurfaceUpdated {
+        session_id: String,
+        execution_id: String,
+        surface: WorkSurface,
+    },
+    SurfaceDeleted {
+        session_id: String,
+        execution_id: String,
+        surface_id: String,
+    },
+    /// A surface was rejected before client publication.
+    SurfaceValidationFailed {
+        session_id: String,
+        execution_id: String,
+        surface_id: String,
+        reason: String,
+    },
     /// Agent started executing.
     AgentStarted {
         agent_id: String,
@@ -264,7 +288,7 @@ pub enum GatewayEvent {
         conversation_id: Option<String>,
     },
 
-    /// Session title changed via set_session_title tool.
+    /// Session title changed by runtime title derivation or legacy log replay.
     SessionTitleChanged { session_id: String, title: String },
 
     /// Intent analysis started for a root session (pre-execution)
@@ -292,12 +316,13 @@ pub enum GatewayEvent {
     },
 
     /// A markdown file in <vault>/config/ was created, modified, or deleted.
-    /// Only emitted for files matching the customization allow-list (root
-    /// `*.md` and `shards/*.md`). Used by the Settings → Customization tab
+    /// Only emitted for files matching the customization allow-list
+    /// (`agent/*.md` and `agent-prompts/*.md`). Used by the Settings → Customization tab
     /// to refresh its file list and detect external edits while a file is
     /// being edited in the UI.
     CustomizationFileChanged {
-        /// Relative to <vault>/config/ (e.g., "SOUL.md" or "shards/foo.md")
+        /// Relative to <vault>/config/ (e.g., "agent/SOUL.md" or
+        /// "agent-prompts/foo.md")
         path: String,
         /// New mtime as RFC3339, or empty string if the file was deleted.
         modified_at: String,
@@ -330,6 +355,17 @@ pub enum GatewayEvent {
         /// final recall output. Surfaces a "this recall was meaningful"
         /// signal — large = many results, zero = nothing recalled.
         surfaced_item_count: u32,
+        /// Non-secret source labels that contributed surfaced recall items.
+        match_sources: Vec<String>,
+        /// Non-secret ranking stages/reasons applied during recall.
+        ranking_reasons: Vec<String>,
+        /// Structured degraded-mode reason labels, if recall degraded.
+        degraded_reasons: Vec<String>,
+        /// Non-secret embedding provider/model/dimension identity used for
+        /// query vectors. Never includes vectors, query text, API keys, or URLs.
+        embedding_provider_identity: Option<serde_json::Value>,
+        /// Non-secret SKOS expansion cues used to widen the retrieval query.
+        taxonomy_expansion: Vec<serde_json::Value>,
     },
 }
 
@@ -337,6 +373,10 @@ impl GatewayEvent {
     /// Get the agent ID for this event (if available).
     pub fn agent_id(&self) -> Option<&str> {
         match self {
+            Self::SurfaceCreated { .. }
+            | Self::SurfaceUpdated { .. }
+            | Self::SurfaceDeleted { .. }
+            | Self::SurfaceValidationFailed { .. } => None,
             Self::AgentStarted { agent_id, .. } => Some(agent_id),
             Self::AgentCompleted { agent_id, .. } => Some(agent_id),
             Self::AgentStopped { agent_id, .. } => Some(agent_id),
@@ -378,6 +418,10 @@ impl GatewayEvent {
     /// all events for that session.
     pub fn session_id(&self) -> Option<&str> {
         match self {
+            Self::SurfaceCreated { session_id, .. }
+            | Self::SurfaceUpdated { session_id, .. }
+            | Self::SurfaceDeleted { session_id, .. }
+            | Self::SurfaceValidationFailed { session_id, .. } => Some(session_id),
             Self::AgentStarted { session_id, .. } => Some(session_id),
             Self::AgentCompleted { session_id, .. } => Some(session_id),
             Self::AgentStopped { session_id, .. } => Some(session_id),
@@ -415,6 +459,10 @@ impl GatewayEvent {
     /// execution (e.g., root-only view or subagent-specific view).
     pub fn execution_id(&self) -> Option<&str> {
         match self {
+            Self::SurfaceCreated { execution_id, .. }
+            | Self::SurfaceUpdated { execution_id, .. }
+            | Self::SurfaceDeleted { execution_id, .. }
+            | Self::SurfaceValidationFailed { execution_id, .. } => Some(execution_id),
             Self::AgentStarted { execution_id, .. } => Some(execution_id),
             Self::AgentCompleted { execution_id, .. } => Some(execution_id),
             Self::AgentStopped { execution_id, .. } => Some(execution_id),
@@ -459,6 +507,10 @@ impl GatewayEvent {
     /// @deprecated Use session_id() for routing and execution_id() for filtering.
     pub fn conversation_id(&self) -> Option<&str> {
         match self {
+            Self::SurfaceCreated { .. }
+            | Self::SurfaceUpdated { .. }
+            | Self::SurfaceDeleted { .. }
+            | Self::SurfaceValidationFailed { .. } => None,
             Self::AgentStarted {
                 conversation_id, ..
             } => conversation_id.as_deref(),

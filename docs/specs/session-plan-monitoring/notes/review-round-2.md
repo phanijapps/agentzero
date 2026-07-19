@@ -1,0 +1,3 @@
+# Plan review — round 2
+
+**1. Raw millisecond timestamps do not provide the specified monotonic event order.** `docs/specs/session-plan-monitoring/plan.md:78-84`. `StreamEvent::timestamp()` is treated as a strictly ordered source value, but equal timestamps are intentionally rejected and wall-clock timestamps can regress. A later valid update can therefore be silently lost, contradicting the latest-plan objective. Fix: define and persist a server-issued monotonic per-session event sequence (or a documented timestamp-plus-monotonic tie-breaker), compare that ordering key atomically, and add equal-timestamp/clock-regression coverage.

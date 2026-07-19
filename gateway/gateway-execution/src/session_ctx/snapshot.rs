@@ -21,8 +21,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use zero_stores_traits::MemoryFact;
-use zero_stores_traits::MemoryFactStore;
+use zbot_stores_traits::MemoryFact;
+use zbot_stores_traits::MemoryFactStore;
 
 /// Byte caps per section — total preamble stays under ~5 KB.
 const AGENTS_MD_CAP: usize = 2048;
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_render_primitives_groups_by_file() {
-        use zero_stores_sqlite::MemoryFact;
+        use zbot_stores_sqlite::MemoryFact;
         fn mk(key: &str, content: &str) -> MemoryFact {
             MemoryFact {
                 id: String::new(),

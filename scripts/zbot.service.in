@@ -11,15 +11,18 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=@@BIN@@ \
+    --log-dir @@LOG_DIR@@ \
     --log-no-stdout \
     --log-rotation daily \
     --log-max-files 4 \
     --static-dir @@DIST@@
 
-# Belt-and-suspenders: silence anything not routed through tracing
-StandardOutput=null
-StandardError=null
+# Keep tracing in rolling files, but let systemd capture early startup
+# output and panics that happen before tracing is initialized.
+StandardOutput=journal
+StandardError=journal
 
 # Auto-restart on crash; circuit-breaker thresholds are in [Unit] above
 Restart=on-failure

@@ -1,82 +1,40 @@
 # Agent Runtime Library
 
-A modular, reusable AI agent execution framework with MCP (Model Context Protocol) support.
+`agent-runtime` is zbot's execution runtime. It keeps the gateway-facing execution contract stable while providing a Rig-backed engine path behind an adapter.
 
 ## Overview
 
-This library provides a clean, framework-agnostic foundation for building AI agent applications. It separates the core agent execution logic from any specific application framework (Tauri, web, CLI, etc.), making it reusable across different projects.
+The crate owns:
 
-## Features
+- `AgentEngine`, the facade used by `gateway-execution`.
+- `AgentExecutor`, the existing executor and fallback path.
+- `RigAgentEngine`, the Rig-backed engine implementation.
+- `LlmClient` and OpenAI-compatible provider transport.
+- Runtime middleware for context control and token accounting.
+- Tool registry/context types used by built-in tools and the Rig tool bridge.
+- MCP manager for the fallback executor path.
 
-- **LLM Abstraction**: Unified interface for multiple LLM providers
-- **Tool System**: Extensible registry for built-in and custom tools
-- **MCP Support**: Model Context Protocol client for external tools
-- **Middleware Pipeline**: Preprocessing and event handling
-- **Structured Logging**: Configurable, controllable logging
-- **Framework Independent**: Use with Tauri, Axum, Actix, or standalone
+Rig is intentionally contained under `src/rig_adapter/`. Gateway, stores, tools, and UI code should not depend on Rig types directly.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Application Layer                           │
-│                   (Tauri, CLI, Web, etc.)                      │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   Agent Runtime Library                         │
-│                                                                  │
-│  ┌────────────┐  ┌────────────┐  ┌───────────┐               │
-│  │     LLM    │  │   Tools    │  │ Middleware│               │
-│  │   Client   │  │  Registry  │  │  Pipeline  │               │
-│  └────────────┘  └────────────┘  └───────────┘               │
-│                                                                  │
-│  ┌────────────┐  ┌────────────┐                                 │
-│  │     MCP    │  │  Executor  │                                 │
-│  │  Manager   │  │            │                                 │
-│  └────────────┘  └────────────┘                                 │
-└─────────────────────────────────────────────────────────────────┘
+gateway-execution
+        │
+        ▼
+  AgentEngine facade
+        │
+        ├── AgentExecutor fallback
+        │
+        └── RigAgentEngine
+              ├── LlmCompletionModel -> zbot LlmClient
+              ├── RigToolAdapter -> agent_primitives::Tool
+              └── Rig hooks/stream items -> zbot StreamEvent
 ```
 
 ## Usage
 
-```rust,no_run
-use agent_runtime::{
-    AgentExecutor, ExecutorConfig, create_executor,
-    ChatMessage, LogLevel
-};
-
-// Initialize logging
-agent_runtime::init_logging(LogLevel::Info);
-
-// Create configuration
-let config = ExecutorConfig {
-    agent_id: "my-agent".to_string(),
-    provider_id: "openai".to_string(),
-    model: "gpt-4".to_string(),
-    temperature: 0.7,
-    max_tokens: 2000,
-    // ... other fields
-};
-
-// Create executor
-let executor = create_executor(config).await?;
-
-// Execute with streaming
-let history = vec![];
-executor.execute_stream(
-    "Hello, agent!",
-    &history,
-    |event| {
-        println!("{:?}", event);
-    }
-).await?;
-```
-
-## Documentation
-
-See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
+Production construction happens in `gateway-execution`, which selects the engine and wires provider config, tools, hooks, memory context, and cancellation. Library users should prefer the facade boundary rather than constructing Rig types directly.
 
 ## License
 

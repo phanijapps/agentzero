@@ -1,0 +1,169 @@
+{
+  "artifact_schema": 1,
+  "comparison_dimensions": [
+    "table_count_buckets",
+    "schema_hashes",
+    "session_status_count_buckets",
+    "message_role_count_buckets",
+    "message_content_length_bucket_presence",
+    "delegation_type_count_buckets",
+    "execution_status_count_buckets",
+    "db_derived_event_variant_count_buckets",
+    "db_derived_tool_pair_count_buckets",
+    "db_derived_delegation_transition_count_buckets"
+  ],
+  "db_derived_event_signatures": {
+    "delegation_transition_count_buckets": {
+      "type:parallel|parent:True|child:True|status:completed": "1-16",
+      "type:root|parent:False|child:False|status:completed": "1-16",
+      "type:sequential|parent:True|child:True|status:completed": "17-128",
+      "type:sequential|parent:True|child:True|status:crashed": "1-16"
+    },
+    "distinct_event_sequence_count_bucket": "17-128",
+    "event_sequence_length_bucket_presence": [
+      "1-16",
+      "1025-8192",
+      "129-1024",
+      "17-128"
+    ],
+    "event_variant_count_buckets": {
+      "AgentCompleted": "17-128",
+      "AgentStarted": "17-128",
+      "DelegationCompleted": "17-128",
+      "DelegationStarted": "17-128",
+      "Error": "1-16",
+      "MessageAdded": "1025-8192",
+      "Token": "1025-8192",
+      "ToolCall": "1025-8192",
+      "ToolResult": "1025-8192",
+      "TurnComplete": "1025-8192"
+    },
+    "lifecycle_count_buckets": {
+      "execution_status:completed": "17-128",
+      "execution_status:crashed": "1-16",
+      "message_role:assistant": "1025-8192",
+      "message_role:system": "17-128",
+      "message_role:tool": "1025-8192",
+      "message_role:user": "17-128",
+      "session_status:completed": "17-128"
+    },
+    "tool_pair_count_buckets": {
+      "balanced": "17-128",
+      "calls:0|results:0": "1-16",
+      "calls:1-16|results:1-16": "17-128",
+      "calls:129-1024|results:129-1024": "1-16",
+      "calls:17-128|results:17-128": "17-128"
+    }
+  },
+  "execution_logs": {
+    "category_count_buckets": {
+      "delegation": "17-128",
+      "intent": "1-16",
+      "response": "1-16",
+      "session": "17-128",
+      "tool_call": "129-1024",
+      "tool_result": "129-1024"
+    },
+    "distinct_metadata_shape_count_bucket": "17-128",
+    "level_count_buckets": {
+      "info": "129-1024",
+      "warn": "1-16"
+    },
+    "message_length_bucket_presence": [
+      "1-16",
+      "1025-8192",
+      "17-128"
+    ]
+  },
+  "executions": {
+    "delegation_type_count_buckets": {
+      "parallel": "1-16",
+      "root": "1-16",
+      "sequential": "17-128"
+    },
+    "parent_child_count_buckets": {
+      "parent:False|child:False": "1-16",
+      "parent:True|child:True": "17-128"
+    },
+    "status_count_buckets": {
+      "completed": "17-128",
+      "crashed": "1-16"
+    },
+    "token_bucket_presence": [
+      "in:0|out:0",
+      "in:0|out:1025-8192",
+      "in:0|out:8193+",
+      "in:8193+|out:1025-8192",
+      "in:8193+|out:129-1024",
+      "in:8193+|out:17-128",
+      "in:8193+|out:8193+"
+    ]
+  },
+  "messages": {
+    "content_length_bucket_presence": [
+      "1-16",
+      "1025-8192",
+      "129-1024",
+      "17-128",
+      "8193+"
+    ],
+    "distinct_role_sequence_count_bucket": "17-128",
+    "distinct_tool_shape_count_bucket": "129-1024",
+    "role_count_buckets": {
+      "assistant": "1025-8192",
+      "system": "17-128",
+      "tool": "1025-8192",
+      "user": "17-128"
+    },
+    "token_count_bucket_presence": [
+      "1-16",
+      "1025-8192",
+      "129-1024",
+      "17-128"
+    ]
+  },
+  "schema_hashes": {
+    "agent_executions": "cfd8af0275ba035b08180ce4",
+    "artifacts": "c4c94b417abd393f22a0e91b",
+    "bridge_outbox": "60a0c553332333ea3e110116",
+    "distillation_runs": "610632957c81f9e0222357d6",
+    "execution_logs": "310151da0417ddff3e88bbf6",
+    "messages": "96bd1c11e3317e1672d653d8",
+    "recall_log": "599696193743b0463ed0639e",
+    "schema_version": "5caf533bdb850f8dc8cc2985",
+    "sessions": "7558986ba406bfddc44f52df"
+  },
+  "schema_version": 22,
+  "sessions": {
+    "mode_count_buckets": {
+      "fast": "1-16",
+      "null": "17-128"
+    },
+    "source_count_buckets": {
+      "cron": "1-16",
+      "web": "17-128"
+    },
+    "state_count_buckets": {
+      "pending:0|continuation:0|archived:0": "17-128"
+    },
+    "status_count_buckets": {
+      "completed": "17-128"
+    }
+  },
+  "source": {
+    "label": "current-conversation-db",
+    "selection": "env-or-cli",
+    "size_bucket": "8193+"
+  },
+  "table_count_buckets": {
+    "agent_executions": "17-128",
+    "artifacts": "17-128",
+    "bridge_outbox": "0",
+    "distillation_runs": "17-128",
+    "execution_logs": "129-1024",
+    "messages": "1025-8192",
+    "recall_log": "0",
+    "schema_version": "1-16",
+    "sessions": "17-128"
+  }
+}

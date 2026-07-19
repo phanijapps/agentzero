@@ -73,7 +73,7 @@ pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse 
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -102,7 +102,7 @@ pub async fn create_cron_job(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -153,7 +153,7 @@ pub async fn get_cron_job(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -191,7 +191,7 @@ pub async fn update_cron_job(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -235,7 +235,7 @@ pub async fn delete_cron_job(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -274,7 +274,7 @@ pub async fn trigger_cron_job(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -320,7 +320,7 @@ pub async fn enable_cron_job(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -359,7 +359,7 @@ pub async fn disable_cron_job(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::scheduler_not_available()),
             )
-                .into_response()
+                .into_response();
         }
     };
 

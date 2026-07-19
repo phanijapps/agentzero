@@ -11,7 +11,7 @@ PLATFORM: Linux
 | Read file | `cat filename` |
 | Read first N lines | `head -30 filename` |
 | Create directory | `mkdir -p core output stocks` |
-| Find text in files | `grep -r "def " core/` |
+| Find text in files | `rg "def " core/` |
 | Check file exists | `test -f filename` |
 | Delete file | `rm filename` |
 | Run Python | `python3 script.py` (or `python` if symlinked) |
@@ -30,6 +30,6 @@ PLATFORM: Linux
 ## Running Python Code
 - For simple checks: `python3 -c "print('hello')"`
 - For multi-line code: write a .py file first, then run it:
-  1. Use the `write_file` tool to create the script
+  1. Use `write_file` to create the script (if it's in your tool set; otherwise delegate to the appropriate agent)
   2. `python3 path/to/script.py` to run it
-- Prefer `write_file` tool + run for scripts longer than ~10 lines
+- Prefer `write_file` + run (or delegate to the appropriate agent) for scripts longer than ~10 lines

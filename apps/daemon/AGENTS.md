@@ -48,7 +48,7 @@ Configurable via `settings.json` in the data directory or CLI flags (CLI overrid
 
 - `gateway` — `GatewayConfig`, `GatewayServer`
 - `gateway-services` — `AppSettings`, `LogSettings`
-- `zero-app` — framework prelude
+- `gateway` — HTTP/WebSocket shell and runtime wiring
 
 ## Notes
 

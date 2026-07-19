@@ -26,16 +26,26 @@ pub struct WebSocketHandler {
     sessions: Arc<SessionRegistry>,
     runtime: Arc<RuntimeService>,
     subscriptions: Arc<SubscriptionManager>,
+    agent_surfaces_enabled: bool,
 }
 
 impl WebSocketHandler {
     /// Create a new WebSocket handler.
     pub fn new(event_bus: Arc<EventBus>, runtime: Arc<RuntimeService>) -> Self {
+        Self::new_with_surfaces(event_bus, runtime, false)
+    }
+
+    pub fn new_with_surfaces(
+        event_bus: Arc<EventBus>,
+        runtime: Arc<RuntimeService>,
+        agent_surfaces_enabled: bool,
+    ) -> Self {
         Self {
             event_bus,
             sessions: Arc::new(SessionRegistry::new()),
             runtime,
             subscriptions: Arc::new(SubscriptionManager::new()),
+            agent_surfaces_enabled,
         }
     }
 
@@ -93,12 +103,14 @@ impl WebSocketHandler {
 
         let router_subscriptions = self.subscriptions.clone();
         let router_runtime = self.runtime.clone();
+        let agent_surfaces_enabled = self.agent_surfaces_enabled;
         let mut router_event_rx = self.event_bus.subscribe_all();
         let mut router_shutdown = shutdown.subscribe();
         tokio::spawn(async move {
             Self::run_event_router(
                 router_subscriptions,
                 router_runtime,
+                agent_surfaces_enabled,
                 &mut router_event_rx,
                 &mut router_shutdown,
             )
@@ -110,6 +122,7 @@ impl WebSocketHandler {
     async fn run_event_router(
         router_subscriptions: Arc<SubscriptionManager>,
         router_runtime: Arc<RuntimeService>,
+        agent_surfaces_enabled: bool,
         router_event_rx: &mut tokio::sync::broadcast::Receiver<GatewayEvent>,
         router_shutdown: &mut broadcast::Receiver<()>,
     ) {
@@ -118,6 +131,9 @@ impl WebSocketHandler {
                 result = router_event_rx.recv() => {
                     match result {
                         Ok(event) => {
+                            if !agent_surfaces_enabled && matches!(event, GatewayEvent::SurfaceCreated { .. } | GatewayEvent::SurfaceUpdated { .. } | GatewayEvent::SurfaceDeleted { .. } | GatewayEvent::SurfaceValidationFailed { .. }) {
+                                continue;
+                            }
                             match &event {
                                 GatewayEvent::DelegationCompleted { session_id, child_agent_id, .. } => {
                                     tracing::debug!(session_id = %session_id, agent = %child_agent_id, "Delegation completed");
@@ -397,8 +413,8 @@ async fn handle_client_message(
             conversation_id,
             message,
             session_id: exec_session_id,
+            metadata,
             mode,
-            ..
         } => {
             debug!(
                 "Session {} invoking agent {} conversation {} (exec_session: {:?}): {}",
@@ -443,8 +459,12 @@ async fn handle_client_message(
                     })
                 });
 
-            // Invoke the agent via runtime service with hook context and callback
-            let invoke_mode = if mode == "deep" { None } else { Some(mode) };
+            // Invoke the agent via runtime service with hook context and callback.
+            let invoke_mode = normalized_invoke_mode(&conversation_id, &mode);
+            // The invoke envelope can carry arbitrary metadata from untrusted
+            // clients. This path needs only the opaque correlation id, so do
+            // not propagate unrelated keys into execution configuration.
+            let client_message_id = client_message_id_from_metadata(metadata);
             match runtime
                 .invoke_with_hook_and_callback(
                     &agent_id,
@@ -454,6 +474,7 @@ async fn handle_client_message(
                     exec_session_id,
                     Some(on_ready),
                     invoke_mode,
+                    client_message_id,
                 )
                 .await
             {
@@ -797,14 +818,60 @@ async fn handle_client_message(
                 let _ = session.send(ServerMessage::Unsubscribed { conversation_id });
             }
         }
+        ClientMessage::PresentationCapabilities { catalogs } => {
+            subscriptions
+                .set_surface_catalogs(&session_id.to_string(), catalogs.into_iter().collect())
+                .await;
+        }
     }
 
     Ok(())
 }
 
-/// Convert a GatewayEvent to a ServerMessage.
-fn gateway_event_to_server_message(event: GatewayEvent) -> Option<ServerMessage> {
+pub(crate) fn gateway_event_to_server_message(event: GatewayEvent) -> Option<ServerMessage> {
     match event {
+        GatewayEvent::SurfaceCreated {
+            session_id,
+            execution_id,
+            surface,
+        } => Some(ServerMessage::SurfaceCreated {
+            session_id,
+            execution_id,
+            surface: serde_json::to_value(surface).expect("work surface is serializable"),
+            seq: None,
+        }),
+        GatewayEvent::SurfaceUpdated {
+            session_id,
+            execution_id,
+            surface,
+        } => Some(ServerMessage::SurfaceUpdated {
+            session_id,
+            execution_id,
+            surface: serde_json::to_value(surface).expect("work surface is serializable"),
+            seq: None,
+        }),
+        GatewayEvent::SurfaceDeleted {
+            session_id,
+            execution_id,
+            surface_id,
+        } => Some(ServerMessage::SurfaceDeleted {
+            session_id,
+            execution_id,
+            surface_id,
+            seq: None,
+        }),
+        GatewayEvent::SurfaceValidationFailed {
+            session_id,
+            execution_id,
+            surface_id,
+            reason,
+        } => Some(ServerMessage::SurfaceValidationFailed {
+            session_id,
+            execution_id,
+            surface_id,
+            reason,
+            seq: None,
+        }),
         GatewayEvent::AgentStarted {
             agent_id,
             session_id,
@@ -1183,6 +1250,11 @@ fn gateway_event_to_server_message(event: GatewayEvent) -> Option<ServerMessage>
             seed_aggregate_ids,
             lca_aggregate_id,
             surfaced_item_count,
+            match_sources: _,
+            ranking_reasons: _,
+            degraded_reasons: _,
+            embedding_provider_identity: _,
+            taxonomy_expansion,
         } => Some(ServerMessage::RecallTrace {
             agent_id,
             conversation_id,
@@ -1190,8 +1262,20 @@ fn gateway_event_to_server_message(event: GatewayEvent) -> Option<ServerMessage>
             seed_aggregate_ids,
             lca_aggregate_id,
             surfaced_item_count,
+            taxonomy_expansion,
             seq: None,
         }),
+    }
+}
+
+fn normalized_invoke_mode(conversation_id: &str, mode: &str) -> Option<String> {
+    if conversation_id.starts_with("research-") {
+        return Some("research".to_string());
+    }
+
+    match mode {
+        "deep" | "research" => Some("research".to_string()),
+        other => Some(other.to_string()),
     }
 }
 
@@ -1210,5 +1294,68 @@ fn gateway_event_to_metadata(event: &GatewayEvent) -> EventMetadata {
     EventMetadata {
         execution_id: event.execution_id().map(|s| s.to_string()),
         is_delegation_event,
+    }
+}
+
+/// Retain only the correlation id used to reconcile an optimistic Research
+/// turn with its durable root message. Validation happens in the execution
+/// bootstrap, immediately before it can become a message-store primary key.
+fn client_message_id_from_metadata(metadata: Option<serde_json::Value>) -> Option<String> {
+    metadata?
+        .get("client_message_id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{client_message_id_from_metadata, normalized_invoke_mode};
+
+    #[test]
+    fn research_conversation_ids_force_research_mode() {
+        assert_eq!(
+            normalized_invoke_mode("research-abc", "fast"),
+            Some("research".to_string())
+        );
+        assert_eq!(
+            normalized_invoke_mode("research-abc", "chat"),
+            Some("research".to_string())
+        );
+        assert_eq!(
+            normalized_invoke_mode("research-abc", "deep"),
+            Some("research".to_string())
+        );
+    }
+
+    #[test]
+    fn non_research_conversation_ids_preserve_explicit_chat_mode() {
+        assert_eq!(
+            normalized_invoke_mode("chat-abc", "fast"),
+            Some("fast".to_string())
+        );
+        assert_eq!(
+            normalized_invoke_mode("sess-chat-abc", "chat"),
+            Some("chat".to_string())
+        );
+        assert_eq!(
+            normalized_invoke_mode("chat-abc", "deep"),
+            Some("research".to_string())
+        );
+    }
+
+    #[test]
+    fn invoke_metadata_forwards_only_the_client_message_id() {
+        let client_message_id = client_message_id_from_metadata(Some(serde_json::json!({
+            "client_message_id": "msg-550e8400-e29b-41d4-a716-446655440000",
+            "unexpected": "must not enter execution config",
+        })));
+        assert_eq!(
+            client_message_id.as_deref(),
+            Some("msg-550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(
+            client_message_id_from_metadata(Some(serde_json::json!({}))),
+            None
+        );
     }
 }

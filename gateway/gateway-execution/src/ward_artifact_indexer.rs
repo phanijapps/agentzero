@@ -18,9 +18,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use zero_stores::KnowledgeGraphStore;
-use zero_stores_domain::EpisodeSource;
-use zero_stores_traits::KgEpisodeStore;
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_domain::EpisodeSource;
+use zbot_stores_traits::KgEpisodeStore;
 
 /// Options for ward indexing.
 #[derive(Debug, Clone, Copy, Default)]
@@ -207,7 +207,7 @@ async fn index_one_file(
 
     let count = all_entities.len();
     if count > 0 {
-        let knowledge = zero_stores::ExtractedKnowledge {
+        let knowledge = zbot_stores::ExtractedKnowledge {
             entities: all_entities,
             relationships: all_rels,
         };

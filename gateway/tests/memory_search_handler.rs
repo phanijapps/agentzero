@@ -14,7 +14,7 @@ use gateway::{http::create_http_router, websocket::WebSocketHandler, GatewayConf
 use serde_json::Value;
 use std::sync::Arc;
 use tempfile::TempDir;
-use zero_stores_domain::MemoryFact;
+use zbot_stores_domain::MemoryFact;
 
 /// Build a minimal `TestServer` + seed one memory fact whose content contains
 /// the keyword `tickers`.
@@ -73,7 +73,7 @@ async fn hybrid_mode_returns_match_source_field() {
 
     let response = server
         .get("/api/memory/agent-1/search")
-        .add_query_param("q", "tickers")
+        .add_query_param("q", "test.tickers")
         .add_query_param("mode", "hybrid")
         .add_query_param("limit", "10")
         .await;
@@ -87,6 +87,7 @@ async fn hybrid_mode_returns_match_source_field() {
         "expected match_source field on first fact, got: {}",
         facts[0]
     );
+    assert_eq!(facts[0]["match_source"], "fts");
 }
 
 #[tokio::test]

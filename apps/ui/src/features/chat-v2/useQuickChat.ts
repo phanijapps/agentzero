@@ -1,15 +1,20 @@
-import { useCallback, useEffect, useReducer, useRef, type Dispatch } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type Dispatch } from "react";
 import { getTransport } from "@/services/transport";
 import type { Transport } from "@/services/transport";
 import type {
   Artifact,
   ConversationEvent,
   SessionMessage,
+  WorkSurface,
 } from "@/services/transport/types";
 import { randomId } from "@/shared/utils/randomId";
 import { useStatusPill, type PillEventSink } from "../shared/statusPill";
 import type { UploadedFile } from "../chat/ChatInput";
-import { composeMessageWithAttachments } from "../chat/attachments";
+import {
+  composeMessageWithAttachments,
+  displayAttachments,
+  splitMessageAttachments,
+} from "../chat/attachments";
 import {
   type QuickChatArtifactRef,
   type QuickChatMessage,
@@ -34,6 +39,8 @@ const CHAT_MODE = "fast";
 
 /** How many root-scoped messages to fetch on hydrate. */
 const HISTORY_TAIL_LIMIT = 50;
+/** Maximum final user deliverables retained for one Quick Chat session. */
+const GOAL_ARTIFACT_LIMIT = 24;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -54,11 +61,15 @@ function isVisibleChatMessage(m: SessionMessage): boolean {
 }
 
 function sessionMessageToQuickChat(m: SessionMessage): QuickChatMessage {
+  const parsed = m.role === "user"
+    ? splitMessageAttachments(m.content)
+    : { content: m.content, attachments: [] };
   return {
     id: m.id,
     role: m.role === "user" ? "user" : "assistant",
-    content: m.content,
+    content: parsed.content,
     timestamp: new Date(m.created_at).getTime(),
+    attachments: parsed.attachments,
   };
 }
 
@@ -77,9 +88,17 @@ async function fetchArtifacts(
   transport: Transport,
   sessionId: string
 ): Promise<QuickChatArtifactRef[]> {
-  const result = await transport.listSessionArtifacts(sessionId);
+  const result = await transport.listSessionArtifacts(sessionId, {
+    goalArtifactsOnly: true,
+    limit: GOAL_ARTIFACT_LIMIT,
+  });
   if (!result.success || !result.data) return [];
-  return result.data.map(artifactToRef);
+  // Treat omitted fields from an older server as false. The local filter is
+  // defense in depth if an intermediary ignores the goal-only query.
+  return result.data
+    .filter((artifact) => artifact.isGoalArtifact === true)
+    .slice(0, GOAL_ARTIFACT_LIMIT)
+    .map(artifactToRef);
 }
 
 /** Idempotent bootstrap: init the reserved session, pull history + artifacts. */
@@ -119,9 +138,14 @@ async function bootstrapChatSession(
 /** Build the WS event handler once; closure captures the stable pill sink. */
 function makeEventHandler(
   pillSink: PillEventSink,
-  dispatch: Dispatch<QuickChatAction>
+  dispatch: Dispatch<QuickChatAction>,
+  onSurface: (event: ConversationEvent) => void,
 ) {
   return (event: ConversationEvent) => {
+    if (event.type === "surface_created" || event.type === "surface_updated" || event.type === "surface_deleted") {
+      onSurface(event);
+      return;
+    }
     // When the agent used the `respond` tool, the gateway delivers the
     // final answer in `turn_complete.final_message` rather than as a
     // bare `respond` event or as streaming tokens. Populate the bubble
@@ -144,6 +168,7 @@ function makeEventHandler(
 export function useQuickChat() {
   const [state, dispatch] = useReducer(reduceQuickChat, EMPTY_QUICK_CHAT_STATE);
   const { state: pillState, sink: pillSink } = useStatusPill();
+  const [surfaces, setSurfaces] = useState<WorkSurface[]>([]);
 
   // Bootstrap idempotency guard. Set AFTER the async work resolves, not
   // before, so StrictMode's synthetic unmount doesn't leave us in a "bootstrap
@@ -181,7 +206,14 @@ export function useQuickChat() {
     const convId = state.conversationId;
     if (!convId || subscribedConvIdRef.current === convId) return;
     subscribedConvIdRef.current = convId;
-    const onEvent = makeEventHandler(pillSink, dispatch);
+    const onEvent = makeEventHandler(pillSink, dispatch, (event) => {
+      const raw = event as unknown as { surface?: WorkSurface; surface_id?: string };
+      if (event.type === "surface_deleted" && raw.surface_id) {
+        setSurfaces(current => current.filter(item => item.surface_id !== raw.surface_id));
+      } else if (raw.surface) {
+        setSurfaces(current => [...current.filter(item => item.surface_id !== raw.surface!.surface_id), raw.surface!]);
+      }
+    });
     const unsubscribe = Promise.resolve().then(async () => {
       const transport = await getTransport();
       return transport.subscribeConversation(convId, { onEvent });
@@ -199,7 +231,7 @@ export function useQuickChat() {
 
   // --- Refresh artifacts on turn completion ---
   // When a turn finishes the agent may have written new files; pull the
-  // artifact manifest so cards appear in the assistant bubble.
+  // bounded deliverable manifest so cards appear in the assistant bubble.
   useEffect(() => {
     if (state.status !== "idle" || !state.sessionId) return;
     let cancelled = false;
@@ -227,8 +259,9 @@ export function useQuickChat() {
         message: {
           id: randomId(),
           role: "user",
-          content: promptText,
+          content: trimmed,
           timestamp: Date.now(),
+          attachments: displayAttachments(attachments),
         },
       });
       const transport = await getTransport();
@@ -277,5 +310,5 @@ export function useQuickChat() {
     });
   }, []);
 
-  return { state, pillState, sendMessage, stopAgent, clearSession };
+  return { state, pillState, surfaces, sendMessage, stopAgent, clearSession };
 }

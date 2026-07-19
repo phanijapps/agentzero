@@ -1,0 +1,28 @@
+[package]
+name = "zbot-runtime-sqlite"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Runtime conversation and execution SQLite persistence for zbot"
+
+[dependencies]
+api-logs = { path = "../../services/api-logs" }
+execution-state = { path = "../../services/execution-state" }
+gateway-services = { path = "../../gateway/gateway-services" }
+rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+tracing = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+zbot-stores-domain = { path = "../zbot-stores-domain" }
+zbot-stores-traits = { path = "../zbot-stores-traits" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

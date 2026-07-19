@@ -1,23 +1,48 @@
-//! End-to-end: construct a `MemoryRecall` with a real `MemoryRepository`,
-//! seed one fact, run `recall_unified`, and assert the returned pool carries
-//! at least one `ItemKind::Fact`. Covers the wiring that glues embedding,
-//! source search, adapter projection, and RRF merge.
-//!
-//! The test runs without an embedding client — the fact source falls back to
-//! FTS5 only, which is enough to prove the pipeline returns a scored item.
+//! End-to-end recall tests using a real SQLite-backed `MemoryRepository`.
 
 use std::sync::Arc;
+
+use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
+use async_trait::async_trait;
 use tempfile::tempdir;
 
 use gateway_execution::recall::{ItemKind, MemoryRecall};
 use gateway_services::{RecallConfig, VaultPaths};
-use zero_stores_sqlite::{
+use zbot_stores_sqlite::{
     EpisodeRepository, KnowledgeDatabase, MemoryFact, MemoryRepository, SessionEpisode,
     SqliteVecIndex, VectorIndex,
 };
 
+struct TestEmbedder;
+
+#[async_trait]
+impl EmbeddingClient for TestEmbedder {
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        Ok(texts
+            .iter()
+            .map(|_| {
+                let mut embedding = vec![0.0; 384];
+                embedding[0] = 1.0;
+                embedding
+            })
+            .collect())
+    }
+
+    fn dimensions(&self) -> usize {
+        384
+    }
+
+    fn model_name(&self) -> String {
+        "test-3d".to_string()
+    }
+
+    fn provider_type(&self) -> String {
+        "test".to_string()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn recall_unified_returns_scored_items_from_facts() {
+async fn recall_unified_skips_sqlite_vector_facts_without_identity_validation() {
     let tmp = tempdir().unwrap();
     let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
     std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
@@ -49,7 +74,11 @@ async fn recall_unified_returns_scored_items_from_facts() {
         source_summary: None,
         source_episode_id: None,
         source_ref: None,
-        embedding: None,
+        embedding: {
+            let mut embedding = vec![0.0; 384];
+            embedding[0] = 1.0;
+            Some(embedding)
+        },
         ward_id: "__global__".to_string(),
         contradicted_by: None,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -63,19 +92,20 @@ async fn recall_unified_returns_scored_items_from_facts() {
     };
     memory_repo.upsert_memory_fact(&fact).unwrap();
 
-    let memory_store: Arc<dyn zero_stores::MemoryFactStore> = Arc::new(
-        zero_stores_sqlite::GatewayMemoryFactStore::new(memory_repo.clone(), None),
+    let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(
+        zbot_stores_sqlite::GatewayMemoryFactStore::new(memory_repo.clone(), None),
     );
-    let mut recall = MemoryRecall::new(None, config);
+    let embedder: Arc<dyn EmbeddingClient> = Arc::new(TestEmbedder);
+    let mut recall = MemoryRecall::new(Some(embedder), config);
     recall.set_memory_store(memory_store);
     let items = recall
-        .recall_unified("root", "tickers", None, &[], 10)
+        .recall_unified("root", "test.pattern", None, &[], 10)
         .await
         .expect("recall_unified succeeds");
 
     assert!(
-        items.iter().any(|i| i.kind == ItemKind::Fact),
-        "expected at least one fact item, got {items:?}"
+        !items.iter().any(|i| i.kind == ItemKind::Fact),
+        "sqlite vector facts without stored identity must fail closed, got {items:?}"
     );
 }
 
@@ -114,11 +144,11 @@ async fn recall_unified_injects_previous_episodes_for_ward() {
     episode_repo.insert(&ep).unwrap();
 
     let config = Arc::new(RecallConfig::default());
-    let memory_store: Arc<dyn zero_stores::MemoryFactStore> = Arc::new(
-        zero_stores_sqlite::GatewayMemoryFactStore::new(memory_repo.clone(), None),
+    let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(
+        zbot_stores_sqlite::GatewayMemoryFactStore::new(memory_repo.clone(), None),
     );
-    let episode_store: Arc<dyn zero_stores_traits::EpisodeStore> = Arc::new(
-        zero_stores_sqlite::GatewayEpisodeStore::new(episode_repo.clone()),
+    let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> = Arc::new(
+        zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo.clone()),
     );
     let mut recall = MemoryRecall::new(None, config);
     recall.set_memory_store(memory_store);

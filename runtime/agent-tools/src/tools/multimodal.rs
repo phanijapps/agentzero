@@ -9,9 +9,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use zero_core::multimodal::rehydrate_source;
-use zero_core::types::ContentSource;
-use zero_core::{Result, Tool, ToolContext, ToolPermissions, ZeroError};
+use agent_primitives::multimodal::rehydrate_source;
+use agent_primitives::types::ContentSource;
+use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
 
 pub struct MultimodalAnalyzeTool;
 
@@ -71,18 +71,18 @@ impl Tool for MultimodalAnalyzeTool {
         let content_items = args
             .get("content")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| ZeroError::Tool("'content' must be an array".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("'content' must be an array".to_string()))?;
 
         let prompt = args
             .get("prompt")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("'prompt' is required".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("'prompt' is required".to_string()))?;
 
         let output_schema = args.get("output_schema").cloned();
 
         // Read multimodal config from state (injected by executor builder)
         let config = ctx.get_state("multimodal_config")
-            .ok_or_else(|| ZeroError::Tool(
+            .ok_or_else(|| AgentError::Tool(
                 "No multimodal model configured. Add a vision-capable model to Settings > Advanced > Multimodal.".to_string()
             ))?;
 
@@ -90,21 +90,22 @@ impl Tool for MultimodalAnalyzeTool {
             .get("baseUrl")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                ZeroError::Tool("multimodal provider baseUrl not resolved".to_string())
+                AgentError::Tool("multimodal provider baseUrl not resolved".to_string())
             })?;
         let api_key = config.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
         let model = config
             .get("model")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ZeroError::Tool("multimodal.model not configured".to_string()))?;
+            .ok_or_else(|| AgentError::Tool("multimodal.model not configured".to_string()))?;
         let temperature = config
             .get("temperature")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.3);
         let max_tokens = config
-            .get("maxTokens")
+            .get("maxOutputTokens")
+            .or_else(|| config.get("maxTokens"))
             .and_then(|v| v.as_u64())
-            .unwrap_or(4096);
+            .unwrap_or(32_000);
 
         // Build OpenAI content array from inputs
         let mut content_blocks: Vec<Value> = Vec::new();
@@ -115,7 +116,7 @@ impl Tool for MultimodalAnalyzeTool {
         for item in content_items {
             let content_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("image");
             let source_str = item.get("source").and_then(|v| v.as_str()).ok_or_else(|| {
-                ZeroError::Tool("Each content item must have a 'source'".to_string())
+                AgentError::Tool("Each content item must have a 'source'".to_string())
             })?;
 
             let source = resolve_source(source_str)?;
@@ -128,7 +129,7 @@ impl Tool for MultimodalAnalyzeTool {
                         .unwrap_or("auto");
                     let mime_type = infer_image_mime(source_str);
                     let resolved = rehydrate_source(&source)
-                        .map_err(|e| ZeroError::Tool(format!("Failed to resolve image: {}", e)))?;
+                        .map_err(|e| AgentError::Tool(format!("Failed to resolve image: {}", e)))?;
                     let url = match &resolved {
                         ContentSource::Base64(data) => {
                             format!("data:{};base64,{}", mime_type, data)
@@ -144,7 +145,7 @@ impl Tool for MultimodalAnalyzeTool {
                 "file" => {
                     let mime_type = infer_file_mime(source_str);
                     let resolved = rehydrate_source(&source)
-                        .map_err(|e| ZeroError::Tool(format!("Failed to resolve file: {}", e)))?;
+                        .map_err(|e| AgentError::Tool(format!("Failed to resolve file: {}", e)))?;
                     let url = match &resolved {
                         ContentSource::Base64(data) => {
                             format!("data:{};base64,{}", mime_type, data)
@@ -157,7 +158,7 @@ impl Tool for MultimodalAnalyzeTool {
                         "file": { "url": url }
                     }));
                 }
-                other => return Err(ZeroError::Tool(format!("Unknown content type: {}", other))),
+                other => return Err(AgentError::Tool(format!("Unknown content type: {}", other))),
             }
         }
 
@@ -197,12 +198,12 @@ impl Tool for MultimodalAnalyzeTool {
         let response = request
             .send()
             .await
-            .map_err(|e| ZeroError::Tool(format!("Multimodal API call failed: {}", e)))?;
+            .map_err(|e| AgentError::Tool(format!("Multimodal API call failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(ZeroError::Tool(format!(
+            return Err(AgentError::Tool(format!(
                 "Multimodal API error ({}): {}",
                 status, error_text
             )));
@@ -211,7 +212,7 @@ impl Tool for MultimodalAnalyzeTool {
         let response_json: Value = response
             .json()
             .await
-            .map_err(|e| ZeroError::Tool(format!("Failed to parse API response: {}", e)))?;
+            .map_err(|e| AgentError::Tool(format!("Failed to parse API response: {}", e)))?;
 
         // Extract the assistant's response content
         let content = response_json
@@ -245,11 +246,11 @@ fn resolve_source(source: &str) -> Result<ContentSource> {
     // File path
     let path = source.strip_prefix("file://").unwrap_or(source);
     if !std::path::Path::new(path).exists() {
-        return Err(ZeroError::Tool(format!("File not found: {}", path)));
+        return Err(AgentError::Tool(format!("File not found: {}", path)));
     }
     use base64::Engine;
     let bytes = std::fs::read(path)
-        .map_err(|e| ZeroError::Tool(format!("Failed to read file {}: {}", path, e)))?;
+        .map_err(|e| AgentError::Tool(format!("Failed to read file {}: {}", path, e)))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(ContentSource::Base64(encoded))
 }

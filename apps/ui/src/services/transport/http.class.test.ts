@@ -30,6 +30,8 @@ interface MockResponseInit {
   statusText?: string;
   body?: unknown;
   text?: string;
+  headers?: Record<string, string>;
+  arrayBuffer?: ArrayBuffer;
 }
 
 // Build a Response-like object that satisfies the bits of the Response
@@ -40,12 +42,17 @@ function mockResponse(init: MockResponseInit = {}): Response {
   const statusText = init.statusText ?? (ok ? 'OK' : 'Internal Server Error');
   const body = init.body ?? null;
   const textBody = init.text ?? '';
+  const headers = new Map(Object.entries(init.headers ?? {}));
   return {
     ok,
     status,
     statusText,
+    headers: {
+      get: (name: string) => headers.get(name.toLowerCase()) ?? headers.get(name) ?? null,
+    },
     json: async () => body,
     text: async () => textBody,
+    arrayBuffer: async () => init.arrayBuffer ?? new ArrayBuffer(0),
   } as unknown as Response;
 }
 
@@ -285,6 +292,7 @@ describe('HttpTransport — query-string builders', () => {
     const t = newTransport();
     await t.listLogSessions({
       agent_id: 'planner',
+      conversation_id: 'sess-history',
       level: 'error',
       from_time: '2026-01-01',
       to_time: '2026-12-31',
@@ -296,6 +304,7 @@ describe('HttpTransport — query-string builders', () => {
     const u = new URL(url);
     expect(u.pathname).toBe('/api/logs/sessions');
     expect(u.searchParams.get('agent_id')).toBe('planner');
+    expect(u.searchParams.get('conversation_id')).toBe('sess-history');
     expect(u.searchParams.get('level')).toBe('error');
     expect(u.searchParams.get('from_time')).toBe('2026-01-01');
     expect(u.searchParams.get('to_time')).toBe('2026-12-31');
@@ -388,6 +397,107 @@ describe('HttpTransport — query-string builders', () => {
 });
 
 // ===========================================================================
+// Vault filesystem browser
+// ===========================================================================
+
+describe('HttpTransport — Vault API', () => {
+  it('listVaultWards calls the filesystem-backed Vault endpoint', async () => {
+    fetchMock.mockResolvedValue(mockResponse({ body: { wards: [{ id: 'w1', name: 'w1' }] } }));
+    const t = newTransport();
+    const res = await t.listVaultWards();
+
+    expect(res.success).toBe(true);
+    expect(res.data).toEqual({ wards: [{ id: 'w1', name: 'w1' }] });
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${HTTP}/api/vault/wards`);
+  });
+
+  it('getVaultTree encodes ward id and ward-relative path query', async () => {
+    fetchMock.mockResolvedValue(mockResponse({ body: { ward_id: 'ward/id', path: 'reports/q1', children: [], truncated: false } }));
+    const t = newTransport();
+    await t.getVaultTree('ward/id', 'reports/q1');
+
+    const [url] = fetchMock.mock.calls[0];
+    const u = new URL(url);
+    expect(u.pathname).toBe('/api/vault/wards/ward%2Fid/tree');
+    expect(u.searchParams.get('path')).toBe('reports/q1');
+  });
+
+  it('searchVaultFiles encodes ward id, query, and limit', async () => {
+    fetchMock.mockResolvedValue(mockResponse({
+      body: { ward_id: 'ward/id', query: 'val md', matches: [], truncated: false },
+    }));
+    const t = newTransport();
+    await t.searchVaultFiles('ward/id', 'val md', 12);
+
+    const [url] = fetchMock.mock.calls[0];
+    const u = new URL(url);
+    expect(u.pathname).toBe('/api/vault/wards/ward%2Fid/search');
+    expect(u.searchParams.get('q')).toBe('val md');
+    expect(u.searchParams.get('limit')).toBe('12');
+  });
+
+  it('getVaultFile decodes JSON text previews', async () => {
+    fetchMock.mockResolvedValue(mockResponse({
+      headers: { 'content-type': 'application/json' },
+      body: {
+        kind: 'text',
+        ward_id: 'stock',
+        path: 'README.md',
+        name: 'README.md',
+        extension: 'md',
+        size: 7,
+        content: '# Stock',
+      },
+    }));
+    const t = newTransport();
+    const res = await t.getVaultFile('stock', 'README.md');
+
+    expect(res.success).toBe(true);
+    expect(res.data?.kind).toBe('text');
+    const [url, init] = fetchMock.mock.calls[0];
+    const u = new URL(url);
+    expect(u.pathname).toBe('/api/vault/wards/stock/file');
+    expect(u.searchParams.get('path')).toBe('README.md');
+    expect(init.method).toBe('GET');
+  });
+
+  it('getVaultFile decodes Office previews as ArrayBuffer responses', async () => {
+    const data = new Uint8Array([1, 2, 3]).buffer;
+    fetchMock.mockResolvedValue(mockResponse({
+      headers: {
+        'content-type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'x-vault-ward-id': 'stock',
+        'x-vault-path': 'deck.pptx',
+      },
+      arrayBuffer: data,
+    }));
+    const t = newTransport();
+    const res = await t.getVaultFile('stock', 'deck.pptx');
+
+    expect(res.success).toBe(true);
+    expect(res.data).toMatchObject({
+      kind: 'office',
+      ward_id: 'stock',
+      path: 'deck.pptx',
+      extension: 'pptx',
+    });
+    expect(res.data?.kind === 'office' ? res.data.data : null).toBe(data);
+  });
+
+  it('openWard still posts to the existing ward-open endpoint', async () => {
+    fetchMock.mockResolvedValue(mockResponse({ body: { path: '/tmp/wards/stock' } }));
+    const t = newTransport();
+    const res = await t.openWard('stock/analysis');
+
+    expect(res.success).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${HTTP}/api/wards/stock%2Fanalysis/open`);
+    expect(init.method).toBe('POST');
+  });
+});
+
+// ===========================================================================
 // Settings envelope unwrapping (success/error in body)
 // ===========================================================================
 
@@ -395,13 +505,13 @@ describe('HttpTransport — settings envelope', () => {
   it('getToolSettings unwraps a successful envelope to its data field', async () => {
     fetchMock.mockResolvedValue(
       mockResponse({
-        body: { success: true, data: { python: true, web_fetch: false } },
+        body: { success: true, data: { fileTools: true, offloadLargeResults: true } },
       }),
     );
     const t = newTransport();
     const res = await t.getToolSettings();
     expect(res.success).toBe(true);
-    expect(res.data).toEqual({ python: true, web_fetch: false });
+    expect(res.data).toEqual({ fileTools: true, offloadLargeResults: true });
   });
 
   it('getToolSettings surfaces envelope-level error messages', async () => {
@@ -418,15 +528,15 @@ describe('HttpTransport — settings envelope', () => {
 
   it('updateToolSettings PUTs and unwraps the response envelope', async () => {
     fetchMock.mockResolvedValue(
-      mockResponse({ body: { success: true, data: { python: false } } }),
+      mockResponse({ body: { success: true, data: { fileTools: false } } }),
     );
     const t = newTransport();
-    const res = await t.updateToolSettings({ python: false } as never);
+    const res = await t.updateToolSettings({ fileTools: false } as never);
     expect(res.success).toBe(true);
-    expect(res.data).toEqual({ python: false });
+    expect(res.data).toEqual({ fileTools: false });
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({ python: false });
+    expect(JSON.parse(init.body)).toEqual({ fileTools: false });
   });
 });
 

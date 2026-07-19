@@ -28,21 +28,29 @@ impl Config {
     pub fn resolve(cli_override: Option<String>) -> Result<Self> {
         // 1. CLI flag wins
         if let Some(url) = cli_override.and_then(non_empty) {
-            return Ok(Self { daemon_url: normalise(url) });
+            return Ok(Self {
+                daemon_url: normalise(url),
+            });
         }
 
         // 2. Env var
         if let Some(url) = std::env::var("ZBOT_URL").ok().and_then(non_empty) {
-            return Ok(Self { daemon_url: normalise(url) });
+            return Ok(Self {
+                daemon_url: normalise(url),
+            });
         }
 
         // 3. Config file
         if let Some(url) = file_config_url()? {
-            return Ok(Self { daemon_url: normalise(url) });
+            return Ok(Self {
+                daemon_url: normalise(url),
+            });
         }
 
         // 4. Default
-        Ok(Self { daemon_url: DEFAULT_DAEMON_URL.to_string() })
+        Ok(Self {
+            daemon_url: DEFAULT_DAEMON_URL.to_string(),
+        })
     }
 
     /// Derive the WebSocket URL from the HTTP URL by swapping the scheme.
@@ -115,13 +123,17 @@ mod tests {
 
     #[test]
     fn ws_url_from_http() {
-        let c = Config { daemon_url: "http://localhost:18791".into() };
+        let c = Config {
+            daemon_url: "http://localhost:18791".into(),
+        };
         assert_eq!(c.websocket_url(), "ws://localhost:18791/ws");
     }
 
     #[test]
     fn ws_url_from_https() {
-        let c = Config { daemon_url: "https://zbot.example".into() };
+        let c = Config {
+            daemon_url: "https://zbot.example".into(),
+        };
         assert_eq!(c.websocket_url(), "wss://zbot.example/ws");
     }
 }

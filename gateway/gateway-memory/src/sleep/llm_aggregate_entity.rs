@@ -221,7 +221,7 @@ impl AggregateEntityLlm for LlmAggregateEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zero_stores::types::EntityId;
+    use zbot_stores::types::EntityId;
 
     fn member(name: &str, description: Option<&str>) -> AggregateMemberContext {
         AggregateMemberContext {

@@ -24,6 +24,9 @@ import type {
   McpServerConfig,
   CreateMcpRequest,
   McpTestResult,
+  McpOAuthStatusResponse,
+  McpOAuthStartRequest,
+  McpOAuthStartResponse,
   ModelRegistryResponse,
   MessageResponse,
   ChatSessionInit,
@@ -42,6 +45,10 @@ import type {
   MissionControlSessionSummary,
   MissionControlSessionTokens,
   MissionControlFilter,
+  AutonomyItem,
+  AutonomyItemDetail,
+  AutonomyResumeResult,
+  AutonomyState,
   DashboardStats,
   // Legacy types
   ExecutionSession,
@@ -62,10 +69,15 @@ import type {
   UpdateCronJobRequest,
   CronTriggerResult,
   // Memory types
+  CreatableMemoryCategory,
   MemoryFact,
   MemoryFilter,
   MemoryListResponse,
   WardContent,
+  VaultFileResponse,
+  VaultSearchResponse,
+  VaultTreeResponse,
+  VaultWardsResponse,
   HybridSearchRequest,
   HybridSearchResponse,
   // Graph types
@@ -78,9 +90,12 @@ import type {
   GraphSubgraphResponse,
   GraphNeighborOptions,
   GraphSubgraphOptions,
-  SetupStatus,
+  CommissioningStatus,
+  CommissioningRequest,
+  LocalDiagnosis,
   SessionState,
   Artifact,
+  ArtifactListOptions,
   EmbeddingsHealth,
   CuratedModel,
   EmbeddingConfig,
@@ -198,6 +213,15 @@ export interface Transport {
   /** Test an MCP server connection */
   testMcp(id: string): Promise<TransportResult<McpTestResult>>;
 
+  /** Get OAuth status for an MCP server */
+  getMcpOAuthStatus(id: string): Promise<TransportResult<McpOAuthStatusResponse>>;
+
+  /** Start OAuth authorization for an MCP server */
+  startMcpOAuth(id: string, request?: McpOAuthStartRequest): Promise<TransportResult<McpOAuthStartResponse>>;
+
+  /** Disconnect OAuth authorization for an MCP server */
+  disconnectMcpOAuth(id: string): Promise<TransportResult<McpOAuthStatusResponse>>;
+
   // =========================================================================
   // Conversation Operations
   // =========================================================================
@@ -229,7 +253,8 @@ export interface Transport {
     conversationId: string,
     message: string,
     sessionId?: string,
-    mode?: string
+    mode?: string,
+    clientMessageId?: string,
   ): Promise<TransportResult<{ conversationId: string; sessionId?: string }>>;
 
   /** Stop an agent execution */
@@ -278,14 +303,16 @@ export interface Transport {
   updateExecutionSettings(settings: ExecutionSettings): Promise<TransportResult<ExecutionSettings & { restartRequired: boolean }>>;
 
   // =========================================================================
-  // Setup Wizard Operations
+  // Agent Commissioning Operations
   // =========================================================================
+  /** Durable server-owned first-run readiness. */
+  getCommissioningStatus(): Promise<TransportResult<CommissioningStatus>>;
 
-  /** Check if first-time setup is needed */
-  getSetupStatus(): Promise<TransportResult<SetupStatus>>;
+  /** Diagnose only the fixed local model runtime. */
+  diagnoseLocalRuntime(): Promise<TransportResult<LocalDiagnosis>>;
 
-  /** Get sanitized MCP server templates for wizard */
-  getMcpDefaults(): Promise<TransportResult<McpServerConfig[]>>;
+  /** Validate and persist one complete first-run commission. */
+  completeCommissioning(request: CommissioningRequest): Promise<TransportResult<CommissioningStatus>>;
 
   // =========================================================================
   // Execution Log Operations
@@ -306,9 +333,8 @@ export interface Transport {
   /**
    * Hard-delete a session and its per-session data (messages, executions,
    * execution logs, artifact pointers, distillation run, bridge outbox
-   * rows, and recall log). Memory facts, vec0 embeddings, and the
-   * knowledge graph are preserved. Files on disk in ward directories
-   * are not touched.
+   * rows, and recall log). Semantic memory and knowledge are preserved.
+   * Files on disk in ward directories are not touched.
    */
   deleteSession(sessionId: string): Promise<TransportResult<void>>;
 
@@ -327,6 +353,18 @@ export interface Transport {
 
   /** Get per-execution token slices for one selected Mission Control session */
   getMissionControlSessionTokens(sessionId: string): Promise<TransportResult<MissionControlSessionTokens>>;
+
+  /** List non-terminal user-controlled decision threads. */
+  listAutonomyItems(): Promise<TransportResult<AutonomyItem[]>>;
+
+  /** Read one decision thread with its evidence references. */
+  getAutonomyItem(id: string): Promise<TransportResult<AutonomyItemDetail>>;
+
+  /** Apply an explicit lifecycle transition. This never executes the item. */
+  transitionAutonomyItem(id: string, state: AutonomyState, outcome?: string): Promise<TransportResult<AutonomyItemDetail>>;
+
+  /** Start a new session for one explicitly selected approved decision thread. */
+  resumeAutonomyItem(id: string): Promise<TransportResult<AutonomyResumeResult>>;
 
   /** Get a single session with executions (V2 API) */
   getSessionFull(sessionId: string): Promise<TransportResult<SessionWithExecutions>>;
@@ -467,6 +505,18 @@ export interface Transport {
   /** Get full content (facts, wiki, procedures, episodes) for a single ward */
   getWardContent(wardId: string): Promise<TransportResult<WardContent>>;
 
+  /** List filesystem-backed wards for the Vault tab. */
+  listVaultWards(): Promise<TransportResult<VaultWardsResponse>>;
+
+  /** Get one lazy-loaded Vault tree directory. */
+  getVaultTree(wardId: string, path?: string): Promise<TransportResult<VaultTreeResponse>>;
+
+  /** Fuzzy-search visible files inside one filesystem-backed ward. */
+  searchVaultFiles(wardId: string, query: string, limit?: number): Promise<TransportResult<VaultSearchResponse>>;
+
+  /** Get read-only file preview content for an accepted Vault file. */
+  getVaultFile(wardId: string, path: string): Promise<TransportResult<VaultFileResponse>>;
+
   /**
    * Open the ward's vault folder in the OS native file browser
    * (POST /api/wards/:ward_id/open). Returns the resolved absolute path on
@@ -483,9 +533,9 @@ export interface Transport {
   /** Delete a memory fact */
   deleteMemory(agentId: string, factId: string): Promise<TransportResult<void>>;
 
-  /** Create a memory fact (policy, instruction, or about-me) */
+  /** Create a public user-authored memory fact. */
   createMemory(agentId: string, fact: {
-    category: string;
+    category: CreatableMemoryCategory;
     key: string;
     content: string;
     confidence?: number;
@@ -537,11 +587,14 @@ export interface Transport {
   // Artifact Operations
   // =========================================================================
 
-  /** List all artifacts for a session */
-  listSessionArtifacts(sessionId: string): Promise<TransportResult<Artifact[]>>;
+  /** List a session artifact manifest, optionally as bounded goal deliverables. */
+  listSessionArtifacts(
+    sessionId: string,
+    options?: ArtifactListOptions,
+  ): Promise<TransportResult<Artifact[]>>;
 
-  /** Get the URL to fetch artifact content */
-  getArtifactContentUrl(artifactId: string): string;
+  /** Get a session-bound URL to fetch artifact content. */
+  getArtifactContentUrl(artifactId: string, sessionId: string): string;
 
   // =========================================================================
   // Embedding Backend Operations

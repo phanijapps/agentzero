@@ -14,8 +14,8 @@ use crate::llm::client::{
 };
 use crate::llm::config::LlmConfig;
 use crate::types::{ChatMessage, ToolCall};
-use zero_core::multimodal::rehydrate_source;
-use zero_core::types::{ContentSource, Part};
+use agent_primitives::multimodal::rehydrate_source;
+use agent_primitives::types::{ContentSource, Part};
 
 /// OpenAI-compatible LLM client
 ///
@@ -65,6 +65,16 @@ fn log_cache_hit(tag: &str, usage: &TokenUsage) {
         hit_pct = format!("{pct:.1}"),
         "{tag} prompt_cache"
     );
+}
+
+fn stream_transport_error(
+    emitted_chars: usize,
+    tool_call_count: usize,
+    error: impl std::fmt::Display,
+) -> LlmError {
+    LlmError::ApiError(format!(
+        "Streaming response terminated after {emitted_chars} chars and {tool_call_count} tool call(s); refusing to treat partial content as complete: {error}"
+    ))
 }
 
 /// Attempt to recover the first JSON object from a concatenated string like `{"a":"b"}{"c":"d"}`.
@@ -216,7 +226,12 @@ impl OpenAiClient {
     /// References:
     ///   - OpenAI prompt caching: <https://platform.openai.com/docs/guides/prompt-caching>
     ///   - GLM / z.ai cache fields: `prompt_cache_hit_tokens` in response usage
-    fn build_request_body(&self, messages: Vec<ChatMessage>, tools: Option<Value>) -> Value {
+    fn build_request_body(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Value>,
+        output_schema: Option<Value>,
+    ) -> Value {
         let messages = Self::rehydrate_messages(messages);
         let mut body_obj = json!({
             "model": self.config.model,
@@ -230,6 +245,22 @@ impl OpenAiClient {
         if let Some(tools_val) = &tools {
             if let Some(body_map) = body_obj.as_object_mut() {
                 body_map.insert("tools".to_string(), tools_val.clone());
+            }
+        }
+
+        if let Some(schema) = output_schema {
+            if let Some(body_map) = body_obj.as_object_mut() {
+                body_map.insert(
+                    "response_format".to_string(),
+                    json!({
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "structured_output",
+                            "strict": true,
+                            "schema": schema,
+                        }
+                    }),
+                );
             }
         }
 
@@ -368,14 +399,14 @@ impl OpenAiClient {
                             .as_str()?
                             .to_string();
 
-                        // Parse arguments from string to Value for internal use
-                        let arguments = serde_json::from_str(&arguments_str)
-                            .or_else(|_| {
-                                recover_first_json(&arguments_str).ok_or_else(|| {
-                                    serde_json::from_str::<Value>("null").unwrap_err()
-                                })
-                            })
-                            .ok()?;
+                        // Parse arguments from string to Value for internal use.
+                        // If the arguments can't be parsed or recovered, skip
+                        // this tool call (return None) rather than panicking —
+                        // the previous `from_str("null").unwrap_err()` crashed
+                        // because `from_str("null")` is `Ok(Null)`.
+                        let arguments = serde_json::from_str::<Value>(&arguments_str)
+                            .ok()
+                            .or_else(|| recover_first_json(&arguments_str))?;
 
                         Some(ToolCall::new(id, name, arguments))
                     })
@@ -403,11 +434,34 @@ impl LlmClient for OpenAiClient {
     ) -> Result<ChatResponse, LlmError> {
         tracing::info!("Starting chat with {} messages", messages.len());
 
-        let body = self.build_request_body(messages, tools);
+        let body = self.build_request_body(messages, tools, None);
         let response = self.make_request(body).await?;
         let parsed = self.parse_response(response);
 
         tracing::info!("Chat completed, response length: {}", parsed.content.len());
+        Ok(parsed)
+    }
+
+    async fn chat_with_schema(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Value>,
+        output_schema: Option<Value>,
+    ) -> Result<ChatResponse, LlmError> {
+        tracing::info!(
+            has_schema = output_schema.is_some(),
+            "Starting structured chat with {} messages",
+            messages.len()
+        );
+
+        let body = self.build_request_body(messages, tools, output_schema);
+        let response = self.make_request(body).await?;
+        let parsed = self.parse_response(response);
+
+        tracing::info!(
+            "Structured chat completed, response length: {}",
+            parsed.content.len()
+        );
         Ok(parsed)
     }
 
@@ -425,7 +479,7 @@ impl LlmClient for OpenAiClient {
 
         let url = format!("{}/chat/completions", self.config.base_url);
 
-        let mut body_obj = self.build_request_body(messages, tools);
+        let mut body_obj = self.build_request_body(messages, tools, None);
         // Enable streaming with usage reporting
         if let Some(obj) = body_obj.as_object_mut() {
             obj.insert("stream".to_string(), json!(true));
@@ -498,7 +552,7 @@ impl LlmClient for OpenAiClient {
                     // If we haven't emitted anything yet, retry as non-streaming
                     if full_content.is_empty() && tool_accumulators.is_empty() {
                         tracing::info!("No content emitted yet, retrying as non-streaming request");
-                        let body = self.build_request_body(fallback_messages, fallback_tools);
+                        let body = self.build_request_body(fallback_messages, fallback_tools, None);
                         let response = self.make_request(body).await?;
                         let parsed = self.parse_response(response);
                         // Emit the full response as a single token
@@ -508,13 +562,18 @@ impl LlmClient for OpenAiClient {
                         return Ok(parsed);
                     }
 
-                    // If we already emitted content, return what we have as partial
-                    // (better than crashing — executor can continue)
+                    // Do not commit partial assistant text as a successful turn.
+                    // A continuation can otherwise treat a truncated preamble as
+                    // the delegate's final answer and make the wrong next move.
                     tracing::warn!(
-                        "Stream broke after {} chars emitted — returning partial response",
+                        "Stream broke after {} chars emitted — failing partial response",
                         full_content.len()
                     );
-                    break;
+                    return Err(stream_transport_error(
+                        full_content.len(),
+                        tool_accumulators.len(),
+                        e,
+                    ));
                 }
             };
             sse_buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -807,6 +866,30 @@ mod tests {
     // body invalidates the provider-side cache and is billed as a miss.
     // ------------------------------------------------------------------
 
+    #[test]
+    fn parse_tool_calls_skips_unparseable_arguments_without_panicking() {
+        // Regression: a tool call whose `arguments` can't be parsed as JSON
+        // must be skipped, not panic. Previously the recovery fallback did
+        // `serde_json::from_str::<Value>("null").unwrap_err()`, which panics
+        // because `from_str("null")` is `Ok(Null)`. This was latent until the
+        // Rig extractor (intent analysis) started sending a `submit` tool and
+        // the model occasionally returned malformed submit arguments.
+        let client = test_client();
+        let response = serde_json::json!({
+            "choices": [{"message": {"tool_calls": [
+                {"id": "call_bad", "function": {"name": "submit", "arguments": "not valid json {{"}},
+                {"id": "call_ok", "function": {"name": "submit", "arguments": "{\"x\":1}"}}
+            ]}}]
+        });
+        let calls = client.parse_tool_calls(&response);
+        assert_eq!(
+            calls.len(),
+            1,
+            "the malformed-args call must be skipped, the valid one kept: {calls:?}"
+        );
+        assert_eq!(calls[0].id, "call_ok");
+    }
+
     fn test_client() -> OpenAiClient {
         let config = LlmConfig::new(
             "https://api.openai.com".to_string(),
@@ -846,8 +929,8 @@ mod tests {
     #[test]
     fn request_body_is_byte_stable_across_identical_calls() {
         let client = test_client();
-        let a = client.build_request_body(fixture_messages(), Some(fixture_tools()));
-        let b = client.build_request_body(fixture_messages(), Some(fixture_tools()));
+        let a = client.build_request_body(fixture_messages(), Some(fixture_tools()), None);
+        let b = client.build_request_body(fixture_messages(), Some(fixture_tools()), None);
 
         let a_bytes = serde_json::to_vec(&a).expect("serialize a");
         let b_bytes = serde_json::to_vec(&b).expect("serialize b");
@@ -863,12 +946,41 @@ mod tests {
     fn request_body_is_byte_stable_without_tools() {
         // Absence of `tools` must not introduce drift either.
         let client = test_client();
-        let a = client.build_request_body(fixture_messages(), None);
-        let b = client.build_request_body(fixture_messages(), None);
+        let a = client.build_request_body(fixture_messages(), None, None);
+        let b = client.build_request_body(fixture_messages(), None, None);
 
         let a_bytes = serde_json::to_vec(&a).expect("serialize a");
         let b_bytes = serde_json::to_vec(&b).expect("serialize b");
         assert_eq!(a_bytes, b_bytes);
+    }
+
+    #[test]
+    fn request_body_includes_json_schema_response_format() {
+        let client = test_client();
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "intent": { "type": "string" }
+            },
+            "required": ["intent"]
+        });
+
+        let body = client.build_request_body(fixture_messages(), None, Some(schema.clone()));
+
+        assert_eq!(
+            body.pointer("/response_format/type")
+                .and_then(Value::as_str),
+            Some("json_schema")
+        );
+        assert_eq!(
+            body.pointer("/response_format/json_schema/strict")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            body.pointer("/response_format/json_schema/schema"),
+            Some(&schema)
+        );
     }
 
     #[test]
@@ -914,6 +1026,19 @@ mod tests {
             "prompt_cache_hit_tokens": 300
         });
         assert_eq!(extract_cached_prompt_tokens(&usage), Some(400));
+    }
+
+    #[test]
+    fn stream_transport_error_rejects_partial_success() {
+        let err = stream_transport_error(86, 0, "connection closed");
+
+        match err {
+            LlmError::ApiError(message) => {
+                assert!(message.contains("terminated after 86 chars"));
+                assert!(message.contains("refusing to treat partial content as complete"));
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
     }
 }
 

@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use zero_stores::KnowledgeGraphStore;
-use zero_stores_traits::MemoryFactStore;
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_traits::MemoryFactStore;
 
 use crate::sleep::belief_propagator::{BeliefPropagationStats, BeliefPropagator};
 
@@ -385,9 +385,9 @@ mod tests {
     use gateway_services::VaultPaths;
     use knowledge_graph::{Entity, EntityType, ExtractedKnowledge, Relationship, RelationshipType};
     use std::sync::Arc;
-    use zero_stores::KnowledgeGraphStore;
-    use zero_stores_sqlite::kg::storage::GraphStorage;
-    use zero_stores_sqlite::{KnowledgeDatabase, SqliteKgStore};
+    use zbot_stores::KnowledgeGraphStore;
+    use zbot_stores_sqlite::kg::storage::GraphStorage;
+    use zbot_stores_sqlite::{KnowledgeDatabase, SqliteKgStore};
 
     fn setup() -> (tempfile::TempDir, Arc<GraphStorage>) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -510,7 +510,7 @@ mod tests {
             .unwrap();
 
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph.clone()));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
         let config = crate::KgDecayConfig::default();
         let stats = engine.decay_kg_confidence(agent_id, &config).await;
@@ -522,7 +522,7 @@ mod tests {
     async fn decay_kg_confidence_no_op_when_disabled() {
         let (_tmp, graph) = setup();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
         let config = crate::KgDecayConfig {
             enabled: false,
@@ -544,12 +544,12 @@ mod tests {
     #[tokio::test]
     async fn propagate_fact_confidence_drops_threshold_logic() {
         use crate::sleep::belief_propagator::BeliefPropagator;
-        use zero_stores_sqlite::SqliteBeliefStore;
-        use zero_stores_traits::{Belief, BeliefStore};
+        use zbot_stores_sqlite::SqliteBeliefStore;
+        use zbot_stores_traits::{Belief, BeliefStore};
 
         let (_tmp, graph) = setup();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph.clone()));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
 
         // Wire a real belief store against the same knowledge DB.
         let knowledge_db = graph.knowledge_db().clone();
@@ -619,12 +619,12 @@ mod tests {
     #[tokio::test]
     async fn propagate_sharp_drop_fires_even_above_floor() {
         use crate::sleep::belief_propagator::BeliefPropagator;
-        use zero_stores_sqlite::SqliteBeliefStore;
-        use zero_stores_traits::{Belief, BeliefStore};
+        use zbot_stores_sqlite::SqliteBeliefStore;
+        use zbot_stores_traits::{Belief, BeliefStore};
 
         let (_tmp, graph) = setup();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph.clone()));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
         let knowledge_db = graph.knowledge_db().clone();
         let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(knowledge_db));
         let now = chrono::Utc::now();
@@ -664,7 +664,7 @@ mod tests {
     async fn propagate_no_op_without_propagator() {
         let (_tmp, graph) = setup();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
 
         let drops = vec![("F-any".to_string(), 0.9_f64, 0.1_f64)];
@@ -682,7 +682,7 @@ mod tests {
     /// Seed a `memory_facts` row marked as contradicted. Uses the
     /// minimal columns the SQL path reads.
     fn insert_contradicted_fact(
-        graph: &zero_stores_sqlite::kg::storage::GraphStorage,
+        graph: &zbot_stores_sqlite::kg::storage::GraphStorage,
         fact_id: &str,
         agent_id: &str,
         source_episode_id: &str,
@@ -706,7 +706,7 @@ mod tests {
     }
 
     fn insert_kg_entity_with_episode(
-        graph: &zero_stores_sqlite::kg::storage::GraphStorage,
+        graph: &zbot_stores_sqlite::kg::storage::GraphStorage,
         id: &str,
         agent_id: &str,
         confidence: f64,
@@ -731,8 +731,8 @@ mod tests {
 
     #[tokio::test]
     async fn propagate_fact_contradictions_decays_kg_nodes_for_contradicted_episodes() {
-        use zero_stores_sqlite::GatewayMemoryFactStore;
-        use zero_stores_traits::MemoryFactStore;
+        use zbot_stores_sqlite::GatewayMemoryFactStore;
+        use zbot_stores_traits::MemoryFactStore;
 
         let (_tmp, graph) = setup();
         let agent = "a";
@@ -749,14 +749,14 @@ mod tests {
         insert_kg_entity_with_episode(&graph, "e3", agent, 0.8, "ep-2,ep-foo");
 
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph.clone()));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
         let db = graph.knowledge_db().clone();
-        let vec_index: Arc<dyn zero_stores_sqlite::VectorIndex> = Arc::new(
-            zero_stores_sqlite::SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
+        let vec_index: Arc<dyn zbot_stores_sqlite::VectorIndex> = Arc::new(
+            zbot_stores_sqlite::SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
                 .expect("vec index init"),
         );
         let memory_repo =
-            Arc::new(zero_stores_sqlite::memory_repository::MemoryRepository::new(db, vec_index));
+            Arc::new(zbot_stores_sqlite::memory_repository::MemoryRepository::new(db, vec_index));
         let fact_store: Arc<dyn MemoryFactStore> =
             Arc::new(GatewayMemoryFactStore::new(memory_repo, None));
 
@@ -800,7 +800,7 @@ mod tests {
     async fn propagate_fact_contradictions_disabled_is_noop() {
         let (_tmp, graph) = setup();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default())
             .with_contradiction_propagation(
                 None,
@@ -820,7 +820,7 @@ mod tests {
     async fn propagate_fact_contradictions_no_factstore_is_noop() {
         let (_tmp, graph) = setup();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zero_stores_sqlite::SqliteKgStore::new(graph));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
         let stats = engine
             .propagate_fact_contradictions("any", chrono::Utc::now())

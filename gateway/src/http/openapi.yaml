@@ -800,6 +800,116 @@ paths:
               schema:
                 $ref: '#/components/schemas/McpTestResult'
 
+  /api/mcps/{id}/oauth/status:
+    get:
+      tags: [MCP Servers]
+      summary: Get MCP OAuth status
+      description: Returns non-secret OAuth connection status for an MCP server.
+      operationId: getMcpOAuthStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OAuth status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOAuthStatusResponse'
+        '404':
+          description: MCP server not found
+
+  /api/mcps/{id}/oauth/start:
+    post:
+      tags: [MCP Servers]
+      summary: Start MCP OAuth authorization
+      description: Creates a PKCE OAuth authorization request for a protected remote MCP server.
+      operationId: startMcpOAuth
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpOAuthStartRequest'
+      responses:
+        '200':
+          description: OAuth authorization URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOAuthStartResponse'
+        '400':
+          description: OAuth flow could not be started
+        '403':
+          description: Non-local browser origin rejected
+
+  /api/mcps/{id}/oauth/disconnect:
+    post:
+      tags: [MCP Servers]
+      summary: Disconnect MCP OAuth
+      description: Removes stored OAuth token and pending state for an MCP server.
+      operationId: disconnectMcpOAuth
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OAuth status after disconnect
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOAuthStatusResponse'
+        '403':
+          description: Non-local browser origin rejected
+
+  /api/mcps/oauth/callback:
+    get:
+      tags: [MCP Servers]
+      summary: MCP OAuth callback
+      description: Local OAuth redirect target used to finish an MCP authorization flow.
+      operationId: completeMcpOAuth
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OAuth authorization completed
+          content:
+            text/html:
+              schema:
+                type: string
+        '400':
+          description: OAuth authorization failed
+          content:
+            text/html:
+              schema:
+                type: string
+
   # ============================================================================
   # Connector Endpoints
   # ============================================================================
@@ -1421,6 +1531,12 @@ components:
         version:
           type: string
           example: 0.1.0
+        buildDate:
+          type: string
+          example: "2026-06-14"
+        buildTimestamp:
+          type: string
+          example: "2026-06-14T15:30:00Z"
 
     StatusResponse:
       type: object
@@ -1428,6 +1544,10 @@ components:
         status:
           type: string
         version:
+          type: string
+        buildDate:
+          type: string
+        buildTimestamp:
           type: string
         agents:
           type: integer
@@ -1507,6 +1627,45 @@ components:
           type: string
           enum: [queued, running, paused, completed, crashed]
 
+  /api/traces/query:
+    post:
+      tags: [Sessions]
+      summary: Query compressed session traces
+      description: |
+        Runs a fixed trace analytics preset over server-owned
+        `traces/*.jsonl.gz` files. Clients choose a preset and typed params;
+        raw SQL is never accepted.
+      operationId: queryTraces
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TraceQueryRequest'
+            example:
+              preset: sessions_with_failed_tool
+              params:
+                tool: read_file
+      responses:
+        '200':
+          description: Trace query results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceQueryResponse'
+        '400':
+          description: Unknown preset or invalid params
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Trace query failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     ErrorResponse:
       type: object
       properties:
@@ -1515,6 +1674,36 @@ components:
         code:
           type: string
           enum: [SESSION_NOT_FOUND, EXECUTION_NOT_FOUND, AGENT_ERROR, PROVIDER_ERROR, INVALID_STATE, INTERNAL_ERROR]
+
+    TraceQueryRequest:
+      type: object
+      required:
+        - preset
+      properties:
+        preset:
+          type: string
+          enum: [sessions_with_failed_tool]
+        params:
+          type: object
+          additionalProperties: true
+          properties:
+            tool:
+              type: string
+
+    TraceQueryResponse:
+      type: object
+      required:
+        - rows
+      properties:
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - session_id
+            properties:
+              session_id:
+                type: string
 
     # ============================================================================
     # Agent Schemas
@@ -1537,8 +1726,15 @@ components:
         temperature:
           type: number
           format: float
+        maxInputTokens:
+          type: integer
+          default: 200000
+        maxOutputTokens:
+          type: integer
+          default: 32000
         maxTokens:
           type: integer
+          description: Legacy alias for maxOutputTokens.
         thinkingEnabled:
           type: boolean
         voiceRecordingEnabled:
@@ -1580,9 +1776,16 @@ components:
         temperature:
           type: number
           default: 0.7
+        maxInputTokens:
+          type: integer
+          default: 200000
+        maxOutputTokens:
+          type: integer
+          default: 32000
         maxTokens:
           type: integer
-          default: 2000
+          default: 32000
+          description: Legacy alias for maxOutputTokens.
         instructions:
           type: string
         mcps:
@@ -1609,8 +1812,13 @@ components:
           type: string
         temperature:
           type: number
+        maxInputTokens:
+          type: integer
+        maxOutputTokens:
+          type: integer
         maxTokens:
           type: integer
+          description: Legacy alias for maxOutputTokens.
         thinkingEnabled:
           type: boolean
         voiceRecordingEnabled:
@@ -1842,6 +2050,11 @@ components:
           type: object
         enabled:
           type: boolean
+        auth:
+          $ref: '#/components/schemas/McpAuthConfig'
+        authStatus:
+          type: string
+          enum: [not_configured, not_connected, connected, reauth_required]
         created_at:
           type: string
           format: date-time
@@ -1871,6 +2084,57 @@ components:
           type: object
           additionalProperties:
             type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Static headers. OAuth MCP servers must not persist Authorization here.
+        auth:
+          $ref: '#/components/schemas/McpAuthConfig'
+
+    McpAuthConfig:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [oauth2]
+        clientId:
+          type: string
+          description: Optional public OAuth client identifier.
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Optional OAuth scopes requested during authorization.
+
+    McpOAuthStatusResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [not_configured, not_connected, connected, reauth_required]
+
+    McpOAuthStartRequest:
+      type: object
+      properties:
+        redirectUri:
+          type: string
+          description: Optional local callback URL. If present, it must target /api/mcps/oauth/callback on localhost.
+
+    McpOAuthStartResponse:
+      type: object
+      required:
+        - authUrl
+        - state
+      properties:
+        authUrl:
+          type: string
+        state:
+          type: string
 
     McpTestResult:
       type: object
@@ -2422,15 +2686,11 @@ components:
     ToolSettings:
       type: object
       properties:
-        grep_enabled:
+        fileTools:
           type: boolean
-        glob_enabled:
+        offloadLargeResults:
           type: boolean
-        python_enabled:
-          type: boolean
-        web_fetch_enabled:
-          type: boolean
-        offload_threshold:
+        offloadThresholdTokens:
           type: integer
 
     LogSettingsRequest:

@@ -30,12 +30,55 @@ interface IntentInfoButtonProps {
   sessionId: string;
 }
 
-export function IntentInfoButton({ sessionId }: IntentInfoButtonProps) {
-  const [open, setOpen] = useState(false);
+interface IntentInfoPanelProps {
+  sessionId: string;
+}
+
+function useIntentAnalysis(sessionId: string) {
   const [intent, setIntent] = useState<IntentAnalysisJson | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasFetched, setHasFetched] = useState(false);
+  const requestGenerationRef = useRef(0);
+
+  // Reset cached intent, loading, and error when the session changes.
+  useEffect(() => {
+    requestGenerationRef.current += 1;
+    setIntent(null);
+    setError(null);
+    setLoading(false);
+    setHasFetched(false);
+  }, [sessionId]);
+
+  const fetchIntent = useCallback(async () => {
+    const requestGeneration = ++requestGenerationRef.current;
+    setHasFetched(true);
+    setLoading(true);
+    setError(null);
+    try {
+      const transport = await getTransport();
+      const result = await transport.getSessionState(sessionId);
+      if (requestGeneration !== requestGenerationRef.current) return;
+      if (!result.success || !result.data) {
+        setError(result.error ?? "Failed to load intent");
+        return;
+      }
+      setIntent((result.data.intentAnalysis ?? null) as IntentAnalysisJson | null);
+    } catch (e) {
+      if (requestGeneration !== requestGenerationRef.current) return;
+      setError((e as Error).message);
+    } finally {
+      if (requestGeneration === requestGenerationRef.current) setLoading(false);
+    }
+  }, [sessionId]);
+
+  return { intent, loading, error, hasFetched, fetchIntent };
+}
+
+export function IntentInfoButton({ sessionId }: IntentInfoButtonProps) {
+  const [open, setOpen] = useState(false);
   const popoverRef = useRef<HTMLDialogElement | null>(null);
+  const { intent, loading, error, hasFetched, fetchIntent } = useIntentAnalysis(sessionId);
 
   // Click-outside → close.
   useEffect(() => {
@@ -48,45 +91,19 @@ export function IntentInfoButton({ sessionId }: IntentInfoButtonProps) {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
-  // Reset cached intent, loading, and error when the session changes.
-  // Without this, navigating to a different session keeps the previously
-  // fetched analysis because the component stays mounted across URL
-  // transitions (same parent ResearchPage) and the open/toggle path only
-  // fetches when `intent === null`.
   useEffect(() => {
-    setIntent(null);
-    setError(null);
-    setLoading(false);
     setOpen(false);
-  }, [sessionId]);
-
-  const fetchIntent = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const transport = await getTransport();
-      const result = await transport.getSessionState(sessionId);
-      if (!result.success || !result.data) {
-        setError(result.error ?? "Failed to load intent");
-        return;
-      }
-      setIntent((result.data.intentAnalysis ?? null) as IntentAnalysisJson | null);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
   }, [sessionId]);
 
   const toggle = useCallback(() => {
     setOpen((wasOpen) => {
       const nextOpen = !wasOpen;
-      if (nextOpen && intent === null && !loading) {
+      if (nextOpen && (!hasFetched || error !== null) && !loading) {
         fetchIntent().catch(() => {});
       }
       return nextOpen;
     });
-  }, [intent, loading, fetchIntent]);
+  }, [hasFetched, error, loading, fetchIntent]);
 
   return (
     <span className="intent-info">
@@ -121,6 +138,30 @@ export function IntentInfoButton({ sessionId }: IntentInfoButtonProps) {
         </dialog>
       )}
     </span>
+  );
+}
+
+/**
+ * The persistent presentation used by Research's context inspector. It keeps
+ * the existing session-scoped endpoint and cache, but does not hide useful
+ * intent detail behind a title-bar popover.
+ */
+export function IntentInfoPanel({ sessionId }: IntentInfoPanelProps) {
+  const { intent, loading, error, hasFetched, fetchIntent } = useIntentAnalysis(sessionId);
+
+  useEffect(() => {
+    if (!hasFetched && !loading) void fetchIntent();
+  }, [hasFetched, loading, fetchIntent]);
+
+  return (
+    <section className="intent-info__panel" aria-label="Intent analysis">
+      <div className="intent-info__header">Intent analysis</div>
+      <div className="intent-info__body">
+        {loading && <div className="intent-info__muted">loading…</div>}
+        {error && <div className="intent-info__error">{error}</div>}
+        {!loading && !error && <IntentDetails data={intent} />}
+      </div>
+    </section>
   );
 }
 

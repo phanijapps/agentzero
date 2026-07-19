@@ -23,6 +23,7 @@ pub mod working_memory;
 pub mod working_memory_middleware;
 
 pub use batch_writer::{spawn_batch_writer, spawn_batch_writer_with_traces, BatchWriterHandle};
+pub(crate) use executor::mcp_startup_failure_observer;
 pub use executor::{
     build_context_capability_catalog, collect_agents_summary, collect_skills_summary,
     resolve_thinking_flag, select_engine, ExecutorBuilder, RuntimeActorKind,

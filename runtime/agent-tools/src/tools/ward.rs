@@ -8,8 +8,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use agent_primitives::{AgentError, FileSystemContext, Result, Tool, ToolContext, ToolPermissions};
+use agent_primitives::{
+    AgentError, DelegateAction, FileSystemContext, Result, Tool, ToolContext, ToolPermissions,
+};
 use zbot_stores_traits::MemoryFactStore;
+
+use crate::tools::guards::start_planning_after_ward;
 
 /// AGENTS.md file name - living readme for agent executions
 const WARD_AGENTS_MD: &str = "AGENTS.md";
@@ -337,6 +341,32 @@ impl Tool for WardTool {
                 // Set ward_id in context state
                 ctx.set_state("ward_id".to_string(), json!(name));
 
+                // Cold graph work has no durable plan yet. Once root has
+                // established the workspace, launch planner-agent directly
+                // from this successful state transition rather than relying
+                // on the model to obey a prompt-only delegation instruction.
+                let planner_task = start_planning_after_ward(ctx.as_ref(), name);
+                if let Some(task) = planner_task.as_ref() {
+                    let mut actions = ctx.actions();
+                    actions.delegate = Some(DelegateAction {
+                        agent_id: "planner-agent".to_string(),
+                        task: task.clone(),
+                        context: None,
+                        wait_for_result: true,
+                        max_iterations: None,
+                        output_schema: None,
+                        skills: Vec::new(),
+                        capability_assignment: None,
+                        planning_capability_catalog: ctx
+                            .get_state("app:planning_capability_catalog"),
+                        complexity: None,
+                        mode: None,
+                        parallel: false,
+                        child_execution_id: None,
+                    });
+                    ctx.set_actions(actions);
+                }
+
                 // List files in the ward
                 let files = self.list_ward_files(&ward_dir);
 
@@ -360,6 +390,10 @@ impl Tool for WardTool {
 
                 if let Some(knowledge) = ward_knowledge {
                     result["ward_knowledge"] = knowledge;
+                }
+
+                if planner_task.is_some() {
+                    result["planner_started"] = json!(true);
                 }
 
                 // Nudge the agent to recall ward-specific knowledge
@@ -442,11 +476,103 @@ impl Tool for WardTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::event::EventActions;
+    use agent_primitives::types::Content;
+    use agent_primitives::{CallbackContext, ReadonlyContext};
+    use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     struct TestFs {
         base: PathBuf,
+    }
+
+    struct GateContext {
+        state: Mutex<HashMap<String, Value>>,
+        actions: Mutex<EventActions>,
+        content: Content,
+    }
+
+    impl GateContext {
+        fn cold_graph() -> Self {
+            let mut state = HashMap::new();
+            state.insert(
+                crate::tools::guards::PLANNING_GATE_STATE.to_string(),
+                serde_json::to_value(crate::tools::guards::PlanningGate::awaiting_ward(
+                    "Plan the requested 3D model",
+                ))
+                .unwrap(),
+            );
+            Self {
+                state: Mutex::new(state),
+                actions: Mutex::new(EventActions::default()),
+                content: Content::user(""),
+            }
+        }
+
+        fn delegated_cold_graph() -> Self {
+            let context = Self::cold_graph();
+            context
+                .state
+                .lock()
+                .unwrap()
+                .insert("app:is_delegated".to_string(), json!(true));
+            context
+        }
+    }
+
+    impl ReadonlyContext for GateContext {
+        fn invocation_id(&self) -> &str {
+            "test"
+        }
+        fn agent_name(&self) -> &str {
+            "root"
+        }
+        fn user_id(&self) -> &str {
+            "test"
+        }
+        fn app_name(&self) -> &str {
+            "test"
+        }
+        fn session_id(&self) -> &str {
+            "test"
+        }
+        fn branch(&self) -> &str {
+            "test"
+        }
+        fn user_content(&self) -> &Content {
+            &self.content
+        }
+    }
+
+    impl CallbackContext for GateContext {
+        fn get_state(&self, key: &str) -> Option<Value> {
+            self.state.lock().ok()?.get(key).cloned()
+        }
+
+        fn set_state(&self, key: String, value: Value) {
+            if let Ok(mut state) = self.state.lock() {
+                state.insert(key, value);
+            }
+        }
+    }
+
+    impl ToolContext for GateContext {
+        fn function_call_id(&self) -> String {
+            "test".to_string()
+        }
+        fn actions(&self) -> EventActions {
+            self.actions
+                .lock()
+                .map(|actions| actions.clone())
+                .unwrap_or_default()
+        }
+        fn set_actions(&self, actions: EventActions) {
+            if let Ok(mut current) = self.actions.lock() {
+                *current = actions;
+            }
+        }
     }
 
     impl FileSystemContext for TestFs {
@@ -621,5 +747,72 @@ mod tests {
 
         let content = std::fs::read_to_string(ward_path.join("AGENTS.md")).unwrap();
         assert!(content.contains("# Custom content")); // Not overwritten
+    }
+
+    #[tokio::test]
+    async fn cold_graph_ward_entry_starts_planner_once_with_actual_ward() {
+        let dir = TempDir::new().unwrap();
+        let fs = Arc::new(TestFs {
+            base: dir.path().to_path_buf(),
+        });
+        let tool = WardTool::new(fs, None, None);
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::cold_graph());
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({ "action": "create", "name": "creative-design" }),
+            )
+            .await
+            .expect("ward creation succeeds");
+
+        assert_eq!(
+            result.get("planner_started").and_then(Value::as_bool),
+            Some(true)
+        );
+        let action = ctx.actions().delegate.expect("planner action is emitted");
+        assert_eq!(action.agent_id, "planner-agent");
+        assert!(action.wait_for_result);
+        assert!(!action.parallel);
+        assert!(action.task.contains("Active ward:"));
+        assert!(action.task.contains("creative-design"));
+
+        let second = tool
+            .execute(
+                ctx.clone(),
+                json!({ "action": "use", "name": "creative-design" }),
+            )
+            .await
+            .expect("re-entering the ward succeeds");
+        assert!(second.get("planner_started").is_none());
+    }
+
+    #[tokio::test]
+    async fn listing_or_delegated_ward_entry_never_starts_the_root_planner() {
+        let dir = TempDir::new().unwrap();
+        let fs = Arc::new(TestFs {
+            base: dir.path().to_path_buf(),
+        });
+        let tool = WardTool::new(fs, None, None);
+
+        let list_ctx: Arc<dyn ToolContext> = Arc::new(GateContext::cold_graph());
+        let listed = tool
+            .execute(list_ctx.clone(), json!({ "action": "list" }))
+            .await
+            .expect("listing wards succeeds");
+        assert!(listed.get("planner_started").is_none());
+        assert!(list_ctx.actions().delegate.is_none());
+
+        std::fs::create_dir_all(dir.path().join("wards").join("creative-design")).unwrap();
+        let delegated_ctx: Arc<dyn ToolContext> = Arc::new(GateContext::delegated_cold_graph());
+        let entered = tool
+            .execute(
+                delegated_ctx.clone(),
+                json!({ "action": "use", "name": "creative-design" }),
+            )
+            .await
+            .expect("a delegated ward entry can use the existing ward");
+        assert!(entered.get("planner_started").is_none());
+        assert!(delegated_ctx.actions().delegate.is_none());
     }
 }

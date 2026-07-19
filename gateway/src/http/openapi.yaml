@@ -586,7 +586,7 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateProviderRequest'
       responses:
-        '200':
+        '201':
           description: Provider created
           content:
             application/json:
@@ -632,6 +632,10 @@ paths:
       responses:
         '200':
           description: Provider updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
         '404':
           description: Provider not found
     delete:
@@ -685,6 +689,10 @@ paths:
       responses:
         '200':
           description: Provider set as default
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
         '404':
           description: Provider not found
 
@@ -1977,49 +1985,113 @@ components:
     # ============================================================================
     Provider:
       type: object
+      required: [name, description, baseUrl, models, isDefault, hasApiKey]
       properties:
         id:
           type: string
         name:
           type: string
-        provider_type:
+        description:
           type: string
-          enum: [anthropic, openai, google, ollama, custom]
-        base_url:
+        baseUrl:
           type: string
-          nullable: true
-        is_default:
+        models:
+          type: array
+          items:
+            type: string
+        embeddingModels:
+          type: array
+          items:
+            type: string
+        embeddingDimensions:
+          type: integer
+        verified:
           type: boolean
-        created_at:
+        isDefault:
+          type: boolean
+        hasApiKey:
+          type: boolean
+          description: Whether a credential is configured. The credential itself is never returned.
+        createdAt:
           type: string
           format: date-time
+        maxConcurrentRequests:
+          type: integer
+        contextWindow:
+          type: integer
+        defaultModel:
+          type: string
+        rateLimits:
+          type: object
+        modelConfigs:
+          type: object
+          additionalProperties: true
 
     CreateProviderRequest:
       type: object
-      required:
-        - name
-        - provider_type
-        - api_key
+      required: [name, description, apiKey, baseUrl, models]
       properties:
+        id:
+          type: string
         name:
           type: string
-        provider_type:
+        description:
           type: string
-          enum: [anthropic, openai, google, ollama, custom]
-        api_key:
+        apiKey:
           type: string
-        base_url:
+        baseUrl:
           type: string
+        models:
+          type: array
+          items:
+            type: string
+        embeddingModels:
+          type: array
+          items:
+            type: string
+        defaultModel:
+          type: string
+        rateLimits:
+          type: object
+        modelConfigs:
+          type: object
+          additionalProperties: true
+        isDefault:
+          type: boolean
+          default: false
 
     UpdateProviderRequest:
       type: object
+      description: Full provider replacement. Omit apiKey or send blank to retain the stored credential.
+      required: [name, description, baseUrl, models]
       properties:
+        id:
+          type: string
         name:
           type: string
-        api_key:
+        description:
           type: string
-        base_url:
+        apiKey:
           type: string
+        baseUrl:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        embeddingModels:
+          type: array
+          items:
+            type: string
+        defaultModel:
+          type: string
+        rateLimits:
+          type: object
+        modelConfigs:
+          type: object
+          additionalProperties: true
+        isDefault:
+          type: boolean
 
     ProviderTestResult:
       type: object

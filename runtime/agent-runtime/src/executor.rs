@@ -1170,6 +1170,10 @@ impl AgentExecutor {
                                     max_iterations: delegate.max_iterations,
                                     output_schema: delegate.output_schema.clone(),
                                     skills: delegate.skills.clone(),
+                                    capability_assignment: delegate.capability_assignment.clone(),
+                                    planning_capability_catalog: delegate
+                                        .planning_capability_catalog
+                                        .clone(),
                                     complexity: delegate.complexity.clone(),
                                     mode: delegate.mode.clone(),
                                     parallel: delegate.parallel,
@@ -1514,6 +1518,25 @@ impl AgentExecutor {
         tool_name: &str,
         arguments: &Value,
     ) -> Result<ToolExecutionResult, String> {
+        // Cold graph work must establish its ward before any work can start.
+        // This lives at the executor boundary (rather than only in individual
+        // built-in tools) so MCP tools — which bypass the normal ToolRegistry
+        // and use the `{server}__{tool}` dispatch below — cannot escape the
+        // planning gate. `ward` remains available to make the required state
+        // transition; successful create/use then launches planner-agent.
+        if tool_name != "ward"
+            && agent_tools::guards::planning_gate_awaits_ward(shared_ctx.as_ref())
+        {
+            return Ok(ToolExecutionResult {
+                output: json!({
+                    "status": "redirect",
+                    "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call MCP tools or other tools yet."
+                })
+                .to_string(),
+                actions: EventActions::default(),
+            });
+        }
+
         // --- Replay intercept ---------------------------------------------------
         // When ZBOT_REPLAY_DIR is set, look up a recorded result and return it
         // instead of running the real tool. Strict mode (default) panics on miss;
@@ -1684,9 +1707,22 @@ impl AgentExecutor {
         // Add MCP tools
         for mcp_id in &self.config.mcps {
             if let Some(client) = self.mcp_manager.get_client(mcp_id).await {
-                let mcp_tools = client.list_tools().await.map_err(|e| {
-                    ExecutorError::McpError(format!("Failed to list MCP tools: {e}"))
-                })?;
+                let mcp_tools = match client.list_tools().await {
+                    Ok(tools) => tools,
+                    Err(_) => {
+                        // Discovery is the real startup boundary for several
+                        // MCP transports. Keep the failure nonfatal, redact
+                        // client/command/stderr text, and remove the client so
+                        // this executor never retries it on a later turn.
+                        tracing::warn!(
+                            mcp_id = %mcp_id,
+                            rejection_code = "startup_failed",
+                            "MCP tool discovery failed; continuing without its tools"
+                        );
+                        self.mcp_manager.mark_startup_failed(mcp_id).await;
+                        continue;
+                    }
+                };
 
                 tracing::info!(
                     "Loaded {} MCP tools from server {}",
@@ -1969,6 +2005,7 @@ mod token_cache_tests {
 mod executor_helper_coverage_tests {
     use super::*;
     use crate::llm::client::{ChatResponse, LlmError, StreamCallback};
+    use crate::mcp::{McpClient, McpError, McpTool};
     use agent_primitives::Tool;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2147,6 +2184,27 @@ mod executor_helper_coverage_tests {
         }
     }
 
+    struct FailingMcpClient;
+
+    #[async_trait]
+    impl McpClient for FailingMcpClient {
+        fn name(&self) -> &str {
+            "blender"
+        }
+
+        async fn call_tool(&self, _tool_name: &str, _arguments: Value) -> Result<Value, McpError> {
+            Err(McpError::ConnectionFailed(
+                "should not be exposed".to_string(),
+            ))
+        }
+
+        async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
+            Err(McpError::ConnectionFailed(
+                "configured command and stderr must not escape".to_string(),
+            ))
+        }
+    }
+
     fn make_inert_executor() -> AgentExecutor {
         let cfg = ExecutorConfig::new("agent".into(), "prov".into(), "model".into());
         AgentExecutor::new(
@@ -2249,6 +2307,45 @@ mod executor_helper_coverage_tests {
             .as_str()
             .unwrap();
         assert_eq!(name, "respond");
+    }
+
+    #[tokio::test]
+    async fn mcp_discovery_failure_is_nonfatal_and_not_retried() {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_clone = Arc::clone(&observed);
+        let manager = Arc::new(McpManager::new().with_startup_failure_observer(Arc::new(
+            move |id| observed_clone.lock().unwrap().push(id.to_string()),
+        )));
+        manager
+            .insert_test_client("blender", Arc::new(FailingMcpClient))
+            .await;
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(crate::tools::RespondTool::new()));
+        let mut config = ExecutorConfig::new("a".into(), "p".into(), "m".into());
+        config.mcps = vec!["blender".to_string()];
+        let executor = AgentExecutor::new(
+            config,
+            Arc::new(InertLlm),
+            Arc::new(registry),
+            Arc::clone(&manager),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .expect("executor builds");
+
+        let schema = executor
+            .build_tools_schema()
+            .await
+            .expect("MCP discovery failure stays nonfatal");
+        let names = schema
+            .as_array()
+            .expect("tool schema array")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["respond"]);
+        assert_eq!(*observed.lock().unwrap(), vec!["blender"]);
+        assert!(manager.get_client("blender").await.is_none());
     }
 
     #[tokio::test]
@@ -2605,6 +2702,53 @@ mod executor_helper_coverage_tests {
         assert_eq!(blocked.0, "[blocked by hook]");
         assert_eq!(blocked.1.as_deref(), Some("blocked_by_hook"));
         assert_eq!(*blocked.2, Some(0));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_mcp_tool_before_ward_entry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(ToolCallThenDoneLlm {
+            calls: Arc::clone(&calls),
+            // MCP tools use the `{normalized-server}__{normalized-tool}`
+            // identifier. No MCP client is registered: reaching its dispatch
+            // path would therefore fail this test instead of redirecting.
+            tool_name: "blender_mcp__execute_code".to_string(),
+        });
+
+        let cfg = ExecutorConfig::new("root".into(), "p".into(), "m".into()).with_initial_state(
+            agent_tools::guards::PLANNING_GATE_STATE,
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan the Blender task",
+            ))
+            .unwrap(),
+        );
+        let exec = AgentExecutor::new(
+            cfg,
+            llm,
+            Arc::new(ToolRegistry::new()),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+
+        let mut events = Vec::new();
+        exec.execute_stream("create a scene", &[], |e| events.push(e))
+            .await
+            .unwrap();
+
+        let result = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::ToolResult { result, error, .. } => {
+                    Some((result.as_str(), error.as_deref()))
+                }
+                _ => None,
+            })
+            .expect("MCP-shaped tool call produces a result");
+        assert!(result.0.contains("cold graph work"));
+        assert!(result.0.contains("planner-agent"));
+        assert_eq!(result.1, None, "the MCP dispatch path was never reached");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     /// Stub LLM that emits a tool call for an UNREGISTERED tool, exercising

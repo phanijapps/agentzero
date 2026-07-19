@@ -17,6 +17,7 @@
 //! - [`delegate`]: Tool for delegating tasks to subagents
 
 pub mod builtin;
+pub mod capabilities;
 pub mod context;
 pub mod delegate;
 pub mod error;
@@ -25,6 +26,9 @@ pub mod respond;
 pub mod run_procedure;
 
 pub use builtin::{FileSystemContext, NoFileSystemContext};
+pub use capabilities::{
+    CapabilityCatalogTool, PLANNER_CAPABILITY_CATALOG_STATE, PLANNING_CAPABILITY_CATALOG_STATE,
+};
 pub use context::ToolContext;
 pub use delegate::DelegateTool;
 pub use error::{ToolError as ToolExecError, ToolResult as ToolExecResult};

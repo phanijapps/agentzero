@@ -28,6 +28,8 @@ fn make_request(session_id: &str, child_agent_id: &str, task: &str) -> Delegatio
         max_iterations: None,
         output_schema: None,
         skills: vec![],
+        capability_assignment: None,
+        planning_capability_catalog: None,
         complexity: None,
         parallel: false,
     }

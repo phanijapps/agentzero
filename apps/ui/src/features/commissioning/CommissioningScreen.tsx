@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -18,14 +18,16 @@ import {
 import { getTransport } from "@/services/transport";
 import type { CommissioningRequest, LocalDiagnosis } from "@/services/transport";
 
-type Step = "focus" | "intelligence" | "world";
+type Step = "focus" | "intelligence" | "memory" | "world";
 type Focus = CommissioningRequest["primaryFocus"];
 type Domain = CommissioningRequest["domains"][number];
+type MemoryProfile = CommissioningRequest["memoryProfile"];
 type CloudPreset = NonNullable<CommissioningRequest["provider"]["presetId"]>;
 
 const STEPS: Array<{ id: Step; label: string }> = [
   { id: "focus", label: "Your focus" },
   { id: "intelligence", label: "Your intelligence" },
+  { id: "memory", label: "Your memory" },
   { id: "world", label: "About you" },
 ];
 
@@ -57,6 +59,7 @@ const INTERESTS = [
 ];
 
 const CLOUD_PROVIDERS: Record<CloudPreset, { name: string; models: string[] }> = {
+  ollama_cloud: { name: "Ollama Cloud", models: ["glm-5.2:cloud"] },
   openai: { name: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "o4-mini", "gpt-4.1"] },
   deepseek: { name: "DeepSeek", models: ["deepseek-chat", "deepseek-reasoner"] },
   openrouter: { name: "OpenRouter", models: ["anthropic/claude-opus", "openai/gpt-4-turbo", "google/gemini-pro"] },
@@ -64,7 +67,12 @@ const CLOUD_PROVIDERS: Record<CloudPreset, { name: string; models: string[] }> =
   mistral: { name: "Mistral", models: ["mistral-large-latest", "mistral-small-latest", "codestral-latest"] },
 };
 
-export function CommissioningScreen() {
+interface CommissioningScreenProps {
+  /** Allow an already commissioned user to intentionally rerun setup. */
+  rerunSetup?: boolean;
+}
+
+export function CommissioningScreen({ rerunSetup = false }: CommissioningScreenProps) {
   const [step, setStep] = useState<Step>("focus");
   const [focus, setFocus] = useState<Focus | null>(null);
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -80,9 +88,35 @@ export function CommissioningScreen() {
   const [hobbies, setHobbies] = useState("");
   const [dateOfBirth, setDateOfBirth] = useState("");
   const [profile, setProfile] = useState("");
+  const [memoryProfile, setMemoryProfile] = useState<MemoryProfile | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [restartPending, setRestartPending] = useState(false);
+  const [isCheckingActivation, setIsCheckingActivation] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    void getTransport()
+      .then((transport) => transport.getCommissioningStatus())
+      .then((result) => {
+        if (!mounted || !result.success || !result.data) return;
+        if (result.data.state === "complete" && !result.data.restartRequired && !rerunSetup) {
+          navigate("/", { replace: true });
+        } else if (result.data.restartRequired) {
+          setRestartPending(true);
+        } else if (result.data.recoveryCode === "memory_profile_conflict") {
+          setError("The Full Zbot memory files or settings changed before activation. Resolve the conflict, then submit commissioning again; z-Bot did not overwrite the existing configuration.");
+        }
+      })
+      .catch(() => {
+        // A transient status failure must not prevent a fresh user from using
+        // the local commissioning wizard.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [navigate, rerunSetup]);
 
   const currentIndex = STEPS.findIndex((item) => item.id === step);
   const focusDetails = focus ? FOCUSES.find((item) => item.id === focus) : undefined;
@@ -96,9 +130,10 @@ export function CommissioningScreen() {
         ? localDiagnosis?.state === "ready" && Boolean(model)
         : Boolean(apiKey.trim()) && Boolean(model);
     }
+    if (step === "memory") return memoryProfile !== null;
     if (step === "world") return Boolean(displayName.trim()) && Boolean(userName.trim()) && interests.length > 0;
     return false;
-  }, [apiKey, displayName, domains.length, focus, interests.length, localDiagnosis?.state, model, providerKind, step, userName]);
+  }, [apiKey, displayName, domains.length, focus, interests.length, localDiagnosis?.state, memoryProfile, model, providerKind, step, userName]);
 
   const selectFocus = (nextFocus: Focus) => {
     const selection = FOCUSES.find((item) => item.id === nextFocus)!;
@@ -119,6 +154,7 @@ export function CommissioningScreen() {
   };
 
   const choosePreset = (nextPreset: CloudPreset) => {
+    setApiKey("");
     setPreset(nextPreset);
     setModel(CLOUD_PROVIDERS[nextPreset].models[0]);
     setError(null);
@@ -155,7 +191,7 @@ export function CommissioningScreen() {
   };
 
   const complete = async () => {
-    if (!focus || !canContinue) return;
+    if (!focus || !memoryProfile || !canContinue) return;
     setIsSubmitting(true);
     setError(null);
     const request: CommissioningRequest = {
@@ -167,6 +203,7 @@ export function CommissioningScreen() {
       dateOfBirth: dateOfBirth || undefined,
       primaryFocus: focus,
       domains,
+      memoryProfile,
       provider: providerKind === "cloud"
         ? { kind: "cloud", presetId: preset, model, apiKey: apiKey.trim() }
         : { kind: "local", model },
@@ -179,6 +216,10 @@ export function CommissioningScreen() {
         setError(result.error || "We couldn’t finish commissioning. Please try again.");
         return;
       }
+      if (result.data?.restartRequired) {
+        setRestartPending(true);
+        return;
+      }
       navigate("/", { replace: true });
     } catch {
       setApiKey("");
@@ -187,6 +228,46 @@ export function CommissioningScreen() {
       setIsSubmitting(false);
     }
   };
+
+  const checkActivation = async () => {
+    setIsCheckingActivation(true);
+    setError(null);
+    try {
+      const transport = await getTransport();
+      const result = await transport.getCommissioningStatus();
+      if (result.success && result.data?.state === "complete" && !result.data.restartRequired) {
+        navigate("/", { replace: true });
+        return;
+      }
+      if (result.data?.recoveryCode === "memory_profile_conflict") {
+        setRestartPending(false);
+        setError("The Full Zbot memory files or settings changed before activation. Resolve the conflict, then submit commissioning again; z-Bot did not overwrite the existing configuration.");
+        return;
+      }
+      setError("The Full Zbot memory profile is still waiting for a daemon restart.");
+    } catch {
+      setError("We couldn’t reconnect to z-Bot yet. Restart the daemon, then check activation.");
+    } finally {
+      setIsCheckingActivation(false);
+    }
+  };
+
+  if (restartPending) {
+    return (
+      <main className="commissioning-shell commissioning-shell--activation">
+        <section className="commissioning-main commissioning-activation">
+          <p className="commissioning-main__eyebrow">Full Zbot memory prepared</p>
+          <h1>Restart z-Bot to activate memory</h1>
+          <p>Your memory profile will activate when the daemon starts again. The current process will not claim the new recall and background workers are active early.</p>
+          <p>Restart zbotd, then check activation here. If the built-in embedding model is not already cached, its first use may complete the one-time local download.</p>
+          {error && <p className="commissioning-error" role="alert">{error}</p>}
+          <button className="btn btn--primary btn--md" onClick={() => void checkActivation()} disabled={isCheckingActivation}>
+            {isCheckingActivation ? <Loader2 className="loading-spinner__icon" /> : <RefreshCw size={16} />} Check activation
+          </button>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="commissioning-shell">
@@ -239,8 +320,8 @@ export function CommissioningScreen() {
             <h2>Choose how your agent thinks</h2>
             <p className="commissioning-panel__intro">Use a cloud provider with your own key or connect a local Ollama model.</p>
             <div className="commissioning-choice-row">
-              <button className={`commissioning-choice ${providerKind === "cloud" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("cloud"); setError(null); }}><Cloud aria-hidden="true" /><strong>Cloud provider</strong><span>Bring an API key from a supported provider.</span></button>
-              <button className={`commissioning-choice ${providerKind === "local" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("local"); setError(null); }}><HeartHandshake aria-hidden="true" /><strong>Local model</strong><span>Run privately through Ollama on this device.</span></button>
+              <button className={`commissioning-choice ${providerKind === "cloud" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("cloud"); setApiKey(""); setModel(CLOUD_PROVIDERS[preset].models[0]); setError(null); }}><Cloud aria-hidden="true" /><strong>Cloud provider</strong><span>Bring an API key from a supported provider.</span></button>
+              <button className={`commissioning-choice ${providerKind === "local" ? "commissioning-choice--selected" : ""}`} onClick={() => { setProviderKind("local"); setApiKey(""); setModel(localDiagnosis?.models?.[0] || ""); setError(null); }}><HeartHandshake aria-hidden="true" /><strong>Local model</strong><span>Run privately through Ollama on this device.</span></button>
             </div>
             {providerKind === "cloud" ? (
               <div className="commissioning-provider-form">
@@ -250,6 +331,7 @@ export function CommissioningScreen() {
                 <p className="commissioning-provider-form__hint">Need a provider with a custom endpoint or authentication method? Add it in Settings after commissioning.</p>
                 <label className="form-group"><span className="form-label">API key</span><input className="form-input" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" placeholder="Paste your key" /></label>
                 <label className="form-group"><span className="form-label">Model</span><select className="form-select" value={model} onChange={(event) => setModel(event.target.value)}>{selectedModelOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
+                {preset === "ollama_cloud" && <div className="commissioning-memory-disclosure" role="note" aria-label="Ollama Cloud model recommendation"><strong>Recommended Ollama Cloud setup</strong><p>All agents start with <code>glm-5.2:cloud</code>. Images and other multimodal work use <code>gemma4:31b-cloud</code>.</p></div>}
               </div>
             ) : (
               <div className="commissioning-local">
@@ -258,6 +340,29 @@ export function CommissioningScreen() {
                 {localDiagnosis?.models && <label className="form-group"><span className="form-label">Local model</span><select className="form-select" value={model} onChange={(event) => setModel(event.target.value)}>{localDiagnosis.models.map((option) => <option key={option}>{option}</option>)}</select></label>}
               </div>
             )}
+          </div>
+        )}
+
+        {step === "memory" && (
+          <div className="commissioning-panel">
+            <h2>Choose how z-Bot remembers</h2>
+            <p className="commissioning-panel__intro">Start conservatively, or enable the complete memory and recall profile used by z-Bot.</p>
+            <div className="commissioning-choice-row">
+              <button type="button" className={`commissioning-choice ${memoryProfile === "zbot_recommended_v1" ? "commissioning-choice--selected" : ""}`} onClick={() => setMemoryProfile("zbot_recommended_v1")} aria-pressed={memoryProfile === "zbot_recommended_v1"}>
+                <Sparkles aria-hidden="true" />
+                <strong>Full Zbot memory <span className="commissioning-recommended">Recommended</span></strong>
+                <span>Enables background memory processing, richer recall, beliefs, hierarchy, and governance.</span>
+              </button>
+              <button type="button" className={`commissioning-choice ${memoryProfile === "safe_baseline" ? "commissioning-choice--selected" : ""}`} onClick={() => setMemoryProfile("safe_baseline")} aria-pressed={memoryProfile === "safe_baseline"}>
+                <ShieldCheck aria-hidden="true" />
+                <strong>Safe baseline</strong>
+                <span>Keeps current memory settings and does not add recall or governance profile files.</span>
+              </button>
+            </div>
+            <div className="commissioning-memory-disclosure" role="note">
+              <strong>Before you enable Full Zbot memory</strong>
+              <p>Background memory work uses your selected model provider, consumes usage, and may add cost. {providerKind === "cloud" ? "Memory-derived content may be sent to that cloud provider for processing." : "Memory-derived content stays with your selected local model runtime."} The built-in FastEmbed model may need a one-time local download on first use.</p>
+            </div>
           </div>
         )}
 
@@ -286,8 +391,8 @@ export function CommissioningScreen() {
         <ul>
           <li><Bot aria-hidden="true" /> Your agent profile</li>
           <li><Sparkles aria-hidden="true" /> A private memory plan</li>
-          <li><Check aria-hidden="true" /> A starter taxonomy</li>
-          <li><Check aria-hidden="true" /> A working ontology</li>
+          {memoryProfile === "zbot_recommended_v1" && <li><Check aria-hidden="true" /> A starter taxonomy</li>}
+          {memoryProfile === "zbot_recommended_v1" && <li><Check aria-hidden="true" /> A working ontology</li>}
           <li><ShieldCheck aria-hidden="true" /> Safe defaults</li>
         </ul>
         <div className="commissioning-safety-notice" role="note"><ShieldCheck aria-hidden="true" /><div><strong>An autonomous agent, with guardrails</strong><p>z-Bot can plan and use the tools you enable. Safety guardrails are built in, but execution is not sandboxed yet: a command or tool can affect this device and connected services. Review requests and enable only integrations you trust.</p></div></div>

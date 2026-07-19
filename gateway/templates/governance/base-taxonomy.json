@@ -1,0 +1,91 @@
+{
+  "kind": "zbot.skos_taxonomy",
+  "schemaVersion": 1,
+  "schemeId": "zbot.general:v1",
+  "label": "Zbot General Taxonomy",
+  "description": "Starter SKOS-style concept scheme for zbot memory, knowledge, recall, and context classification.",
+  "concepts": [
+    {
+      "id": "work",
+      "prefLabel": "Work",
+      "altLabels": ["task", "job", "activity"]
+    },
+    {
+      "id": "software_engineering",
+      "prefLabel": "Software Engineering",
+      "altLabels": ["code", "coding", "development", "programming"],
+      "broader": ["work"],
+      "related": ["tools", "artifacts"]
+    },
+    {
+      "id": "rust",
+      "prefLabel": "Rust",
+      "altLabels": ["rustlang", "cargo", "crate"],
+      "broader": ["software_engineering"],
+      "related": ["tools"]
+    },
+    {
+      "id": "agent_runtime",
+      "prefLabel": "Agent Runtime",
+      "altLabels": ["agent engine", "orchestration", "execution engine"],
+      "broader": ["software_engineering"],
+      "related": ["tools", "memory", "context_graph"]
+    },
+    {
+      "id": "tools",
+      "prefLabel": "Tools",
+      "altLabels": ["tooling", "tool call", "capability"],
+      "broader": ["work"],
+      "related": ["context_graph", "artifacts"]
+    },
+    {
+      "id": "memory",
+      "prefLabel": "Memory",
+      "altLabels": ["durable memory", "recall", "facts"],
+      "broader": ["work"],
+      "related": ["knowledge_graph", "context_graph"]
+    },
+    {
+      "id": "knowledge_graph",
+      "prefLabel": "Knowledge Graph",
+      "altLabels": ["graph", "kg", "entities", "relationships"],
+      "broader": ["memory"],
+      "related": ["context_graph"]
+    },
+    {
+      "id": "context_graph",
+      "prefLabel": "Context Graph",
+      "altLabels": ["context packet", "context", "working context"],
+      "broader": ["memory"],
+      "related": ["tools", "knowledge_graph"]
+    },
+    {
+      "id": "research",
+      "prefLabel": "Research",
+      "altLabels": ["analysis", "investigation", "source review"],
+      "broader": ["work"],
+      "related": ["documents", "memory"]
+    },
+    {
+      "id": "finance",
+      "prefLabel": "Finance",
+      "altLabels": ["valuation", "market analysis", "equity research", "stocks"],
+      "broader": ["research"],
+      "related": ["documents"]
+    },
+    {
+      "id": "documents",
+      "prefLabel": "Documents",
+      "altLabels": ["article", "paper", "report", "spec", "rfc"],
+      "broader": ["work"],
+      "related": ["research", "artifacts"]
+    },
+    {
+      "id": "artifacts",
+      "prefLabel": "Artifacts",
+      "altLabels": ["file", "code artifact", "generated output"],
+      "broader": ["work"],
+      "related": ["software_engineering", "documents"]
+    }
+  ]
+}

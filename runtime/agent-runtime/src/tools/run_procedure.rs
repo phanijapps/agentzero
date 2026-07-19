@@ -10,6 +10,7 @@
 //! Task 8 lands the dispatch loop. Task 9 lands argument interpolation.
 
 use agent_primitives::{AgentError, Result, Tool, ToolContext};
+use agent_tools::guards::planning_gate_awaits_ward;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -209,6 +210,13 @@ impl Tool for RunProcedureTool {
     }
 
     async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request is awaiting ward(create/use). The system will start planner-agent after ward entry; do not run a procedure before planning."
+            }));
+        }
+
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
@@ -336,6 +344,18 @@ mod tests {
         ))
     }
 
+    fn cold_graph_ctx() -> Arc<dyn ToolContext> {
+        let ctx = test_ctx();
+        ctx.set_state(
+            agent_tools::guards::PLANNING_GATE_STATE.to_string(),
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan this procedure-backed graph task",
+            ))
+            .unwrap(),
+        );
+        ctx
+    }
+
     fn test_procedure(id: &str, name: &str, steps_json: &str) -> Procedure {
         Procedure {
             id: id.into(),
@@ -437,6 +457,20 @@ mod tests {
         let res = tool.execute(test_ctx(), json!({})).await;
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_procedure_before_lookup_or_dispatch() {
+        let tool =
+            RunProcedureTool::new(Arc::new(ToolRegistry::new()), Arc::new(NoOpProcedureStore));
+        let result = tool
+            .execute(cold_graph_ctx(), json!({"name": "anything"}))
+            .await
+            .expect("planning gate returns a redirect");
+        assert_eq!(
+            result.get("status").and_then(Value::as_str),
+            Some("redirect")
+        );
     }
 
     #[tokio::test]

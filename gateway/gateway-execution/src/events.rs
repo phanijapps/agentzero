@@ -469,6 +469,8 @@ mod tests {
             max_iterations: None,
             output_schema: None,
             skills: vec![],
+            capability_assignment: None,
+            planning_capability_catalog: None,
             complexity: None,
             mode: None,
             parallel: false,

@@ -4,9 +4,11 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Ollama Cloud Provider](ollama-cloud-provider/spec.md) | Draft | Adds authenticated Ollama Cloud commissioning with aligned `glm-5.2:cloud` agents, a `gemma4:31b-cloud` multimodal fallback, and strict separation from Ollama Local. |
 | [Autonomy Ledger](autonomy-ledger/spec.md) | Shipped | Adds durable, approved cross-session decision threads with bounded resume context, Mission Control visibility, and read-only trigger eligibility. |
 | [Agent-Driven Surfaces](agent-driven-surfaces/spec.md) | Draft | Adds capability-gated, catalog-constrained agent work surfaces with channel-neutral results and server-owned actions. |
 | [Agent Commissioning](agent-commissioning/spec.md) | Shipped | Replaces the legacy setup wizard with durable, personalized model commissioning and a portable semantic profile. |
+| [Commissioning Memory Profile](commissioning-memory-profile/spec.md) | Shipped | Adds an explicit recommended Full Zbot memory choice with built-in embeddings, pinned recall/governance files, and restart-verified activation. |
 | [Engram Provider Adoption](engram-provider-adoption/spec.md) | Implementing | Makes the semantic-memory adapter use Engram's provider facade and expose capability-gated services without changing agent or UI behavior. |
 | [Research Terminal State Reconciliation](research-terminal-state-reconciliation/spec.md) | Shipped | Makes successful Research completion deterministically reconcile the plan surface and final response. |
 | [Vault Layout Standardization](vault-layout-standardization/spec.md) | Shipped | Makes vault paths, configuration names, runtime directories, and prompt loading consistent while retiring dormant OKF material. |
@@ -14,6 +16,9 @@ Active feature specs for AgentZero.
 | [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Implementing | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
 | [Quick Chat Terminal Response Deduplication](quick-chat-terminal-response-dedup/spec.md) | Shipped | Prevents a root terminal fallback from rendering a second Quick Chat answer. |
 | [Quick Chat Recall Ranking](quick-chat-recall-ranking/spec.md) | Shipped | Preserves hybrid recall ranking and supplies query-scoped profile facts from durable memory. |
+| [Graph Planning Gate](graph-planning-gate/spec.md) | Implementing | Enforces cold graph work as ward setup → planner-agent → plan-step execution. |
+| [Execution Capabilities](execution-capabilities/spec.md) | Implementing | Makes skills and MCPs dynamically assigned to root and subagent executions by intent and planning, while retaining static agent mappings as a compatibility fallback. |
+| [MCP ID Normalization](mcp-id-normalization/spec.md) | Shipped | Derives stable IDs for API-managed MCPs and gives the active Blender MCP its canonical `blender-mcp` ID. |
 | [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Implementing | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |
 | [Research Context Inspector](research-context-inspector/spec.md) | Implementing | Moves existing intent analysis and delegated-agent context into Research's real right inspector without adding dashboard metrics. |
 | [YFinance Market Analysis Skill Consolidation](yfinance-market-analysis-skill/spec.md) | Shipped | Consolidates bundled yfinance workflows into one primary skill while keeping old `yf-*` IDs as compatibility wrappers. |

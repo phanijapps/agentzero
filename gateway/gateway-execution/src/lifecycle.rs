@@ -32,8 +32,8 @@ pub struct SessionSetup {
 /// If `existing_session_id` is provided and the session exists, creates a new
 /// execution within that session. Otherwise, creates a new session and execution.
 ///
-/// If the existing session was in a terminal state (completed/crashed), it will
-/// be reactivated to running status.
+/// Terminal state is preserved here. `InvokeBootstrap` reactivates an existing
+/// completed/crashed session only after the next root user message is durable.
 ///
 /// The `source` parameter determines the trigger source for new sessions.
 pub fn get_or_create_session(

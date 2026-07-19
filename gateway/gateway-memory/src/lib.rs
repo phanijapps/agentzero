@@ -64,6 +64,14 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Canonical inspectable bytes for the Full Zbot memory V1 preset.
+pub const ZBOT_RECOMMENDED_V1_MEMORY_JSON: &str =
+    include_str!("../templates/zbot-recommended-v1-memory.json");
+
+/// Canonical bytes written to `config/recall-config.json` for Full Zbot V1.
+pub const ZBOT_RECOMMENDED_V1_RECALL_JSON: &str =
+    include_str!("../templates/zbot-recommended-v1-recall.json");
+
 // ============================================================================
 // RECALL CONFIG
 // Configurable recall priority engine with compiled defaults and JSON merge.
@@ -288,6 +296,15 @@ impl Default for RecallConfig {
 }
 
 impl RecallConfig {
+    /// Construct the immutable Full Zbot recall V1 profile.
+    ///
+    /// Provisioning writes the canonical bundled bytes directly so `HashMap`
+    /// iteration cannot drift.
+    pub fn zbot_recommended_v1() -> Self {
+        serde_json::from_str(ZBOT_RECOMMENDED_V1_RECALL_JSON)
+            .expect("bundled Full Zbot recall V1 fixture must remain valid")
+    }
+
     /// Load recall config from `{path}/config/recall-config.json`.
     ///
     /// - Missing file → compiled defaults (info log)
@@ -452,6 +469,17 @@ impl Default for MemorySettings {
             hierarchy: HierarchySettings::default(),
             procedure_recommendation: ProcedureRecommendationConfig::default(),
         }
+    }
+}
+
+impl MemorySettings {
+    /// Construct the immutable Full Zbot memory V1 profile.
+    ///
+    /// The contract test pins the complete bundled fixture independently from
+    /// mutable defaults.
+    pub fn zbot_recommended_v1() -> Self {
+        serde_json::from_str(ZBOT_RECOMMENDED_V1_MEMORY_JSON)
+            .expect("bundled Full Zbot memory V1 fixture must remain valid")
     }
 }
 
@@ -1752,5 +1780,96 @@ mod tests {
         // unspecified fields keep defaults
         assert_eq!(m.hierarchy.interval_hours, 24);
         assert_eq!(m.hierarchy.cluster_target_size, 20);
+    }
+
+    // AC4 — the V1 preset pins approved tuning and built-in identity.
+    #[test]
+    fn zbot_recommended_v1_pins_memory_tuning_and_builtin_embeddings() {
+        let defaults = serde_json::to_value(MemorySettings::default()).unwrap();
+        let profile = MemorySettings::zbot_recommended_v1();
+        let approved: serde_json::Value =
+            serde_json::from_str(include_str!("../templates/zbot-recommended-v1-memory.json"))
+                .unwrap();
+
+        assert_eq!(serde_json::to_value(&profile).unwrap(), approved);
+        assert_eq!(
+            defaults["correctionsAbstractorIntervalHours"],
+            serde_json::json!(24)
+        );
+        assert_eq!(defaults["queryGate"]["enabled"], serde_json::json!(false));
+
+        assert_eq!(profile.corrections_abstractor_interval_hours, 1);
+        assert!(profile.query_gate.enabled);
+        assert!(profile.belief_network.enabled);
+        assert_eq!(profile.belief_network.interval_hours, 0);
+        assert_eq!(profile.belief_network.contradiction_budget_per_cycle, 200);
+        assert!(profile.mmr.enabled);
+        assert!(profile.hierarchy.enabled);
+        assert_eq!(profile.hierarchy.interval_hours, 0);
+        assert!((profile.procedure_recommendation.tentative.score_floor - 0.55).abs() < 1e-9);
+        assert_eq!(
+            profile.provider.embedding_provider.provider_type,
+            "fastembed"
+        );
+        assert_eq!(
+            profile.provider.embedding_provider.model,
+            "bge-small-en-v1.5"
+        );
+        assert_eq!(profile.provider.embedding_provider.dimensions, 384);
+        assert_eq!(profile.provider.embedding_provider.prompt_profile, "query");
+        assert_eq!(
+            profile.provider.governance.default_selection.ontology_ids,
+            ["zbot.base:v1"]
+        );
+        assert_eq!(
+            profile
+                .provider
+                .governance
+                .default_selection
+                .taxonomy_scheme_ids,
+            ["zbot.general:v1"]
+        );
+    }
+
+    // AC5 — the versioned recall profile is materializable and inspectable.
+    #[test]
+    fn zbot_recommended_v1_materializes_recall_defaults() {
+        let approved_bytes = include_str!("../templates/zbot-recommended-v1-recall.json");
+        let approved: RecallConfig = serde_json::from_str(approved_bytes).unwrap();
+        let profile = RecallConfig::zbot_recommended_v1();
+        assert_eq!(
+            serde_json::to_value(profile).unwrap(),
+            serde_json::to_value(approved).unwrap()
+        );
+        assert_eq!(RecallConfig::default().max_recall_tokens, 3000);
+
+        let json = ZBOT_RECOMMENDED_V1_RECALL_JSON.to_string();
+        assert_eq!(json.as_bytes(), approved_bytes.as_bytes());
+        let parsed: RecallConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_recall_tokens, 3000);
+        assert_eq!(parsed.max_facts, 10);
+        assert_eq!(parsed.max_episodes, 3);
+        assert!(parsed.mid_session_recall.enabled);
+        assert!(parsed.graph_traversal.enabled);
+        assert!(parsed.predictive_recall.enabled);
+    }
+
+    // AC5 — bundled definitions expose the approved governance IDs.
+    #[test]
+    fn bundled_governance_definitions_have_approved_ids() {
+        fn bundled_governance() -> (&'static str, &'static str) {
+            (
+                include_str!("../../templates/governance/base-ontology.json"),
+                include_str!("../../templates/governance/base-taxonomy.json"),
+            )
+        }
+
+        let (ontology, taxonomy) = bundled_governance();
+        let ontology: serde_json::Value = serde_json::from_str(ontology).unwrap();
+        let taxonomy: serde_json::Value = serde_json::from_str(taxonomy).unwrap();
+        assert_eq!(ontology["kind"], "zbot.ontology");
+        assert_eq!(ontology["ontologyId"], "zbot.base:v1");
+        assert_eq!(taxonomy["kind"], "zbot.skos_taxonomy");
+        assert_eq!(taxonomy["schemeId"], "zbot.general:v1");
     }
 }

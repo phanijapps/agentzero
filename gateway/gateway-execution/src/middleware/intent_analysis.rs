@@ -1,6 +1,7 @@
+use agent_primitives::event::AgentCapabilityAssignment;
 use agent_runtime::{ContextActorKind, LlmClient};
 use agent_tools::{GoalAccess, RecallAuthorizationContext};
-use gateway_services::{AgentService, SharedVaultPaths, SkillService, SkillSource};
+use gateway_services::{AgentService, McpService, SharedVaultPaths, SkillService, SkillSource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +18,10 @@ pub struct IntentAnalysis {
     pub hidden_intents: Vec<String>,
     pub recommended_skills: Vec<String>,
     pub recommended_agents: Vec<String>,
+    /// Capability recommendations grouped by the exact agent that may use
+    /// them. MCP IDs are validated again at execution time.
+    #[serde(default)]
+    pub recommended_capabilities: Vec<AgentCapabilityAssignment>,
     pub ward_recommendation: WardRecommendation,
     pub execution_strategy: ExecutionStrategy,
     /// Kept for backward compat with existing logs; no longer requested from LLM.
@@ -191,6 +196,7 @@ The runtime supplies the structured response schema. Return exactly one schema-c
 - Skills and agents are DIFFERENT. Skills = load_skill(). Agents = delegate_to_agent(). Never mix them.
 - recommended_skills: from the "Relevant Skills" list only.
 - recommended_agents: from the "Relevant Agents" list or "root" only. Never put skill names as agents.
+- recommended_capabilities: optional assignments of the form {agent_id, skills, mcps}. Use only IDs from the supplied Relevant MCP Servers list, and only for `root` or a Relevant Agent. Keep skills and mcps as [] when no capability is needed.
 - ward_name MUST be a reusable domain category, NEVER task-specific or ticker-specific.
   GOOD: "financial-analysis", "stock-analysis", "market-research", "personal-life", "homework"
   BAD: "amd-stock-analysis", "spy-options-trade", "math-homework-ch5"
@@ -209,6 +215,7 @@ Return one top-level object matching these field names. Do not wrap it in "inten
 - hidden_intents: array of actionable implicit requirements; use [] when none.
 - recommended_skills: array of skill names from Relevant Skills only; use [] when none.
 - recommended_agents: array of agent names from Relevant Agents or "root" only; use [] when none.
+- recommended_capabilities: array of {agent_id, skills, mcps}; use [] when none. MCPs must be canonical IDs from Relevant MCP Servers only.
 - ward_recommendation: object with action ("use_existing" or "create_new"), ward_name, subdirectory (string or null), structure (object; use {} when none), and reason.
 - execution_strategy: object with approach ("simple" or "graph"), graph (prefer null; planner builds executable graphs later), and explanation.
 "#;
@@ -272,6 +279,17 @@ pub fn format_intent_injection(
             }
         }
 
+        if let Some(root_assignment) = analysis
+            .recommended_capabilities
+            .iter()
+            .find(|assignment| assignment.agent_id == "root" && !assignment.mcps.is_empty())
+        {
+            out.push_str("\n**Selected MCP servers:**\n");
+            for mcp in &root_assignment.mcps {
+                out.push_str(&format!("- `{mcp}` is already mounted for this request.\n"));
+            }
+        }
+
         if !es.explanation.is_empty() {
             out.push_str(&format!("\n**Approach:** {}\n", es.explanation));
         }
@@ -299,12 +317,23 @@ pub fn format_intent_injection(
         for h in &analysis.hidden_intents {
             ward_task.push_str(&format!("\\n- also: {}", h));
         }
+        let assignment = analysis
+            .recommended_capabilities
+            .iter()
+            .find(|assignment| assignment.agent_id == format!("ward:{ward}"));
+        let capability_args = assignment.map_or_else(String::new, |assignment| {
+            format!(
+                ", skills={}, mcps={}",
+                serde_json::to_string(&assignment.skills).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&assignment.mcps).unwrap_or_else(|_| "[]".to_string()),
+            )
+        });
         out.push_str(&format!(
             "\n**Required action:** This task belongs to the existing `{ward}` ward.\n\
              1. Delegate the ENTIRE task to the ward-agent in ONE call and wait \
              for its result:\n\
              ```\n\
-             delegate_to_agent(agent_id=\"ward:{ward}\", task=\"{ward_task}\", wait_for_result=true)\n\
+             delegate_to_agent(agent_id=\"ward:{ward}\", task=\"{ward_task}\", wait_for_result=true{capability_args})\n\
              ```\n\
              The `ward:{ward}` agent plans and executes the whole task internally and returns \
              a finished result. Do NOT call `ward(action=\"use\")`. Do NOT delegate to \
@@ -364,58 +393,15 @@ pub fn format_intent_injection(
 
     // Execution approach
     if es.approach == ExecutionApproach::Graph {
-        // Build a rich delegation task so planner sees the original request,
-        // intent, ward context, hidden requirements, and available resources
-        // — not just the bare goal.
-        let mut planner_task = String::new();
-        planner_task.push_str("Plan this goal.\\n\\n");
-        if let Some(msg) = original_message {
-            planner_task.push_str(&format!("Original request: {}\\n", msg));
-        }
-        planner_task.push_str(&format!("Intent: {}\\n", analysis.primary_intent));
-        planner_task.push_str(&format!(
-            "Ward: {} ({}) — {}",
-            wr.ward_name, wr.action, wr.reason
-        ));
-        if let Some(ref sub) = wr.subdirectory {
-            planner_task.push_str(&format!("; subdirectory: {}", sub));
-        }
-        planner_task.push_str(".\\n");
-        if !analysis.hidden_intents.is_empty() {
-            planner_task.push_str("Hidden requirements:\\n");
-            for h in &analysis.hidden_intents {
-                planner_task.push_str(&format!("- {}\\n", h));
-            }
-        }
-        if !analysis.recommended_skills.is_empty() {
-            planner_task.push_str(&format!(
-                "Recommended skills: {}.\\n",
-                analysis.recommended_skills.join(", ")
-            ));
-        }
-        if !analysis.recommended_agents.is_empty() {
-            let specialists: Vec<String> = analysis
-                .recommended_agents
-                .iter()
-                .filter(|a| a.as_str() != "planner-agent")
-                .cloned()
-                .collect();
-            if !specialists.is_empty() {
-                planner_task.push_str(&format!(
-                    "Recommended specialist agents: {}.\\n",
-                    specialists.join(", ")
-                ));
-            }
-        }
+        let planner_task = format_planner_task(analysis, original_message);
 
         out.push_str(&format!(
             "\n**Approach:** Complex task requiring multi-step execution.\n\
-             \n**First step:** Delegate to `planner-agent` with the full intent context:\n\
-             ```\n\
-             delegate_to_agent(agent_id=\"planner-agent\", task=\"{}\")\n\
-             ```\n\
+             \n**First step:** Establish the required workspace. The system then starts `planner-agent` with the full intent context.\n\
+             Do NOT delegate to a worker, planner, or ward-agent manually and do NOT create a root checklist before that transition.\n\
              The planner will read the ward, check existing code and specs, and return a structured execution plan.\n\
-             Then execute each step from the plan by delegating to the assigned agent.\n",
+             Then read every step briefing and execute it by delegating to its assigned agent with `mode=\"step_executor\"`. Pass each briefing's exact `## Skills` and `## MCPs` canonical IDs as the `skills` and `mcps` arguments to `delegate_to_agent`; an explicit `none` means pass an empty list.\n\
+             \nPlanner context:\n{}\n",
             planner_task
         ));
     } else if !es.explanation.is_empty() {
@@ -437,6 +423,75 @@ pub fn format_intent_injection(
     out
 }
 
+/// Build the planner's stable task context from structured intent output.
+///
+/// The root prompt renders this for transparency while bootstrap stores the
+/// same content in the cold-graph planning gate. WardTool appends the actual
+/// active ward when it consumes that gate, so a provisional recommendation can
+/// never override the root's successful workspace choice.
+#[must_use]
+pub fn format_planner_task(analysis: &IntentAnalysis, original_message: Option<&str>) -> String {
+    let wr = &analysis.ward_recommendation;
+    let mut planner_task = String::from("Plan this goal.\\n\\n");
+    if let Some(msg) = original_message {
+        planner_task.push_str(&format!("Original request: {}\\n", msg));
+    }
+    planner_task.push_str(&format!("Intent: {}\\n", analysis.primary_intent));
+    planner_task.push_str(&format!(
+        "Ward recommendation: {} ({}) — {}",
+        wr.ward_name, wr.action, wr.reason
+    ));
+    if let Some(sub) = &wr.subdirectory {
+        planner_task.push_str(&format!("; subdirectory: {}", sub));
+    }
+    planner_task.push_str(".\\n");
+    if !analysis.hidden_intents.is_empty() {
+        planner_task.push_str("Hidden requirements:\\n");
+        for requirement in &analysis.hidden_intents {
+            planner_task.push_str(&format!("- {}\\n", requirement));
+        }
+    }
+    if !analysis.recommended_skills.is_empty() {
+        planner_task.push_str(&format!(
+            "Recommended skills: {}.\\n",
+            analysis.recommended_skills.join(", ")
+        ));
+    }
+    if !analysis.recommended_capabilities.is_empty() {
+        planner_task.push_str(
+            "Capability guidance from intent (planner may revise it). Use lookup_capabilities to search the complete catalog before assigning skills or MCPs:\n",
+        );
+        for assignment in &analysis.recommended_capabilities {
+            let skills = if assignment.skills.is_empty() {
+                "none".to_string()
+            } else {
+                assignment.skills.join(", ")
+            };
+            let mcps = if assignment.mcps.is_empty() {
+                "none".to_string()
+            } else {
+                assignment.mcps.join(", ")
+            };
+            planner_task.push_str(&format!(
+                "- {}: skills [{}]; MCPs [{}]\n",
+                assignment.agent_id, skills, mcps
+            ));
+        }
+    }
+    let specialists: Vec<&str> = analysis
+        .recommended_agents
+        .iter()
+        .filter_map(|agent| (agent.as_str() != "planner-agent").then_some(agent.as_str()))
+        .collect();
+    if !specialists.is_empty() {
+        planner_task.push_str(&format!(
+            "Recommended specialist agents: {}.\\n",
+            specialists.join(", ")
+        ));
+    }
+    planner_task
+}
+
 // ---------------------------------------------------------------------------
 // format_user_template
 // ---------------------------------------------------------------------------
@@ -445,6 +500,7 @@ pub fn format_user_template(
     message: &str,
     skills: &[Value],
     agents: &[Value],
+    mcps: &[Value],
     wards: &[String],
 ) -> String {
     let skills_list = if skills.is_empty() {
@@ -475,6 +531,20 @@ pub fn format_user_template(
             .join("\n")
     };
 
+    let mcps_list = if mcps.is_empty() {
+        "(none available)".to_string()
+    } else {
+        mcps.iter()
+            .filter_map(|mcp| {
+                let id = mcp.get("id")?.as_str()?;
+                let name = mcp.get("name")?.as_str()?;
+                let desc = mcp.get("description")?.as_str()?;
+                Some(format!("- {} ({}): {}", id, name, desc))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
     let wards_list = if wards.is_empty() {
         "(none — all new)".to_string()
     } else {
@@ -486,8 +556,8 @@ pub fn format_user_template(
     };
 
     format!(
-        "### User Request\n{}\n\n### Available Skills\n{}\n\n### Available Agents\n{}\n\n### Existing Wards\n{}",
-        message, skills_list, agents_list, wards_list
+        "### User Request\n{}\n\n### Available Skills\n{}\n\n### Available Agents\n{}\n\n### Relevant MCP Servers\n{}\n\n### Existing Wards\n{}",
+        message, skills_list, agents_list, mcps_list, wards_list
     )
 }
 
@@ -536,6 +606,7 @@ fn simple_analysis(message: &str) -> IntentAnalysis {
         hidden_intents: vec![],
         recommended_skills: vec![],
         recommended_agents: vec![],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
             action: WardAction::UseExisting,
             ward_name: "general".to_string(),
@@ -648,6 +719,37 @@ pub async fn analyze_intent(
     _procedure_recommendation_cfg: Option<&gateway_memory::ProcedureRecommendationConfig>,
     existing_wards: &[String],
 ) -> Result<IntentAnalysis, String> {
+    analyze_intent_with_capabilities(
+        llm_client,
+        user_message,
+        fact_store,
+        memory_recall,
+        goal_access,
+        recall_authorization,
+        system_prompt,
+        _tool_inventory,
+        _procedure_recommendation_cfg,
+        existing_wards,
+        &[],
+    )
+    .await
+}
+
+/// Analyze intent with a bounded, sanitized MCP candidate list.
+#[allow(clippy::too_many_arguments)]
+pub async fn analyze_intent_with_capabilities(
+    llm_client: std::sync::Arc<dyn LlmClient>,
+    user_message: &str,
+    fact_store: &dyn MemoryFactStore,
+    memory_recall: Option<&std::sync::Arc<crate::recall::MemoryRecall>>,
+    goal_access: Option<std::sync::Arc<dyn GoalAccess>>,
+    recall_authorization: Option<RecallAuthorizationContext>,
+    system_prompt: &str,
+    _tool_inventory: &[String],
+    _procedure_recommendation_cfg: Option<&gateway_memory::ProcedureRecommendationConfig>,
+    existing_wards: &[String],
+    available_mcps: &[Value],
+) -> Result<IntentAnalysis, String> {
     // Fast path: skip LLM for trivial messages
     if is_simple_message(user_message) {
         tracing::info!(
@@ -739,6 +841,7 @@ pub async fn analyze_intent(
         skills_matched = results.skills.len(),
         agents_matched = results.agents.len(),
         wards_matched = results.wards.len(),
+        mcps_matched = results.mcps.len(),
         "Semantic search complete"
     );
 
@@ -747,10 +850,39 @@ pub async fn analyze_intent(
     // not from `results.wards`, which relies on a `category:"ward"` fact recall
     // that returns nothing. Showing the real ward list is what stops the
     // classifier inventing near-duplicate ward names (P5 anti-fragmentation).
+    // MCP facts are indexed and semantically retrieved like skills. Intersect
+    // them with the just-read runtime-safe catalog so stale facts can never
+    // surface a deleted, disabled, or OAuth-unavailable server. If retrieval
+    // is unavailable, retain a small safe fallback list rather than sending
+    // the full runtime catalog to the intent model.
+    let available_mcp_ids = available_mcps
+        .iter()
+        .filter_map(|mcp| mcp.get("id").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    let relevant_mcps = results
+        .mcps
+        .iter()
+        .filter(|mcp| {
+            mcp.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| available_mcp_ids.contains(id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mcp_prompt_candidates = if relevant_mcps.is_empty() {
+        available_mcps
+            .iter()
+            .take(MAX_MCPS)
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        relevant_mcps
+    };
     let user_template = format_user_template(
         user_message,
         &results.skills,
         &results.agents,
+        &mcp_prompt_candidates,
         existing_wards,
     );
 
@@ -765,6 +897,7 @@ pub async fn analyze_intent(
         skills = results.skills.len(),
         agents = results.agents.len(),
         wards = results.wards.len(),
+        mcps = mcp_prompt_candidates.len(),
         "LLM call — sending relevant resources"
     );
 
@@ -984,12 +1117,17 @@ pub async fn index_resources(
     fact_store: &dyn MemoryFactStore,
     skill_service: &SkillService,
     agent_service: &AgentService,
+    mcp_service: &McpService,
     vault_paths: &SharedVaultPaths,
 ) {
     // 1. Skills — incremental, per-row diff.
     reindex_skills(fact_store, skill_service).await;
 
-    // 2. Agents + wards — count-based.
+    // 2. MCPs — always refresh the small, mutable safe catalog. The agent/
+    // ward marker below must not suppress a newly configured MCP.
+    index_mcps(fact_store, mcp_service).await;
+
+    // 3. Agents + wards — count-based.
     let aw_count = count_agent_and_ward_resources(agent_service, vault_paths).await;
     let temp_dir = vault_paths.vault_dir().join("temp");
     let index_marker = temp_dir.join(".aw_index_count");
@@ -1078,11 +1216,57 @@ pub async fn index_resources(
     let _ = std::fs::write(&index_marker, aw_count.to_string());
 }
 
+/// Index the safe MCP metadata used by semantic intent retrieval.
+async fn index_mcps(fact_store: &dyn MemoryFactStore, mcp_service: &McpService) {
+    // Runtime service filtering prevents disabled/OAuth-blocked entries from
+    // entering semantic recall. Only ID, name, and description are stored—
+    // never commands, URLs, headers, or credentials.
+    match mcp_service.list_summaries() {
+        Ok(summaries) => {
+            let summaries = summaries
+                .into_iter()
+                .filter(|summary| {
+                    summary.enabled
+                        && matches!(
+                            summary.auth_status.as_deref(),
+                            None | Some("not_configured") | Some("connected")
+                        )
+                })
+                .collect::<Vec<_>>();
+            tracing::info!(count = summaries.len(), "Indexing MCPs into memory");
+            for summary in summaries {
+                let key = format!("mcp:{}", summary.id);
+                let description = summary
+                    .description
+                    .chars()
+                    .take(MAX_MCP_DESCRIPTION_CHARS)
+                    .map(|character| {
+                        if character.is_control() {
+                            ' '
+                        } else {
+                            character
+                        }
+                    })
+                    .collect::<String>();
+                let content = format!("{} | {} | {}", summary.id, summary.name, description);
+                if let Err(e) = fact_store
+                    .save_fact("root", "mcp", &key, &content, 1.0, None, None)
+                    .await
+                {
+                    tracing::debug!("Failed to index MCP {}: {}", summary.id, e);
+                }
+            }
+        }
+        Err(e) => tracing::warn!("Failed to list MCPs for indexing: {}", e),
+    }
+}
+
 /// Semantic search result grouped by resource type.
 struct SearchResults {
     skills: Vec<Value>,
     agents: Vec<Value>,
     wards: Vec<String>,
+    mcps: Vec<Value>,
 }
 
 /// Minimum relevance score to include a result (filters noise).
@@ -1099,12 +1283,16 @@ const MAX_SKILLS: usize = 8;
 const MAX_AGENTS: usize = 5;
 /// Maximum wards to send to the LLM.
 const MAX_WARDS: usize = 5;
+/// Maximum semantically relevant MCPs to show to the intent model.
+const MAX_MCPS: usize = 8;
+const MAX_MCP_DESCRIPTION_CHARS: usize = 512;
 
 /// Search memory_facts for resources semantically relevant to the user message.
 async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) -> SearchResults {
     let mut skills = Vec::new();
     let mut agents = Vec::new();
     let mut wards = Vec::new();
+    let mut mcps = Vec::new();
 
     // Recall with generous fetch limit, then filter by score and cap per category
     match fact_store.recall_facts("root", user_message, 50).await {
@@ -1142,6 +1330,17 @@ async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) 
                         "ward" if wards.len() < MAX_WARDS => {
                             wards.push(content.to_string());
                         }
+                        "mcp" if mcps.len() < MAX_MCPS => {
+                            let id = key.strip_prefix("mcp:").unwrap_or(key);
+                            let parts: Vec<&str> = content.splitn(3, " | ").collect();
+                            let name = parts.get(1).copied().unwrap_or(id);
+                            let desc = parts.get(2).copied().unwrap_or("");
+                            mcps.push(serde_json::json!({
+                                "id": id,
+                                "name": name,
+                                "description": desc,
+                            }));
+                        }
                         _ => {}
                     }
                 }
@@ -1154,6 +1353,7 @@ async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) 
         skills_above_threshold = skills.len(),
         agents_above_threshold = agents.len(),
         wards_above_threshold = wards.len(),
+        mcps_above_threshold = mcps.len(),
         min_score = MIN_RELEVANCE_SCORE,
         "Filtered by relevance score"
     );
@@ -1162,6 +1362,7 @@ async fn search_resources(fact_store: &dyn MemoryFactStore, user_message: &str) 
         skills,
         agents,
         wards,
+        mcps,
     }
 }
 
@@ -1349,13 +1550,15 @@ mod tests {
             json!({"name": "testing", "description": "Runs unit tests"}),
         ];
         let agents = vec![json!({"name": "coder", "description": "Writes production code"})];
+        let mcps = vec![json!({"id": "web", "name": "Web", "description": "Searches the web"})];
 
-        let result = format_user_template("Build a REST API", &skills, &agents, &[]);
+        let result = format_user_template("Build a REST API", &skills, &agents, &mcps, &[]);
 
         assert!(result.contains("### User Request\nBuild a REST API"));
         assert!(result.contains("- code-gen: Generates code from specs"));
         assert!(result.contains("- testing: Runs unit tests"));
         assert!(result.contains("- coder: Writes production code"));
+        assert!(result.contains("- web (Web): Searches the web"));
         assert!(result.contains("### Existing Wards\n(none — all new)"));
     }
 
@@ -1380,11 +1583,12 @@ mod tests {
 
     #[test]
     fn test_format_user_template_empty_resources() {
-        let result = format_user_template("Hello", &[], &[], &[]);
+        let result = format_user_template("Hello", &[], &[], &[], &[]);
 
         assert!(result.contains("### User Request\nHello"));
         assert!(result.contains("### Available Skills\n(none available)"));
         assert!(result.contains("### Available Agents\n(none available)"));
+        assert!(result.contains("### Relevant MCP Servers\n(none available)"));
         assert!(result.contains("### Existing Wards\n(none — all new)"));
     }
 
@@ -1507,6 +1711,55 @@ mod tests {
         ) -> Result<Value, String> {
             Ok(serde_json::json!({"results": [], "count": 0}))
         }
+    }
+
+    struct RecallFactStore {
+        results: Value,
+    }
+
+    #[async_trait]
+    impl MemoryFactStore for RecallFactStore {
+        async fn save_fact(
+            &self,
+            _agent_id: &str,
+            _category: &str,
+            _key: &str,
+            _content: &str,
+            _confidence: f64,
+            _session_id: Option<&str>,
+            _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<Value, String> {
+            Ok(serde_json::json!({"status": "ok"}))
+        }
+
+        async fn recall_facts(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Value, String> {
+            Ok(self.results.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn semantic_search_returns_mcp_candidates_by_canonical_id() {
+        let store = RecallFactStore {
+            results: serde_json::json!({
+                "results": [{
+                    "category": "mcp",
+                    "key": "mcp:blender",
+                    "content": "blender | Blender | Create 3D scenes",
+                    "score": 0.2,
+                }],
+            }),
+        };
+
+        let result = search_resources(&store, "Create a 3D scene").await;
+        assert_eq!(result.mcps.len(), 1);
+        assert_eq!(result.mcps[0]["id"], "blender");
+        assert_eq!(result.mcps[0]["name"], "Blender");
+        assert_eq!(result.mcps[0]["description"], "Create 3D scenes");
     }
 
     // -----------------------------------------------------------------
@@ -2142,6 +2395,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "x".to_string(),
@@ -2193,6 +2447,11 @@ mod tests {
             hidden_intents: vec!["Save results to output/".to_string()],
             recommended_skills: vec!["coding".to_string(), "web-search".to_string()],
             recommended_agents: vec!["code-agent".to_string()],
+            recommended_capabilities: vec![AgentCapabilityAssignment {
+                agent_id: "code-agent".to_string(),
+                skills: vec!["coding".to_string()],
+                mcps: vec!["blender".to_string()],
+            }],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "financial-analysis".to_string(),
@@ -2215,6 +2474,10 @@ mod tests {
         assert!(injection.contains("stocks/spy"));
         assert!(injection.contains("coding"));
         assert!(injection.contains("code-agent"));
+        assert!(injection.contains("Capability guidance from intent"));
+        assert!(injection.contains("lookup_capabilities"));
+        assert!(injection.contains("mode=\"step_executor\""));
+        assert!(injection.contains("exact `## Skills` and `## MCPs` canonical IDs"));
         assert!(injection.contains("Ward Rule:"));
     }
 
@@ -2225,6 +2488,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "test-ward".to_string(),
@@ -2253,6 +2517,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "unassigned".to_string(),
@@ -2281,6 +2546,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "hiring-analysis".to_string(),
@@ -2318,6 +2584,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "test-ward".to_string(),
@@ -2383,6 +2650,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "test-ward".to_string(),
@@ -2414,6 +2682,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "financial-analysis".to_string(),
@@ -2449,6 +2718,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::UseExisting,
                 ward_name: "travel-planning".to_string(),
@@ -2481,6 +2751,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::UseExisting,
                 ward_name: "travel-planning".to_string(),
@@ -2510,6 +2781,7 @@ mod tests {
             hidden_intents: vec!["save the report".to_string()],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::UseExisting,
                 ward_name: "financial-analysis".to_string(),
@@ -2548,6 +2820,7 @@ mod tests {
             hidden_intents: vec![],
             recommended_skills: vec![],
             recommended_agents: vec![],
+            recommended_capabilities: vec![],
             ward_recommendation: WardRecommendation {
                 action: WardAction::UseExisting,
                 ward_name: "x".to_string(),

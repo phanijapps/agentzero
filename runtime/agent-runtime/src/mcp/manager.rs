@@ -19,9 +19,14 @@ use super::sse::SseMcpClient;
 use super::stdio::StdioMcpClient;
 use super::tool::McpTool;
 
+/// Host-owned observer for a safe, canonical MCP startup/discovery failure.
+/// The runtime never passes error text across this boundary.
+pub type McpStartupFailureObserver = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Manager for MCP server connections
 pub struct McpManager {
     servers: RwLock<HashMap<String, Arc<dyn McpClient>>>,
+    startup_failure_observer: Option<McpStartupFailureObserver>,
 }
 
 impl McpManager {
@@ -30,7 +35,15 @@ impl McpManager {
     pub fn new() -> Self {
         Self {
             servers: RwLock::new(HashMap::new()),
+            startup_failure_observer: None,
         }
+    }
+
+    /// Register a host-side audit observer for nonfatal startup failures.
+    #[must_use]
+    pub fn with_startup_failure_observer(mut self, observer: McpStartupFailureObserver) -> Self {
+        self.startup_failure_observer = Some(observer);
+        self
     }
 
     /// Load MCP servers from configuration
@@ -126,6 +139,26 @@ impl McpManager {
     /// Get an MCP client by ID
     pub async fn get_client(&self, id: &str) -> Option<Arc<dyn McpClient>> {
         self.servers.read().await.get(id).cloned()
+    }
+
+    /// Remove a server after a failed discovery handshake and notify the host
+    /// using only its canonical configured ID. Removing it prevents retries on
+    /// later turns in the same executor.
+    pub async fn mark_startup_failed(&self, id: &str) {
+        self.servers.write().await.remove(id);
+        self.notify_startup_failure(id);
+    }
+
+    /// Report a startup failure that occurred before a client was inserted.
+    pub fn notify_startup_failure(&self, id: &str) {
+        if let Some(observer) = &self.startup_failure_observer {
+            observer(id);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_test_client(&self, id: &str, client: Arc<dyn McpClient>) {
+        self.servers.write().await.insert(id.to_string(), client);
     }
 
     /// Execute a tool on an MCP server

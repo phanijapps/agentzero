@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (nothing yet)
+- First-time commissioning now offers an explicit recommended Full Zbot memory
+  profile with built-in embeddings, pinned recall/governance configuration, and
+  a restart-verified activation screen. The safe baseline remains available
+  and preserves existing memory configuration.
 
 ### Changed
 
@@ -39,4 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- (nothing yet)
+- Commissioning completion now rejects non-local originless peers before body
+  parsing and provisions fixed memory-profile files without following symlinks
+  or overwriting conflicting content.

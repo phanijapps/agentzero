@@ -74,12 +74,18 @@ pub async fn get_stats(
         .unwrap_or(false);
     let top_n = query.top_n.unwrap_or(DEFAULT_TOP_N).min(MAX_TOP_N);
 
-    let summary = match state.kg_store.as_ref() {
-        Some(store) => store
-            .hierarchy_summary(DEFAULT_AGENT_ID, top_n)
-            .await
-            .unwrap_or_else(|_| HierarchySummary::default()),
-        None => HierarchySummary::default(),
+    // Hierarchy is opt-in. Avoid opening the graph store at all when disabled:
+    // on a large graph even a summary must not become an accidental page-load cost.
+    let summary = if enabled {
+        match state.kg_store.as_ref() {
+            Some(store) => store
+                .hierarchy_summary(DEFAULT_AGENT_ID, top_n)
+                .await
+                .unwrap_or_else(|_| HierarchySummary::default()),
+            None => HierarchySummary::default(),
+        }
+    } else {
+        HierarchySummary::default()
     };
 
     Json(HierarchyStatsResponse {

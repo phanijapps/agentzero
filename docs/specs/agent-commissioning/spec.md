@@ -6,6 +6,7 @@
 - **Constrained by:** [`RFC-0011`](../../rfc/0011-engram-memory-engine-cutover.md); [`RFC-0012`](../../rfc/0012-engram-upstream-risk-reduction.md)
 - **Brief:** none
 - **Contract:** [`contracts/openapi/commissioning.yaml`](../../../contracts/openapi/commissioning.yaml)
+- **Extended by:** [`commissioning-memory-profile`](../commissioning-memory-profile/spec.md)
 - **Shape:** mixed
 
 > **Spec contract:** this document defines what "done" means. The implementing
@@ -21,8 +22,10 @@ not present a boundaries questionnaire: it uses safe defaults and plainly
 warns that the agent is autonomous, guarded, and not sandboxed for execution.
 The gateway owns durable readiness state and configuration; the browser does
 not decide completion. Commissioning persists a portable semantic profile
-containing the base taxonomy/ontology pack IDs and selected domain packs, but
-does not import, start, or call Engram. Existing configured installations keep
+containing the base taxonomy/ontology pack IDs and selected domain packs. A
+later version may materialize local governance definition files while the
+reported `deferred` state continues to mean that Engram import/bootstrap has
+not run; commissioning does not import, start, or call Engram. Existing configured installations keep
 working without being forced through the new flow; incomplete legacy installs
 receive a focused recovery flow. The old setup UI and setup-only endpoints are
 deleted at cutover.
@@ -61,8 +64,9 @@ deleted at cutover.
   or changing the existing provider API's credential representation.
 - Installing, starting, or downloading local model software without an
   explicit action in the UI.
-- Making semantic workspace provisioning a commissioning completion gate once
-  Engram integration is available.
+- Making Engram import/bootstrap a commissioning completion gate once Engram
+  integration is available. Local definition-file materialization alone does
+  not change the semantic profile's `deferred` state.
 - Expanding commissioning to import MCP servers, connectors, or skills by
   default.
 

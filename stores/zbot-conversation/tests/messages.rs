@@ -120,13 +120,8 @@ fn concurrent_appends_yield_distinct_ordered_seqs() {
         handles.push(std::thread::spawn(move || {
             for i in 0..100 {
                 let id = format!("msg-{}-{}", t, i);
-                let offset = t * 1000; // unique PKs across threads
                 store
                     .append(&msg(&id, &session, "user", "x", None))
-                    .map_err(|e| {
-                        let _ = offset; // silence unused
-                        e
-                    })
                     .unwrap();
             }
         }));

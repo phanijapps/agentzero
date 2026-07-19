@@ -40,7 +40,7 @@ function makeProvider(): ProviderResponse {
     id: "openai-1",
     name: "OpenAI",
     description: "OpenAI API",
-    apiKey: "sk-test-1234",
+    hasApiKey: true,
     baseUrl: "https://api.openai.com/v1",
     models: ["gpt-4o", "gpt-4o-mini"],
     defaultModel: "gpt-4o",

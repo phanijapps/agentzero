@@ -35,6 +35,7 @@ use agent_tools::{
     WardTool,
     WriteFileTool,
 };
+use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
 use gateway_services::agents::Agent;
 use gateway_services::models::{ModelRegistry, DEFAULT_MAX_INPUT_TOKENS};
@@ -796,6 +797,7 @@ pub struct ExecutorBuilder {
     /// Trait-routed procedure store for the `run_procedure` tool.
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     memory_recall: Option<Arc<gateway_memory::MemoryRecall>>,
+    mcp_startup_failure_observer: Option<agent_runtime::mcp::McpStartupFailureObserver>,
     extra_initial_state: Option<Vec<(String, serde_json::Value)>>,
     chat_mode: bool,
 }
@@ -822,6 +824,7 @@ impl ExecutorBuilder {
             messages: None,
             procedure_store: None,
             memory_recall: None,
+            mcp_startup_failure_observer: None,
             extra_initial_state: None,
             chat_mode: false,
         }
@@ -846,6 +849,16 @@ impl ExecutorBuilder {
     /// is available in the gateway composition root.
     pub fn with_memory_recall(mut self, memory_recall: Arc<gateway_memory::MemoryRecall>) -> Self {
         self.memory_recall = Some(memory_recall);
+        self
+    }
+
+    /// Persist a safe host-side event if MCP startup or discovery fails. The
+    /// observer receives only a canonical configured ID, never client errors.
+    pub fn with_mcp_startup_failure_observer(
+        mut self,
+        observer: agent_runtime::mcp::McpStartupFailureObserver,
+    ) -> Self {
+        self.mcp_startup_failure_observer = Some(observer);
         self
     }
 
@@ -965,6 +978,14 @@ impl ExecutorBuilder {
             .get_or_insert_with(Vec::new)
             .push((key.to_string(), value));
         self
+    }
+
+    fn has_planner_capability_catalog(&self) -> bool {
+        self.extra_initial_state.as_ref().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|(key, _)| key == agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE)
+        })
     }
 
     /// Build a descriptive context capability catalog from the same registry
@@ -1444,6 +1465,9 @@ impl ExecutorBuilder {
             &[ToolCapability::AgentDelegate],
             Arc::new(DelegateTool::new()),
         );
+        if self.has_planner_capability_catalog() {
+            tool_registry.register(Arc::new(agent_runtime::tools::CapabilityCatalogTool::new()));
+        }
         register_if_allowed(
             &mut tool_registry,
             actor,
@@ -1567,7 +1591,11 @@ impl ExecutorBuilder {
 
     /// Build the MCP manager and start configured servers.
     async fn build_mcp_manager(&self, agent: &Agent, mcp_service: &McpService) -> Arc<McpManager> {
-        let mcp_manager = Arc::new(McpManager::new());
+        let mut mcp_manager = McpManager::new();
+        if let Some(observer) = self.mcp_startup_failure_observer.clone() {
+            mcp_manager = mcp_manager.with_startup_failure_observer(observer);
+        }
+        let mcp_manager = Arc::new(mcp_manager);
 
         // Load and start MCP servers configured for this agent
         if !agent.mcps.is_empty() {
@@ -1575,14 +1603,55 @@ impl ExecutorBuilder {
             for mcp_config in mcp_configs {
                 let server_id = mcp_config.id();
                 tracing::info!("Starting MCP server: {}", server_id);
-                if let Err(e) = mcp_manager.start_server(mcp_config).await {
-                    tracing::warn!("Failed to start MCP server {}: {}", server_id, e);
+                if mcp_manager.start_server(mcp_config).await.is_err() {
+                    // Fail closed for this executor: no tool registration and
+                    // no retry. Keep provider/error details out of logs.
+                    tracing::warn!(
+                        mcp_id = %server_id,
+                        rejection_code = "startup_failed",
+                        "MCP server startup failed; continuing without its tools"
+                    );
+                    mcp_manager.notify_startup_failure(&server_id);
                 }
             }
         }
 
         mcp_manager
     }
+}
+
+/// Build a host-side audit observer for MCP startup/discovery failures. The
+/// runtime boundary supplies a canonical ID only, so config errors, commands,
+/// URLs, and server stderr cannot enter execution logs.
+pub(crate) fn mcp_startup_failure_observer(
+    log_service: Arc<LogService<DatabaseManager>>,
+    execution_id: impl Into<String>,
+    session_id: impl Into<String>,
+    agent_id: impl Into<String>,
+) -> agent_runtime::mcp::McpStartupFailureObserver {
+    let execution_id = execution_id.into();
+    let session_id = session_id.into();
+    let agent_id = agent_id.into();
+    Arc::new(move |mcp_id| {
+        let entry = ExecutionLog::new(
+            &execution_id,
+            &session_id,
+            &agent_id,
+            LogLevel::Info,
+            LogCategory::Intent,
+            "MCP capability startup failed",
+        )
+        .with_metadata(serde_json::json!({
+            "origin": "mcp_startup",
+            "effective_mcps": [],
+            "startup_failed_mcps": [mcp_id],
+            "unresolved_count": 1,
+            "rejection_codes": ["startup_failed"],
+        }));
+        if log_service.log(entry).is_err() {
+            tracing::debug!(mcp_id, "Failed to persist MCP startup audit event");
+        }
+    })
 }
 
 /// Helper to collect available agents summary for executor state.
@@ -2744,5 +2813,54 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, "app:delegation_mode");
         assert_eq!(entries[0].1, "direct_artifact");
+    }
+
+    #[test]
+    fn planner_capability_lookup_requires_host_catalog_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let ordinary = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build_tool_registry(fs_context.clone())
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !ordinary.contains("lookup_capabilities"),
+            "ordinary workers must not receive planner lookup"
+        );
+
+        let root_handoff = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::Root)
+            .with_initial_state(
+                agent_runtime::tools::PLANNING_CAPABILITY_CATALOG_STATE,
+                serde_json::json!({"skills": [], "mcps": []}),
+            )
+            .build_tool_registry(fs_context.clone())
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !root_handoff.contains("lookup_capabilities"),
+            "root may carry a host handoff but must not receive planner lookup"
+        );
+
+        let planner = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .with_initial_state(
+                agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE,
+                serde_json::json!({"skills": [], "mcps": []}),
+            )
+            .build_tool_registry(fs_context)
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planner.contains("lookup_capabilities"),
+            "a host-attached planner catalog enables lookup"
+        );
     }
 }

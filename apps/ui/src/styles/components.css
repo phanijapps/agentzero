@@ -4921,6 +4921,15 @@
 .commissioning-choice { display: grid; gap: var(--spacing-2); min-height: 126px; padding: var(--spacing-5); border-radius: var(--radius-lg); text-align: left; }
 .commissioning-choice svg { color: var(--primary); }
 .commissioning-choice span { color: var(--muted-foreground); font-size: var(--text-sm); }
+.commissioning-recommended { display: inline-flex; margin-left: var(--spacing-2); padding: 2px var(--spacing-2); border-radius: var(--radius-full); background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary) !important; font-size: var(--text-xs) !important; font-weight: 700; }
+.commissioning-memory-disclosure { padding: var(--spacing-4); border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
+.commissioning-memory-disclosure strong { color: var(--foreground); }
+.commissioning-memory-disclosure p { margin: var(--spacing-2) 0 0; color: var(--muted-foreground); font-size: var(--text-sm); line-height: 1.55; }
+.commissioning-shell--activation { grid-template-columns: minmax(0, 720px); justify-content: center; }
+.commissioning-activation { align-self: center; padding: var(--spacing-8); border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); }
+.commissioning-activation h1 { margin: var(--spacing-2) 0 var(--spacing-4); font-family: var(--font-display); }
+.commissioning-activation > p:not(.commissioning-main__eyebrow, .commissioning-error) { color: var(--muted-foreground); line-height: 1.6; }
+.commissioning-activation .btn { margin-top: var(--spacing-4); }
 
 .commissioning-provider-form { display: grid; gap: var(--spacing-4); }
 .commissioning-provider-form__hint { margin: 0; color: var(--muted-foreground); font-size: var(--text-xs); }

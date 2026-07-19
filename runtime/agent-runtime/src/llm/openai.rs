@@ -26,6 +26,22 @@ pub struct OpenAiClient {
     http_client: reqwest::Client,
 }
 
+async fn bounded_error_text(mut response: reqwest::Response) -> String {
+    const LIMIT: usize = 64 * 1024;
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let remaining = LIMIT.saturating_sub(body.len());
+        if remaining == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if chunk.len() > remaining {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
 /// Extract the provider-reported cached prompt-token count from a `usage`
 /// object, if any. Handles the two shapes we see in production:
 ///
@@ -137,12 +153,22 @@ impl OpenAiClient {
     /// Create a new OpenAI-compatible client
     pub fn new(config: LlmConfig) -> Result<Self, LlmError> {
         tracing::debug!("Creating OpenAI client for model: {}", config.model);
-        let http_client = reqwest::Client::builder()
+        if config.provider_id == "provider-ollama-cloud"
+            && config.base_url != "https://ollama.com/v1"
+        {
+            return Err(LlmError::ApiError(
+                "Ollama Cloud endpoint must be https://ollama.com/v1".to_string(),
+            ));
+        }
+        let mut client_builder = reqwest::Client::builder()
             .tcp_nodelay(true)
             .pool_max_idle_per_host(4)
             .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .timeout(std::time::Duration::from_secs(600))
-            .build()?;
+            .timeout(std::time::Duration::from_secs(600));
+        if config.provider_id == "provider-ollama-cloud" {
+            client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
+        }
+        let http_client = client_builder.build()?;
         Ok(Self {
             config: Arc::new(config),
             http_client,
@@ -330,7 +356,12 @@ impl OpenAiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
+            let error_text = bounded_error_text(response).await;
+            let error_text = if self.config.api_key.is_empty() {
+                error_text
+            } else {
+                error_text.replace(&self.config.api_key, "[redacted]")
+            };
             tracing::error!("API error ({}): {}", status, error_text);
             return Err(LlmError::ApiError(format!("({status}): {error_text}")));
         }
@@ -502,7 +533,12 @@ impl LlmClient for OpenAiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
+            let error_text = bounded_error_text(response).await;
+            let error_text = if self.config.api_key.is_empty() {
+                error_text
+            } else {
+                error_text.replace(&self.config.api_key, "[redacted]")
+            };
             tracing::error!("API error ({}): {}", status, error_text);
             return Err(LlmError::ApiError(format!("({status}): {error_text}")));
         }

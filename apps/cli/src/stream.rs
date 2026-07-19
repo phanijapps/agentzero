@@ -92,17 +92,18 @@ pub async fn run_turn(
                 let _ = io::stderr().write_all(line.as_bytes());
                 at_line_start = true;
             }
-            ServerMessage::ToolResult { error, .. } => {
-                if let Some(err) = error {
-                    let line = format!(
-                        "{}{}{}\n",
-                        indent,
-                        style::tool_marker(&format!("✗ {err}"), cfg.color, Style::Error),
-                        "",
-                    );
-                    let _ = io::stderr().write_all(line.as_bytes());
-                }
+            ServerMessage::ToolResult {
+                error: Some(err), ..
+            } => {
+                let line = format!(
+                    "{}{}{}\n",
+                    indent,
+                    style::tool_marker(&format!("✗ {err}"), cfg.color, Style::Error),
+                    "",
+                );
+                let _ = io::stderr().write_all(line.as_bytes());
             }
+            ServerMessage::ToolResult { error: None, .. } => {}
             ServerMessage::TokenUsage {
                 tokens_in,
                 tokens_out,

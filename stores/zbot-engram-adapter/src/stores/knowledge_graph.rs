@@ -844,6 +844,8 @@ impl KnowledgeGraphSidecar {
                     ON kg_entities(agent_id, entity_type, name);
                 CREATE INDEX IF NOT EXISTS idx_kg_entities_layer
                     ON kg_entities(agent_id, layer);
+                CREATE INDEX IF NOT EXISTS idx_kg_entities_active_layer
+                    ON kg_entities(agent_id, pruned, layer);
                 CREATE INDEX IF NOT EXISTS idx_kg_entities_mentions
                     ON kg_entities(pruned, mention_count DESC, name);
                 CREATE INDEX IF NOT EXISTS idx_kg_entities_type_mentions
@@ -881,6 +883,8 @@ impl KnowledgeGraphSidecar {
                     ON kg_relationships(target_entity_id);
                 CREATE INDEX IF NOT EXISTS idx_kg_relationships_mentions
                     ON kg_relationships(archived, mention_count DESC, id);
+                CREATE INDEX IF NOT EXISTS idx_kg_relationships_active_inter_cluster
+                    ON kg_relationships(agent_id, archived, is_inter_cluster);
                 CREATE INDEX IF NOT EXISTS idx_kg_relationships_type_mentions
                     ON kg_relationships(relationship_type, archived, mention_count DESC, id);
                 CREATE TABLE IF NOT EXISTS kg_governance_findings (
@@ -1633,27 +1637,39 @@ impl KnowledgeGraphSidecar {
     }
 
     fn count_entities(&self, agent_id: Option<&str>) -> StoreResult<usize> {
-        Ok(self
-            .load_all_entities()?
-            .into_iter()
-            .filter(|entry| {
-                agent_id
-                    .map(|agent_id| entry.entity.agent_id == agent_id)
-                    .unwrap_or(true)
-            })
-            .count())
+        let connection = self.lock()?;
+        let count = match agent_id {
+            Some(agent_id) => connection.query_row(
+                "SELECT COUNT(*) FROM kg_entities WHERE pruned = 0 AND agent_id = ?1",
+                params![agent_id],
+                |row| row.get::<_, i64>(0),
+            ),
+            None => connection.query_row(
+                "SELECT COUNT(*) FROM kg_entities WHERE pruned = 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            ),
+        }
+        .map_err(to_backend)?;
+        Ok(count.max(0) as usize)
     }
 
     fn count_relationships(&self, agent_id: Option<&str>) -> StoreResult<usize> {
-        Ok(self
-            .load_all_relationships()?
-            .into_iter()
-            .filter(|entry| {
-                agent_id
-                    .map(|agent_id| entry.relationship.agent_id == agent_id)
-                    .unwrap_or(true)
-            })
-            .count())
+        let connection = self.lock()?;
+        let count = match agent_id {
+            Some(agent_id) => connection.query_row(
+                "SELECT COUNT(*) FROM kg_relationships WHERE archived = 0 AND agent_id = ?1",
+                params![agent_id],
+                |row| row.get::<_, i64>(0),
+            ),
+            None => connection.query_row(
+                "SELECT COUNT(*) FROM kg_relationships WHERE archived = 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            ),
+        }
+        .map_err(to_backend)?;
+        Ok(count.max(0) as usize)
     }
 
     fn count_aliases(&self) -> StoreResult<usize> {
@@ -2031,45 +2047,80 @@ impl KnowledgeGraphSidecar {
     }
 
     fn hierarchy_summary(&self, agent_id: &str, top_n: usize) -> StoreResult<HierarchySummary> {
-        let entities = self.list_entity_entries(Some(agent_id), None, usize::MAX, 0)?;
-        let mut layer_counts: HashMap<i64, usize> = HashMap::new();
-        let mut aggregates = Vec::new();
-        for entry in entities {
-            let layer = property_i64(&entry.entity, "layer").unwrap_or(0);
-            *layer_counts.entry(layer).or_insert(0) += 1;
-            let member_count = property_i64(&entry.entity, "member_count").unwrap_or(0);
-            if member_count > 0 {
-                aggregates.push(zbot_stores::AggregateSummary {
-                    description: property_string(&entry.entity, "description").unwrap_or_default(),
-                    id: entry.entity.id,
-                    name: entry.entity.name,
-                    layer,
-                    member_count: member_count as usize,
-                });
-            }
-        }
-        let mut layer_counts = layer_counts.into_iter().collect::<Vec<_>>();
-        layer_counts.sort_by_key(|(layer, _)| *layer);
-        aggregates.sort_by(|left, right| {
-            right
-                .member_count
-                .cmp(&left.member_count)
-                .then_with(|| left.name.cmp(&right.name))
-        });
-        aggregates.truncate(top_n);
-        let inter_cluster_relations = self
-            .load_all_relationships()?
-            .into_iter()
-            .filter(|entry| {
-                entry.relationship.agent_id == agent_id
-                    && relationship_property_bool(&entry.relationship, "is_inter_cluster")
-                        .unwrap_or(false)
+        let connection = self.lock()?;
+        let mut layer_statement = connection
+            .prepare(
+                "SELECT layer, COUNT(*) FROM kg_entities
+                 WHERE agent_id = ?1 AND pruned = 0
+                 GROUP BY layer
+                 ORDER BY layer ASC",
+            )
+            .map_err(to_backend)?;
+        let layer_counts = layer_statement
+            .query_map(params![agent_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
             })
-            .count();
+            .map_err(to_backend)?
+            .map(|row| {
+                row.map(|(layer, count)| (layer, count.max(0) as usize))
+                    .map_err(to_backend)
+            })
+            .collect::<StoreResult<Vec<_>>>()?;
+
+        let mut aggregate_statement = connection
+            .prepare(
+                "SELECT id, name, layer,
+                        CASE json_type(properties_json, '$.member_count')
+                            WHEN 'integer' THEN json_extract(properties_json, '$.member_count')
+                            ELSE 0
+                        END,
+                        CASE json_type(properties_json, '$.description')
+                            WHEN 'text' THEN json_extract(properties_json, '$.description')
+                            ELSE ''
+                        END
+                 FROM kg_entities
+                 WHERE agent_id = ?1
+                   AND pruned = 0
+                   AND layer > 0
+                   AND CASE json_type(properties_json, '$.member_count')
+                           WHEN 'integer' THEN json_extract(properties_json, '$.member_count')
+                           ELSE 0
+                       END > 0
+                 ORDER BY CASE json_type(properties_json, '$.member_count')
+                              WHEN 'integer' THEN json_extract(properties_json, '$.member_count')
+                              ELSE 0
+                          END DESC,
+                          name ASC
+                 LIMIT ?2",
+            )
+            .map_err(to_backend)?;
+        let top_aggregates = aggregate_statement
+            .query_map(params![agent_id, top_n as i64], |row| {
+                Ok(zbot_stores::AggregateSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    layer: row.get(2)?,
+                    member_count: row.get::<_, i64>(3)?.max(0) as usize,
+                    description: row.get(4)?,
+                })
+            })
+            .map_err(to_backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_backend)?;
+
+        let inter_cluster_relations = connection
+            .query_row(
+                "SELECT COUNT(*) FROM kg_relationships
+                 WHERE agent_id = ?1 AND archived = 0 AND is_inter_cluster = 1",
+                params![agent_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(to_backend)?
+            .max(0) as usize;
         Ok(HierarchySummary {
             layer_counts,
             inter_cluster_relations,
-            top_aggregates: aggregates,
+            top_aggregates,
         })
     }
 

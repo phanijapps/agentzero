@@ -132,7 +132,7 @@ fn error(status: StatusCode, message: impl Into<String>) -> HandlerError {
     )
 }
 
-fn is_local_request(config: &GatewayConfig, peer: Option<SocketAddr>) -> bool {
+pub(super) fn is_local_request(config: &GatewayConfig, peer: Option<SocketAddr>) -> bool {
     if config.host.is_loopback() {
         return true;
     }
@@ -279,7 +279,7 @@ fn canonical_child(base: &FsPath, child: &FsPath) -> Result<PathBuf, HandlerErro
     Ok(canonical)
 }
 
-fn has_symlink_component(base: &FsPath, relative: &FsPath) -> bool {
+pub(super) fn has_symlink_component(base: &FsPath, relative: &FsPath) -> bool {
     let mut current = base.to_path_buf();
     for component in relative.components() {
         let Component::Normal(part) = component else {

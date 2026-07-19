@@ -410,6 +410,138 @@ async fn graph_entities_relationships_and_read_models_round_trip() {
     );
 }
 
+/// Aggregate counters must only read indexed scalar columns.  A malformed
+/// JSON payload is deliberately inserted to prove the counter never
+/// deserializes graph records as the old implementation did.
+#[tokio::test]
+async fn aggregate_counts_do_not_deserialize_graph_payloads() {
+    let root = tempfile::tempdir().expect("root");
+    let config = engram_config(&root);
+    let sidecar_path = config
+        .compatibility_store_path("zbot-knowledge-graph.sqlite")
+        .expect("sidecar path");
+    let store = EngramKnowledgeGraphStore::open(config).expect("store");
+    let connection = rusqlite::Connection::open(sidecar_path).expect("sidecar connection");
+    let now = Utc::now().to_rfc3339();
+
+    connection
+        .execute(
+            "INSERT INTO kg_entities \
+                (id, agent_id, entity_type, name, first_seen_at, last_seen_at, mention_count, \
+                 properties_json, entity_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "invalid-count-entity",
+                "agent-a",
+                "person",
+                "Invalid payload",
+                now,
+                now,
+                1_i64,
+                "{}",
+                "not valid entity json",
+            ],
+        )
+        .expect("insert entity");
+    connection
+        .execute(
+            "INSERT INTO kg_relationships \
+                (id, agent_id, source_entity_id, target_entity_id, relationship_type, \
+                 first_seen_at, last_seen_at, mention_count, properties_json, relationship_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                "invalid-count-relationship",
+                "agent-a",
+                "source",
+                "target",
+                "uses",
+                now,
+                now,
+                1_i64,
+                "{}",
+                "not valid relationship json",
+            ],
+        )
+        .expect("insert relationship");
+
+    assert_eq!(store.count_all_entities().await.expect("entity count"), 1);
+    assert_eq!(
+        store
+            .count_all_relationships()
+            .await
+            .expect("relationship count"),
+        1
+    );
+}
+
+/// Hierarchy health is fetched whenever the Observatory opens. Its summary
+/// must therefore aggregate indexed columns without loading every graph JSON
+/// payload when hierarchy is enabled on a large workspace.
+#[tokio::test]
+async fn hierarchy_summary_does_not_deserialize_graph_payloads() {
+    let root = tempfile::tempdir().expect("root");
+    let config = engram_config(&root);
+    let sidecar_path = config
+        .compatibility_store_path("zbot-knowledge-graph.sqlite")
+        .expect("sidecar path");
+    let store = EngramKnowledgeGraphStore::open(config).expect("store");
+    let connection = rusqlite::Connection::open(sidecar_path).expect("sidecar connection");
+    let now = Utc::now().to_rfc3339();
+
+    connection
+        .execute(
+            "INSERT INTO kg_entities \
+                (id, agent_id, entity_type, name, first_seen_at, last_seen_at, mention_count, \
+                 properties_json, entity_json, layer) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                "invalid-hierarchy-entity",
+                "agent-a",
+                "concept",
+                "Aggregate",
+                now,
+                now,
+                1_i64,
+                r#"{"member_count": 42, "description": "A bounded summary."}"#,
+                "not valid entity json",
+                1_i64,
+            ],
+        )
+        .expect("insert aggregate");
+    connection
+        .execute(
+            "INSERT INTO kg_relationships \
+                (id, agent_id, source_entity_id, target_entity_id, relationship_type, \
+                 first_seen_at, last_seen_at, mention_count, properties_json, relationship_json, \
+                 is_inter_cluster) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                "invalid-hierarchy-relationship",
+                "agent-a",
+                "source",
+                "target",
+                "related_to",
+                now,
+                now,
+                1_i64,
+                "{}",
+                "not valid relationship json",
+                1_i64,
+            ],
+        )
+        .expect("insert inter-cluster relation");
+
+    let summary = store
+        .hierarchy_summary("agent-a", 10)
+        .await
+        .expect("hierarchy summary");
+    assert_eq!(summary.layer_counts, vec![(1, 1)]);
+    assert_eq!(summary.inter_cluster_relations, 1);
+    assert_eq!(summary.top_aggregates.len(), 1);
+    assert_eq!(summary.top_aggregates[0].id, "invalid-hierarchy-entity");
+    assert_eq!(summary.top_aggregates[0].member_count, 42);
+}
+
 #[tokio::test]
 async fn duplicate_relationships_collapse_by_normalized_governed_key() {
     let root = tempfile::tempdir().expect("root");

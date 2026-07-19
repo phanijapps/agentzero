@@ -573,10 +573,12 @@ mod tests {
 
     struct PanicQueryProvider;
 
+    type EnqueuedRecord = (String, String, String, Option<String>, String);
+
     #[derive(Default)]
     struct MockIntake {
         records: Mutex<Vec<EvidenceRecord>>,
-        enqueued: Mutex<Vec<(String, String, String, Option<String>, String)>>,
+        enqueued: Mutex<Vec<EnqueuedRecord>>,
     }
 
     #[async_trait]

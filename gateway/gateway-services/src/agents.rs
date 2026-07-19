@@ -351,7 +351,7 @@ impl AgentService {
         // Write AGENTS.md
         fs::write(
             target_dir.join("AGENTS.md"),
-            format!("{}\n", agent.instructions),
+            format!("{}\n", agent.instructions.trim_end()),
         )
         .map_err(|e| format!("Failed to write AGENTS.md: {}", e))?;
 

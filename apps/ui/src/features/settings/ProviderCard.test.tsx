@@ -12,7 +12,7 @@ function makeProvider(overrides: Partial<ProviderResponse> = {}): ProviderRespon
     id: "openai-1",
     name: "OpenAI",
     description: "OpenAI API",
-    apiKey: "sk-test",
+    hasApiKey: true,
     baseUrl: "https://api.openai.com/v1",
     models: ["gpt-4o", "gpt-4o-mini"],
     verified: true,

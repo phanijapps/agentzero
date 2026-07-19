@@ -40,7 +40,7 @@ impl HttpMcpClient {
         url: String,
         headers: HashMap<String, String>,
     ) -> Self {
-        tracing::debug!("Creating HTTP MCP client: {} at {}", name, url);
+        tracing::debug!(mcp_id = %id, "Created HTTP MCP client");
         Self {
             id,
             name,
@@ -64,7 +64,7 @@ impl HttpMcpClient {
             "params": params
         });
 
-        tracing::debug!("HTTP MCP request to {}: {}", self.url, request_body);
+        tracing::debug!(mcp_id = %self.id, "Sending HTTP MCP request");
 
         let mut req = self
             .client
@@ -81,7 +81,7 @@ impl HttpMcpClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| McpError::ProtocolError(format!("HTTP request failed: {e}")))?;
+            .map_err(|_| McpError::ProtocolError("MCP request failed".to_string()))?;
 
         let status = response.status();
         let content_type = response
@@ -92,45 +92,30 @@ impl HttpMcpClient {
         let response_text = response
             .text()
             .await
-            .map_err(|e| McpError::ProtocolError(format!("Failed to read response: {e}")))?;
+            .map_err(|_| McpError::ProtocolError("Failed to read MCP response".to_string()))?;
 
         tracing::debug!(
-            "HTTP MCP response status: {}, body: {}",
-            status,
-            redact_text(&response_text, &auth_secrets)
+            mcp_id = %self.id,
+            status = status.as_u16(),
+            "Received HTTP MCP response"
         );
 
         if !status.is_success() {
-            if !auth_secrets.is_empty() {
-                return Err(McpError::ProtocolError(format!(
-                    "HTTP error {}: authenticated MCP request failed",
-                    status.as_u16()
-                )));
-            }
             return Err(McpError::ProtocolError(format!(
-                "HTTP error {}: {}",
-                status.as_u16(),
-                redact_text(&response_text, &auth_secrets)
+                "MCP request failed with HTTP status {}",
+                status.as_u16()
             )));
         }
 
         let mut response_json = parse_mcp_response(&response_text, content_type.as_deref())
-            .map_err(|e| {
-                McpError::ProtocolError(format!(
-                    "{}{}",
-                    e,
-                    if content_type.is_some() {
-                        format!(" (content-type: {})", content_type.as_deref().unwrap())
-                    } else {
-                        String::new()
-                    }
-                ))
-            })?;
+            .map_err(|_| McpError::ProtocolError("Failed to parse MCP response".to_string()))?;
         redact_json(&mut response_json, &auth_secrets);
 
         // Check for JSON-RPC error
-        if let Some(error) = response_json.get("error") {
-            return Err(McpError::ProtocolError(format!("MCP error: {error}")));
+        if response_json.get("error").is_some() {
+            return Err(McpError::ProtocolError(
+                "MCP returned a protocol error".to_string(),
+            ));
         }
 
         Ok(response_json)

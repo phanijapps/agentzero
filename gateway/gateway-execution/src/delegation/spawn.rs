@@ -3,15 +3,15 @@
 //! Handles spawning of delegated subagents.
 
 use super::callback::{handle_delegation_failure, handle_delegation_success};
-use super::context::{infer_delegation_mode, DelegationContext, DelegationRequest};
+use super::context::{infer_delegation_mode, DelegationContext, DelegationMode, DelegationRequest};
 use super::registry::DelegationRegistry;
 use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig};
-use api_logs::LogService;
+use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
 use gateway_events::{EventBus, GatewayEvent};
 use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths, SkillService};
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path};
 use std::sync::Arc;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock};
 use zbot_runtime_sqlite::DatabaseManager;
@@ -23,8 +23,9 @@ use agent_runtime::ChatMessage;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
     broadcast_event, collect_agents_summary, collect_skills_summary, detect_subagent_role,
-    process_stream_event, select_engine, spawn_batch_writer_with_traces, subagent_rules,
-    AgentLoader, ExecutorBuilder, ResponseAccumulator, RuntimeActorKind, StreamContext,
+    mcp_startup_failure_observer, process_stream_event, select_engine,
+    spawn_batch_writer_with_traces, subagent_rules, AgentLoader, ExecutorBuilder,
+    ResponseAccumulator, RuntimeActorKind, StreamContext,
 };
 use crate::lifecycle::{
     complete_execution, crash_execution, emit_delegation_completed, emit_delegation_started,
@@ -159,6 +160,43 @@ pub async fn spawn_delegated_agent(
     )
     .await;
 
+    // Dynamic assignments are valid only for an existing configured agent or
+    // an already-created ward. This check occurs before `AgentLoader` can
+    // auto-create a specialist, so an arbitrary delegate target can never
+    // obtain an MCP merely by naming one in a tool call.
+    let has_dynamic_assignment = request.capability_assignment.is_some();
+    let dynamic_assignment = match request.capability_assignment.as_ref() {
+        Some(assignment)
+            if assignment.agent_id == request.child_agent_id
+                && dynamic_target_exists(
+                    &agent_service,
+                    paths.vault_dir(),
+                    &request.child_agent_id,
+                )
+                .await =>
+        {
+            Some(assignment)
+        }
+        Some(_) => {
+            log_capability_resolution(
+                &log_service,
+                CapabilityResolutionLog {
+                    execution_id: &execution_id,
+                    session_id: &session_id,
+                    agent_id: &request.child_agent_id,
+                    origin: "rejected_target",
+                    effective_skills: &[],
+                    effective_mcps: &[],
+                    unresolved_skill_count: 1,
+                    unresolved_count: 1,
+                    rejection_codes: &[],
+                },
+            );
+            None
+        }
+        None => None,
+    };
+
     // Load agent and provider using AgentLoader
     let agent_loader = AgentLoader::new(&agent_service, &provider_service, paths.clone());
     let (mut agent, provider) = match agent_loader
@@ -173,6 +211,13 @@ pub async fn spawn_delegated_agent(
             return Err(e);
         }
     };
+
+    // The dedicated planner is descriptive only. It can discover available
+    // capabilities through the host catalog but must never start an MCP while
+    // deciding the graph.
+    if request.child_agent_id == "planner-agent" {
+        agent.mcps.clear();
+    }
 
     // Detect actor kind before prompt rules. Warm ward agents keep full-tool
     // actor policy even when the task contains review-like language.
@@ -198,13 +243,137 @@ pub async fn spawn_delegated_agent(
     let original_instructions = std::mem::take(&mut agent.instructions);
     agent.instructions = format!("{}\n\n{}", rules, original_instructions);
 
-    // Skill hints (one line)
-    if !request.skills.is_empty() {
-        let skill_names = request.skills.join(", ");
+    // Explicit dynamic skills are recommendations to the existing lazy
+    // `load_skill` workflow. Validate the planner/root choice against the
+    // current service catalog before it reaches model instructions; omitted
+    // legacy assignments retain their prior hint unchanged.
+    let dynamic_skill_resolution = match dynamic_assignment {
+        Some(assignment) => resolve_dynamic_skills(&skill_service, &assignment.skills).await,
+        None => None,
+    };
+    let recommended_skills: &[String] = dynamic_skill_resolution.as_ref().map_or_else(
+        || {
+            if has_dynamic_assignment {
+                &[] as &[String]
+            } else {
+                request.skills.as_slice()
+            }
+        },
+        |resolution| resolution.effective.as_slice(),
+    );
+    if !recommended_skills.is_empty() {
+        let skill_names = recommended_skills.join(", ");
         agent.instructions.push_str(&format!(
             "\nRecommended skills: {}. Use load_skill to load any you need.\n",
             skill_names
         ));
+    }
+
+    // An explicit assignment overrides static `agent.mcps`, including an
+    // empty array. Resolution accepts only canonical enabled/runtime-ready
+    // server IDs and records aggregate reason codes without raw request data.
+    if request.child_agent_id == "planner-agent" {
+        // The planner may discover and record capabilities, but it is never
+        // an execution target. A model-supplied mapping cannot remount MCPs
+        // after the static planner list was cleared above.
+        agent.mcps.clear();
+        if let Some(assignment) = dynamic_assignment {
+            log_capability_resolution(
+                &log_service,
+                CapabilityResolutionLog {
+                    execution_id: &execution_id,
+                    session_id: &session_id,
+                    agent_id: &request.child_agent_id,
+                    origin: "planner_runtime_prohibited",
+                    effective_skills: dynamic_skill_resolution
+                        .as_ref()
+                        .map_or(&[], |resolution| resolution.effective.as_slice()),
+                    effective_mcps: &[],
+                    unresolved_skill_count: dynamic_skill_resolution
+                        .as_ref()
+                        .map_or(assignment.skills.len(), |resolution| {
+                            resolution.unresolved_count
+                        }),
+                    unresolved_count: assignment.mcps.len(),
+                    rejection_codes: &["planner_runtime_prohibited"],
+                },
+            );
+        }
+    } else if let Some(assignment) = dynamic_assignment {
+        match mcp_service.resolve_dynamic_runtime_ids(&assignment.mcps) {
+            Ok(resolution) => {
+                agent.mcps = resolution.effective_ids.clone();
+                let rejection_codes = resolution
+                    .rejections
+                    .iter()
+                    .map(|reason| reason.as_str())
+                    .collect::<Vec<_>>();
+                log_capability_resolution(
+                    &log_service,
+                    CapabilityResolutionLog {
+                        execution_id: &execution_id,
+                        session_id: &session_id,
+                        agent_id: &request.child_agent_id,
+                        origin: capability_assignment_origin(delegation_mode),
+                        effective_skills: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(&[], |resolution| resolution.effective.as_slice()),
+                        effective_mcps: &resolution.effective_ids,
+                        unresolved_skill_count: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(assignment.skills.len(), |resolution| {
+                                resolution.unresolved_count
+                            }),
+                        unresolved_count: resolution.rejections.len(),
+                        rejection_codes: &rejection_codes,
+                    },
+                );
+            }
+            Err(_) => {
+                // Fail closed: a catalog/configuration read failure leaves no
+                // dynamic MCPs mounted and does not fall back to static ones.
+                agent.mcps.clear();
+                log_capability_resolution(
+                    &log_service,
+                    CapabilityResolutionLog {
+                        execution_id: &execution_id,
+                        session_id: &session_id,
+                        agent_id: &request.child_agent_id,
+                        origin: "dynamic_resolution_unavailable",
+                        effective_skills: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(&[], |resolution| resolution.effective.as_slice()),
+                        effective_mcps: &[],
+                        unresolved_skill_count: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(assignment.skills.len(), |resolution| {
+                                resolution.unresolved_count
+                            }),
+                        unresolved_count: assignment.mcps.len(),
+                        rejection_codes: &[],
+                    },
+                );
+            }
+        }
+    } else if !has_dynamic_assignment {
+        log_capability_resolution(
+            &log_service,
+            CapabilityResolutionLog {
+                execution_id: &execution_id,
+                session_id: &session_id,
+                agent_id: &request.child_agent_id,
+                origin: "legacy_fallback",
+                effective_skills: &[],
+                effective_mcps: &agent.mcps,
+                unresolved_skill_count: 0,
+                unresolved_count: 0,
+                rejection_codes: &[],
+            },
+        );
+    } else {
+        // A present assignment that fails target validation is still dynamic.
+        // Do not silently revive static MCPs or legacy skill hints.
+        agent.mcps.clear();
     }
 
     // Inject output contract into child agent instructions when schema is provided
@@ -297,7 +466,22 @@ pub async fn spawn_delegated_agent(
     let mut builder = ExecutorBuilder::new(paths.vault_dir().clone(), tool_settings)
         .with_model_registry(model_registry)
         .with_actor_kind(actor_kind)
-        .with_initial_state("app:delegation_mode", delegation_mode.as_state_value());
+        .with_initial_state("app:delegation_mode", delegation_mode.as_state_value())
+        .with_mcp_startup_failure_observer(mcp_startup_failure_observer(
+            log_service.clone(),
+            execution_id.clone(),
+            session_id.clone(),
+            request.child_agent_id.clone(),
+        ));
+
+    if request.child_agent_id == "planner-agent" || request.child_agent_id.starts_with("ward:") {
+        if let Some(catalog) = request.planning_capability_catalog.as_ref() {
+            builder = builder.with_initial_state(
+                agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE,
+                catalog.clone(),
+            );
+        }
+    }
 
     if let Some(limiter) = rate_limiter {
         builder = builder.with_rate_limiter(limiter);
@@ -481,6 +665,117 @@ pub async fn spawn_delegated_agent(
     );
 
     Ok(child_conversation_id)
+}
+
+const MAX_DYNAMIC_SKILLS: usize = 25;
+
+struct DynamicSkillResolution {
+    effective: Vec<String>,
+    unresolved_count: usize,
+}
+
+/// Resolve planner/root-provided skill recommendations against the live skill
+/// service. The child sees only canonical, deduplicated names and never raw
+/// rejected model values.
+async fn resolve_dynamic_skills(
+    skill_service: &SkillService,
+    requested: &[String],
+) -> Option<DynamicSkillResolution> {
+    let available = skill_service.list().await.ok()?;
+    let known = available
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect::<HashSet<_>>();
+    let mut effective = Vec::new();
+    let mut seen = HashSet::new();
+    let mut unresolved_count = requested.len().saturating_sub(MAX_DYNAMIC_SKILLS);
+
+    for skill in requested.iter().take(MAX_DYNAMIC_SKILLS) {
+        if known.contains(skill) && seen.insert(skill.clone()) {
+            effective.push(skill.clone());
+        } else if !known.contains(skill) {
+            unresolved_count += 1;
+        }
+    }
+
+    Some(DynamicSkillResolution {
+        effective,
+        unresolved_count,
+    })
+}
+
+async fn dynamic_target_exists(
+    agent_service: &AgentService,
+    vault_dir: &Path,
+    agent_id: &str,
+) -> bool {
+    if let Some(ward_id) = agent_id.strip_prefix("ward:") {
+        if ward_id.is_empty() || ward_id.contains(['/', '\\']) {
+            return false;
+        }
+        let mut components = Path::new(ward_id).components();
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+            return false;
+        }
+        return std::fs::symlink_metadata(vault_dir.join("wards").join(ward_id))
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+    }
+
+    agent_service.get(agent_id).await.is_ok()
+}
+
+/// A step-executor delegation is the root's execution of a planner-written
+/// step briefing. Keep the provenance host-derived from the validated posture
+/// rather than a model-supplied metadata field.
+fn capability_assignment_origin(mode: DelegationMode) -> &'static str {
+    if mode == DelegationMode::StepExecutor {
+        "planner"
+    } else {
+        "dynamic"
+    }
+}
+
+/// Persist only canonical accepted IDs and aggregate closed rejection codes.
+/// Raw assignments, config errors, URLs, and secret-bearing MCP config are
+/// deliberately excluded from this execution-log record.
+struct CapabilityResolutionLog<'a> {
+    execution_id: &'a str,
+    session_id: &'a str,
+    agent_id: &'a str,
+    origin: &'a str,
+    effective_skills: &'a [String],
+    effective_mcps: &'a [String],
+    unresolved_skill_count: usize,
+    unresolved_count: usize,
+    rejection_codes: &'a [&'a str],
+}
+
+fn log_capability_resolution(
+    log_service: &LogService<DatabaseManager>,
+    resolution: CapabilityResolutionLog<'_>,
+) {
+    let entry = ExecutionLog::new(
+        resolution.execution_id,
+        resolution.session_id,
+        resolution.agent_id,
+        LogLevel::Info,
+        LogCategory::Intent,
+        "Resolved execution capabilities",
+    )
+    .with_metadata(serde_json::json!({
+        "origin": resolution.origin,
+        "effective_skills": resolution.effective_skills,
+        "effective_mcps": resolution.effective_mcps,
+        "unresolved_skill_count": resolution.unresolved_skill_count,
+        "unresolved_count": resolution.unresolved_count,
+        "rejection_codes": resolution.rejection_codes,
+    }));
+    if log_service.log(entry).is_err() {
+        tracing::debug!(
+            agent_id = resolution.agent_id,
+            "Failed to persist capability resolution audit event"
+        );
+    }
 }
 
 /// Return the `<reuse_check>` imperative for coding-capable agents.
@@ -1395,6 +1690,44 @@ mod tests {
         assert_eq!(
             actor_kind_for_delegation("ward:maritime", "Review the implementation"),
             RuntimeActorKind::WardAgent
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_skill_resolution_accepts_only_live_unique_skill_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("research");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: research\ndescription: Find evidence\n---\n",
+        )
+        .expect("skill file");
+        let service = SkillService::with_roots(vec![dir.path().to_path_buf()]);
+
+        let resolution = resolve_dynamic_skills(
+            &service,
+            &[
+                "research".to_string(),
+                "missing".to_string(),
+                "research".to_string(),
+            ],
+        )
+        .await
+        .expect("skill catalog reads");
+        assert_eq!(resolution.effective, vec!["research"]);
+        assert_eq!(resolution.unresolved_count, 1);
+    }
+
+    #[test]
+    fn planned_step_assignments_are_audited_as_planner_origin() {
+        assert_eq!(
+            capability_assignment_origin(DelegationMode::StepExecutor),
+            "planner"
+        );
+        assert_eq!(
+            capability_assignment_origin(DelegationMode::WardBackedBuild),
+            "dynamic"
         );
     }
 }

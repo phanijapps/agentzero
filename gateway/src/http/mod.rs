@@ -10,7 +10,7 @@ mod beliefs;
 mod bridge;
 mod chat;
 mod cleanup;
-mod commissioning;
+pub(crate) mod commissioning;
 mod connectors;
 mod conversations;
 mod cron;

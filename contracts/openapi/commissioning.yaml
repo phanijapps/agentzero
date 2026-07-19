@@ -1,9 +1,10 @@
 openapi: 3.0.3
 info:
   title: z-Bot Agent Commissioning API
-  version: 1.0.0
+  version: 2.0.0
   description: Durable first-run commissioning for a local z-Bot installation.
-x-spec: docs/specs/agent-commissioning/spec.md
+x-spec: docs/specs/commissioning-memory-profile/spec.md
+x-original-spec: docs/specs/agent-commissioning/spec.md
 paths:
   /api/commissioning/status:
     get:
@@ -30,7 +31,7 @@ paths:
   /api/commissioning/complete:
     post:
       operationId: completeCommissioning
-      summary: Validate and persist a complete commission
+      summary: Validate and persist commissioning state
       description: Available only to the local z-Bot browser origin or a native local client.
       requestBody:
         required: true
@@ -40,7 +41,7 @@ paths:
               $ref: '#/components/schemas/CommissioningRequest'
       responses:
         '200':
-          description: Redacted completed commission
+          description: Redacted persisted state, either complete or awaiting full-memory restart activation
           content:
             application/json:
               schema:
@@ -51,11 +52,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommissioningError'
+        '403':
+          description: Commissioning denied because the browser origin or connection peer is not local.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommissioningError'
 components:
   schemas:
     CommissioningStatus:
       type: object
-      required: [state, semanticProfile]
+      required: [state, semanticProfile, restartRequired]
       properties:
         state:
           type: string
@@ -65,6 +72,9 @@ components:
           nullable: true
         semanticProfile:
           $ref: '#/components/schemas/SemanticProfile'
+        restartRequired:
+          type: boolean
+          description: True only while a persisted full-memory profile awaits daemon-restart activation.
     SemanticProfile:
       type: object
       required: [version, basePackIds, domainPackIds, provisioning]
@@ -82,10 +92,11 @@ components:
         provisioning:
           type: string
           enum: [deferred]
+          description: Engram import/bootstrap is deferred; commissioning may already materialize local governance definition files.
     CommissioningRequest:
       type: object
       additionalProperties: false
-      required: [displayName, userName, interests, primaryFocus, domains, provider]
+      required: [displayName, userName, interests, primaryFocus, domains, memoryProfile, provider]
       properties:
         displayName:
           type: string
@@ -130,6 +141,10 @@ components:
           items:
             type: string
             enum: [personal_knowledge, software, writing, learning, planning]
+        memoryProfile:
+          type: string
+          description: Explicit first-run memory behavior selected by the local user.
+          enum: [safe_baseline, zbot_recommended_v1]
         provider:
           $ref: '#/components/schemas/ProviderSelection'
     ProviderSelection:
@@ -143,6 +158,7 @@ components:
         presetId:
           type: string
           description: Required for cloud; resolved server-side to a known preset.
+          enum: [ollama_cloud, openai, deepseek, openrouter, z-ai, mistral]
         model:
           type: string
           minLength: 1

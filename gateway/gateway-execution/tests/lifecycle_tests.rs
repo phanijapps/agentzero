@@ -100,10 +100,11 @@ fn get_or_create_session_falls_back_to_new_when_existing_missing() {
     assert_ne!(setup_result.session_id, "does-not-exist");
 }
 
-/// REGRESSION: continuing a terminal session must reactivate it AND
-/// clear the stale delegation bookkeeping (this is the defect from PR #67).
+/// Looking up a terminal session must not reactivate it before the next root
+/// user message is durable. `InvokeBootstrap` performs the reactivation after
+/// persistence, and `StateService` owns clearing stale delegation bookkeeping.
 #[test]
-fn get_or_create_session_reactivates_and_clears_stale_delegation_state() {
+fn get_or_create_session_defers_reactivation_until_after_message_persistence() {
     let f = setup();
     let (session, _root) = f.state.create_session("test-agent").expect("create");
 
@@ -120,7 +121,8 @@ fn get_or_create_session_reactivates_and_clears_stale_delegation_state() {
     assert_eq!(crashed.pending_delegations, 1);
     assert!(crashed.continuation_needed);
 
-    // Continue the session.
+    // Prepare to continue the session. This lookup alone is not allowed to
+    // mutate terminal state or stale bookkeeping.
     let _ = get_or_create_session(
         &f.state,
         "test-agent",
@@ -128,15 +130,15 @@ fn get_or_create_session_reactivates_and_clears_stale_delegation_state() {
         TriggerSource::Web,
     );
 
-    let live = f.state.get_session(&session.id).unwrap().unwrap();
-    assert_eq!(live.status, StateSessionStatus::Running);
+    let unchanged = f.state.get_session(&session.id).unwrap().unwrap();
+    assert_eq!(unchanged.status, StateSessionStatus::Crashed);
     assert_eq!(
-        live.pending_delegations, 0,
-        "reactivation must zero the stale pending count (PR #67 fix)"
+        unchanged.pending_delegations, 1,
+        "lookup must preserve bookkeeping until durable-message reactivation"
     );
     assert!(
-        !live.continuation_needed,
-        "reactivation must clear the stale continuation flag (PR #67 fix)"
+        unchanged.continuation_needed,
+        "lookup must preserve continuation state until durable-message reactivation"
     );
 }
 

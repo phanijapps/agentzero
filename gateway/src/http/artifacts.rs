@@ -19,7 +19,7 @@ const MAX_GOAL_ARTIFACTS_PER_SESSION: u32 = 24;
 // ============================================================================
 
 /// JSON representation of an artifact for API responses.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactResponse {
     pub id: String,

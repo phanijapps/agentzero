@@ -12,7 +12,7 @@ function makeProvider(id: string, name: string): ProviderResponse {
     id,
     name,
     description: "",
-    apiKey: "",
+    hasApiKey: false,
     baseUrl: `https://${id}.example.com/v1`,
     models: [],
     verified: false,

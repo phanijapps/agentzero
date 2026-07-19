@@ -245,6 +245,16 @@ impl AppState {
         let provider_service = Arc::new(ProviderService::new(paths.clone()));
         let mcp_service = Arc::new(McpService::new(paths.clone()));
         let settings = Arc::new(SettingsService::new(paths.clone()));
+        if let Err(code) = crate::http::commissioning::activate_pending_memory_profile_on_boot(
+            paths.as_ref(),
+            settings.as_ref(),
+        ) {
+            tracing::warn!(
+                event = "commissioning_memory_profile_activation_deferred",
+                code,
+                "Pending Full memory profile was not finalized"
+            );
+        }
         let memory_provider_settings = settings
             .get_execution_settings()
             .map(|s| s.memory.provider.clone())

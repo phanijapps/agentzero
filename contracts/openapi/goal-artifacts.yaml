@@ -39,7 +39,7 @@ paths:
                 type: string
                 enum: [nosniff]
             Content-Disposition:
-              description: `attachment` for HTML, HTM, and SVG; absent for other previewable media.
+              description: "`attachment` for HTML, HTM, and SVG; absent for other previewable media."
               schema:
                 type: string
                 enum: [attachment]

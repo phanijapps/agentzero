@@ -150,6 +150,10 @@ pub enum StreamEvent {
         max_iterations: Option<u32>,
         output_schema: Option<Value>,
         skills: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability_assignment: Option<agent_primitives::event::AgentCapabilityAssignment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        planning_capability_catalog: Option<Value>,
         complexity: Option<String>,
         mode: Option<String>,
         parallel: bool,
@@ -403,6 +407,8 @@ mod tests {
                 max_iterations: None,
                 output_schema: None,
                 skills: vec![],
+                capability_assignment: None,
+                planning_capability_catalog: None,
                 complexity: None,
                 mode: None,
                 parallel: false,

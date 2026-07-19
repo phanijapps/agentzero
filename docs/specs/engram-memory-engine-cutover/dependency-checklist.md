@@ -25,10 +25,10 @@ row contents, embeddings, connector data, or secrets.
 
 | Evidence | Status | Notes |
 | --- | --- | --- |
-| `cargo metadata --locked` | Recorded | Workspace metadata includes `zbot-engram-adapter` and local Engram crates. |
-| `Cargo.lock` | Recorded | Lockfile contains the Engram crate set and adapter package entry. |
+| `cargo metadata --locked` | Recorded | Workspace metadata includes `zbot-engram-adapter` and GitHub-sourced Engram crates. |
+| `Cargo.lock` | Recorded | Lockfile contains the Engram crate set, resolved Git revision, and adapter package entry. |
 | Dependency scanner | Recorded | Repository search confirms Engram implementation imports stay behind `zbot-engram-adapter`; gateway imports only the adapter. |
-| Engram source revision | Recorded | `mem-alpha` revision `f1a996db25f877659e45ffb160485fcd4b98ece8`. |
+| Engram source revision | Recorded | `https://github.com/phanijapps/engram` `main` revision is recorded in `Cargo.lock`. |
 | Dirty-state policy | Recorded | Untracked local tool-cache state such as `.serena/` is not a release input; release/publish still requires a pinned source decision. |
 
 ## Provider-Selection Gate

@@ -48,6 +48,10 @@ When the verbatim ask names an existing ward plus a specific missing capability 
 - Injected context packet — for prior-domain context, skills, agents, and policies.
 - `memory_write` — persist durable planning facts only when they will be useful across sessions.
 - `ward` (action: `use`) — enter the ward.
+- `lookup_capabilities` — available only for this planning run. Search the safe
+  live catalog when a step needs a skill or MCP not already in context. Record
+  every selected MCP as its canonical ID under that step's `## MCPs` heading;
+  do not start or call an MCP yourself.
 
 ## What you do NOT do
 

@@ -57,6 +57,10 @@ Produce exactly this structure for every step. No implementation bodies. No per-
 - <skill_name>: <what it covers in this step>
 - ("none — use raw tools" if no skill fits)
 
+## MCPs
+- <canonical_mcp_id>: <why this step needs its tools>
+- ("none" if the step needs no MCP)
+
 ## Reusable inputs (import from ward root)
 - `<module_root>/<module>.<symbol>` — <signature + what it returns>
 - `templates/<name>.<ext>` — <purpose>
@@ -171,8 +175,8 @@ Replace `## Steps — PENDING (plan-composer fills this)` with:
 ````markdown
 ## Steps
 
-1. [Step 1](step_1.md) — <title> — skills `<list>` — <one-line goal>
-2. [Step 2](step_2.md) — <title> — skills `<list>` — <one-line goal>
+1. [Step 1](step_1.md) — <title> — skills `<list>` — MCPs `<canonical-id list | none>` — <one-line goal>
+2. [Step 2](step_2.md) — <title> — skills `<list>` — MCPs `<canonical-id list | none>` — <one-line goal>
 ...
 
 ## Step dependency graph
@@ -191,8 +195,9 @@ Dependency graph is ASCII. Every step depends on step 1 at minimum (ward-setup) 
 Before returning, check every item. Revise and re-check until every item passes:
 
 - Every phase from the spec has ≥ 1 step.
-- Every step has non-empty `Goal`, `Skills`, at least one of `Reusable outputs` / `Domain outputs` populated, and a BDD `Acceptance` block with Given / When / Then.
+- Every step has non-empty `Goal`, `Skills`, `MCPs`, at least one of `Reusable outputs` / `Domain outputs` populated, and a BDD `Acceptance` block with Given / When / Then.
 - Every step's `Skills` list contains only real skill names from the spec's Suggested skills, Additional skills required, or planner catalog. **No invented skill names.**
+- Every step's `MCPs` list contains only canonical IDs returned by `lookup_capabilities` or the planner catalog. Use `none` rather than an invented MCP or a display name.
 - Every entry in `Reusable inputs` / `Domain inputs` / `Reusable outputs` / `Domain outputs` references a real path shape — no placeholder like `<TBD>`.
 - Every `Depends on` entry references a real step id.
 - `Parallel-safe with` is consistent with the dependency graph — a step is not parallel-safe with an ancestor or descendant.

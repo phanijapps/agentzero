@@ -92,7 +92,12 @@ impl Tool for DelegateTool {
                 "skills": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Skills to pre-load for the subagent. These are loaded into the agent's context automatically."
+                    "description": "Skills recommended to the subagent. It can load them with load_skill when needed."
+                },
+                "mcps": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Canonical MCP server IDs to mount for this subagent before its first model turn. Omit unless explicitly assigned."
                 },
                 "parallel": {
                     "type": "boolean",
@@ -173,15 +178,41 @@ impl Tool for DelegateTool {
 
         let output_schema = args.get("output_schema").cloned();
 
+        const MAX_ASSIGNED_CAPABILITIES: usize = 25;
         let skills: Vec<String> = args
             .get("skills")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                    .take(MAX_ASSIGNED_CAPABILITIES)
                     .collect()
             })
             .unwrap_or_default();
+
+        let mcps: Vec<String> = args
+            .get("mcps")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                    .take(MAX_ASSIGNED_CAPABILITIES)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let capability_assignment = (args.get("skills").is_some() || args.get("mcps").is_some())
+            .then(|| agent_primitives::event::AgentCapabilityAssignment {
+                agent_id: target_agent_id.to_string(),
+                skills: skills.clone(),
+                mcps,
+            });
+        let planning_capability_catalog = (target_agent_id == "planner-agent"
+            || target_agent_id.starts_with("ward:"))
+        .then(|| {
+            ctx.get_state(super::PLANNER_CAPABILITY_CATALOG_STATE)
+                .or_else(|| ctx.get_state(super::PLANNING_CAPABILITY_CATALOG_STATE))
+        })
+        .flatten();
 
         let parallel = args
             .get("parallel")
@@ -307,6 +338,8 @@ impl Tool for DelegateTool {
             max_iterations,
             output_schema,
             skills,
+            capability_assignment,
+            planning_capability_catalog,
             complexity: None,
             mode,
             parallel,
@@ -383,6 +416,7 @@ mod tests {
         assert!(properties.get("context").is_some());
         assert!(properties.get("wait_for_result").is_some());
         assert!(properties.get("mode").is_some());
+        assert!(properties.get("mcps").is_some());
 
         let required = schema.get("required").unwrap().as_array().unwrap();
         assert!(required.iter().any(|v| v == "agent_id"));
@@ -665,6 +699,7 @@ mod tests {
                     "agent_id": "writer-agent",
                     "task": "compose summary",
                     "skills": ["html-report"],
+                    "mcps": ["renderer"],
                     "parallel": false,
                 }),
             )
@@ -690,9 +725,38 @@ mod tests {
             "task must be enriched with platform hint"
         );
         assert_eq!(action.skills, vec!["html-report".to_string()]);
+        let assignment = action
+            .capability_assignment
+            .expect("explicit skills or MCPs create a dynamic assignment");
+        assert_eq!(assignment.agent_id, "writer-agent");
+        assert_eq!(assignment.skills, vec!["html-report".to_string()]);
+        assert_eq!(assignment.mcps, vec!["renderer".to_string()]);
         assert_eq!(action.mode, None);
         assert!(!action.parallel);
         assert!(!action.wait_for_result);
+    }
+
+    #[tokio::test]
+    async fn planner_delegate_carries_host_capability_catalog() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("root");
+        ctx.set_state(
+            crate::tools::PLANNING_CAPABILITY_CATALOG_STATE.to_string(),
+            json!({"skills": [], "mcps": [{"id": "blender"}]}),
+        );
+
+        tool.execute(
+            ctx.clone(),
+            json!({"agent_id": "planner-agent", "task": "plan this"}),
+        )
+        .await
+        .expect("planner delegation succeeds");
+
+        let action = ctx.actions().delegate.expect("delegate action set");
+        assert_eq!(
+            action.planning_capability_catalog,
+            Some(json!({"skills": [], "mcps": [{"id": "blender"}]}))
+        );
     }
 
     #[tokio::test]

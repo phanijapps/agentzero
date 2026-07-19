@@ -1170,6 +1170,10 @@ impl AgentExecutor {
                                     max_iterations: delegate.max_iterations,
                                     output_schema: delegate.output_schema.clone(),
                                     skills: delegate.skills.clone(),
+                                    capability_assignment: delegate.capability_assignment.clone(),
+                                    planning_capability_catalog: delegate
+                                        .planning_capability_catalog
+                                        .clone(),
                                     complexity: delegate.complexity.clone(),
                                     mode: delegate.mode.clone(),
                                     parallel: delegate.parallel,
@@ -1703,9 +1707,22 @@ impl AgentExecutor {
         // Add MCP tools
         for mcp_id in &self.config.mcps {
             if let Some(client) = self.mcp_manager.get_client(mcp_id).await {
-                let mcp_tools = client.list_tools().await.map_err(|e| {
-                    ExecutorError::McpError(format!("Failed to list MCP tools: {e}"))
-                })?;
+                let mcp_tools = match client.list_tools().await {
+                    Ok(tools) => tools,
+                    Err(_) => {
+                        // Discovery is the real startup boundary for several
+                        // MCP transports. Keep the failure nonfatal, redact
+                        // client/command/stderr text, and remove the client so
+                        // this executor never retries it on a later turn.
+                        tracing::warn!(
+                            mcp_id = %mcp_id,
+                            rejection_code = "startup_failed",
+                            "MCP tool discovery failed; continuing without its tools"
+                        );
+                        self.mcp_manager.mark_startup_failed(mcp_id).await;
+                        continue;
+                    }
+                };
 
                 tracing::info!(
                     "Loaded {} MCP tools from server {}",
@@ -1988,6 +2005,7 @@ mod token_cache_tests {
 mod executor_helper_coverage_tests {
     use super::*;
     use crate::llm::client::{ChatResponse, LlmError, StreamCallback};
+    use crate::mcp::{McpClient, McpError, McpTool};
     use agent_primitives::Tool;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2166,6 +2184,27 @@ mod executor_helper_coverage_tests {
         }
     }
 
+    struct FailingMcpClient;
+
+    #[async_trait]
+    impl McpClient for FailingMcpClient {
+        fn name(&self) -> &str {
+            "blender"
+        }
+
+        async fn call_tool(&self, _tool_name: &str, _arguments: Value) -> Result<Value, McpError> {
+            Err(McpError::ConnectionFailed(
+                "should not be exposed".to_string(),
+            ))
+        }
+
+        async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
+            Err(McpError::ConnectionFailed(
+                "configured command and stderr must not escape".to_string(),
+            ))
+        }
+    }
+
     fn make_inert_executor() -> AgentExecutor {
         let cfg = ExecutorConfig::new("agent".into(), "prov".into(), "model".into());
         AgentExecutor::new(
@@ -2268,6 +2307,45 @@ mod executor_helper_coverage_tests {
             .as_str()
             .unwrap();
         assert_eq!(name, "respond");
+    }
+
+    #[tokio::test]
+    async fn mcp_discovery_failure_is_nonfatal_and_not_retried() {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_clone = Arc::clone(&observed);
+        let manager = Arc::new(McpManager::new().with_startup_failure_observer(Arc::new(
+            move |id| observed_clone.lock().unwrap().push(id.to_string()),
+        )));
+        manager
+            .insert_test_client("blender", Arc::new(FailingMcpClient))
+            .await;
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(crate::tools::RespondTool::new()));
+        let mut config = ExecutorConfig::new("a".into(), "p".into(), "m".into());
+        config.mcps = vec!["blender".to_string()];
+        let executor = AgentExecutor::new(
+            config,
+            Arc::new(InertLlm),
+            Arc::new(registry),
+            Arc::clone(&manager),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .expect("executor builds");
+
+        let schema = executor
+            .build_tools_schema()
+            .await
+            .expect("MCP discovery failure stays nonfatal");
+        let names = schema
+            .as_array()
+            .expect("tool schema array")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["respond"]);
+        assert_eq!(*observed.lock().unwrap(), vec!["blender"]);
+        assert!(manager.get_client("blender").await.is_none());
     }
 
     #[tokio::test]

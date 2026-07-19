@@ -5,6 +5,7 @@
 
 use crate::types::Content;
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -170,6 +171,25 @@ pub struct RespondAction {
     pub artifacts: Vec<ArtifactDeclaration>,
 }
 
+/// Dynamic capabilities assigned to one agent execution.
+///
+/// This is intentionally transport-only: the gateway validates every ID
+/// against its live catalogs before it can affect an executor.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentCapabilityAssignment {
+    /// Canonical ID of the execution that may receive these capabilities.
+    pub agent_id: String,
+
+    /// Skill IDs recommended to the agent. Skills remain lazy-loaded through
+    /// the existing `load_skill` tool.
+    #[serde(default)]
+    pub skills: Vec<String>,
+
+    /// Canonical MCP server IDs to mount before the agent's first model turn.
+    #[serde(default)]
+    pub mcps: Vec<String>,
+}
+
 /// Action for the delegate tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegateAction {
@@ -199,6 +219,17 @@ pub struct DelegateAction {
     /// Skills to pre-load for the subagent.
     #[serde(default)]
     pub skills: Vec<String>,
+
+    /// Explicit dynamic capability assignment for this child. `None` retains
+    /// legacy static-agent MCP behavior; `Some` overrides it, including an
+    /// intentionally empty list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_assignment: Option<AgentCapabilityAssignment>,
+
+    /// Host-supplied planner capability catalog. This is populated only for
+    /// planning executions and is never accepted from the model's tool args.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_capability_catalog: Option<Value>,
 
     /// Task complexity level: "S", "M", "L", "XL".
     ///
@@ -317,6 +348,12 @@ mod tests {
             max_iterations: None,
             output_schema: None,
             skills: vec![],
+            capability_assignment: Some(AgentCapabilityAssignment {
+                agent_id: "child".to_string(),
+                skills: vec!["research".to_string()],
+                mcps: vec!["web".to_string()],
+            }),
+            planning_capability_catalog: None,
             complexity: Some("M".to_string()),
             mode: Some("ward_backed_build".to_string()),
             parallel: false,
@@ -324,6 +361,10 @@ mod tests {
         };
         assert_eq!(action.complexity, Some("M".to_string()));
         assert_eq!(action.mode.as_deref(), Some("ward_backed_build"));
+        assert_eq!(
+            action.capability_assignment.unwrap().mcps,
+            vec!["web".to_string()]
+        );
     }
 
     #[test]
@@ -332,5 +373,7 @@ mod tests {
         let action: DelegateAction = serde_json::from_str(json).unwrap();
         assert_eq!(action.complexity, None);
         assert_eq!(action.mode, None);
+        assert_eq!(action.capability_assignment, None);
+        assert_eq!(action.planning_capability_catalog, None);
     }
 }

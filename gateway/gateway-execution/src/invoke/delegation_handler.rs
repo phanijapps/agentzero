@@ -22,6 +22,8 @@ pub fn handle_delegation(
     max_iterations: Option<u32>,
     output_schema: &Option<serde_json::Value>,
     skills: &[String],
+    capability_assignment: &Option<agent_primitives::event::AgentCapabilityAssignment>,
+    planning_capability_catalog: &Option<serde_json::Value>,
     complexity: &Option<String>,
     mode: &Option<String>,
     parallel: bool,
@@ -145,6 +147,8 @@ pub fn handle_delegation(
         max_iterations,
         output_schema: output_schema.clone(),
         skills: skills.to_vec(),
+        capability_assignment: capability_assignment.clone(),
+        planning_capability_catalog: planning_capability_catalog.clone(),
         complexity: complexity.clone(),
         parallel,
     });

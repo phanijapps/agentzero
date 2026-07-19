@@ -325,6 +325,7 @@ fn test_intent_injection_sdlc_for_graph() {
         hidden_intents: vec!["fetch options data".to_string()],
         recommended_skills: vec!["coding".to_string()],
         recommended_agents: vec!["code-agent".to_string()],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
             action: WardAction::CreateNew,
             ward_name: "financial-analysis".to_string(),
@@ -369,6 +370,7 @@ fn test_intent_injection_no_sdlc_for_simple() {
         hidden_intents: vec![],
         recommended_skills: vec![],
         recommended_agents: vec![],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
             action: WardAction::UseExisting,
             ward_name: "scratch".to_string(),
@@ -419,6 +421,7 @@ fn test_ward_rules_domain_agnostic() {
         hidden_intents: vec![],
         recommended_skills: vec![],
         recommended_agents: vec![],
+        recommended_capabilities: vec![],
         ward_recommendation: WardRecommendation {
             action: WardAction::CreateNew,
             ward_name: "test".to_string(),

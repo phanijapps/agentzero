@@ -12,7 +12,7 @@
 //! `get_rate_limiter`) are implemented here directly because they operate
 //! exclusively on the bootstrap's own field set.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
 
@@ -31,12 +31,13 @@ use crate::agent_pool::AgentResultBus;
 use crate::config::ExecutionConfig;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
-    collect_agents_summary, collect_skills_summary, select_engine, AgentLoader, ExecutorBuilder,
+    collect_agents_summary, collect_skills_summary, mcp_startup_failure_observer, select_engine,
+    AgentLoader, ExecutorBuilder,
 };
 use crate::lifecycle::{emit_agent_started, get_or_create_session, start_execution};
 use crate::middleware::intent_analysis::{
-    analyze_intent, format_intent_injection, format_planner_task, index_resources,
-    ExecutionApproach, IntentAnalysis, WardAction, WardRecommendation,
+    analyze_intent_with_capabilities, format_intent_injection, format_planner_task,
+    index_resources, ExecutionApproach, IntentAnalysis, WardAction, WardRecommendation,
 };
 use crate::session_title::{SessionTitleInputs, SessionTitleService};
 
@@ -150,6 +151,8 @@ struct IntentAnalysisCtx<'a> {
 /// Return type of [`InvokeBootstrap::run_intent_analysis`].
 struct IntentOutcome {
     recommended_skills: Vec<String>,
+    recommended_capabilities: Vec<agent_primitives::event::AgentCapabilityAssignment>,
+    is_graph: bool,
     instructions_injection: String,
     title_hint: String,
     /// A ward accepted by the filesystem validation and graduation gate. This
@@ -158,6 +161,8 @@ struct IntentOutcome {
     /// Present only for a cold graph request. Bootstrap installs this in root
     /// tool context so ward entry can deterministically trigger planner-agent.
     planning_task: Option<String>,
+    /// Host-owned full catalog used by planner-only `lookup_capabilities`.
+    planning_capability_catalog: Option<serde_json::Value>,
     /// Sanitized intent data, held until the active ward is known. Delaying
     /// the write prevents a model-suggested path from becoming fact scope.
     intent_snapshot: serde_json::Value,
@@ -339,6 +344,204 @@ fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
         names.push("goal".to_string());
     }
     names
+}
+
+const MAX_INTENT_MCP_DESCRIPTION_CHARS: usize = 512;
+const MAX_INTENT_CAPABILITY_ASSIGNMENTS: usize = 12;
+const MAX_CAPABILITIES_PER_ASSIGNMENT: usize = 25;
+
+fn safe_capability_description(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_INTENT_MCP_DESCRIPTION_CHARS)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+/// Read the complete safe runtime MCP catalog for semantic retrieval and
+/// post-model validation. The intent prompt receives only the bounded semantic
+/// subset selected in `search_resources`.
+///
+/// Runtime configuration, auth tokens, URLs, command lines, headers, and
+/// environment values never cross this boundary.
+fn safe_intent_mcp_catalog(mcp_service: &McpService) -> Vec<serde_json::Value> {
+    let mut candidates = mcp_service
+        .list_summaries()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|summary| {
+            summary.enabled
+                && matches!(
+                    summary.auth_status.as_deref(),
+                    None | Some("not_configured") | Some("connected")
+                )
+        })
+        .map(|summary| {
+            let description = safe_capability_description(&summary.description);
+            serde_json::json!({
+                "id": summary.id,
+                "name": summary.name,
+                "description": description,
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.get("id")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("id").and_then(serde_json::Value::as_str))
+    });
+    candidates
+}
+
+/// Keep model output on the narrow capability transport boundary. Invalid
+/// targets and unknown IDs are silently discarded here and revalidated again
+/// immediately before child/root executor construction.
+async fn sanitize_capability_recommendations(
+    agent_service: &AgentService,
+    skill_service: &SkillService,
+    paths: &SharedVaultPaths,
+    assignments: Vec<agent_primitives::event::AgentCapabilityAssignment>,
+    mcp_candidates: &[serde_json::Value],
+) -> Vec<agent_primitives::event::AgentCapabilityAssignment> {
+    let known_skills = skill_service
+        .list()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect::<HashSet<_>>();
+    let known_mcps = mcp_candidates
+        .iter()
+        .filter_map(|candidate| candidate.get("id")?.as_str())
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    let mut seen_agents = HashSet::new();
+    let mut sanitized = Vec::new();
+
+    for mut assignment in assignments
+        .into_iter()
+        .take(MAX_INTENT_CAPABILITY_ASSIGNMENTS)
+    {
+        let valid_target = if assignment.agent_id == "root" {
+            true
+        } else if let Some(ward_id) = assignment.agent_id.strip_prefix("ward:") {
+            canonical_existing_ward_id(paths, ward_id).is_some()
+        } else {
+            agent_service.get(&assignment.agent_id).await.is_ok()
+        };
+        if !valid_target || !seen_agents.insert(assignment.agent_id.clone()) {
+            continue;
+        }
+
+        assignment.skills = assignment
+            .skills
+            .into_iter()
+            .filter(|skill| known_skills.contains(skill))
+            .take(MAX_CAPABILITIES_PER_ASSIGNMENT)
+            .collect();
+        assignment.mcps = assignment
+            .mcps
+            .into_iter()
+            .filter(|mcp| known_mcps.contains(mcp))
+            .take(MAX_CAPABILITIES_PER_ASSIGNMENT)
+            .collect();
+        sanitized.push(assignment);
+    }
+
+    sanitized
+}
+
+/// Root assignments are part of the same intent contract as legacy
+/// `recommended_skills`. Materialize their already-sanitized skill IDs into
+/// that recommendation list before rendering the root prompt, so Quick Chat
+/// gets the same lazy `load_skill` guidance as a delegated agent.
+fn merge_root_assignment_skills(analysis: &mut IntentAnalysis, root_agent_id: &str) -> Vec<String> {
+    let assigned = analysis
+        .recommended_capabilities
+        .iter()
+        .find(|assignment| assignment.agent_id == "root" || assignment.agent_id == root_agent_id)
+        .map(|assignment| assignment.skills.clone())
+        .unwrap_or_default();
+
+    let mut seen = analysis
+        .recommended_skills
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    for skill in &assigned {
+        if seen.insert(skill.clone()) {
+            analysis.recommended_skills.push(skill.clone());
+        }
+    }
+
+    assigned
+}
+
+/// Build the complete, pager-backed planner catalog. It is kept in host state
+/// and reaches the model only through `lookup_capabilities`; the planner prompt
+/// receives just intent guidance.
+async fn build_planner_capability_catalog(
+    skill_service: &SkillService,
+    mcp_service: &McpService,
+    intent_guidance: &[agent_primitives::event::AgentCapabilityAssignment],
+) -> serde_json::Value {
+    let mut skills = skill_service
+        .list()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|skill| {
+            let description = safe_capability_description(&skill.description);
+            serde_json::json!({
+                "id": skill.name,
+                "name": skill.display_name,
+                "description": description,
+            })
+        })
+        .collect::<Vec<_>>();
+    skills.sort_by(|left, right| {
+        left.get("id")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("id").and_then(serde_json::Value::as_str))
+    });
+
+    let mut mcps = mcp_service
+        .list_summaries()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|summary| {
+            summary.enabled
+                && matches!(
+                    summary.auth_status.as_deref(),
+                    None | Some("not_configured") | Some("connected")
+                )
+        })
+        .map(|summary| {
+            let description = safe_capability_description(&summary.description);
+            serde_json::json!({
+                "id": summary.id,
+                "name": summary.name,
+                "description": description,
+            })
+        })
+        .collect::<Vec<_>>();
+    mcps.sort_by(|left, right| {
+        left.get("id")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("id").and_then(serde_json::Value::as_str))
+    });
+
+    serde_json::json!({
+        "skills": skills,
+        "mcps": mcps,
+        "intent_guidance": intent_guidance,
+    })
 }
 
 fn is_trivial_chat_prompt(message: &str) -> bool {
@@ -1007,7 +1210,13 @@ impl InvokeBootstrap {
         // Use ExecutorBuilder to create the executor
         let mut builder = ExecutorBuilder::new(self.paths.vault_dir().clone(), tool_settings)
             .with_rate_limiter(rate_limiter)
-            .with_chat_mode(config.is_chat_mode());
+            .with_chat_mode(config.is_chat_mode())
+            .with_mcp_startup_failure_observer(mcp_startup_failure_observer(
+                self.log_service.clone(),
+                execution_id,
+                session_id,
+                &agent.id,
+            ));
         if let Some(registry) = self.model_registry.load_full() {
             builder = builder.with_model_registry(registry);
         }
@@ -1105,7 +1314,69 @@ impl InvokeBootstrap {
             }
 
             recommended_skills = out.recommended_skills;
+            if is_root && !out.is_graph {
+                if let Some(assignment) = out.recommended_capabilities.iter().find(|assignment| {
+                    assignment.agent_id == "root" || assignment.agent_id == agent_for_build.id
+                }) {
+                    match self
+                        .mcp_service
+                        .resolve_dynamic_runtime_ids(&assignment.mcps)
+                    {
+                        Ok(resolution) => {
+                            agent_for_build.mcps = resolution.effective_ids.clone();
+                            let rejection_codes = resolution
+                                .rejections
+                                .iter()
+                                .map(|reason| reason.as_str())
+                                .collect::<Vec<_>>();
+                            let entry = api_logs::ExecutionLog::new(
+                                execution_id,
+                                session_id,
+                                &agent_for_build.id,
+                                api_logs::LogLevel::Info,
+                                api_logs::LogCategory::Intent,
+                                "Resolved execution capabilities",
+                            )
+                            .with_metadata(serde_json::json!({
+                                "origin": "intent",
+                                "effective_skills": assignment.skills,
+                                "effective_mcps": resolution.effective_ids,
+                                "unresolved_count": resolution.rejections.len(),
+                                "rejection_codes": rejection_codes,
+                            }));
+                            let _ = self.log_service.log(entry);
+                        }
+                        Err(_) => {
+                            // An explicit root assignment fails closed and
+                            // never falls back to static MCP configuration.
+                            agent_for_build.mcps.clear();
+                            let entry = api_logs::ExecutionLog::new(
+                                execution_id,
+                                session_id,
+                                &agent_for_build.id,
+                                api_logs::LogLevel::Info,
+                                api_logs::LogCategory::Intent,
+                                "Resolved execution capabilities",
+                            )
+                            .with_metadata(serde_json::json!({
+                                "origin": "intent_resolution_unavailable",
+                                "effective_skills": assignment.skills,
+                                "effective_mcps": [],
+                                "unresolved_count": assignment.mcps.len(),
+                                "rejection_codes": [],
+                            }));
+                            let _ = self.log_service.log(entry);
+                        }
+                    }
+                }
+            }
             if is_root {
+                if let Some(catalog) = out.planning_capability_catalog.as_ref() {
+                    builder = builder.with_initial_state(
+                        agent_runtime::tools::PLANNING_CAPABILITY_CATALOG_STATE,
+                        catalog.clone(),
+                    );
+                }
                 if let Some(task) = out.planning_task.as_deref() {
                     builder = builder.with_initial_state(
                         agent_tools::guards::PLANNING_GATE_STATE,
@@ -1265,8 +1536,10 @@ impl InvokeBootstrap {
             fact_store,
         } = ctx;
 
-        // Guard: non-root or chat-mode — never run intent analysis.
-        if !is_root || config.is_chat_mode() {
+        // Only root executions own intent analysis. Quick Chat uses the same
+        // bounded capability selection, but its result is forced to the fast
+        // path below so it never enters ward/planning orchestration.
+        if !is_root {
             return None;
         }
 
@@ -1292,10 +1565,11 @@ impl InvokeBootstrap {
             fs.as_ref(),
             &self.skill_service,
             &self.agent_service,
+            &self.mcp_service,
             &self.paths,
         )
         .await;
-        tracing::info!("Resource indexing complete (skills, agents, wards)");
+        tracing::info!("Resource indexing complete (skills, agents, wards, MCPs)");
 
         // Emit started event so UI can show "Analyzing..."
         self.event_bus
@@ -1371,7 +1645,8 @@ impl InvokeBootstrap {
                 recall, "root", "root", session_id, None,
             )
         });
-        let mut analysis = match analyze_intent(
+        let available_mcps = safe_intent_mcp_catalog(&self.mcp_service);
+        let mut analysis = match analyze_intent_with_capabilities(
             retrying.clone(),
             msg,
             fs.as_ref(),
@@ -1382,6 +1657,7 @@ impl InvokeBootstrap {
             &tool_inventory,
             Some(&self.procedure_recommendation_cfg),
             &existing_wards,
+            &available_mcps,
         )
         .await
         {
@@ -1399,6 +1675,24 @@ impl InvokeBootstrap {
                 return None;
             }
         };
+
+        if config.is_chat_mode() {
+            analysis.execution_strategy.approach = ExecutionApproach::Simple;
+            analysis.execution_strategy.graph = None;
+            analysis.execution_strategy.explanation =
+                "Quick Chat runs directly in the root execution".to_string();
+        }
+        analysis.recommended_capabilities = sanitize_capability_recommendations(
+            &self.agent_service,
+            &self.skill_service,
+            &self.paths,
+            analysis.recommended_capabilities,
+            &available_mcps,
+        )
+        .await;
+        if ctx.is_root {
+            merge_root_assignment_skills(&mut analysis, &ctx.agent.id);
+        }
 
         // Intent is allowed to bind only an explicit `use_existing` result.
         // A filesystem match does not upgrade a `create_new` result. A valid
@@ -1506,9 +1800,24 @@ impl InvokeBootstrap {
         // other graph request is cold: its root must establish a ward and the
         // runtime gate will launch planner-agent from that transition.
         let planning_task = cold_graph_planning_task(&analysis, existing_ward_id.as_deref(), msg);
+        let planning_capability_catalog =
+            if analysis.execution_strategy.approach == ExecutionApproach::Graph {
+                Some(
+                    build_planner_capability_catalog(
+                        &self.skill_service,
+                        &self.mcp_service,
+                        &analysis.recommended_capabilities,
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
 
         Some(IntentOutcome {
             recommended_skills: analysis.recommended_skills.clone(),
+            recommended_capabilities: analysis.recommended_capabilities.clone(),
+            is_graph: analysis.execution_strategy.approach == ExecutionApproach::Graph,
             title_hint: analysis.primary_intent.clone(),
             instructions_injection: format_intent_injection(
                 &analysis,
@@ -1517,6 +1826,7 @@ impl InvokeBootstrap {
             ),
             existing_ward_id,
             planning_task,
+            planning_capability_catalog,
             intent_snapshot: intent_json,
         })
     }
@@ -1796,6 +2106,7 @@ mod tests {
             hidden_intents: Vec::new(),
             recommended_skills: vec!["coding".to_string()],
             recommended_agents: vec!["builder-agent".to_string()],
+            recommended_capabilities: Vec::new(),
             ward_recommendation: WardRecommendation {
                 action: WardAction::CreateNew,
                 ward_name: "creative-design".to_string(),
@@ -1811,6 +2122,23 @@ mod tests {
             rewritten_prompt: String::new(),
             procedure_recommendation: None,
         }
+    }
+
+    #[test]
+    fn root_assignment_skills_are_merged_into_lazy_recommendations() {
+        let mut analysis = intent_with_approach(ExecutionApproach::Simple);
+        analysis.recommended_skills = vec!["coding".to_string()];
+        analysis.recommended_capabilities =
+            vec![agent_primitives::event::AgentCapabilityAssignment {
+                agent_id: "root".to_string(),
+                skills: vec!["research".to_string(), "coding".to_string()],
+                mcps: vec![],
+            }];
+
+        let assigned = merge_root_assignment_skills(&mut analysis, "root");
+
+        assert_eq!(assigned, vec!["research", "coding"]);
+        assert_eq!(analysis.recommended_skills, vec!["coding", "research"]);
     }
 
     #[test]

@@ -356,6 +356,9 @@ impl Tool for WardTool {
                         max_iterations: None,
                         output_schema: None,
                         skills: Vec::new(),
+                        capability_assignment: None,
+                        planning_capability_catalog: ctx
+                            .get_state("app:planning_capability_catalog"),
                         complexity: None,
                         mode: None,
                         parallel: false,

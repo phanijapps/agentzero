@@ -2,7 +2,10 @@
 //!
 //! CRUD operations for MCP server configurations.
 
-use crate::services::{mcp::McpServerSummary, McpOAuthService, McpOAuthStartResponse};
+use crate::services::{
+    mcp::{McpServerSummary, McpUpdateError},
+    McpOAuthService, McpOAuthStartResponse,
+};
 use crate::state::AppState;
 use agent_runtime::{McpAuthConfig, McpServerConfig};
 use axum::{
@@ -108,9 +111,25 @@ fn default_true() -> bool {
     true
 }
 
-impl From<CreateMcpRequest> for McpServerConfig {
-    fn from(req: CreateMcpRequest) -> Self {
-        match req {
+const MISSING_MCP_NAME_ERROR: &str = "MCP name is required when ID is omitted";
+
+fn canonical_mcp_id(id: Option<String>, name: &str) -> Result<String, String> {
+    if let Some(id) = id.filter(|id| !id.trim().is_empty()) {
+        return Ok(id);
+    }
+
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(MISSING_MCP_NAME_ERROR.to_string());
+    }
+    Ok(name.to_lowercase().replace(' ', "-"))
+}
+
+impl TryFrom<CreateMcpRequest> for McpServerConfig {
+    type Error = String;
+
+    fn try_from(req: CreateMcpRequest) -> Result<Self, Self::Error> {
+        Ok(match req {
             CreateMcpRequest::Stdio {
                 id,
                 name,
@@ -120,7 +139,7 @@ impl From<CreateMcpRequest> for McpServerConfig {
                 env,
                 enabled,
             } => McpServerConfig::Stdio {
-                id,
+                id: Some(canonical_mcp_id(id, &name)?),
                 name,
                 description,
                 command,
@@ -138,7 +157,7 @@ impl From<CreateMcpRequest> for McpServerConfig {
                 auth,
                 enabled,
             } => McpServerConfig::Http {
-                id,
+                id: Some(canonical_mcp_id(id, &name)?),
                 name,
                 description,
                 url,
@@ -156,7 +175,7 @@ impl From<CreateMcpRequest> for McpServerConfig {
                 auth,
                 enabled,
             } => McpServerConfig::Sse {
-                id,
+                id: Some(canonical_mcp_id(id, &name)?),
                 name,
                 description,
                 url,
@@ -174,7 +193,7 @@ impl From<CreateMcpRequest> for McpServerConfig {
                 auth,
                 enabled,
             } => McpServerConfig::StreamableHttp {
-                id,
+                id: Some(canonical_mcp_id(id, &name)?),
                 name,
                 description,
                 url,
@@ -183,8 +202,12 @@ impl From<CreateMcpRequest> for McpServerConfig {
                 enabled,
                 validated: None,
             },
-        }
+        })
     }
+}
+
+fn try_mcp_config(request: CreateMcpRequest) -> Result<McpServerConfig, String> {
+    request.try_into()
 }
 
 fn validate_mcp_config(config: &McpServerConfig) -> Result<(), String> {
@@ -228,7 +251,8 @@ pub async fn create_mcp(
     headers: HeaderMap,
     Json(request): Json<CreateMcpRequest>,
 ) -> Result<Json<McpServerConfig>, (StatusCode, Json<ErrorResponse>)> {
-    let config: McpServerConfig = request.into();
+    let config = try_mcp_config(request)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })))?;
 
     if requires_local_origin_guard(&config) {
         require_local_origin(&headers)?;
@@ -264,7 +288,8 @@ pub async fn update_mcp(
         ));
     }
 
-    let config: McpServerConfig = request.into();
+    let config = try_mcp_config(request)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })))?;
 
     if requires_local_origin_guard(&config) {
         require_local_origin(&headers)?;
@@ -277,13 +302,47 @@ pub async fn update_mcp(
     match state.mcp_service.update(&id, config.clone()) {
         Ok(()) => Ok(Json(config)),
         Err(e) => {
-            tracing::error!("Failed to update MCP server: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: e }),
-            ))
+            match &e {
+                McpUpdateError::Internal(_) => {
+                    tracing::error!(
+                        error_kind = "mcp_update_internal",
+                        "Failed to update MCP server"
+                    );
+                }
+                McpUpdateError::DuplicateId { .. } => {
+                    tracing::warn!(
+                        error_kind = "mcp_update_duplicate_id",
+                        "Rejected MCP update"
+                    );
+                }
+                McpUpdateError::NotFound { .. } => {
+                    tracing::warn!(
+                        error_kind = "mcp_update_not_found",
+                        "MCP update target not found"
+                    );
+                }
+            }
+            Err(mcp_update_error_response(e))
         }
     }
+}
+
+fn mcp_update_error_response(error: McpUpdateError) -> (StatusCode, Json<ErrorResponse>) {
+    let (status, message) = match error {
+        McpUpdateError::DuplicateId { id } => (
+            StatusCode::BAD_REQUEST,
+            format!("MCP server with ID '{}' already exists", id),
+        ),
+        McpUpdateError::NotFound { id } => (
+            StatusCode::NOT_FOUND,
+            format!("MCP server not found: {}", id),
+        ),
+        McpUpdateError::Internal(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to update MCP server".to_string(),
+        ),
+    };
+    (status, Json(ErrorResponse { error: message }))
 }
 
 /// DELETE /api/mcps/:id - Delete an MCP server.
@@ -525,7 +584,66 @@ fn is_local_origin(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::mcp::McpUpdateError;
     use axum::http::{HeaderMap, HeaderValue};
+
+    fn stdio_request(id: Option<&str>, name: &str) -> CreateMcpRequest {
+        CreateMcpRequest::Stdio {
+            id: id.map(str::to_string),
+            name: name.to_string(),
+            description: "test MCP".to_string(),
+            command: "echo".to_string(),
+            args: vec![],
+            env: None,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn request_conversion_derives_missing_or_blank_ids() {
+        for request in [
+            stdio_request(None, "Blender MCP"),
+            stdio_request(Some("   "), "Blender MCP"),
+        ] {
+            assert_eq!(try_mcp_config(request).unwrap().id(), "blender-mcp");
+        }
+    }
+
+    #[test]
+    fn request_conversion_preserves_explicit_id() {
+        let config = try_mcp_config(stdio_request(Some("manual-id"), "Blender MCP")).unwrap();
+
+        assert_eq!(config.id(), "manual-id");
+    }
+
+    #[test]
+    fn request_conversion_rejects_blank_name_when_id_must_be_derived() {
+        for request in [stdio_request(None, "  "), stdio_request(Some("\t"), "\n")] {
+            assert_eq!(
+                try_mcp_config(request).unwrap_err(),
+                "MCP name is required when ID is omitted"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_update_error_maps_to_bad_request_but_internal_error_does_not() {
+        let (duplicate_status, Json(duplicate_body)) =
+            mcp_update_error_response(McpUpdateError::DuplicateId {
+                id: "taken".to_string(),
+            });
+        let (internal_status, Json(internal_body)) =
+            mcp_update_error_response(McpUpdateError::Internal("disk failed".to_string()));
+
+        assert_eq!(duplicate_status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            duplicate_body.error,
+            "MCP server with ID 'taken' already exists"
+        );
+        assert_eq!(internal_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(internal_body.error, "Failed to update MCP server");
+        assert_ne!(internal_body.error, "disk failed");
+    }
 
     #[test]
     fn oauth_redirect_uri_accepts_local_dev_callback() {

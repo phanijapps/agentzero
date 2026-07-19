@@ -34,5 +34,5 @@ mod tool;
 pub use client::McpClient;
 pub use config::{McpAuthConfig, McpAuthType, McpServerConfig};
 pub use error::McpError;
-pub use manager::McpManager;
+pub use manager::{McpManager, McpStartupFailureObserver};
 pub use tool::McpTool;

@@ -178,6 +178,13 @@ pub struct DelegationRequest {
     /// Skills to pre-load for the subagent.
     pub skills: Vec<String>,
 
+    /// Explicit dynamic capabilities requested for this child. The spawn path
+    /// validates and resolves these IDs before building its executor.
+    pub capability_assignment: Option<agent_primitives::event::AgentCapabilityAssignment>,
+
+    /// Host-owned safe catalog made available only to a planner or ward-agent.
+    pub planning_capability_catalog: Option<Value>,
+
     /// Task complexity level ("S", "M", "L", "XL") for budget enforcement.
     pub complexity: Option<String>,
 

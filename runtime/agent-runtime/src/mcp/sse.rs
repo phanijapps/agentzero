@@ -36,7 +36,7 @@ impl SseMcpClient {
         url: String,
         headers: HashMap<String, String>,
     ) -> Self {
-        tracing::debug!("Creating SSE MCP client: {} at {}", name, url);
+        tracing::debug!(mcp_id = %id, "Created SSE MCP client");
         Self {
             id,
             name,
@@ -59,7 +59,7 @@ impl SseMcpClient {
             "params": params
         });
 
-        tracing::debug!("SSE MCP request to {}: {}", self.url, request_body);
+        tracing::debug!(mcp_id = %self.id, "Sending SSE MCP request");
 
         let mut req = self
             .client
@@ -76,34 +76,35 @@ impl SseMcpClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| McpError::ProtocolError(format!("HTTP request failed: {e}")))?;
+            .map_err(|_| McpError::ProtocolError("MCP request failed".to_string()))?;
 
         let status = response.status();
         let response_text = response
             .text()
             .await
-            .map_err(|e| McpError::ProtocolError(format!("Failed to read response: {e}")))?;
+            .map_err(|_| McpError::ProtocolError("Failed to read MCP response".to_string()))?;
 
         tracing::debug!(
-            "SSE MCP response status: {}, body: {}",
-            status,
-            response_text
+            mcp_id = %self.id,
+            status = status.as_u16(),
+            "Received SSE MCP response"
         );
 
         if !status.is_success() {
             return Err(McpError::ProtocolError(format!(
-                "HTTP error {}: {}",
-                status.as_u16(),
-                response_text
+                "MCP request failed with HTTP status {}",
+                status.as_u16()
             )));
         }
 
         let response_json: Value = serde_json::from_str(&response_text)
-            .map_err(|e| McpError::ProtocolError(format!("Failed to parse JSON response: {e}")))?;
+            .map_err(|_| McpError::ProtocolError("Failed to parse MCP response".to_string()))?;
 
         // Check for JSON-RPC error
-        if let Some(error) = response_json.get("error") {
-            return Err(McpError::ProtocolError(format!("MCP error: {error}")));
+        if response_json.get("error").is_some() {
+            return Err(McpError::ProtocolError(
+                "MCP returned a protocol error".to_string(),
+            ));
         }
 
         Ok(response_json)

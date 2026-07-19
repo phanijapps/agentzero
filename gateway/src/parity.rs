@@ -114,6 +114,8 @@ fn stream_scenarios() -> Vec<Value> {
                     max_iterations: Some(1),
                     output_schema: None,
                     skills: vec!["skill".to_string()],
+                    capability_assignment: None,
+                    planning_capability_catalog: None,
                     complexity: Some("low".to_string()),
                     mode: Some("DirectArtifact".to_string()),
                     parallel: false,

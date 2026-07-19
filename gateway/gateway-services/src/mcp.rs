@@ -22,6 +22,29 @@ pub struct McpService {
     oauth_lock: Mutex<()>,
 }
 
+/// Failure reason when replacing an MCP configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpUpdateError {
+    /// The requested existing MCP record is absent.
+    NotFound { id: String },
+    /// A different MCP record already owns the requested replacement ID.
+    DuplicateId { id: String },
+    /// Reading, persisting, or securely clearing state failed.
+    Internal(String),
+}
+
+impl std::fmt::Display for McpUpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound { id } => write!(f, "MCP server not found: {id}"),
+            Self::DuplicateId { id } => write!(f, "MCP server with ID '{id}' already exists"),
+            Self::Internal(error) => f.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for McpUpdateError {}
+
 /// Summary of an MCP server for listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerSummary {
@@ -39,6 +62,40 @@ pub struct McpServerSummary {
     /// Non-secret auth status for UI/listing surfaces.
     #[serde(rename = "authStatus", skip_serializing_if = "Option::is_none")]
     pub auth_status: Option<String>,
+}
+
+/// Safe reason why a requested dynamic MCP could not be mounted.
+///
+/// Deliberately excludes the requested identifier and underlying error text so
+/// callers can make an audit record without exposing untrusted values or
+/// configuration details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpCapabilityRejection {
+    UnknownId,
+    Disabled,
+    OAuthUnavailable,
+}
+
+impl McpCapabilityRejection {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownId => "unknown_id",
+            Self::Disabled => "disabled",
+            Self::OAuthUnavailable => "oauth_unavailable",
+        }
+    }
+}
+
+/// Result of resolving untrusted dynamic MCP IDs into safe runtime IDs.
+///
+/// `effective_ids` contains canonical configured IDs only. Rejections are
+/// countable categories rather than echoes of the raw requested values.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpCapabilityResolution {
+    pub effective_ids: Vec<String>,
+    pub rejections: Vec<McpCapabilityRejection>,
 }
 
 /// Non-secret OAuth connection status.
@@ -239,6 +296,47 @@ impl McpService {
             .collect()
     }
 
+    /// Resolve canonical dynamic MCP IDs for an executor without exposing
+    /// configuration secrets or invalid requested IDs to the caller.
+    ///
+    /// Unlike `get_multiple_for_runtime`, this accepts only exact canonical
+    /// IDs. Display-name aliases are retained exclusively for legacy static
+    /// agent configuration compatibility.
+    pub fn resolve_dynamic_runtime_ids(
+        &self,
+        requested_ids: &[String],
+    ) -> Result<McpCapabilityResolution, String> {
+        let configs = self.list()?;
+        let mut result = McpCapabilityResolution::default();
+
+        for requested_id in requested_ids {
+            let Some(config) = configs.iter().find(|config| config.id() == *requested_id) else {
+                result.rejections.push(McpCapabilityRejection::UnknownId);
+                continue;
+            };
+            if !config.enabled() {
+                result.rejections.push(McpCapabilityRejection::Disabled);
+                continue;
+            }
+            if !matches!(
+                self.runtime_auth_status(config),
+                McpOAuthStatus::NotConfigured | McpOAuthStatus::Connected
+            ) {
+                result
+                    .rejections
+                    .push(McpCapabilityRejection::OAuthUnavailable);
+                continue;
+            }
+
+            let canonical_id = config.id();
+            if !result.effective_ids.contains(&canonical_id) {
+                result.effective_ids.push(canonical_id);
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Get one MCP config for connection testing/runtime use, injecting OAuth
     /// bearer headers only when the stored token is connected and resource-bound
     /// to the current config.
@@ -432,19 +530,31 @@ impl McpService {
     }
 
     /// Update an existing MCP server configuration.
-    pub fn update(&self, id: &str, config: McpServerConfig) -> Result<(), String> {
-        let mut configs = self.list()?;
+    pub fn update(&self, id: &str, config: McpServerConfig) -> Result<(), McpUpdateError> {
+        let mut configs = self.list().map_err(McpUpdateError::Internal)?;
 
         let index = configs
             .iter()
             .position(|c| c.id() == id)
-            .ok_or_else(|| format!("MCP server not found: {}", id))?;
+            .ok_or_else(|| McpUpdateError::NotFound { id: id.to_string() })?;
+
+        let replacement_id = config.id();
+        if configs
+            .iter()
+            .enumerate()
+            .any(|(other_index, existing)| other_index != index && existing.id() == replacement_id)
+        {
+            return Err(McpUpdateError::DuplicateId {
+                id: replacement_id.to_string(),
+            });
+        }
 
         if oauth_identity_changed(&configs[index], &config) {
-            self.disconnect_oauth(id)?;
+            self.disconnect_oauth(id)
+                .map_err(McpUpdateError::Internal)?;
         }
         configs[index] = config;
-        self.save(&configs)
+        self.save(&configs).map_err(McpUpdateError::Internal)
     }
 
     /// Delete an MCP server configuration.
@@ -571,7 +681,9 @@ fn validate_oauth_configs(configs: &[McpServerConfig]) -> Result<(), String> {
 
 fn oauth_identity_changed(old: &McpServerConfig, new: &McpServerConfig) -> bool {
     old.is_oauth()
-        && (config_resource_url(old) != config_resource_url(new) || old.auth() != new.auth())
+        && (old.id() != new.id()
+            || config_resource_url(old) != config_resource_url(new)
+            || old.auth() != new.auth())
 }
 
 fn config_resource_url(config: &McpServerConfig) -> Option<String> {
@@ -707,6 +819,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dynamic_runtime_resolution_requires_enabled_canonical_ready_ids() {
+        let (_dir, service) = service();
+        service
+            .save(&[
+                stdio(Some("ready"), "Ready", true),
+                stdio(Some("disabled"), "Disabled", false),
+                oauth_streamable("oauth", true),
+            ])
+            .unwrap();
+
+        let resolution = service
+            .resolve_dynamic_runtime_ids(&[
+                "ready".to_string(),
+                "Ready".to_string(),
+                "disabled".to_string(),
+                "oauth".to_string(),
+                "missing".to_string(),
+                "ready".to_string(),
+            ])
+            .unwrap();
+
+        assert_eq!(resolution.effective_ids, vec!["ready"]);
+        assert_eq!(
+            resolution.rejections,
+            vec![
+                McpCapabilityRejection::UnknownId,
+                McpCapabilityRejection::Disabled,
+                McpCapabilityRejection::OAuthUnavailable,
+                McpCapabilityRejection::UnknownId,
+            ]
+        );
+    }
+
     fn token_record(access_token: &str, expires_at_unix: Option<i64>) -> McpOAuthTokenRecord {
         McpOAuthTokenRecord {
             access_token: access_token.to_string(),
@@ -758,6 +904,28 @@ mod tests {
         let found = service.get_multiple(&["Brave Search".to_string()]);
 
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn update_rejects_replacement_id_owned_by_another_mcp_without_mutation() {
+        let (_dir, service) = service();
+        service
+            .save(&[
+                stdio(Some("first"), "First", true),
+                stdio(Some("second"), "Second", true),
+            ])
+            .unwrap();
+
+        let result = service.update("first", stdio(Some("second"), "First", true));
+
+        assert_eq!(
+            result,
+            Err(McpUpdateError::DuplicateId {
+                id: "second".to_string(),
+            })
+        );
+        assert_eq!(service.get("first").unwrap().name(), "First");
+        assert_eq!(service.get("second").unwrap().name(), "Second");
     }
 
     #[test]
@@ -830,6 +998,58 @@ mod tests {
         assert_eq!(service.oauth_status("two"), McpOAuthStatus::Connected);
         assert!(service.remove_oauth_pending("one-state").unwrap().is_none());
         assert!(service.remove_oauth_pending("two-state").unwrap().is_some());
+    }
+
+    #[test]
+    fn changing_oauth_mcp_id_clears_old_identity_oauth_state() {
+        let (_dir, service) = service();
+        service
+            .save(&[
+                oauth_streamable("old", false),
+                oauth_streamable("other", false),
+            ])
+            .unwrap();
+
+        for id in ["old", "other"] {
+            service
+                .save_oauth_token(
+                    id,
+                    token_record(&format!("{id}-access"), Some(Utc::now().timestamp() + 3600)),
+                )
+                .unwrap();
+            service
+                .save_oauth_pending(
+                    &format!("{id}-state"),
+                    McpOAuthPendingRecord {
+                        mcp_id: id.to_string(),
+                        code_verifier: "verifier".to_string(),
+                        redirect_uri: "http://localhost/callback".to_string(),
+                        resource: "https://example.com/mcp".to_string(),
+                        expires_at_unix: Utc::now().timestamp() + 300,
+                        client_id: Some("client".to_string()),
+                        client_secret: None,
+                        token_endpoint: "https://example.com/token".to_string(),
+                    },
+                )
+                .unwrap();
+        }
+
+        service
+            .update("old", oauth_streamable("renamed", false))
+            .unwrap();
+
+        let tokens = service
+            .read_secret_map::<McpOAuthTokenRecord>(&service.oauth_tokens_path())
+            .unwrap();
+        assert!(!tokens.contains_key("old"));
+        assert!(tokens.contains_key("other"));
+        assert!(service.get("old").is_err());
+        assert!(service.get("renamed").is_ok());
+        assert!(service.remove_oauth_pending("old-state").unwrap().is_none());
+        assert!(service
+            .remove_oauth_pending("other-state")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

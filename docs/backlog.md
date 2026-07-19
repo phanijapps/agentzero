@@ -127,6 +127,20 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   artifact contracts, status transitions, and continuation pointers, then making
   markdown specs a rendered view instead of the source of runtime truth.
 
+## nested-builder-mcp-handoff-defect
+
+- **Defect:** A nested ward → `builder-agent` delegation can accept an explicit
+  `mcps: ["blender-mcp"]` assignment yet start the child without a registered
+  Blender MCP tool. In session `sess-ee8c4526-38a0-47eb-a0e8-c8aaa192e8d5`,
+  the builder's tool probe listed only shell/file tools and it used the
+  prohibited `bpy` fallback, while a later direct root → ward retry mounted
+  the same MCP successfully. The capability-resolution audit entry that should
+  distinguish a dropped assignment from a rejected/unavailable MCP was not
+  persisted for that child. Blocked on a focused delegation-runtime fix;
+  unblocked by making nested explicit MCP assignments fail closed before model
+  execution when no tool registers, and by persisting the effective IDs plus
+  rejection reason for every child execution.
+
 <!-- Add one section per spec with open work, e.g.:
 
 ## <spec-name>

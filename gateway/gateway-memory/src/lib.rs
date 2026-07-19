@@ -64,6 +64,14 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Canonical inspectable bytes for the Full Zbot memory V1 preset.
+pub const ZBOT_RECOMMENDED_V1_MEMORY_JSON: &str =
+    include_str!("../templates/zbot-recommended-v1-memory.json");
+
+/// Canonical bytes written to `config/recall-config.json` for Full Zbot V1.
+pub const ZBOT_RECOMMENDED_V1_RECALL_JSON: &str =
+    include_str!("../templates/zbot-recommended-v1-recall.json");
+
 // ============================================================================
 // RECALL CONFIG
 // Configurable recall priority engine with compiled defaults and JSON merge.
@@ -290,10 +298,11 @@ impl Default for RecallConfig {
 impl RecallConfig {
     /// Construct the immutable Full Zbot recall V1 profile.
     ///
-    /// Implemented after the work-loop plan gate; provisioning writes the
-    /// canonical bundled bytes directly so `HashMap` iteration cannot drift.
+    /// Provisioning writes the canonical bundled bytes directly so `HashMap`
+    /// iteration cannot drift.
     pub fn zbot_recommended_v1() -> Self {
-        todo!("zbot_recommended_v1 is defined by the bundled V1 fixture")
+        serde_json::from_str(ZBOT_RECOMMENDED_V1_RECALL_JSON)
+            .expect("bundled Full Zbot recall V1 fixture must remain valid")
     }
 
     /// Load recall config from `{path}/config/recall-config.json`.
@@ -466,10 +475,11 @@ impl Default for MemorySettings {
 impl MemorySettings {
     /// Construct the immutable Full Zbot memory V1 profile.
     ///
-    /// Implemented after the work-loop plan gate; the red contract test pins
-    /// the complete bundled fixture independently from mutable defaults.
+    /// The contract test pins the complete bundled fixture independently from
+    /// mutable defaults.
     pub fn zbot_recommended_v1() -> Self {
-        todo!("zbot_recommended_v1 is defined by the bundled V1 fixture")
+        serde_json::from_str(ZBOT_RECOMMENDED_V1_MEMORY_JSON)
+            .expect("bundled Full Zbot memory V1 fixture must remain valid")
     }
 }
 
@@ -1772,7 +1782,7 @@ mod tests {
         assert_eq!(m.hierarchy.cluster_target_size, 20);
     }
 
-    // STUB: AC4 — the V1 preset pins approved tuning and built-in identity.
+    // AC4 — the V1 preset pins approved tuning and built-in identity.
     #[test]
     fn zbot_recommended_v1_pins_memory_tuning_and_builtin_embeddings() {
         let defaults = serde_json::to_value(MemorySettings::default()).unwrap();
@@ -1821,7 +1831,7 @@ mod tests {
         );
     }
 
-    // STUB: AC5 — the versioned recall profile is materializable and inspectable.
+    // AC5 — the versioned recall profile is materializable and inspectable.
     #[test]
     fn zbot_recommended_v1_materializes_recall_defaults() {
         let approved_bytes = include_str!("../templates/zbot-recommended-v1-recall.json");
@@ -1833,11 +1843,7 @@ mod tests {
         );
         assert_eq!(RecallConfig::default().max_recall_tokens, 3000);
 
-        fn materialized_recall_stub() -> Option<String> {
-            None
-        }
-
-        let json = materialized_recall_stub().expect("V1 recall JSON must be materialized");
+        let json = ZBOT_RECOMMENDED_V1_RECALL_JSON.to_string();
         assert_eq!(json.as_bytes(), approved_bytes.as_bytes());
         let parsed: RecallConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.max_recall_tokens, 3000);
@@ -1848,17 +1854,17 @@ mod tests {
         assert!(parsed.predictive_recall.enabled);
     }
 
-    // STUB: AC5 — bundled definitions expose the approved governance IDs.
+    // AC5 — bundled definitions expose the approved governance IDs.
     #[test]
     fn bundled_governance_definitions_have_approved_ids() {
-        fn bundled_governance_stub() -> (&'static str, &'static str) {
+        fn bundled_governance() -> (&'static str, &'static str) {
             (
                 include_str!("../../templates/governance/base-ontology.json"),
                 include_str!("../../templates/governance/base-taxonomy.json"),
             )
         }
 
-        let (ontology, taxonomy) = bundled_governance_stub();
+        let (ontology, taxonomy) = bundled_governance();
         let ontology: serde_json::Value = serde_json::from_str(ontology).unwrap();
         let taxonomy: serde_json::Value = serde_json::from_str(taxonomy).unwrap();
         assert_eq!(ontology["kind"], "zbot.ontology");

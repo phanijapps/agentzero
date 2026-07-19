@@ -594,6 +594,7 @@ export interface CommissioningStatus {
   state: CommissioningState;
   recoveryCode?: string | null;
   semanticProfile: SemanticProfile;
+  restartRequired: boolean;
 }
 
 export interface LocalDiagnosis {
@@ -613,6 +614,7 @@ export interface CommissioningRequest {
   dateOfBirth?: string;
   primaryFocus: "think_organize" | "build_code" | "research_learn" | "run_work";
   domains: Array<"personal_knowledge" | "software" | "writing" | "learning" | "planning">;
+  memoryProfile: "safe_baseline" | "zbot_recommended_v1";
   provider: {
     kind: "cloud" | "local";
     presetId?: "openai" | "deepseek" | "openrouter" | "z-ai" | "mistral";

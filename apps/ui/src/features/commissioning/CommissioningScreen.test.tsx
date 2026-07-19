@@ -26,6 +26,14 @@ beforeEach(() => {
   diagnoseLocalRuntime.mockReset();
   completeCommissioning.mockReset();
   getCommissioningStatus.mockReset();
+  getCommissioningStatus.mockResolvedValue({
+    success: true,
+    data: {
+      state: "not_started",
+      restartRequired: false,
+      semanticProfile: { version: 1, basePackIds: [], domainPackIds: [], provisioning: "deferred" },
+    },
+  });
 });
 
 describe("CommissioningScreen", () => {
@@ -58,7 +66,7 @@ describe("CommissioningScreen", () => {
     expect(screen.getByRole("option", { name: "llama3.3" })).toBeInTheDocument();
   });
 
-  // STUB: AC2 — memory behavior requires an explicit informed choice.
+  // AC2 — memory behavior requires an explicit informed choice.
   it("requires an explicit memory profile and recommends full Zbot memory", () => {
     renderScreen();
 
@@ -113,7 +121,7 @@ describe("CommissioningScreen", () => {
     expect(screen.queryByDisplayValue("sensitive-key")).toBeNull();
   });
 
-  // STUB: AC6 — full memory must stop on a restart-required recovery screen.
+  // AC6 — full memory must stop on a restart-required recovery screen.
   it("keeps full-memory commissioning on a restart screen until activation", async () => {
     completeCommissioning.mockResolvedValue({
       success: true,
@@ -140,7 +148,24 @@ describe("CommissioningScreen", () => {
     expect(screen.getByText(/memory profile will activate/i)).toBeInTheDocument();
   });
 
-  // STUB: AC6 — a post-restart status check resumes normal navigation.
+  it("restores restart recovery from durable status after a reload", async () => {
+    getCommissioningStatus.mockResolvedValue({
+      success: true,
+      data: {
+        state: "needs_attention",
+        recoveryCode: "memory_profile_restart_required",
+        restartRequired: true,
+        semanticProfile: { version: 1, basePackIds: [], domainPackIds: [], provisioning: "deferred" },
+      },
+    });
+
+    renderScreen();
+
+    expect(await screen.findByText(/restart z-bot to activate memory/i)).toBeInTheDocument();
+    expect(screen.queryByText(/let’s commission your agent/i)).not.toBeInTheDocument();
+  });
+
+  // AC6 — a post-restart status check resumes normal navigation.
   it("enters the application after restarted status reports memory active", async () => {
     completeCommissioning.mockResolvedValue({
       success: true,
@@ -173,5 +198,50 @@ describe("CommissioningScreen", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /check activation/i }));
     expect(await screen.findByText("Commissioning activated")).toBeInTheDocument();
+  });
+
+  it("exits the restart loop when durable activation reports a conflict", async () => {
+    completeCommissioning.mockResolvedValue({
+      success: true,
+      data: {
+        state: "needs_attention",
+        recoveryCode: "memory_profile_restart_required",
+        restartRequired: true,
+        semanticProfile: { version: 1, basePackIds: [], domainPackIds: [], provisioning: "deferred" },
+      },
+    });
+    getCommissioningStatus
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          state: "not_started",
+          restartRequired: false,
+          semanticProfile: { version: 1, basePackIds: [], domainPackIds: [], provisioning: "deferred" },
+        },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          state: "needs_attention",
+          recoveryCode: "memory_profile_conflict",
+          restartRequired: false,
+          semanticProfile: { version: 1, basePackIds: [], domainPackIds: [], provisioning: "deferred" },
+        },
+      });
+    renderScreen();
+
+    fireEvent.click(screen.getByRole("button", { name: /think & organize/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "test-key" } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /full zbot memory/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/your name/i), { target: { value: "Ada" } });
+    fireEvent.click(screen.getByRole("button", { name: /learning & ideas/i }));
+    fireEvent.click(screen.getByRole("button", { name: /commission my agent/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /check activation/i }));
+    expect(await screen.findByText(/files or settings changed before activation/i)).toBeInTheDocument();
+    expect(screen.queryByText(/still waiting for a daemon restart/i)).not.toBeInTheDocument();
   });
 });

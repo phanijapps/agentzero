@@ -1,7 +1,7 @@
 # Plan: Commissioning Memory Profile
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Complete
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as we learn.
@@ -14,8 +14,8 @@ profile enum. Put the canonical memory preset and serialization contract in
 commissioning boundary, and reuse `VaultPaths` plus the existing settings
 service. Add a fourth user-visible commissioning step for explicit consent.
 Persist a fixed pending-restart marker for the full profile, then finalize
-commissioning during the next boot only after all boot-bound memory consumers
-have been constructed from the new configuration. Implement profile logic and
+commissioning during the next boot immediately before boot-bound memory
+consumers are constructed from the new configuration. Implement profile logic and
 file transitions with TDD, then run the complete fresh-vault journey and
 workspace gates before review and publication.
 
@@ -400,3 +400,6 @@ approved values.
 - 2026-07-18: added fixture-pinned V1 bytes, legacy settings/backend conflict
   rules, explicit embedding identity mapping, and a boot-verified
   restart-required activation state after adversarial plan review.
+- 2026-07-18: implemented the approved profile, added durable reload recovery
+  and exact pending-state validation after implementation review, and passed
+  the workspace Rust/UI gates.

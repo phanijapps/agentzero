@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -18,14 +18,16 @@ import {
 import { getTransport } from "@/services/transport";
 import type { CommissioningRequest, LocalDiagnosis } from "@/services/transport";
 
-type Step = "focus" | "intelligence" | "world";
+type Step = "focus" | "intelligence" | "memory" | "world";
 type Focus = CommissioningRequest["primaryFocus"];
 type Domain = CommissioningRequest["domains"][number];
+type MemoryProfile = CommissioningRequest["memoryProfile"];
 type CloudPreset = NonNullable<CommissioningRequest["provider"]["presetId"]>;
 
 const STEPS: Array<{ id: Step; label: string }> = [
   { id: "focus", label: "Your focus" },
   { id: "intelligence", label: "Your intelligence" },
+  { id: "memory", label: "Your memory" },
   { id: "world", label: "About you" },
 ];
 
@@ -80,9 +82,35 @@ export function CommissioningScreen() {
   const [hobbies, setHobbies] = useState("");
   const [dateOfBirth, setDateOfBirth] = useState("");
   const [profile, setProfile] = useState("");
+  const [memoryProfile, setMemoryProfile] = useState<MemoryProfile | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [restartPending, setRestartPending] = useState(false);
+  const [isCheckingActivation, setIsCheckingActivation] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    void getTransport()
+      .then((transport) => transport.getCommissioningStatus())
+      .then((result) => {
+        if (!mounted || !result.success || !result.data) return;
+        if (result.data.state === "complete" && !result.data.restartRequired) {
+          navigate("/", { replace: true });
+        } else if (result.data.restartRequired) {
+          setRestartPending(true);
+        } else if (result.data.recoveryCode === "memory_profile_conflict") {
+          setError("The Full Zbot memory files or settings changed before activation. Resolve the conflict, then submit commissioning again; z-Bot did not overwrite the existing configuration.");
+        }
+      })
+      .catch(() => {
+        // A transient status failure must not prevent a fresh user from using
+        // the local commissioning wizard.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [navigate]);
 
   const currentIndex = STEPS.findIndex((item) => item.id === step);
   const focusDetails = focus ? FOCUSES.find((item) => item.id === focus) : undefined;
@@ -96,9 +124,10 @@ export function CommissioningScreen() {
         ? localDiagnosis?.state === "ready" && Boolean(model)
         : Boolean(apiKey.trim()) && Boolean(model);
     }
+    if (step === "memory") return memoryProfile !== null;
     if (step === "world") return Boolean(displayName.trim()) && Boolean(userName.trim()) && interests.length > 0;
     return false;
-  }, [apiKey, displayName, domains.length, focus, interests.length, localDiagnosis?.state, model, providerKind, step, userName]);
+  }, [apiKey, displayName, domains.length, focus, interests.length, localDiagnosis?.state, memoryProfile, model, providerKind, step, userName]);
 
   const selectFocus = (nextFocus: Focus) => {
     const selection = FOCUSES.find((item) => item.id === nextFocus)!;
@@ -155,7 +184,7 @@ export function CommissioningScreen() {
   };
 
   const complete = async () => {
-    if (!focus || !canContinue) return;
+    if (!focus || !memoryProfile || !canContinue) return;
     setIsSubmitting(true);
     setError(null);
     const request: CommissioningRequest = {
@@ -167,6 +196,7 @@ export function CommissioningScreen() {
       dateOfBirth: dateOfBirth || undefined,
       primaryFocus: focus,
       domains,
+      memoryProfile,
       provider: providerKind === "cloud"
         ? { kind: "cloud", presetId: preset, model, apiKey: apiKey.trim() }
         : { kind: "local", model },
@@ -179,6 +209,10 @@ export function CommissioningScreen() {
         setError(result.error || "We couldn’t finish commissioning. Please try again.");
         return;
       }
+      if (result.data?.restartRequired) {
+        setRestartPending(true);
+        return;
+      }
       navigate("/", { replace: true });
     } catch {
       setApiKey("");
@@ -187,6 +221,46 @@ export function CommissioningScreen() {
       setIsSubmitting(false);
     }
   };
+
+  const checkActivation = async () => {
+    setIsCheckingActivation(true);
+    setError(null);
+    try {
+      const transport = await getTransport();
+      const result = await transport.getCommissioningStatus();
+      if (result.success && result.data?.state === "complete" && !result.data.restartRequired) {
+        navigate("/", { replace: true });
+        return;
+      }
+      if (result.data?.recoveryCode === "memory_profile_conflict") {
+        setRestartPending(false);
+        setError("The Full Zbot memory files or settings changed before activation. Resolve the conflict, then submit commissioning again; z-Bot did not overwrite the existing configuration.");
+        return;
+      }
+      setError("The Full Zbot memory profile is still waiting for a daemon restart.");
+    } catch {
+      setError("We couldn’t reconnect to z-Bot yet. Restart the daemon, then check activation.");
+    } finally {
+      setIsCheckingActivation(false);
+    }
+  };
+
+  if (restartPending) {
+    return (
+      <main className="commissioning-shell commissioning-shell--activation">
+        <section className="commissioning-main commissioning-activation">
+          <p className="commissioning-main__eyebrow">Full Zbot memory prepared</p>
+          <h1>Restart z-Bot to activate memory</h1>
+          <p>Your memory profile will activate when the daemon starts again. The current process will not claim the new recall and background workers are active early.</p>
+          <p>Restart zbotd, then check activation here. If the built-in embedding model is not already cached, its first use may complete the one-time local download.</p>
+          {error && <p className="commissioning-error" role="alert">{error}</p>}
+          <button className="btn btn--primary btn--md" onClick={() => void checkActivation()} disabled={isCheckingActivation}>
+            {isCheckingActivation ? <Loader2 className="loading-spinner__icon" /> : <RefreshCw size={16} />} Check activation
+          </button>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="commissioning-shell">
@@ -261,6 +335,29 @@ export function CommissioningScreen() {
           </div>
         )}
 
+        {step === "memory" && (
+          <div className="commissioning-panel">
+            <h2>Choose how z-Bot remembers</h2>
+            <p className="commissioning-panel__intro">Start conservatively, or enable the complete memory and recall profile used by z-Bot.</p>
+            <div className="commissioning-choice-row">
+              <button type="button" className={`commissioning-choice ${memoryProfile === "zbot_recommended_v1" ? "commissioning-choice--selected" : ""}`} onClick={() => setMemoryProfile("zbot_recommended_v1")} aria-pressed={memoryProfile === "zbot_recommended_v1"}>
+                <Sparkles aria-hidden="true" />
+                <strong>Full Zbot memory <span className="commissioning-recommended">Recommended</span></strong>
+                <span>Enables background memory processing, richer recall, beliefs, hierarchy, and governance.</span>
+              </button>
+              <button type="button" className={`commissioning-choice ${memoryProfile === "safe_baseline" ? "commissioning-choice--selected" : ""}`} onClick={() => setMemoryProfile("safe_baseline")} aria-pressed={memoryProfile === "safe_baseline"}>
+                <ShieldCheck aria-hidden="true" />
+                <strong>Safe baseline</strong>
+                <span>Keeps current memory settings and does not add recall or governance profile files.</span>
+              </button>
+            </div>
+            <div className="commissioning-memory-disclosure" role="note">
+              <strong>Before you enable Full Zbot memory</strong>
+              <p>Background memory work uses your selected model provider, consumes usage, and may add cost. {providerKind === "cloud" ? "Memory-derived content may be sent to that cloud provider for processing." : "Memory-derived content stays with your selected local model runtime."} The built-in FastEmbed model may need a one-time local download on first use.</p>
+            </div>
+          </div>
+        )}
+
         {step === "world" && (
           <div className="commissioning-panel commissioning-panel--narrow">
             <h2>A little about you</h2>
@@ -286,8 +383,8 @@ export function CommissioningScreen() {
         <ul>
           <li><Bot aria-hidden="true" /> Your agent profile</li>
           <li><Sparkles aria-hidden="true" /> A private memory plan</li>
-          <li><Check aria-hidden="true" /> A starter taxonomy</li>
-          <li><Check aria-hidden="true" /> A working ontology</li>
+          {memoryProfile === "zbot_recommended_v1" && <li><Check aria-hidden="true" /> A starter taxonomy</li>}
+          {memoryProfile === "zbot_recommended_v1" && <li><Check aria-hidden="true" /> A working ontology</li>}
           <li><ShieldCheck aria-hidden="true" /> Safe defaults</li>
         </ul>
         <div className="commissioning-safety-notice" role="note"><ShieldCheck aria-hidden="true" /><div><strong>An autonomous agent, with guardrails</strong><p>z-Bot can plan and use the tools you enable. Safety guardrails are built in, but execution is not sandboxed yet: a command or tool can affect this device and connected services. Review requests and enable only integrations you trust.</p></div></div>

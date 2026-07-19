@@ -1,6 +1,6 @@
 # Spec: Commissioning Memory Profile
 
-- **Status:** Approved
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`RFC-0011`](../../rfc/0011-engram-memory-engine-cutover.md); [`agent-commissioning`](../agent-commissioning/spec.md)
@@ -100,21 +100,21 @@ and manual checks record `no stub (mode)`.
 
 ## Acceptance Criteria
 
-- [ ] The commissioning contract requires `memoryProfile` with only
+- [x] The commissioning contract requires `memoryProfile` with only
   `safe_baseline` and `zbot_recommended_v1`; unknown or omitted values are
   rejected before any provider or filesystem side effect, and unknown
   top-level or nested provider fields are also rejected.
-- [ ] The commissioning UI presents both profiles, marks Full Zbot memory as
+- [x] The commissioning UI presents both profiles, marks Full Zbot memory as
   recommended, explains that it enables background memory processing and may
   incur selected-provider usage/cost, and keeps Continue disabled until the
   user explicitly selects one. When a cloud provider is selected, the same
   consent surface states that memory-derived content may be sent to that
   provider. It also discloses that the built-in embedding model may need a
   one-time local download on first use.
-- [ ] Selecting `safe_baseline` preserves the installation's existing memory
+- [x] Selecting `safe_baseline` preserves the installation's existing memory
   and embedding settings and creates no recall or governance profile files; on
   a fresh vault this is `MemorySettings::default()` behavior.
-- [ ] Selecting `zbot_recommended_v1` persists the approved memory tuning with
+- [x] Selecting `zbot_recommended_v1` persists the approved memory tuning with
   built-in FastEmbed identity `bge-small-en-v1.5`, 384 dimensions, and query
   prompt profile, matching the exact identity reported by the internal client
   and used by store compatibility checks. It proceeds only when existing memory
@@ -122,18 +122,18 @@ and manual checks record `no stub (mode)`.
   persisted/live embedding backend is already internal/384; customized memory
   settings or any other embedding backend return a finite conflict without
   mutation.
-- [ ] The complete V1 memory and recall documents are checked-in canonical JSON
+- [x] The complete V1 memory and recall documents are checked-in canonical JSON
   assets; constructors deserialize those assets and tests require exact
   serialized parity, so mutable Rust defaults cannot change V1 behavior or
   retry bytes.
-- [ ] Full-profile completion materializes an inspectable
+- [x] Full-profile completion materializes an inspectable
   `config/recall-config.json` matching the approved versioned recall snapshot
   and provisions `zbot.base:v1` plus `zbot.general:v1` definitions beneath
   `config/governance/`.
-- [ ] Retrying full-profile completion accepts byte-identical existing profile
+- [x] Retrying full-profile completion accepts byte-identical existing profile
   files, rejects different existing content with a finite redacted error code,
   never overwrites it, and does not report commissioning complete on failure.
-- [ ] A successful full-profile request returns
+- [x] A successful full-profile request returns
   `memory_profile_restart_required`, leaves `setupComplete` false, and does not
   expose the normal application as active. On the next daemon boot, memory
   settings and fixed artifacts are verified before memory construction,
@@ -142,17 +142,17 @@ and manual checks record `no stub (mode)`.
   startup constructs memory services from that profile successfully. A failed
   completion-state save retains the marker; completed state plus a leftover
   marker is cleaned up idempotently on the next boot.
-- [ ] A symlink in `config`, `governance`, or any final profile-file position,
+- [x] A symlink in `config`, `governance`, or any final profile-file position,
   and a non-regular existing target, fail closed without writing outside the
   canonical vault or changing provider, SOUL, settings, or commissioning state.
-- [ ] A browser request from a non-local Origin and an originless request from
+- [x] A browser request from a non-local Origin and an originless request from
   a non-loopback peer receive `403 commissioning_origin_denied` before any
   validation, provider test, credential, filesystem, SOUL, or settings effect;
   loopback browser and native/CLI calls remain supported.
-- [ ] Existing provider verification, local-origin enforcement, credential
+- [x] Existing provider verification, local-origin enforcement, credential
   redaction, semantic-profile persistence, and legacy readiness behavior remain
   covered and unchanged.
-- [ ] Rust formatting, clippy, relevant Rust tests, UI tests, UI build, and the
+- [x] Rust formatting, clippy, relevant Rust tests, UI tests, UI build, and the
   workspace check pass before the branch is published.
 
 ## Assumptions

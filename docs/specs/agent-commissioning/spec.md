@@ -6,6 +6,7 @@
 - **Constrained by:** [`RFC-0011`](../../rfc/0011-engram-memory-engine-cutover.md); [`RFC-0012`](../../rfc/0012-engram-upstream-risk-reduction.md)
 - **Brief:** none
 - **Contract:** [`contracts/openapi/commissioning.yaml`](../../../contracts/openapi/commissioning.yaml)
+- **Extended by:** [`commissioning-memory-profile`](../commissioning-memory-profile/spec.md)
 - **Shape:** mixed
 
 > **Spec contract:** this document defines what "done" means. The implementing

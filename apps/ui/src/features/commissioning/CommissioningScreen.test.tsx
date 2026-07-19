@@ -48,6 +48,29 @@ describe("CommissioningScreen", () => {
     expect(screen.getByRole("button", { name: /^personal knowledge$/i })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("keeps the wizard open when rerunning setup after commissioning is complete", async () => {
+    getCommissioningStatus.mockResolvedValue({
+      success: true,
+      data: {
+        state: "complete",
+        restartRequired: false,
+        semanticProfile: { version: 1, basePackIds: [], domainPackIds: [], provisioning: "deferred" },
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/setup"]}>
+        <Routes>
+          <Route path="/setup" element={<CommissioningScreen rerunSetup />} />
+          <Route path="/research" element={<p>Research page</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/let’s commission your agent/i)).toBeInTheDocument();
+    expect(screen.queryByText("Research page")).not.toBeInTheDocument();
+  });
+
   it("shows an actionable local-runtime diagnosis and available models", async () => {
     diagnoseLocalRuntime.mockResolvedValue({
       success: true,

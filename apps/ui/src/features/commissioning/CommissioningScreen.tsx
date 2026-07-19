@@ -67,7 +67,12 @@ const CLOUD_PROVIDERS: Record<CloudPreset, { name: string; models: string[] }> =
   mistral: { name: "Mistral", models: ["mistral-large-latest", "mistral-small-latest", "codestral-latest"] },
 };
 
-export function CommissioningScreen() {
+interface CommissioningScreenProps {
+  /** Allow an already commissioned user to intentionally rerun setup. */
+  rerunSetup?: boolean;
+}
+
+export function CommissioningScreen({ rerunSetup = false }: CommissioningScreenProps) {
   const [step, setStep] = useState<Step>("focus");
   const [focus, setFocus] = useState<Focus | null>(null);
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -96,7 +101,7 @@ export function CommissioningScreen() {
       .then((transport) => transport.getCommissioningStatus())
       .then((result) => {
         if (!mounted || !result.success || !result.data) return;
-        if (result.data.state === "complete" && !result.data.restartRequired) {
+        if (result.data.state === "complete" && !result.data.restartRequired && !rerunSetup) {
           navigate("/", { replace: true });
         } else if (result.data.restartRequired) {
           setRestartPending(true);
@@ -111,7 +116,7 @@ export function CommissioningScreen() {
     return () => {
       mounted = false;
     };
-  }, [navigate]);
+  }, [navigate, rerunSetup]);
 
   const currentIndex = STEPS.findIndex((item) => item.id === step);
   const focusDetails = focus ? FOCUSES.find((item) => item.id === focus) : undefined;

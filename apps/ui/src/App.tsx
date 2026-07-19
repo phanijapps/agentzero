@@ -228,7 +228,7 @@ function App() {
       <Routes>
           {/* Commissioning renders without the application shell. */}
           <Route path="/commission" element={<CommissioningScreen />} />
-          <Route path="/setup" element={<Navigate to="/commission" replace />} />
+          <Route path="/setup" element={<CommissioningScreen rerunSetup />} />
 
           {/* Main app with sidebar */}
           <Route path="/*" element={

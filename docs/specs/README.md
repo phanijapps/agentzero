@@ -7,6 +7,7 @@ Active feature specs for AgentZero.
 | [Autonomy Ledger](autonomy-ledger/spec.md) | Shipped | Adds durable, approved cross-session decision threads with bounded resume context, Mission Control visibility, and read-only trigger eligibility. |
 | [Agent-Driven Surfaces](agent-driven-surfaces/spec.md) | Draft | Adds capability-gated, catalog-constrained agent work surfaces with channel-neutral results and server-owned actions. |
 | [Agent Commissioning](agent-commissioning/spec.md) | Shipped | Replaces the legacy setup wizard with durable, personalized model commissioning and a portable semantic profile. |
+| [Commissioning Memory Profile](commissioning-memory-profile/spec.md) | Implementing | Adds an explicit recommended Full Zbot memory choice with built-in embeddings, pinned recall/governance files, and restart-verified activation. |
 | [Engram Provider Adoption](engram-provider-adoption/spec.md) | Implementing | Makes the semantic-memory adapter use Engram's provider facade and expose capability-gated services without changing agent or UI behavior. |
 | [Research Terminal State Reconciliation](research-terminal-state-reconciliation/spec.md) | Shipped | Makes successful Research completion deterministically reconcile the plan surface and final response. |
 | [Vault Layout Standardization](vault-layout-standardization/spec.md) | Shipped | Makes vault paths, configuration names, runtime directories, and prompt loading consistent while retiring dormant OKF material. |

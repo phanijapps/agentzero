@@ -4,11 +4,11 @@
 //! on Engram or a concrete semantic database; a later integration can consume
 //! `SemanticProfile` from settings without changing this HTTP contract.
 
-use std::process::Command;
+use std::{net::SocketAddr, process::Command};
 
 use axum::{
-    extract::State,
-    http::{header::ORIGIN, HeaderMap, StatusCode},
+    extract::{ConnectInfo, FromRequestParts, State},
+    http::{header::ORIGIN, request::Parts, HeaderMap, StatusCode},
     Json,
 };
 use gateway_services::providers::Provider;
@@ -17,9 +17,88 @@ use gateway_services::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::{config::GatewayConfig, state::AppState};
 
 const LOCAL_RUNTIME_URL: &str = "http://127.0.0.1:11434/v1";
+const MEMORY_PROFILE_PENDING_BYTES: &[u8] =
+    include_bytes!("../../templates/zbot-memory-profile-v1-pending");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixedProfileTargetState {
+    Absent,
+    Identical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryProfileActivationOutcome {
+    Activated,
+    CleanedCompletedMarker,
+}
+
+/// Finalize or clean up an exact pending V1 marker with save-before-remove ordering.
+///
+/// The closures make crash-boundary behavior failure-injectable without tying
+/// the state machine to one settings backend. Implemented after plan approval.
+fn finalize_pending_memory_profile<Save, Remove>(
+    _marker: &std::path::Path,
+    _state: CommissioningState,
+    _exact_v1_inputs: bool,
+    _save_complete: Save,
+    _remove_marker: Remove,
+) -> Result<MemoryProfileActivationOutcome, &'static str>
+where
+    Save: FnOnce() -> Result<(), &'static str>,
+    Remove: FnOnce() -> Result<(), &'static str>,
+{
+    todo!("pending memory activation ordering is specified in the approved plan")
+}
+
+/// Authorizes commissioning from request parts before Axum consumes or
+/// deserializes the JSON body.
+struct LocalCommissioningRequest;
+
+#[async_trait::async_trait]
+impl<S> FromRequestParts<S> for LocalCommissioningRequest
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<CommissioningError>);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let config = parts.extensions.get::<GatewayConfig>();
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(peer)| *peer);
+        let local_peer = config.is_some_and(|config| super::vault::is_local_request(config, peer));
+        if local_peer && is_local_commissioning_origin(&parts.headers) {
+            Ok(Self)
+        } else {
+            Err(commissioning_origin_denied())
+        }
+    }
+}
+
+/// Preflight one fixed commissioning-owned target without following links.
+///
+/// This interface is materialized for the red construction tests. The
+/// implementation follows after work-loop plan approval.
+fn preflight_fixed_profile_target(
+    _path: &std::path::Path,
+    _expected: &[u8],
+) -> Result<FixedProfileTargetState, &'static str> {
+    todo!("fixed-target no-follow preflight is specified in the approved plan")
+}
+
+/// Preflight every full-profile setting and fixed target before provider,
+/// SOUL, settings, or profile mutation.
+fn preflight_full_memory_profile(
+    _paths: &gateway_services::VaultPaths,
+    _existing_memory: &gateway_memory::MemorySettings,
+    _embedding_is_internal_384: bool,
+) -> Result<(), &'static str> {
+    todo!("full-profile settings and fixed-target preflight is specified in the approved plan")
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -672,6 +751,16 @@ fn internal_error() -> (StatusCode, Json<CommissioningError>) {
     )
 }
 
+fn commissioning_origin_denied() -> (StatusCode, Json<CommissioningError>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(CommissioningError {
+            code: "commissioning_origin_denied",
+            message: "Commissioning must be completed from the local z-Bot app.",
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,6 +783,390 @@ mod tests {
                 api_key: None,
             },
         }
+    }
+
+    // STUB: AC1 — commissioning requires one of the two approved memory profiles.
+    #[test]
+    fn commissioning_request_requires_an_approved_memory_profile() {
+        let base = serde_json::json!({
+            "displayName": "Atlas",
+            "userName": "Ada",
+            "interests": ["Learning & ideas"],
+            "primaryFocus": "research_learn",
+            "domains": ["learning"],
+            "provider": { "kind": "local", "model": "llama3.3" }
+        });
+
+        assert!(serde_json::from_value::<CommissioningRequest>(base.clone()).is_err());
+
+        let mut approved = base.clone();
+        approved["memoryProfile"] = serde_json::json!("zbot_recommended_v1");
+        assert!(serde_json::from_value::<CommissioningRequest>(approved).is_ok());
+
+        let mut safe = base.clone();
+        safe["memoryProfile"] = serde_json::json!("safe_baseline");
+        assert!(serde_json::from_value::<CommissioningRequest>(safe.clone()).is_ok());
+
+        let mut unknown = base;
+        unknown["memoryProfile"] = serde_json::json!("custom");
+        assert!(serde_json::from_value::<CommissioningRequest>(unknown).is_err());
+
+        let mut unknown_top_level = safe.clone();
+        unknown_top_level["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<CommissioningRequest>(unknown_top_level).is_err());
+
+        let mut unknown_provider = safe;
+        unknown_provider["provider"]["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<CommissioningRequest>(unknown_provider).is_err());
+    }
+
+    // AC8 — authorization runs before JSON extraction while loopback CLI stays supported.
+    #[tokio::test]
+    async fn originless_remote_request_is_denied_even_when_its_json_is_malformed() {
+        use axum::{routing::post, Extension, Router};
+        use axum_test::TestServer;
+
+        async fn guarded(
+            _local: LocalCommissioningRequest,
+            Json(_body): Json<serde_json::Value>,
+        ) -> StatusCode {
+            StatusCode::OK
+        }
+
+        async fn response_for(peer: &str) -> axum_test::TestResponse {
+            let config = GatewayConfig {
+                host: "0.0.0.0".parse().unwrap(),
+                ..GatewayConfig::default()
+            };
+            let router = Router::new()
+                .route("/complete", post(guarded))
+                .layer(Extension(config))
+                .layer(Extension(ConnectInfo::<SocketAddr>(peer.parse().unwrap())));
+            TestServer::new(router)
+                .unwrap()
+                .post("/complete")
+                .content_type("application/json")
+                .bytes(b"{".to_vec().into())
+                .await
+        }
+
+        let remote = response_for("192.168.1.40:43110").await;
+        remote.assert_status_forbidden();
+        assert_eq!(
+            remote.json::<serde_json::Value>()["code"],
+            "commissioning_origin_denied"
+        );
+
+        let loopback = response_for("127.0.0.1:43110").await;
+        assert_ne!(loopback.status_code(), StatusCode::FORBIDDEN);
+    }
+
+    // STUB: AC3, AC5, AC6 — fixed profile files are explicit and conflict-safe.
+    #[test]
+    fn profile_provisioning_distinguishes_safe_full_retry_and_conflict() {
+        fn provision_stub(_root: &std::path::Path, _full: bool) -> Result<(), &'static str> {
+            Err("profile provisioning is not implemented")
+        }
+
+        let safe = tempfile::tempdir().unwrap();
+        assert!(provision_stub(safe.path(), false).is_ok());
+        assert!(!safe.path().join("config/recall-config.json").exists());
+
+        let full = tempfile::tempdir().unwrap();
+        assert!(provision_stub(full.path(), true).is_ok());
+        assert!(full.path().join("config/recall-config.json").exists());
+        assert!(full
+            .path()
+            .join("config/governance/base-ontology.json")
+            .exists());
+        assert!(full
+            .path()
+            .join("config/governance/base-taxonomy.json")
+            .exists());
+        assert!(provision_stub(full.path(), true).is_ok());
+
+        std::fs::write(full.path().join("config/recall-config.json"), "conflict").unwrap();
+        assert_eq!(
+            provision_stub(full.path(), true),
+            Err("memory_profile_conflict")
+        );
+        assert_eq!(
+            std::fs::read_to_string(full.path().join("config/recall-config.json")).unwrap(),
+            "conflict"
+        );
+    }
+
+    // STUB: AC6 — full memory stays restart-pending until a boot activates it.
+    #[test]
+    fn full_profile_completion_is_finalized_only_after_restart_activation() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct ActivationSnapshot {
+            state: CommissioningState,
+            setup_complete: bool,
+            restart_required: bool,
+            marker_exists: bool,
+        }
+
+        fn persist_full_profile_stub() -> ActivationSnapshot {
+            ActivationSnapshot {
+                state: CommissioningState::Complete,
+                setup_complete: true,
+                restart_required: false,
+                marker_exists: false,
+            }
+        }
+
+        fn activate_on_boot_stub(snapshot: ActivationSnapshot) -> ActivationSnapshot {
+            snapshot
+        }
+
+        let pending = persist_full_profile_stub();
+        assert_eq!(pending.state, CommissioningState::NeedsAttention);
+        assert!(!pending.setup_complete);
+        assert!(pending.restart_required);
+        assert!(pending.marker_exists);
+
+        let active = activate_on_boot_stub(pending);
+        assert_eq!(active.state, CommissioningState::Complete);
+        assert!(active.setup_complete);
+        assert!(!active.restart_required);
+        assert!(!active.marker_exists);
+    }
+
+    // STUB: AC4, AC6 — custom memory/backend conflicts have zero persistent effects.
+    #[test]
+    fn full_profile_preflight_preserves_all_state_on_memory_or_embedding_conflict() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct PersistentSnapshot {
+            provider: Vec<u8>,
+            soul: Vec<u8>,
+            settings: Vec<u8>,
+            recall: Vec<u8>,
+            ontology: Vec<u8>,
+            taxonomy: Vec<u8>,
+            marker: Vec<u8>,
+        }
+
+        fn snapshot(paths: &gateway_services::VaultPaths) -> PersistentSnapshot {
+            let read = |path: std::path::PathBuf| std::fs::read(path).unwrap();
+            let governance = paths.config_dir().join("governance");
+            PersistentSnapshot {
+                provider: read(paths.providers()),
+                soul: read(paths.soul()),
+                settings: read(paths.settings()),
+                recall: read(paths.recall_config()),
+                ontology: read(governance.join("base-ontology.json")),
+                taxonomy: read(governance.join("base-taxonomy.json")),
+                marker: read(paths.config_dir().join(".zbot-memory-profile-v1-pending")),
+            }
+        }
+
+        let vault = tempfile::tempdir().unwrap();
+        let paths = gateway_services::VaultPaths::new(vault.path().to_path_buf());
+        let governance = paths.config_dir().join("governance");
+        std::fs::create_dir_all(&governance).unwrap();
+        std::fs::write(paths.providers(), b"provider-before").unwrap();
+        std::fs::write(paths.soul(), b"soul-before").unwrap();
+        std::fs::write(paths.settings(), b"settings-before").unwrap();
+        std::fs::write(
+            paths.recall_config(),
+            include_bytes!("../../gateway-memory/templates/zbot-recommended-v1-recall.json"),
+        )
+        .unwrap();
+        std::fs::write(
+            governance.join("base-ontology.json"),
+            include_bytes!("../../templates/governance/base-ontology.json"),
+        )
+        .unwrap();
+        std::fs::write(
+            governance.join("base-taxonomy.json"),
+            include_bytes!("../../templates/governance/base-taxonomy.json"),
+        )
+        .unwrap();
+        std::fs::write(
+            paths.config_dir().join(".zbot-memory-profile-v1-pending"),
+            MEMORY_PROFILE_PENDING_BYTES,
+        )
+        .unwrap();
+
+        let before = snapshot(&paths);
+        let exact = gateway_memory::MemorySettings::zbot_recommended_v1();
+        assert_eq!(preflight_full_memory_profile(&paths, &exact, true), Ok(()));
+
+        let mut custom = gateway_memory::MemorySettings::default();
+        custom.corrections_abstractor_interval_hours = 99;
+        assert_eq!(
+            preflight_full_memory_profile(&paths, &custom, true),
+            Err("memory_profile_conflict")
+        );
+        assert_eq!(snapshot(&paths), before);
+        assert_eq!(
+            preflight_full_memory_profile(&paths, &exact, false),
+            Err("memory_profile_conflict")
+        );
+        assert_eq!(snapshot(&paths), before);
+    }
+
+    // STUB: AC6, AC7 — every fixed target, including the marker, fails closed.
+    #[test]
+    #[cfg(unix)]
+    fn fixed_profile_targets_reject_symlinks_non_regular_files_and_conflicts() {
+        use std::os::unix::fs::symlink;
+
+        let vault = tempfile::tempdir().unwrap();
+        let config = vault.path().join("config");
+        std::fs::create_dir(&config).unwrap();
+
+        let absent = config.join("absent");
+        assert_eq!(
+            preflight_fixed_profile_target(&absent, MEMORY_PROFILE_PENDING_BYTES),
+            Ok(FixedProfileTargetState::Absent)
+        );
+
+        let identical = config.join("identical");
+        std::fs::write(&identical, MEMORY_PROFILE_PENDING_BYTES).unwrap();
+        assert_eq!(
+            preflight_fixed_profile_target(&identical, MEMORY_PROFILE_PENDING_BYTES),
+            Ok(FixedProfileTargetState::Identical)
+        );
+
+        let conflict = config.join("conflict");
+        std::fs::write(&conflict, b"different").unwrap();
+        assert_eq!(
+            preflight_fixed_profile_target(&conflict, MEMORY_PROFILE_PENDING_BYTES),
+            Err("memory_profile_conflict")
+        );
+        assert_eq!(std::fs::read(&conflict).unwrap(), b"different");
+
+        let directory = config.join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        assert_eq!(
+            preflight_fixed_profile_target(&directory, MEMORY_PROFILE_PENDING_BYTES),
+            Err("memory_profile_conflict")
+        );
+
+        let outside = vault.path().join("outside");
+        std::fs::write(&outside, b"outside").unwrap();
+        let link = config.join("link");
+        symlink(&outside, &link).unwrap();
+        assert_eq!(
+            preflight_fixed_profile_target(&link, MEMORY_PROFILE_PENDING_BYTES),
+            Err("memory_profile_conflict")
+        );
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+
+        let parent_vault = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_marker = outside_dir.path().join("marker");
+        std::fs::write(&outside_marker, b"outside-parent").unwrap();
+        symlink(outside_dir.path(), parent_vault.path().join("config")).unwrap();
+        assert_eq!(
+            preflight_fixed_profile_target(
+                &parent_vault.path().join("config/marker"),
+                MEMORY_PROFILE_PENDING_BYTES,
+            ),
+            Err("memory_profile_conflict")
+        );
+        assert_eq!(std::fs::read(&outside_marker).unwrap(), b"outside-parent");
+    }
+
+    // STUB: AC6 — boot activation saves completion before marker cleanup.
+    #[test]
+    fn pending_profile_activation_is_ordered_and_failure_idempotent() {
+        use std::{cell::RefCell, rc::Rc};
+
+        fn marker(vault: &tempfile::TempDir) -> std::path::PathBuf {
+            let config = vault.path().join("config");
+            std::fs::create_dir_all(&config).unwrap();
+            let marker = config.join(".zbot-memory-profile-v1-pending");
+            std::fs::write(&marker, MEMORY_PROFILE_PENDING_BYTES).unwrap();
+            marker
+        }
+
+        let save_failure = tempfile::tempdir().unwrap();
+        let save_failure_marker = marker(&save_failure);
+        let result = finalize_pending_memory_profile(
+            &save_failure_marker,
+            CommissioningState::NeedsAttention,
+            true,
+            || Err("settings_save_failed"),
+            || panic!("marker removal must not run after save failure"),
+        );
+        assert_eq!(result, Err("settings_save_failed"));
+        assert!(save_failure_marker.exists());
+
+        let cleanup_failure = tempfile::tempdir().unwrap();
+        let cleanup_failure_marker = marker(&cleanup_failure);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let save_events = events.clone();
+        let remove_events = events.clone();
+        let result = finalize_pending_memory_profile(
+            &cleanup_failure_marker,
+            CommissioningState::NeedsAttention,
+            true,
+            move || {
+                save_events.borrow_mut().push("save");
+                Ok(())
+            },
+            move || {
+                remove_events.borrow_mut().push("remove");
+                Err("marker_remove_failed")
+            },
+        );
+        assert_eq!(events.borrow().as_slice(), ["save", "remove"]);
+        assert_eq!(result, Err("marker_remove_failed"));
+        assert!(cleanup_failure_marker.exists());
+
+        let activated = tempfile::tempdir().unwrap();
+        let activated_marker = marker(&activated);
+        let result = finalize_pending_memory_profile(
+            &activated_marker,
+            CommissioningState::NeedsAttention,
+            true,
+            || Ok(()),
+            || std::fs::remove_file(&activated_marker).map_err(|_| "marker_remove_failed"),
+        );
+        assert_eq!(result, Ok(MemoryProfileActivationOutcome::Activated));
+        assert!(!activated_marker.exists());
+
+        let completed = tempfile::tempdir().unwrap();
+        let completed_marker = marker(&completed);
+        let result = finalize_pending_memory_profile(
+            &completed_marker,
+            CommissioningState::Complete,
+            true,
+            || panic!("completed marker cleanup must not save again"),
+            || std::fs::remove_file(&completed_marker).map_err(|_| "marker_remove_failed"),
+        );
+        assert_eq!(
+            result,
+            Ok(MemoryProfileActivationOutcome::CleanedCompletedMarker)
+        );
+        assert!(!completed_marker.exists());
+
+        let stale = tempfile::tempdir().unwrap();
+        let stale_marker = marker(&stale);
+        let result = finalize_pending_memory_profile(
+            &stale_marker,
+            CommissioningState::NotStarted,
+            true,
+            || panic!("stale marker must not save"),
+            || panic!("stale marker must not be removed"),
+        );
+        assert_eq!(result, Err("memory_profile_conflict"));
+        assert!(stale_marker.exists());
+
+        let mismatch = tempfile::tempdir().unwrap();
+        let mismatch_marker = marker(&mismatch);
+        let result = finalize_pending_memory_profile(
+            &mismatch_marker,
+            CommissioningState::NeedsAttention,
+            false,
+            || panic!("mismatched V1 inputs must not save"),
+            || panic!("mismatched V1 inputs must not remove marker"),
+        );
+        assert_eq!(result, Err("memory_profile_conflict"));
+        assert!(mismatch_marker.exists());
     }
 
     #[test]

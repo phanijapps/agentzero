@@ -132,7 +132,7 @@ fn error(status: StatusCode, message: impl Into<String>) -> HandlerError {
     )
 }
 
-fn is_local_request(config: &GatewayConfig, peer: Option<SocketAddr>) -> bool {
+pub(super) fn is_local_request(config: &GatewayConfig, peer: Option<SocketAddr>) -> bool {
     if config.host.is_loopback() {
         return true;
     }

@@ -8,6 +8,7 @@ x-spec:
   - docs/specs/a2ui-component-catalog/
   - docs/specs/automatic-work-surfaces/
   - docs/specs/persistent-work-surfaces/
+  - docs/specs/dynamic-surface-titles/
 channels:
   sessionSurface:
     address: /ws
@@ -237,27 +238,40 @@ components:
     DecisionMatrixProps:
       type: object
       additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
     EvidenceTableProps:
       type: object
       additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
     AssumptionRegisterProps:
       type: object
       additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
     PlanChecklistProps:
       type: object
       additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
     ApprovalGateProps:
       type: object
       additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
     OpenLoopsProps:
       type: object
       additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
     MetricCardProps:
       type: object
       required: [value_path]
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         label: { $ref: "#/components/schemas/Label" }
         value_path: { $ref: "#/components/schemas/JsonPointer" }
         detail_path: { $ref: "#/components/schemas/JsonPointer" }
@@ -267,6 +281,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         label: { $ref: "#/components/schemas/Label" }
         value_path: { $ref: "#/components/schemas/JsonPointer" }
         max: { type: number, exclusiveMinimum: 0 }
@@ -276,6 +291,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         label: { $ref: "#/components/schemas/Label" }
         value_path: { $ref: "#/components/schemas/JsonPointer" }
     CalloutProps:
@@ -284,6 +300,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         message_path: { $ref: "#/components/schemas/JsonPointer" }
         tone: { enum: [info, success, warning, error] }
     KeyValueListProps:
@@ -292,6 +309,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         items_path: { $ref: "#/components/schemas/JsonPointer" }
     DataTableProps:
       type: object
@@ -299,6 +317,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         rows_path: { $ref: "#/components/schemas/JsonPointer" }
         columns:
           type: array
@@ -311,6 +330,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         items_path: { $ref: "#/components/schemas/JsonPointer" }
     CartesianChartProps:
       type: object
@@ -318,6 +338,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         data_path: { $ref: "#/components/schemas/JsonPointer" }
         x_key: { $ref: "#/components/schemas/FieldKey" }
         series:
@@ -332,6 +353,7 @@ components:
       additionalProperties: false
       properties:
         title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
         data_path: { $ref: "#/components/schemas/JsonPointer" }
         name_key: { $ref: "#/components/schemas/FieldKey" }
         value_key: { $ref: "#/components/schemas/FieldKey" }

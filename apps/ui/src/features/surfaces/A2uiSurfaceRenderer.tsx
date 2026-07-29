@@ -24,8 +24,24 @@ function atPath(data: Record<string, unknown>, path: unknown): unknown {
   ), data);
 }
 
-function title(component: WorkSurfaceComponent): string {
-  return typeof component.props?.title === "string" ? component.props.title : component.type;
+function displayTitle(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function humanizedId(component: WorkSurfaceComponent): string {
+  const humanized = component.id
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_\-\s]+/g, " ")
+    .trim();
+  if (!humanized) return "Component";
+  if (humanized.replace(/\s/g, "").toLowerCase() === component.type.toLowerCase()) return "Component";
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+}
+
+function title(component: WorkSurfaceComponent, data: Record<string, unknown>): string {
+  return displayTitle(atPath(data, component.props?.title_path))
+    ?? displayTitle(component.props?.title)
+    ?? humanizedId(component);
 }
 
 function List({ value }: { value: unknown }) {
@@ -246,27 +262,28 @@ function PieChart({ value, nameKey, valueKey, label }: { value: unknown; nameKey
 
 function SurfaceComponentView({ component, data }: { component: WorkSurfaceComponent; data: Record<string, unknown> }) {
   const props = component.props ?? {};
+  const resolvedTitle = title(component, data);
   switch (component.type) {
-    case "DecisionMatrix": return <><h3>{title(component)}</h3><DecisionMatrix criteria={atPath(data, props.criteria_path)} options={atPath(data, props.options_path)} /></>;
-    case "EvidenceTable": return <><h3>{title(component)}</h3><EvidenceTable value={atPath(data, props.evidence_path)} /></>;
-    case "AssumptionRegister": return <><h3>{title(component)}</h3><AssumptionRegister value={atPath(data, props.assumptions_path)} /></>;
-    case "PlanChecklist": return <><h3>{title(component)}</h3><PlanChecklist value={atPath(data, props.plan_path)} /></>;
-    case "OpenLoops": return <><h3>{title(component)}</h3><OpenLoops value={atPath(data, props.items_path)} /></>;
-    case "ApprovalGate": return <ApprovalGate component={component} />;
-    case "MetricCard": return <><h3>{title(component)}</h3><MetricCard value={atPath(data, props.value_path)} detail={atPath(data, props.detail_path)} label={props.label} /></>;
-    case "ProgressBar": return <><h3>{title(component)}</h3><ProgressBar value={atPath(data, props.value_path)} max={props.max} label={props.label ?? props.title} /></>;
-    case "StatusBadge": return <><h3>{title(component)}</h3><StatusBadge value={atPath(data, props.value_path)} label={props.label} /></>;
-    case "Callout": return <><h3>{title(component)}</h3><Callout value={atPath(data, props.message_path)} tone={props.tone} /></>;
-    case "KeyValueList": return <><h3>{title(component)}</h3><KeyValueList value={atPath(data, props.items_path)} /></>;
-    case "DataTable": return <><h3>{title(component)}</h3><DataTable value={atPath(data, props.rows_path)} columns={props.columns} label={title(component)} /></>;
-    case "Timeline": return <><h3>{title(component)}</h3><Timeline value={atPath(data, props.items_path)} /></>;
-    case "LineChart": return <><h3>{title(component)}</h3><CartesianChart kind="line" value={atPath(data, props.data_path)} xKey={props.x_key} series={props.series} label={title(component)} /></>;
-    case "BarChart": return <><h3>{title(component)}</h3><CartesianChart kind="bar" value={atPath(data, props.data_path)} xKey={props.x_key} series={props.series} label={title(component)} /></>;
-    case "PieChart": return <><h3>{title(component)}</h3><PieChart value={atPath(data, props.data_path)} nameKey={props.name_key} valueKey={props.value_key} label={title(component)} /></>;
+    case "DecisionMatrix": return <><h3>{resolvedTitle}</h3><DecisionMatrix criteria={atPath(data, props.criteria_path)} options={atPath(data, props.options_path)} /></>;
+    case "EvidenceTable": return <><h3>{resolvedTitle}</h3><EvidenceTable value={atPath(data, props.evidence_path)} /></>;
+    case "AssumptionRegister": return <><h3>{resolvedTitle}</h3><AssumptionRegister value={atPath(data, props.assumptions_path)} /></>;
+    case "PlanChecklist": return <><h3>{resolvedTitle}</h3><PlanChecklist value={atPath(data, props.plan_path)} /></>;
+    case "OpenLoops": return <><h3>{resolvedTitle}</h3><OpenLoops value={atPath(data, props.items_path)} /></>;
+    case "ApprovalGate": return <ApprovalGate component={component} title={resolvedTitle} />;
+    case "MetricCard": return <><h3>{resolvedTitle}</h3><MetricCard value={atPath(data, props.value_path)} detail={atPath(data, props.detail_path)} label={props.label} /></>;
+    case "ProgressBar": return <><h3>{resolvedTitle}</h3><ProgressBar value={atPath(data, props.value_path)} max={props.max} label={props.label ?? resolvedTitle} /></>;
+    case "StatusBadge": return <><h3>{resolvedTitle}</h3><StatusBadge value={atPath(data, props.value_path)} label={props.label} /></>;
+    case "Callout": return <><h3>{resolvedTitle}</h3><Callout value={atPath(data, props.message_path)} tone={props.tone} /></>;
+    case "KeyValueList": return <><h3>{resolvedTitle}</h3><KeyValueList value={atPath(data, props.items_path)} /></>;
+    case "DataTable": return <><h3>{resolvedTitle}</h3><DataTable value={atPath(data, props.rows_path)} columns={props.columns} label={resolvedTitle} /></>;
+    case "Timeline": return <><h3>{resolvedTitle}</h3><Timeline value={atPath(data, props.items_path)} /></>;
+    case "LineChart": return <><h3>{resolvedTitle}</h3><CartesianChart kind="line" value={atPath(data, props.data_path)} xKey={props.x_key} series={props.series} label={resolvedTitle} /></>;
+    case "BarChart": return <><h3>{resolvedTitle}</h3><CartesianChart kind="bar" value={atPath(data, props.data_path)} xKey={props.x_key} series={props.series} label={resolvedTitle} /></>;
+    case "PieChart": return <><h3>{resolvedTitle}</h3><PieChart value={atPath(data, props.data_path)} nameKey={props.name_key} valueKey={props.value_key} label={resolvedTitle} /></>;
   }
 }
 
-function ApprovalGate({ component }: { component: WorkSurfaceComponent }) {
+function ApprovalGate({ component, title }: { component: WorkSurfaceComponent; title: string }) {
   const [status, setStatus] = useState<string | null>(null);
   const props = component.props ?? {};
   const actionId = typeof props.action_id === "string" ? props.action_id : null;
@@ -278,7 +295,7 @@ function ApprovalGate({ component }: { component: WorkSurfaceComponent }) {
     const response = await fetch("/api/surfaces/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action_id: actionId, surface_id: component.id, target, expected_state: expectedState }) });
     setStatus(response.ok ? "Updated." : "Gateway denied this action.");
   };
-  return <><h3>{title(component)}</h3><button type="button" onClick={invoke} disabled={!actionId || !target || !expectedState}>{title(component)}</button>{status && <p role="status">{status}</p>}</>;
+  return <><h3>{title}</h3><button type="button" onClick={invoke} disabled={!actionId || !target || !expectedState}>{title}</button>{status && <p role="status">{status}</p>}</>;
 }
 
 /** Native, static catalog renderer. It never evaluates agent-supplied code or HTML. */

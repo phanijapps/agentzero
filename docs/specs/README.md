@@ -16,6 +16,7 @@ Active feature specs for AgentZero.
 | [Autonomy Ledger](autonomy-ledger/spec.md) | Shipped | Adds durable, approved cross-session decision threads with bounded resume context, Mission Control visibility, and read-only trigger eligibility. |
 | [Agent-Driven Surfaces](agent-driven-surfaces/spec.md) | Draft | Adds capability-gated, catalog-constrained agent work surfaces with channel-neutral results and server-owned actions. |
 | [A2UI Component Catalog](a2ui-component-catalog/spec.md) | Shipped | Adds bounded native metrics, status, structured records, timelines, and dynamic charts to the display-only work-surface catalog. |
+| [Dynamic Surface Titles](dynamic-surface-titles/spec.md) | Shipped | Replaces generic A2UI type headings with bound, static, or humanized content-aware titles. |
 | [Automatic Work Surfaces](automatic-work-surfaces/spec.md) | Shipped | Lets user-facing agents automatically publish validated display-only A2UI surfaces when structure materially improves an answer. |
 | [Persistent Work Surfaces](persistent-work-surfaces/spec.md) | Shipped | Adds opt-in, bounded persistence and reload restoration for validated Quick Chat and Research infographics, plus an explicit clear action. |
 | [Agent Commissioning](agent-commissioning/spec.md) | Shipped | Replaces the legacy setup wizard with durable, personalized model commissioning and a portable semantic profile. |

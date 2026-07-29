@@ -182,7 +182,9 @@ impl SurfaceValidator for ZbotWorkSurfaceCatalog {
             }
             validate_component_bindings(component)?;
             validate_component_properties(component)?;
-            if is_expanded_component(component.component_type) {
+            if is_expanded_component(component.component_type)
+                || component.props.contains_key("title_path")
+            {
                 validate_bound_data(component, &surface.data)?;
             }
         }
@@ -380,11 +382,10 @@ fn validate_bound_data(
     component: &SurfaceComponent,
     data: &Value,
 ) -> Result<(), SurfaceValidationError> {
-    for (property, path) in component
-        .props
-        .iter()
-        .filter(|(property, _)| property.ends_with("_path"))
-    {
+    for (property, path) in component.props.iter().filter(|(property, _)| {
+        property.as_str() == "title_path"
+            || (is_expanded_component(component.component_type) && property.ends_with("_path"))
+    }) {
         let Some(path) = path.as_str() else {
             continue;
         };
@@ -497,23 +498,29 @@ fn is_pointer_token(token: &str) -> bool {
 
 fn allowed_properties(component: ComponentType) -> &'static [&'static str] {
     match component {
-        ComponentType::DecisionMatrix => &["title", "criteria_path", "options_path"],
-        ComponentType::EvidenceTable => &["title", "evidence_path"],
-        ComponentType::AssumptionRegister => &["title", "assumptions_path"],
-        ComponentType::PlanChecklist => &["title", "plan_path"],
-        ComponentType::ApprovalGate => &["title", "action_id", "target", "expected_state"],
-        ComponentType::OpenLoops => &["title", "items_path"],
-        ComponentType::MetricCard => &["title", "label", "value_path", "detail_path"],
-        ComponentType::ProgressBar => &["title", "label", "value_path", "max"],
-        ComponentType::StatusBadge => &["title", "label", "value_path"],
-        ComponentType::Callout => &["title", "message_path", "tone"],
-        ComponentType::KeyValueList => &["title", "items_path"],
-        ComponentType::DataTable => &["title", "rows_path", "columns"],
-        ComponentType::Timeline => &["title", "items_path"],
+        ComponentType::DecisionMatrix => &["title", "title_path", "criteria_path", "options_path"],
+        ComponentType::EvidenceTable => &["title", "title_path", "evidence_path"],
+        ComponentType::AssumptionRegister => &["title", "title_path", "assumptions_path"],
+        ComponentType::PlanChecklist => &["title", "title_path", "plan_path"],
+        ComponentType::ApprovalGate => &[
+            "title",
+            "title_path",
+            "action_id",
+            "target",
+            "expected_state",
+        ],
+        ComponentType::OpenLoops => &["title", "title_path", "items_path"],
+        ComponentType::MetricCard => &["title", "title_path", "label", "value_path", "detail_path"],
+        ComponentType::ProgressBar => &["title", "title_path", "label", "value_path", "max"],
+        ComponentType::StatusBadge => &["title", "title_path", "label", "value_path"],
+        ComponentType::Callout => &["title", "title_path", "message_path", "tone"],
+        ComponentType::KeyValueList => &["title", "title_path", "items_path"],
+        ComponentType::DataTable => &["title", "title_path", "rows_path", "columns"],
+        ComponentType::Timeline => &["title", "title_path", "items_path"],
         ComponentType::LineChart | ComponentType::BarChart => {
-            &["title", "data_path", "x_key", "series"]
+            &["title", "title_path", "data_path", "x_key", "series"]
         }
-        ComponentType::PieChart => &["title", "data_path", "name_key", "value_key"],
+        ComponentType::PieChart => &["title", "title_path", "data_path", "name_key", "value_key"],
     }
 }
 
@@ -964,6 +971,128 @@ mod tests {
             ZbotWorkSurfaceCatalog.validate(&oversized),
             Err(SurfaceValidationError::PayloadTooLarge)
         );
+    }
+
+    #[test]
+    fn catalog_accepts_bounded_title_paths_for_every_component_type() {
+        let surface: WorkSurface = serde_json::from_value(json!({
+            "surface_id": "title-paths",
+            "catalog_id": ZBOT_WORK_SURFACE_CATALOG,
+            "components": [
+                {"id": "matrix", "type": "DecisionMatrix", "props": {"title_path": "/titles/matrix", "criteria_path": "/criteria", "options_path": "/options"}},
+                {"id": "evidence", "type": "EvidenceTable", "props": {"title_path": "/titles/evidence", "evidence_path": "/evidence"}},
+                {"id": "assumptions", "type": "AssumptionRegister", "props": {"title_path": "/titles/assumptions", "assumptions_path": "/assumptions"}},
+                {"id": "plan", "type": "PlanChecklist", "props": {"title_path": "/titles/plan", "plan_path": "/plan"}},
+                {"id": "approval", "type": "ApprovalGate", "props": {"title_path": "/titles/approval", "action_id": "inspect", "target": "item-1"}},
+                {"id": "loops", "type": "OpenLoops", "props": {"title_path": "/titles/loops", "items_path": "/loops"}},
+                {"id": "metric", "type": "MetricCard", "props": {"title_path": "/titles/metric", "value_path": "/metric"}},
+                {"id": "progress", "type": "ProgressBar", "props": {"title_path": "/titles/progress", "value_path": "/progress"}},
+                {"id": "status", "type": "StatusBadge", "props": {"title_path": "/titles/status", "value_path": "/status"}},
+                {"id": "callout", "type": "Callout", "props": {"title_path": "/titles/callout", "message_path": "/message"}},
+                {"id": "pairs", "type": "KeyValueList", "props": {"title_path": "/titles/pairs", "items_path": "/pairs"}},
+                {"id": "table", "type": "DataTable", "props": {"title_path": "/titles/table", "rows_path": "/rows"}},
+                {"id": "timeline", "type": "Timeline", "props": {"title_path": "/titles/timeline", "items_path": "/timeline"}},
+                {"id": "line", "type": "LineChart", "props": {"title_path": "/titles/line", "data_path": "/points", "x_key": "name", "series": ["value"]}},
+                {"id": "bar", "type": "BarChart", "props": {"title_path": "/titles/bar", "data_path": "/points", "x_key": "name", "series": ["value"]}},
+                {"id": "pie", "type": "PieChart", "props": {"title_path": "/titles/pie", "data_path": "/slices", "name_key": "name", "value_key": "value"}}
+            ],
+            "data": {
+                "titles": {
+                    "matrix": "Decision criteria",
+                    "evidence": "Evidence summary",
+                    "assumptions": "Assumption status",
+                    "plan": "Launch plan",
+                    "approval": "Approve milestone",
+                    "loops": "Open follow-ups",
+                    "metric": "Revenue",
+                    "progress": "Migration progress",
+                    "status": "Service status",
+                    "callout": "Deployment note",
+                    "pairs": "Environment details",
+                    "table": "Deployment rows",
+                    "timeline": "Release history",
+                    "line": "Traffic trend",
+                    "bar": "Build volume",
+                    "pie": "Usage share"
+                },
+                "criteria": [],
+                "options": [],
+                "evidence": [],
+                "assumptions": [],
+                "plan": [],
+                "loops": [],
+                "metric": 42,
+                "progress": 75,
+                "status": "healthy",
+                "message": "Ready",
+                "pairs": {"region": "east"},
+                "rows": [{"name": "api", "value": 1}],
+                "timeline": [{"title": "Started"}],
+                "points": [{"name": "Mon", "value": 1}],
+                "slices": [{"name": "API", "value": 1}]
+            }
+        }))
+        .expect("title-path surface");
+
+        assert_eq!(ZbotWorkSurfaceCatalog.validate(&surface), Ok(()));
+    }
+
+    #[test]
+    fn catalog_rejects_invalid_title_path_descriptors() {
+        let rejected = [
+            (
+                "malformed title_path",
+                json!({
+                    "surface_id": "bad-title-path",
+                    "catalog_id": ZBOT_WORK_SURFACE_CATALOG,
+                    "components": [{"id": "callout", "type": "Callout", "props": {"title_path": "title", "message_path": "/message"}}],
+                    "data": {"message": "Ready"}
+                }),
+                "invalid JSON pointer",
+            ),
+            (
+                "unsupported title binding property",
+                json!({
+                    "surface_id": "unsupported-title-binding",
+                    "catalog_id": ZBOT_WORK_SURFACE_CATALOG,
+                    "components": [{"id": "callout", "type": "Callout", "props": {"titlePath": "/title", "message_path": "/message"}}],
+                    "data": {"title": "Notice", "message": "Ready"}
+                }),
+                "unsupported",
+            ),
+            (
+                "overlong bound title",
+                json!({
+                    "surface_id": "overlong-title",
+                    "catalog_id": ZBOT_WORK_SURFACE_CATALOG,
+                    "components": [{"id": "approval", "type": "ApprovalGate", "props": {"title_path": "/title", "action_id": "inspect", "target": "item-1"}}],
+                    "data": {"title": "x".repeat(4097)}
+                }),
+                "rendered string",
+            ),
+            (
+                "over-budget title collection",
+                json!({
+                    "surface_id": "title-collection",
+                    "catalog_id": ZBOT_WORK_SURFACE_CATALOG,
+                    "components": [{"id": "callout", "type": "Callout", "props": {"title_path": "/title", "message_path": "/message"}}],
+                    "data": {
+                        "title": (0..=MAX_BOUND_ITEMS).collect::<Vec<_>>(),
+                        "message": "Ready"
+                    }
+                }),
+                "bound collection",
+            ),
+        ];
+
+        for (name, descriptor, expected_reason) in rejected {
+            let surface: WorkSurface = serde_json::from_value(descriptor).expect(name);
+            let error = ZbotWorkSurfaceCatalog.validate(&surface).expect_err(name);
+            assert!(
+                error.to_string().contains(expected_reason),
+                "{name} must fail for {expected_reason}, got: {error}"
+            );
+        }
     }
 
     #[test]

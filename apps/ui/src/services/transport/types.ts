@@ -580,6 +580,20 @@ export interface ExecutionSettingsResponse {
   error?: string;
 }
 
+export interface PresentationSettings {
+  persistSurfaces: boolean;
+}
+
+export interface PresentationSettingsResponse {
+  success: boolean;
+  data?: PresentationSettings & { restartRequired: false };
+  error?: string;
+}
+
+export interface ClearSavedSurfacesResponse {
+  deletedCount: number;
+}
+
 export type CommissioningState = "not_started" | "in_progress" | "needs_attention" | "complete";
 export type LocalRuntimeState = "unavailable" | "unreachable" | "no_model" | "ready";
 
@@ -664,7 +678,7 @@ export interface StreamEvent {
 
 export interface WorkSurfaceComponent {
   id: string;
-  type: "DecisionMatrix" | "EvidenceTable" | "AssumptionRegister" | "PlanChecklist" | "ApprovalGate" | "OpenLoops";
+  type: "DecisionMatrix" | "EvidenceTable" | "AssumptionRegister" | "PlanChecklist" | "ApprovalGate" | "OpenLoops" | "MetricCard" | "ProgressBar" | "StatusBadge" | "Callout" | "KeyValueList" | "DataTable" | "Timeline" | "LineChart" | "BarChart" | "PieChart";
   props?: Record<string, unknown>;
 }
 

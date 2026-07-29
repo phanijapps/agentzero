@@ -247,6 +247,7 @@ async function hydrateFromSnapshot(
   dispatch: Dispatch<ResearchAction>,
   latestArtifactsRef: { current: Artifact[] },
   canApply: () => boolean = () => true,
+  onSavedSurfaces?: (surfaces: WorkSurface[]) => void,
 ): Promise<void> {
   const transport = await getTransport();
   const snap = await snapshotSession(transport, sessionId);
@@ -257,6 +258,7 @@ async function hydrateFromSnapshot(
     dispatch({ type: "ERROR", message: "Failed to load session" });
     return;
   }
+  onSavedSurfaces?.(snap.surfaces);
   dispatch({
     type: "HYDRATE",
     sessionId,
@@ -438,6 +440,7 @@ export function useResearchSession() {
         dispatch,
         latestArtifactsRef,
         () => active,
+        setSurfaces,
       );
       // Set AFTER the dispatch (chat-v2 learning #6) so StrictMode's first
       // mount re-entering doesn't skip dispatch via a pre-completion flag.

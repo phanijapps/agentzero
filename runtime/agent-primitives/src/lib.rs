@@ -47,6 +47,7 @@ pub mod multimodal;
 pub mod policy;
 pub mod tool;
 pub mod types;
+pub mod ward;
 
 // ============================================================================
 // CONVENIENCE RE-EXPORTS
@@ -61,6 +62,7 @@ pub use filesystem::{FileSystemContext, NoFileSystemContext};
 pub use policy::{ToolPermissions, ToolRiskLevel};
 pub use tool::Tool;
 pub use types::{Content, Part};
+pub use ward::{UnknownWardArchetype, WardArchetypeId};
 
 // ============================================================================
 // STRING UTILITIES

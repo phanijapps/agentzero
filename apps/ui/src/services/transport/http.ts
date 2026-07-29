@@ -41,6 +41,10 @@ import type {
   UpdateLogSettingsRequest,
   ExecutionSettings,
   ExecutionSettingsResponse,
+  PresentationSettings,
+  PresentationSettingsResponse,
+  ClearSavedSurfacesResponse,
+  WorkSurface,
   LogSession,
   SessionDetail,
   LogFilter,
@@ -439,6 +443,32 @@ export class HttpTransport implements Transport {
       return { success: true, data: result.data.data };
     }
     return { success: false, error: result.error || result.data?.error || "Failed to update execution settings" };
+  }
+
+  async getPresentationSettings(): Promise<TransportResult<PresentationSettings & { restartRequired: false }>> {
+    const result = await this.get<PresentationSettingsResponse>("/api/settings/presentation");
+    if (result.success && result.data?.success && result.data.data) {
+      return { success: true, data: result.data.data };
+    }
+    return { success: false, error: result.error || result.data?.error || "Failed to get presentation settings" };
+  }
+
+  async updatePresentationSettings(settings: PresentationSettings): Promise<TransportResult<PresentationSettings & { restartRequired: false }>> {
+    const result = await this.put<PresentationSettingsResponse>("/api/settings/presentation", settings);
+    if (result.success && result.data?.success && result.data.data) {
+      return { success: true, data: result.data.data };
+    }
+    return { success: false, error: result.error || result.data?.error || "Failed to update presentation settings" };
+  }
+
+  async listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<WorkSurface[]>> {
+    return this.get<WorkSurface[]>(`/api/sessions/${encodeURIComponent(sessionId)}/surfaces`);
+  }
+
+  async clearSavedSurfaces(): Promise<TransportResult<ClearSavedSurfacesResponse>> {
+    return this.deleteWithBody<ClearSavedSurfacesResponse>("/api/surfaces/saved", {
+      confirmation: "clear_saved_infographics",
+    });
   }
 
   async getCommissioningStatus(): Promise<TransportResult<CommissioningStatus>> {
@@ -1918,6 +1948,25 @@ export class HttpTransport implements Transport {
       }
 
       return { success: true };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  }
+
+  private async deleteWithBody<T>(path: string, body: unknown): Promise<TransportResult<T>> {
+    if (!this.config) {
+      return { success: false, error: "Transport not initialized" };
+    }
+    try {
+      const response = await fetch(`${this.config.httpUrl}${path}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
+      }
+      return { success: true, data: await response.json() as T };
     } catch (error) {
       return { success: false, error: String(error) };
     }

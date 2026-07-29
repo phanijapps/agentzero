@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use agent_primitives::WardArchetypeId;
 use async_trait::async_trait;
 use gateway_services::{WardProvenance, WardUsage};
 
@@ -21,8 +22,11 @@ impl WardUsageAdapter {
 
 #[async_trait]
 impl agent_tools::WardUsageAccess for WardUsageAdapter {
-    async fn mark_created_agent(&self, ward: &str) {
-        if let Err(e) = self.inner.mark_created(ward, WardProvenance::Agent) {
+    async fn mark_created_agent(&self, ward: &str, archetype: WardArchetypeId) {
+        if let Err(e) =
+            self.inner
+                .mark_created_with_archetype(ward, WardProvenance::Agent, Some(archetype))
+        {
             tracing::warn!(
                 ward = %ward,
                 error = %e,

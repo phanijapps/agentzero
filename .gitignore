@@ -140,6 +140,15 @@ docs/*
 !docs/specs/**
 !docs/rfc/
 !docs/rfc/**
+!docs/architecture/
+docs/architecture/*
+!docs/architecture/security.md
+!docs/adr/
+!docs/adr/**
+!docs/product/
+docs/product/*
+!docs/product/briefs/
+!docs/product/briefs/**
 docs/specs/**/state.json
 .agents
 # mempalace / chromadb artifacts

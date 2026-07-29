@@ -572,6 +572,129 @@ impl<D: StateDbProvider> StateRepository<D> {
         })
     }
 
+    /// Upsert an opaque validated surface and retain only the 16 most recently
+    /// touched descriptors for this session.
+    pub fn save_session_surface(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        surface_id: &str,
+        surface_json: &str,
+    ) -> Result<(), String> {
+        self.db.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let now = chrono::Utc::now().to_rfc3339();
+            tx.execute(
+                "INSERT INTO session_surfaces (
+                    session_id, surface_id, execution_id, surface_json,
+                    created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                 ON CONFLICT(session_id, surface_id) DO UPDATE SET
+                    execution_id = excluded.execution_id,
+                    surface_json = excluded.surface_json,
+                    updated_at = excluded.updated_at",
+                params![session_id, surface_id, execution_id, surface_json, now],
+            )?;
+            tx.execute(
+                "DELETE FROM session_surfaces
+                 WHERE session_id = ?1
+                   AND rowid NOT IN (
+                     SELECT rowid FROM session_surfaces
+                     WHERE session_id = ?1
+                     ORDER BY updated_at DESC, rowid DESC
+                     LIMIT 16
+                   )",
+                params![session_id],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// List at most 16 saved descriptors in stable creation order.
+    pub fn list_session_surfaces(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionSurfaceRecord>, String> {
+        self.db.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT session_id, surface_id, execution_id, surface_json,
+                        created_at, updated_at
+                 FROM session_surfaces
+                 WHERE session_id = ?1
+                 ORDER BY created_at ASC, rowid ASC
+                 LIMIT 16",
+            )?;
+            let records = stmt
+                .query_map(params![session_id], |row| {
+                    Ok(SessionSurfaceRecord {
+                        session_id: row.get(0)?,
+                        surface_id: row.get(1)?,
+                        execution_id: row.get(2)?,
+                        surface_json: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                })
+                .and_then(Iterator::collect)?;
+            Ok(records)
+        })
+    }
+
+    pub fn delete_session_surface(
+        &self,
+        session_id: &str,
+        surface_id: &str,
+    ) -> Result<bool, String> {
+        self.db.with_connection(|conn| {
+            Ok(conn.execute(
+                "DELETE FROM session_surfaces WHERE session_id = ?1 AND surface_id = ?2",
+                params![session_id, surface_id],
+            )? > 0)
+        })
+    }
+
+    pub fn clear_session_surfaces(&self) -> Result<usize, String> {
+        self.db
+            .with_connection(|conn| conn.execute("DELETE FROM session_surfaces", []))
+    }
+
+    fn row_to_session_plan(
+        row: &rusqlite::Row<'_>,
+    ) -> Result<SessionPlanSnapshot, rusqlite::Error> {
+        let plan_json: String = row.get(1)?;
+        let plan = serde_json::from_str(&plan_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
+        let source_event_timestamp: i64 = row.get(3)?;
+        let source_event_sequence: i64 = row.get(4)?;
+
+        Ok(SessionPlanSnapshot {
+            execution_id: row.get(0)?,
+            explanation: row.get(2)?,
+            plan,
+            updated_at: row.get(5)?,
+            source_event_timestamp: u64::try_from(source_event_timestamp).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Integer,
+                    Box::new(error),
+                )
+            })?,
+            source_event_sequence: u64::try_from(source_event_sequence).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Integer,
+                    Box::new(error),
+                )
+            })?,
+        })
+    }
+
     fn list_executions_for_sessions(
         &self,
         session_ids: &[String],
@@ -897,6 +1020,10 @@ impl<D: StateDbProvider> StateRepository<D> {
                 "DELETE FROM recall_log WHERE session_id = ?",
                 params![session_id],
             )?;
+            total += tx.execute(
+                "DELETE FROM session_surfaces WHERE session_id = ?",
+                params![session_id],
+            )?;
             total += tx.execute("DELETE FROM sessions WHERE id = ?", params![session_id])?;
             // Intentionally NOT touched: memory_facts, memory_facts_index,
             // kg_entities, kg_relationships, kg_causal_edges. Those are
@@ -981,6 +1108,7 @@ impl<D: StateDbProvider> StateRepository<D> {
                 "distillation_runs",
                 "bridge_outbox",
                 "recall_log",
+                "session_surfaces",
             ] {
                 let sql = format!(
                     "DELETE FROM {} WHERE session_id IN (SELECT id FROM _delete_session_set)",
@@ -1755,29 +1883,6 @@ impl<D: StateDbProvider> StateRepository<D> {
             tool_results: None,
         })
     }
-
-    fn row_to_session_plan(row: &rusqlite::Row) -> Result<SessionPlanSnapshot, rusqlite::Error> {
-        use rusqlite::types::Type;
-
-        let plan_json: String = row.get(1)?;
-        let plan = serde_json::from_str(&plan_json).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error))
-        })?;
-        let source_event_timestamp: i64 = row.get(3)?;
-        let source_event_sequence: i64 = row.get(4)?;
-        Ok(SessionPlanSnapshot {
-            execution_id: row.get(0)?,
-            plan,
-            explanation: row.get(2)?,
-            source_event_timestamp: u64::try_from(source_event_timestamp).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(3, Type::Integer, Box::new(error))
-            })?,
-            source_event_sequence: u64::try_from(source_event_sequence).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(4, Type::Integer, Box::new(error))
-            })?,
-            updated_at: row.get(5)?,
-        })
-    }
 }
 
 // ============================================================================
@@ -1857,6 +1962,18 @@ mod tests {
                     source_event_timestamp INTEGER NOT NULL,
                     source_event_sequence INTEGER NOT NULL,
                     updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS session_surfaces (
+                    session_id TEXT NOT NULL,
+                    surface_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    surface_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, surface_id),
                     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
                     FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
                 );
@@ -2583,6 +2700,51 @@ mod tests {
         assert!(repo.get_session(&session.id).unwrap().is_none());
     }
 
+    #[test]
+    fn session_surfaces_upsert_delete_and_prune_to_sixteen() {
+        // STUB: AC2/AC9 — stable IDs are parameterized, replaced, and bounded.
+        let repo = setup_repo();
+        let session = Session::new("agent");
+        let execution = AgentExecution::new_root(&session.id, "agent");
+        repo.create_session(&session).unwrap();
+        repo.create_execution(&execution).unwrap();
+
+        let quoted_id = "surface-'; DROP TABLE sessions; --";
+        repo.save_session_surface(&session.id, &execution.id, quoted_id, r#"{"version":1}"#)
+            .unwrap();
+        repo.save_session_surface(&session.id, &execution.id, quoted_id, r#"{"version":2}"#)
+            .unwrap();
+        let updated = repo.list_session_surfaces(&session.id).unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].surface_json, r#"{"version":2}"#);
+
+        for index in 0..20 {
+            repo.save_session_surface(
+                &session.id,
+                &execution.id,
+                &format!("surface-{index:02}"),
+                &format!(r#"{{"index":{index}}}"#),
+            )
+            .unwrap();
+        }
+
+        let records = repo.list_session_surfaces(&session.id).unwrap();
+        assert_eq!(records.len(), 16);
+        assert!(records
+            .iter()
+            .any(|record| record.surface_id == "surface-19"));
+        assert!(!records
+            .iter()
+            .any(|record| record.surface_id == "surface-00"));
+
+        let removed_id = records[0].surface_id.clone();
+        assert!(repo
+            .delete_session_surface(&session.id, &removed_id)
+            .unwrap());
+        assert_eq!(repo.list_session_surfaces(&session.id).unwrap().len(), 15);
+        assert!(repo.get_session(&session.id).unwrap().is_some());
+    }
+
     // ========================================================================
     // Cascade Delete Tests (R18)
     //
@@ -2709,6 +2871,16 @@ mod tests {
                     fact_key TEXT NOT NULL,
                     recalled_at TEXT NOT NULL,
                     PRIMARY KEY (session_id, fact_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS session_surfaces (
+                    session_id TEXT NOT NULL,
+                    surface_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    surface_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, surface_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS memory_facts (
@@ -2866,6 +3038,29 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn session_surface_clear_preserves_sessions_messages_artifacts_and_memory() {
+        // STUB: AC7 — global clear is fixed to session_surfaces only.
+        let (db, repo) = cascade_repo();
+        let sid = "sess-clear-surfaces";
+        seed_cascade_fixture(&db, &repo, sid);
+        seed_memory_fact(&db, "fact-clear", "keep memory");
+        repo.save_session_surface(
+            sid,
+            &format!("exec-{sid}"),
+            "surface-clear",
+            r#"{"surface_id":"surface-clear"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(repo.clear_session_surfaces().unwrap(), 1);
+        assert_eq!(count_rows(&db, "session_surfaces", "session_id", sid), 0);
+        assert_eq!(count_rows(&db, "sessions", "id", sid), 1);
+        assert_eq!(count_rows(&db, "messages", "session_id", sid), 1);
+        assert_eq!(count_rows(&db, "artifacts", "session_id", sid), 1);
+        assert_eq!(count_rows(&db, "memory_facts", "content", "keep memory"), 1);
     }
 
     #[test]

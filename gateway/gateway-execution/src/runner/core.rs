@@ -712,6 +712,7 @@ impl ExecutionRunner {
         ));
         builder = builder
             .with_ward_usage(observer)
+            .with_ward_usage_service(self.ward_usage.clone())
             .with_steering_registry(self.steering_registry.clone())
             .with_agent_result_bus(self.agent_result_bus.clone());
 
@@ -1367,30 +1368,24 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
             .unwrap_or("0")
     );
 
-    // Reuse the root execution for continuation (one continuous conversation)
     let execution_id = match state_service.get_root_execution(session_id)? {
         Some(root_exec) => root_exec.id,
         None => {
-            // Fallback: create new root execution if none found
             let execution = execution_state::AgentExecution::new_root(session_id, root_agent_id);
             state_service.create_execution(&execution)?;
             execution.id
         }
     };
 
-    // Reactivate session and execution if they were in a terminal state
     state_service.reactivate_session(session_id)?;
     state_service.reactivate_execution(&execution_id)?;
     let _ = log_service.log_session_start(&execution_id, &conversation_id, root_agent_id, None);
 
-    // Create execution handle
-    let handle = ExecutionHandle::new(50); // Default max iterations for continuation
+    let handle = ExecutionHandle::new(50);
     {
         let mut handles_guard = handles.write().await;
         handles_guard.insert(conversation_id.clone(), handle.clone());
     }
-
-    // Emit agent started event
     emit_agent_started(
         &event_bus,
         root_agent_id,
@@ -1409,19 +1404,21 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     // Load full session conversation (includes tool calls, results, and callbacks).
     let mut history: Vec<ChatMessage> = messages
         .replay(session_id, None, 200)
-        .map(|rows| crate::conversation_history::messages_to_chat_format(&rows))
-        .unwrap_or_default();
+        .map_err(|_| "continuation_history_read_failed".to_string())
+        .map(|rows| crate::conversation_history::messages_to_chat_format(&rows))?;
 
     // Look up active ward from session (needed for recall ward affinity)
-    let session_ward_id = state_service
+    let session = state_service
         .get_session(session_id)
-        .ok()
-        .flatten()
-        .and_then(|s| s.ward_id);
+        .map_err(|_| "continuation_session_read_failed".to_string())?
+        .ok_or_else(|| "continuation_session_missing".to_string())?;
+    if session.root_agent_id != root_agent_id {
+        return Err("continuation_identity_mismatch".to_string());
+    }
+    let session_ward_id = session.ward_id;
     let session_plan = state_service
         .get_mission_control_session_tokens(session_id)
-        .ok()
-        .flatten()
+        .map_err(|_| "continuation_plan_read_failed".to_string())?
         .and_then(|tokens| tokens.current_plan);
 
     // Prepend scoped unified recall (if any) to history as a bounded system
@@ -1451,7 +1448,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         super::prompt_safe_tool_result_config(&tool_settings, paths.vault_dir());
 
     // Collect available agents and skills
-    let available_agents = collect_agents_summary(&agent_service).await;
+    let available_agents = collect_agents_summary(&agent_service, &paths).await;
     let available_skills = collect_skills_summary(&skill_service).await;
 
     // Ward AGENTS.md and memory-bank/ are curated manually by agents;
@@ -1488,7 +1485,9 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         let observer = std::sync::Arc::new(
             crate::invoke::ward_usage_adapter::WardUsageAdapter::new(ward_usage.clone()),
         );
-        builder = builder.with_ward_usage(observer);
+        builder = builder
+            .with_ward_usage(observer)
+            .with_ward_usage_service(ward_usage.clone());
     }
     if let Some(ps) = procedure_store.clone() {
         builder = builder.with_procedure_store(ps);

@@ -52,7 +52,10 @@ confidence notes.
   fields when present, and record missing title, publisher, timestamp, or URL
   fields instead of fabricating values.
 - Prefer reusable code for repeated calculations, but keep task-specific output
-  paths and schemas governed by the active plan or ward.
+  paths and schemas governed by the task and injected Active Ward Template.
+- Never assume data, source, report, or output directories. If no declared role
+  can hold a requested artifact, return `role_not_declared` with the template
+  digest instead of inventing a path.
 
 ## Standard Workflow
 

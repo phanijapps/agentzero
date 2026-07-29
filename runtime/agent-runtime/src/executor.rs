@@ -1196,55 +1196,60 @@ impl AgentExecutor {
                                 );
                             }
 
-                            // Check for generative UI markers
+                            // Only the capability-gated presentation tool may
+                            // turn result markers into user-visible surfaces.
                             if let Ok(parsed) = serde_json::from_str::<Value>(&output) {
-                                // A work surface is declarative data only. It is validated by
-                                // gateway-execution before any client can receive it.
-                                if parsed
-                                    .get("__work_surface")
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface) = parsed.get("surface").cloned() {
-                                        if let Ok(surface) = serde_json::from_value(surface) {
-                                            on_event(StreamEvent::WorkSurface {
+                                if tool_name == "present_surface" {
+                                    // A work surface is declarative data only. It is validated by
+                                    // gateway-execution before any client can receive it.
+                                    if parsed
+                                        .get("__work_surface")
+                                        .and_then(serde_json::Value::as_bool)
+                                        .unwrap_or(false)
+                                    {
+                                        if let Some(surface) = parsed.get("surface").cloned() {
+                                            if let Ok(surface) = serde_json::from_value(surface) {
+                                                on_event(StreamEvent::WorkSurface {
+                                                    timestamp: chrono::Utc::now().timestamp_millis()
+                                                        as u64,
+                                                    surface,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    if parsed
+                                        .get("__work_surface_updated")
+                                        .and_then(serde_json::Value::as_bool)
+                                        .unwrap_or(false)
+                                    {
+                                        if let Some(surface) = parsed
+                                            .get("surface")
+                                            .cloned()
+                                            .and_then(|value| serde_json::from_value(value).ok())
+                                        {
+                                            on_event(StreamEvent::WorkSurfaceUpdated {
                                                 timestamp: chrono::Utc::now().timestamp_millis()
                                                     as u64,
                                                 surface,
                                             });
                                         }
                                     }
-                                }
-                                if parsed
-                                    .get("__work_surface_updated")
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface) = parsed
-                                        .get("surface")
-                                        .cloned()
-                                        .and_then(|value| serde_json::from_value(value).ok())
+                                    if parsed
+                                        .get("__work_surface_deleted")
+                                        .and_then(serde_json::Value::as_bool)
+                                        .unwrap_or(false)
                                     {
-                                        on_event(StreamEvent::WorkSurfaceUpdated {
-                                            timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                                            surface,
-                                        });
-                                    }
-                                }
-                                if parsed
-                                    .get("__work_surface_deleted")
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface_id) = parsed
-                                        .get("surface_id")
-                                        .and_then(serde_json::Value::as_str)
-                                        .filter(|id| !id.is_empty() && id.len() <= 128)
-                                    {
-                                        on_event(StreamEvent::WorkSurfaceDeleted {
-                                            timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                                            surface_id: surface_id.to_owned(),
-                                        });
+                                        if let Some(surface_id) = parsed
+                                            .get("surface_id")
+                                            .and_then(serde_json::Value::as_str)
+                                            .filter(|id| !id.is_empty() && id.len() <= 128)
+                                        {
+                                            on_event(StreamEvent::WorkSurfaceDeleted {
+                                                timestamp: chrono::Utc::now().timestamp_millis()
+                                                    as u64,
+                                                surface_id: surface_id.to_owned(),
+                                            });
+                                        }
                                     }
                                 }
 
@@ -1518,25 +1523,6 @@ impl AgentExecutor {
         tool_name: &str,
         arguments: &Value,
     ) -> Result<ToolExecutionResult, String> {
-        // Cold graph work must establish its ward before any work can start.
-        // This lives at the executor boundary (rather than only in individual
-        // built-in tools) so MCP tools — which bypass the normal ToolRegistry
-        // and use the `{server}__{tool}` dispatch below — cannot escape the
-        // planning gate. `ward` remains available to make the required state
-        // transition; successful create/use then launches planner-agent.
-        if tool_name != "ward"
-            && agent_tools::guards::planning_gate_awaits_ward(shared_ctx.as_ref())
-        {
-            return Ok(ToolExecutionResult {
-                output: json!({
-                    "status": "redirect",
-                    "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call MCP tools or other tools yet."
-                })
-                .to_string(),
-                actions: EventActions::default(),
-            });
-        }
-
         // --- Replay intercept ---------------------------------------------------
         // When ZBOT_REPLAY_DIR is set, look up a recorded result and return it
         // instead of running the real tool. Strict mode (default) panics on miss;
@@ -2554,6 +2540,156 @@ mod executor_helper_coverage_tests {
         tool_name: String,
     }
 
+    struct SurfaceMarkerTool {
+        name: &'static str,
+        update: bool,
+    }
+
+    struct RejectingSurfaceTool;
+    struct PlanMarkerTool;
+
+    #[async_trait]
+    impl Tool for SurfaceMarkerTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &'static str {
+            "test surface marker"
+        }
+
+        fn parameters_schema(&self) -> Option<Value> {
+            Some(json!({"type": "object", "properties": {}}))
+        }
+
+        async fn execute(
+            &self,
+            _ctx: Arc<dyn ZeroToolContext>,
+            _args: Value,
+        ) -> agent_primitives::Result<Value> {
+            let marker = if self.update {
+                "__work_surface_updated"
+            } else {
+                "__work_surface"
+            };
+            Ok(json!({
+                (marker): true,
+                "surface": {
+                    "surface_id": "automatic-summary",
+                    "catalog_id": "zbot/work-surface/v1",
+                    "components": [{
+                        "id": "status",
+                        "type": "StatusBadge",
+                        "props": {"value_path": "/status"}
+                    }],
+                    "data": {"status": "ready"}
+                }
+            }))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for RejectingSurfaceTool {
+        fn name(&self) -> &'static str {
+            "present_surface"
+        }
+
+        fn description(&self) -> &'static str {
+            "reject an invalid test surface"
+        }
+
+        async fn execute(
+            &self,
+            _ctx: Arc<dyn ZeroToolContext>,
+            _args: Value,
+        ) -> agent_primitives::Result<Value> {
+            Err(agent_primitives::AgentError::Tool(
+                "surface descriptor is invalid".to_string(),
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for PlanMarkerTool {
+        fn name(&self) -> &'static str {
+            "update_plan"
+        }
+
+        fn description(&self) -> &'static str {
+            "return a test plan marker"
+        }
+
+        async fn execute(
+            &self,
+            _ctx: Arc<dyn ZeroToolContext>,
+            _args: Value,
+        ) -> agent_primitives::Result<Value> {
+            Ok(json!({
+                "__plan_update": true,
+                "plan": [{"step": "Keep legacy markers working", "status": "completed"}]
+            }))
+        }
+    }
+
+    struct RejectedSurfaceThenRespondLlm {
+        calls: Arc<AtomicUsize>,
+        reject_first: bool,
+    }
+
+    #[async_trait]
+    impl LlmClient for RejectedSurfaceThenRespondLlm {
+        fn model(&self) -> &str {
+            "tooled"
+        }
+
+        fn provider(&self) -> &str {
+            "tooled"
+        }
+
+        async fn chat(
+            &self,
+            _msgs: Vec<ChatMessage>,
+            _tools: Option<Value>,
+        ) -> Result<ChatResponse, LlmError> {
+            unreachable!()
+        }
+
+        async fn chat_stream(
+            &self,
+            _msgs: Vec<ChatMessage>,
+            _tools: Option<Value>,
+            _cb: StreamCallback,
+        ) -> Result<ChatResponse, LlmError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let reject_surface = self.reject_first && call == 0;
+            let (name, arguments) = if reject_surface {
+                (
+                    "present_surface",
+                    json!({
+                        "surface_id": "invalid",
+                        "components": [{"type": "ApprovalGate"}],
+                        "data": {}
+                    }),
+                )
+            } else {
+                (
+                    "respond",
+                    json!({"message": "The canonical answer remains available."}),
+                )
+            };
+            Ok(ChatResponse {
+                content: String::new(),
+                tool_calls: Some(vec![ToolCall::new(
+                    format!("call-{call}"),
+                    name.to_string(),
+                    arguments,
+                )]),
+                reasoning: None,
+                usage: None,
+            })
+        }
+    }
+
     #[async_trait]
     impl LlmClient for ToolCallThenDoneLlm {
         fn model(&self) -> &str {
@@ -2654,6 +2790,172 @@ mod executor_helper_coverage_tests {
     }
 
     #[tokio::test]
+    async fn surface_tool_markers_emit_create_and_update_events() {
+        for update in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let llm = Arc::new(ToolCallThenDoneLlm {
+                calls,
+                tool_name: "present_surface".to_string(),
+            });
+            let mut registry = ToolRegistry::new();
+            registry.register(Arc::new(SurfaceMarkerTool {
+                name: "present_surface",
+                update,
+            }));
+            let cfg = ExecutorConfig::new("agent".into(), "p".into(), "m".into());
+            let exec = AgentExecutor::new(
+                cfg,
+                llm,
+                Arc::new(registry),
+                Arc::new(McpManager::new()),
+                Arc::new(MiddlewarePipeline::new()),
+            )
+            .unwrap();
+
+            let mut events = Vec::new();
+            exec.execute_stream("present a status", &[], |event| events.push(event))
+                .await
+                .unwrap();
+
+            assert!(events.iter().any(|event| {
+                if update {
+                    matches!(event, StreamEvent::WorkSurfaceUpdated { surface, .. }
+                        if surface.surface_id == "automatic-summary")
+                } else {
+                    matches!(event, StreamEvent::WorkSurface { surface, .. }
+                        if surface.surface_id == "automatic-summary")
+                }
+            }));
+            assert!(events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::Done { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn surface_markers_from_other_tools_are_inert() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(ToolCallThenDoneLlm {
+            calls,
+            tool_name: "untrusted_marker".to_string(),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(SurfaceMarkerTool {
+            name: "untrusted_marker",
+            update: false,
+        }));
+        let cfg = ExecutorConfig::new("agent".into(), "p".into(), "m".into());
+        let exec = AgentExecutor::new(
+            cfg,
+            llm,
+            Arc::new(registry),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+
+        let mut events = Vec::new();
+        exec.execute_stream("return a marker", &[], |event| events.push(event))
+            .await
+            .unwrap();
+
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            StreamEvent::WorkSurface { .. }
+                | StreamEvent::WorkSurfaceUpdated { .. }
+                | StreamEvent::WorkSurfaceDeleted { .. }
+        )));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::Done { .. })));
+    }
+
+    #[tokio::test]
+    async fn surface_marker_guard_preserves_other_tool_markers() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(ToolCallThenDoneLlm {
+            calls,
+            tool_name: "update_plan".to_string(),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(PlanMarkerTool));
+        let cfg = ExecutorConfig::new("agent".into(), "p".into(), "m".into());
+        let exec = AgentExecutor::new(
+            cfg,
+            llm,
+            Arc::new(registry),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+
+        let mut events = Vec::new();
+        exec.execute_stream("update the plan", &[], |event| events.push(event))
+            .await
+            .unwrap();
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::ActionPlanUpdate { .. })));
+    }
+
+    #[tokio::test]
+    async fn rejected_surface_then_respond_matches_respond_only_terminal_result() {
+        async fn run(reject_first: bool) -> Vec<StreamEvent> {
+            let llm = Arc::new(RejectedSurfaceThenRespondLlm {
+                calls: Arc::new(AtomicUsize::new(0)),
+                reject_first,
+            });
+            let mut registry = ToolRegistry::new();
+            registry.register(Arc::new(RejectingSurfaceTool));
+            registry.register(Arc::new(crate::tools::RespondTool::new()));
+            let cfg = ExecutorConfig::new("agent".into(), "p".into(), "m".into());
+            let exec = AgentExecutor::new(
+                cfg,
+                llm,
+                Arc::new(registry),
+                Arc::new(McpManager::new()),
+                Arc::new(MiddlewarePipeline::new()),
+            )
+            .unwrap();
+            let mut events = Vec::new();
+            exec.execute_stream("answer canonically", &[], |event| events.push(event))
+                .await
+                .unwrap();
+            events
+        }
+
+        let after_rejection = run(true).await;
+        let respond_only = run(false).await;
+        let response = |events: &[StreamEvent]| {
+            events.iter().find_map(|event| match event {
+                StreamEvent::ActionRespond { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+        };
+
+        assert_eq!(response(&after_rejection), response(&respond_only));
+        assert_eq!(
+            after_rejection
+                .iter()
+                .filter(|event| matches!(event, StreamEvent::Done { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            respond_only
+                .iter()
+                .filter(|event| matches!(event, StreamEvent::Done { .. }))
+                .count(),
+            1
+        );
+        assert!(!after_rejection.iter().any(|event| matches!(
+            event,
+            StreamEvent::WorkSurface { .. } | StreamEvent::WorkSurfaceUpdated { .. }
+        )));
+    }
+
+    #[tokio::test]
     async fn blocked_before_tool_call_emits_warning_grade_tool_result() {
         let calls = Arc::new(AtomicUsize::new(0));
         let llm = Arc::new(ToolCallThenDoneLlm {
@@ -2702,53 +3004,6 @@ mod executor_helper_coverage_tests {
         assert_eq!(blocked.0, "[blocked by hook]");
         assert_eq!(blocked.1.as_deref(), Some("blocked_by_hook"));
         assert_eq!(*blocked.2, Some(0));
-    }
-
-    #[tokio::test]
-    async fn cold_graph_gate_redirects_mcp_tool_before_ward_entry() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let llm = Arc::new(ToolCallThenDoneLlm {
-            calls: Arc::clone(&calls),
-            // MCP tools use the `{normalized-server}__{normalized-tool}`
-            // identifier. No MCP client is registered: reaching its dispatch
-            // path would therefore fail this test instead of redirecting.
-            tool_name: "blender_mcp__execute_code".to_string(),
-        });
-
-        let cfg = ExecutorConfig::new("root".into(), "p".into(), "m".into()).with_initial_state(
-            agent_tools::guards::PLANNING_GATE_STATE,
-            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
-                "Plan the Blender task",
-            ))
-            .unwrap(),
-        );
-        let exec = AgentExecutor::new(
-            cfg,
-            llm,
-            Arc::new(ToolRegistry::new()),
-            Arc::new(McpManager::new()),
-            Arc::new(MiddlewarePipeline::new()),
-        )
-        .unwrap();
-
-        let mut events = Vec::new();
-        exec.execute_stream("create a scene", &[], |e| events.push(e))
-            .await
-            .unwrap();
-
-        let result = events
-            .iter()
-            .find_map(|event| match event {
-                StreamEvent::ToolResult { result, error, .. } => {
-                    Some((result.as_str(), error.as_deref()))
-                }
-                _ => None,
-            })
-            .expect("MCP-shaped tool call produces a result");
-        assert!(result.0.contains("cold graph work"));
-        assert!(result.0.contains("planner-agent"));
-        assert_eq!(result.1, None, "the MCP dispatch path was never reached");
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     /// Stub LLM that emits a tool call for an UNREGISTERED tool, exercising

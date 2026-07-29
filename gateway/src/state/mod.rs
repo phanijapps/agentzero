@@ -23,7 +23,9 @@ use agent_runtime::{
 };
 use api_logs::LogService;
 use execution_state::StateService;
-use gateway_services::{EmbeddingService, WardProvenance, WardUsage};
+#[cfg(test)]
+use gateway_services::WardProvenance;
+use gateway_services::{EmbeddingService, WardUsage};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -231,6 +233,9 @@ impl AppState {
         if let Err(e) = paths.ensure_dirs_exist() {
             tracing::warn!("Failed to create vault directories: {}", e);
         }
+        if let Err(e) = gateway_services::seed_default_ward_archetypes(&paths) {
+            tracing::warn!("Failed to seed editable ward archetypes: {}", e);
+        }
         if let Err(e) = paths.migrate_legacy_layout() {
             tracing::warn!("Failed to migrate legacy vault layout: {}", e);
         }
@@ -284,6 +289,12 @@ impl AppState {
 
         // Create state service for execution state management
         let state_service = Arc::new(StateService::new(db_manager.clone()));
+        state_service.set_surface_persistence_enabled(
+            settings
+                .get_presentation_settings()
+                .map(|value| value.persist_surfaces)
+                .unwrap_or(false),
+        );
 
         // Create connector registry
         let connector_service = ConnectorService::new(paths.clone());
@@ -957,6 +968,9 @@ impl AppState {
         if let Err(e) = paths.ensure_dirs_exist() {
             tracing::warn!("Failed to create vault directories: {}", e);
         }
+        if let Err(e) = gateway_services::seed_default_ward_archetypes(&paths) {
+            tracing::warn!("Failed to seed editable ward archetypes: {}", e);
+        }
         if let Err(e) = paths.migrate_legacy_layout() {
             tracing::warn!("Failed to migrate legacy vault layout: {}", e);
         }
@@ -972,6 +986,13 @@ impl AppState {
         let log_service = Arc::new(LogService::new(db_manager.clone()));
         let bridge_outbox = Arc::new(gateway_bridge::OutboxRepository::new(db_manager.clone()));
         let state_service = Arc::new(StateService::new(db_manager));
+        let settings = Arc::new(SettingsService::new(paths.clone()));
+        state_service.set_surface_persistence_enabled(
+            settings
+                .get_presentation_settings()
+                .map(|value| value.persist_surfaces)
+                .unwrap_or(false),
+        );
         let engram_store_bundle = persistence_factory::build_engram_store_bundle(
             paths.as_ref(),
             &gateway_memory::MemoryProviderSettings::default(),
@@ -1026,7 +1047,7 @@ impl AppState {
             event_bus,
             hook_registry: None,
             delegation_registry: Arc::new(DelegationRegistry::new()),
-            settings: Arc::new(SettingsService::new(paths.clone())),
+            settings,
             log_service,
             state_service,
             connector_registry,
@@ -1221,6 +1242,13 @@ impl AppState {
         paths: SharedVaultPaths,
     ) -> Self {
         let vault_dir = paths.vault_dir().clone();
+        let settings = Arc::new(SettingsService::new(paths.clone()));
+        state_service.set_surface_persistence_enabled(
+            settings
+                .get_presentation_settings()
+                .map(|value| value.persist_surfaces)
+                .unwrap_or(false),
+        );
         let engram_store_bundle = persistence_factory::build_engram_store_bundle(
             paths.as_ref(),
             &gateway_memory::MemoryProviderSettings::default(),
@@ -1277,7 +1305,7 @@ impl AppState {
             slim_logs,
             trace_analytics,
             delegation_registry: Arc::new(DelegationRegistry::new()),
-            settings: Arc::new(SettingsService::new(paths.clone())),
+            settings,
             log_service,
             state_service,
             connector_registry,
@@ -1665,43 +1693,13 @@ impl AppState {
         self.ensure_wards_dir();
     }
 
-    /// Create the wards directory with scratch ward + wiki vault ward.
-    ///
-    /// The wiki ward is the Obsidian vault — it receives promoted content
-    /// from producer-skill runs (book-reader, research archetypes) via the
-    /// `wiki` skill. Its name is configurable via `settings.json →
-    /// execution.wiki.wardName` (default `"wiki"`). We seed it at startup so
-    /// delegated subagents (which cannot create wards) can just `use` it.
+    /// Ensure the wards root exists. Its catalog is created safely by the
+    /// ward tool on first use.
     fn ensure_wards_dir(&self) {
         let wards_dir = self.vault_dir.join("wards");
-        let scratch_dir = wards_dir.join("scratch");
-
-        if !scratch_dir.exists() {
-            if let Err(e) = std::fs::create_dir_all(&scratch_dir) {
-                tracing::warn!("Failed to create wards/scratch directory: {}", e);
-            } else {
-                tracing::info!(
-                    "Created wards directory with scratch ward at {}",
-                    wards_dir.display()
-                );
-            }
+        if let Err(error) = agent_tools::ensure_ward_catalog(&wards_dir) {
+            tracing::error!(%error, root = %wards_dir.display(), "failed to initialize wards root");
         }
-
-        // Mark the bundled provenance so the curator never archives `scratch`.
-        // Idempotent: re-marking on every boot just refreshes `created_by`.
-        if let Err(e) = WardUsage::new(&wards_dir).mark_created("scratch", WardProvenance::Bundled)
-        {
-            tracing::warn!(error = %e, "ward_usage: failed to mark scratch as bundled");
-        }
-
-        let wiki_name = self
-            .settings
-            .load()
-            .ok()
-            .map(|s| s.execution.wiki.ward_name)
-            .unwrap_or_else(|| "wiki".to_string());
-
-        self.ensure_wiki_ward(&wards_dir, &wiki_name);
     }
 
     /// Create the wiki vault ward with canonical Obsidian tree + AGENTS.md marker.
@@ -1709,6 +1707,8 @@ impl AppState {
     /// Idempotent — existing content is preserved. The marker
     /// `<!-- obsidian-vault -->` in AGENTS.md lets the `wiki` skill discover
     /// this ward via `ward(action="list")` regardless of the configured name.
+    #[cfg(test)]
+    #[allow(dead_code)]
     fn ensure_wiki_ward(&self, wards_dir: &std::path::Path, wiki_name: &str) {
         let wiki_dir = wards_dir.join(wiki_name);
         if let Err(e) = std::fs::create_dir_all(&wiki_dir) {
@@ -2254,6 +2254,36 @@ mod tests {
     }
 
     #[test]
+    fn fresh_database_and_vault_bootstrap_can_create_a_coding_ward() {
+        let dir = TempDir::new().unwrap();
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+
+        let _state = AppState::minimal(dir.path().to_path_buf());
+        let paths = VaultPaths::new(dir.path().to_path_buf());
+        assert!(paths.conversations_db().is_file());
+        let created = gateway_services::create_ward_from_archetype(
+            &paths,
+            "fresh-code",
+            Some(agent_primitives::WardArchetypeId::Coding),
+        )
+        .unwrap();
+
+        assert_eq!(created.archetype, agent_primitives::WardArchetypeId::Coding);
+        let mut entries = std::fs::read_dir(&created.path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(
+            entries,
+            ["AGENTS.md", "fresh-code.md", "log.md", "ward-conf.yaml"]
+        );
+        for lazy_directory in ["src", "tests", "docs", "scripts", "artifacts", ".zbot"] {
+            assert!(!created.path.join(lazy_directory).exists());
+        }
+    }
+
+    #[test]
     fn local_context_provider_catalog_entries_report_resource_health() {
         let capabilities = local_context_provider_capabilities(LocalProviderStatus {
             memory_store: true,
@@ -2421,76 +2451,35 @@ mod tests {
     }
 
     #[test]
-    fn ensure_wards_dir_creates_scratch_and_wiki_subtrees() {
+    fn ensure_wards_dir_creates_only_plain_root_catalog() {
         let (_dir, state) = make_temp_state();
         state.ensure_wards_dir();
-
-        assert!(state.vault_dir.join("wards").join("scratch").is_dir());
-
-        let wiki = state.vault_dir.join("wards").join("wiki");
-        assert!(wiki.is_dir());
-        for folder in [
-            "00_Inbox",
-            "20_Projects",
-            "30_Library/Books",
-            "40_Research",
-            "50_Resources",
-            "60_Archive",
-            "70_Assets/Images",
-            "_zztemplates",
-        ] {
-            assert!(wiki.join(folder).is_dir());
-        }
-
-        let agents_md = std::fs::read_to_string(wiki.join("AGENTS.md")).expect("agents.md");
-        assert!(agents_md.starts_with("<!-- obsidian-vault -->"));
-
-        for f in ["ward.md", "structure.md", "core_docs.md"] {
-            assert!(wiki.join("memory-bank").join(f).exists());
-        }
-    }
-
-    #[test]
-    fn ensure_wards_dir_is_idempotent_and_preserves_user_edits() {
-        let (_dir, state) = make_temp_state();
-        state.ensure_wards_dir();
-        let agents_md_path = state.vault_dir.join("wards").join("wiki").join("AGENTS.md");
-
-        std::fs::write(&agents_md_path, "user-authored content").unwrap();
-        state.ensure_wards_dir();
-        let after = std::fs::read_to_string(&agents_md_path).unwrap();
-        assert_eq!(after, "user-authored content");
-    }
-
-    #[test]
-    fn ensure_wards_dir_reseeds_when_marker_present() {
-        let (_dir, state) = make_temp_state();
-        state.ensure_wards_dir();
-        let agents_md_path = state.vault_dir.join("wards").join("wiki").join("AGENTS.md");
-
-        std::fs::write(
-            &agents_md_path,
-            "<!-- obsidian-vault -->\nold seed content\n",
-        )
-        .unwrap();
-        state.ensure_wards_dir();
-        let after = std::fs::read_to_string(&agents_md_path).unwrap();
-        assert!(after.starts_with("<!-- obsidian-vault -->"));
-        assert!(after.contains("Folder map"));
-    }
-
-    #[test]
-    fn ensure_wiki_ward_handles_custom_name() {
-        let (_dir, state) = make_temp_state();
         let wards = state.vault_dir.join("wards");
-        std::fs::create_dir_all(&wards).unwrap();
-        state.ensure_wiki_ward(&wards, "knowledge");
+        assert_eq!(std::fs::read_dir(&wards).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(wards.join("index.md")).unwrap(),
+            "# Wards\n"
+        );
+    }
 
-        let custom = wards.join("knowledge");
-        assert!(custom.is_dir());
-        assert!(custom.join("AGENTS.md").exists());
-        let content = std::fs::read_to_string(custom.join("AGENTS.md")).unwrap();
-        assert!(content.contains("# knowledge"));
+    #[test]
+    fn ensure_wards_dir_is_idempotent_and_preserves_root_index() {
+        let (_dir, state) = make_temp_state();
+        state.ensure_wards_dir();
+        let index = state.vault_dir.join("wards").join("index.md");
+
+        std::fs::write(&index, "# My catalog\n").unwrap();
+        state.ensure_wards_dir();
+        assert_eq!(std::fs::read_to_string(index).unwrap(), "# My catalog\n");
+    }
+
+    #[test]
+    fn ensure_wards_dir_does_not_seed_legacy_wards() {
+        let (_dir, state) = make_temp_state();
+        state.ensure_wards_dir();
+        state.ensure_wards_dir();
+        assert!(!state.vault_dir.join("wards/scratch").exists());
+        assert!(!state.vault_dir.join("wards/wiki").exists());
     }
 
     #[test]
@@ -2549,7 +2538,8 @@ mod tests {
         let (_dir, state) = make_temp_state();
         state.ensure_runtime_environments().await;
 
-        assert!(state.vault_dir.join("wards").join("scratch").is_dir());
+        assert!(state.vault_dir.join("wards").join("index.md").is_file());
+        assert!(!state.vault_dir.join("wards").join("scratch").exists());
         assert!(!state.vault_dir.join("wards").join(".node_env").exists());
     }
 

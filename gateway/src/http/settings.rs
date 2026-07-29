@@ -5,7 +5,7 @@
 use crate::state::AppState;
 use agent_tools::ToolSettings;
 use axum::{extract::State, http::StatusCode, Json};
-use gateway_services::{ExecutionSettings, LogSettings};
+use gateway_services::{ExecutionSettings, LogSettings, PresentationSettings};
 use serde::{Deserialize, Serialize};
 
 /// Response for settings endpoints.
@@ -87,6 +87,82 @@ pub async fn update_tool_settings(
             }),
         )),
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationSettingsResponse {
+    #[serde(flatten)]
+    pub settings: PresentationSettings,
+    pub restart_required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdatePresentationSettingsRequest {
+    pub persist_surfaces: bool,
+}
+
+pub async fn get_presentation_settings(
+    State(state): State<AppState>,
+    _origin: super::SameOrigin,
+) -> Result<
+    Json<SettingsResponse<PresentationSettingsResponse>>,
+    (StatusCode, Json<SettingsResponse<()>>),
+> {
+    state
+        .settings
+        .get_presentation_settings()
+        .map(|settings| {
+            Json(SettingsResponse {
+                success: true,
+                data: Some(PresentationSettingsResponse {
+                    settings,
+                    restart_required: false,
+                }),
+                error: None,
+            })
+        })
+        .map_err(internal_settings_error)
+}
+
+pub async fn update_presentation_settings(
+    State(state): State<AppState>,
+    _origin: super::SameOrigin,
+    Json(request): Json<UpdatePresentationSettingsRequest>,
+) -> Result<
+    Json<SettingsResponse<PresentationSettingsResponse>>,
+    (StatusCode, Json<SettingsResponse<()>>),
+> {
+    let settings = PresentationSettings {
+        persist_surfaces: request.persist_surfaces,
+    };
+    state
+        .settings
+        .update_presentation_settings(settings)
+        .map_err(internal_settings_error)?;
+    state
+        .state_service
+        .set_surface_persistence_enabled(settings.persist_surfaces);
+    Ok(Json(SettingsResponse {
+        success: true,
+        data: Some(PresentationSettingsResponse {
+            settings,
+            restart_required: false,
+        }),
+        error: None,
+    }))
+}
+
+fn internal_settings_error(error: String) -> (StatusCode, Json<SettingsResponse<()>>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(SettingsResponse {
+            success: false,
+            data: None,
+            error: Some(error),
+        }),
+    )
 }
 
 // ============================================================================

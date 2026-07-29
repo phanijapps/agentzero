@@ -6,6 +6,7 @@ use crate::handlers::{Message, SessionMessage, SessionMessagesQuery};
 use crate::repository::{StateDbProvider, StateRepository};
 use crate::types::*;
 use rusqlite::params;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 // ============================================================================
@@ -18,6 +19,7 @@ use std::sync::Arc;
 pub struct StateService<D: StateDbProvider> {
     repo: StateRepository<D>,
     db: Arc<D>,
+    persist_surfaces: AtomicBool,
 }
 
 impl<D: StateDbProvider> StateService<D> {
@@ -25,7 +27,52 @@ impl<D: StateDbProvider> StateService<D> {
         Self {
             repo: StateRepository::new(db.clone()),
             db,
+            persist_surfaces: AtomicBool::new(false),
         }
+    }
+
+    /// Update the live mirror of the durable presentation setting.
+    pub fn set_surface_persistence_enabled(&self, enabled: bool) {
+        self.persist_surfaces.store(enabled, Ordering::Release);
+    }
+
+    /// Whether validated work-surface events should be saved and restored.
+    pub fn surface_persistence_enabled(&self) -> bool {
+        self.persist_surfaces.load(Ordering::Acquire)
+    }
+
+    /// Upsert one already-validated display-only descriptor.
+    pub fn save_session_surface(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        surface_id: &str,
+        surface_json: &str,
+    ) -> Result<(), String> {
+        self.repo
+            .save_session_surface(session_id, execution_id, surface_id, surface_json)
+    }
+
+    /// List the bounded opaque descriptors for one session.
+    pub fn list_session_surfaces(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionSurfaceRecord>, String> {
+        self.repo.list_session_surfaces(session_id)
+    }
+
+    /// Remove one stable surface from a session.
+    pub fn delete_session_surface(
+        &self,
+        session_id: &str,
+        surface_id: &str,
+    ) -> Result<bool, String> {
+        self.repo.delete_session_surface(session_id, surface_id)
+    }
+
+    /// Remove every saved work surface without touching other session data.
+    pub fn clear_session_surfaces(&self) -> Result<usize, String> {
+        self.repo.clear_session_surfaces()
     }
 
     // =========================================================================

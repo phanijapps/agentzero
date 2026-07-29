@@ -626,6 +626,7 @@ fn known_template_managed_hashes(name: &str) -> &'static [&'static str] {
         // builder-delegation-hygiene mode updates.
         "builder-agent" => &["3f7bcb5343be4add6b90775d0d02be28ace6f1306e425b213ba9c53f0b21ec0a"],
         "planner-agent" => &["e8575d90ee8342db9b969dd33fbb3d9cf431e6e3896a936b764c9fed2f1deef7"],
+        "research-agent" => &["49d398231d26efbf4cca843788de5259d1583ee61681a6c249b38fb287e56f7b"],
         _ => &[],
     }
 }
@@ -634,40 +635,7 @@ fn known_template_managed_hashes(name: &str) -> &'static [&'static str] {
 // DEFAULT AGENT INSTRUCTIONS
 // ============================================================================
 
-const RESEARCH_AGENT_INSTRUCTIONS: &str = r#"# Research Agent
-
-You are a specialized research agent focused on gathering, analyzing, and synthesizing information.
-
-## Capabilities
-
-- Deep research on any topic
-- Information synthesis and summarization
-- Fact-checking and verification
-- Source evaluation and citation
-
-## Approach
-
-1. **Understand the Query**: Clarify what information is needed
-2. **Gather Information**: Use available tools to search and collect data
-3. **Analyze**: Evaluate sources, identify patterns, cross-reference facts
-4. **Synthesize**: Combine findings into a coherent summary
-5. **Report**: Provide clear, well-structured findings
-
-## Output Format
-
-Structure your findings as:
-- **Summary**: Key findings in 2-3 sentences
-- **Details**: Organized by subtopic
-- **Sources**: List of references used
-- **Confidence**: How confident you are in the findings
-
-## Guidelines
-
-- Prioritize accuracy over speed
-- Cite sources when possible
-- Acknowledge uncertainty
-- Provide balanced perspectives on controversial topics
-"#;
+const RESEARCH_AGENT_INSTRUCTIONS: &str = include_str!("../../templates/agents/research-agent.md");
 
 const CODE_AGENT_INSTRUCTIONS: &str = r#"# Code Agent
 

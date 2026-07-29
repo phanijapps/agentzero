@@ -1,0 +1,189 @@
+openapi: 3.1.0
+info:
+  title: zbot Persistent Work Surfaces
+  version: 0.1.0
+  description: Opt-in persistence, restoration, and explicit clearing of validated work surfaces.
+x-spec:
+  - docs/specs/persistent-work-surfaces/
+paths:
+  /api/settings/presentation:
+    get:
+      operationId: getPresentationSettings
+      description: Browser Origin must match Host. Origin-less native callers inherit the configured single-owner gateway reachability boundary; no session identifier is an authentication credential.
+      responses:
+        "200":
+          description: Current presentation settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresentationSettingsEnvelope"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "500":
+          $ref: "#/components/responses/GenericFailure"
+    put:
+      operationId: updatePresentationSettings
+      description: Browser Origin must match Host before body extraction. Origin-less native callers inherit the configured single-owner gateway reachability boundary.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresentationSettings"
+      responses:
+        "200":
+          description: Updated live presentation settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresentationSettingsEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "500":
+          $ref: "#/components/responses/GenericFailure"
+  /api/sessions/{sessionId}/surfaces:
+    get:
+      operationId: listSavedSessionSurfaces
+      description: Browser Origin must match Host. sessionId is a correlation binding, not authentication or multi-user authorization.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200":
+          description: At most 16 validated descriptors, or an empty list while persistence is disabled.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 16
+                items:
+                  $ref: "#/components/schemas/WorkSurface"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "500":
+          $ref: "#/components/responses/GenericFailure"
+  /api/surfaces/saved:
+    delete:
+      operationId: clearSavedSurfaces
+      description: Browser Origin must match Host and the fixed confirmation value is verified before deletion.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirmation]
+              properties:
+                confirmation: { const: clear_saved_infographics }
+      responses:
+        "200":
+          description: All saved work-surface descriptors were cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deletedCount]
+                properties:
+                  deletedCount: { type: integer, minimum: 0 }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "500":
+          $ref: "#/components/responses/GenericFailure"
+components:
+  responses:
+    BadRequest:
+      description: The typed request or fixed confirmation value was invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OriginRejected:
+      description: A browser Origin was present and did not match Host.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    GenericFailure:
+      description: The operation failed without exposing descriptor contents or bound values.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { type: string, maxLength: 128 }
+    PresentationSettings:
+      type: object
+      additionalProperties: false
+      required: [persistSurfaces]
+      properties:
+        persistSurfaces: { type: boolean, default: false }
+    PresentationSettingsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [success, data]
+      properties:
+        success: { const: true }
+        data:
+          allOf:
+            - $ref: "#/components/schemas/PresentationSettings"
+            - type: object
+              required: [restartRequired]
+              properties:
+                restartRequired: { const: false }
+    WorkSurface:
+      type: object
+      additionalProperties: false
+      required: [surface_id, catalog_id, components, data]
+      properties:
+        surface_id: { type: string, minLength: 1, maxLength: 128 }
+        catalog_id: { const: zbot/work-surface/v1 }
+        components:
+          type: array
+          maxItems: 64
+          items:
+            $ref: "#/components/schemas/PersistedSurfaceComponent"
+        data:
+          type: object
+          additionalProperties: true
+      description: The complete serialized descriptor is limited to 64 KiB and revalidated before response.
+    PersistedSurfaceComponent:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id: { type: string, minLength: 1, maxLength: 128 }
+        type:
+          enum:
+            - DecisionMatrix
+            - EvidenceTable
+            - AssumptionRegister
+            - PlanChecklist
+            - OpenLoops
+            - MetricCard
+            - ProgressBar
+            - StatusBadge
+            - Callout
+            - KeyValueList
+            - DataTable
+            - Timeline
+            - LineChart
+            - BarChart
+            - PieChart
+        props:
+          type: object
+          additionalProperties: true
+      description: Closed display-only persistence allowlist. ApprovalGate and future actionable component types are excluded even if accepted for transient live surfaces.

@@ -11,6 +11,14 @@ description: >
 
 Generate single-file HTML presentations that match the ARIA v1.0 design system — warm earth-tone palette, serif display headings, monospace labels, 1920x1080 canvas with JS viewport scaling, section nav legend, and staggered entrance animations.
 
+## Output placement
+
+- Use an exact task path only when the Active Ward Template permits it.
+- Otherwise resolve a declared resource area or file rule that permits HTML.
+- Never assume an output directory or filename.
+- If no durable role is declared, write nothing and return
+  `role_not_declared` with the template digest.
+
 ## Workflow
 
 **Always follow this two-step intake before generating:**
@@ -187,6 +195,9 @@ Every generated presentation must follow this exact HTML skeleton:
 9. **Responsive scaling** — The 1920x1080 canvas scales to fit any viewport via the JS `resizeDeck()` function. Never use viewport units inside slides. All sizing is in rem/px relative to the 24px root.
 
 10. **Single file** — Everything must be in one `.html` file. No external CSS, JS, or assets.
+
+11. **Declared destination** — Verify the final path is task-specified or
+    template-declared before delivery.
 
 ## Reference File Guide
 

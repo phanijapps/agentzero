@@ -19,10 +19,17 @@ description: "Use when tasks involve reading, creating, or reviewing PDF files w
 3. Use `pdfplumber` (or `pypdf`) for text extraction and quick checks; do not rely on it for layout fidelity.
 4. After each meaningful update, re-render pages and verify alignment, spacing, and legibility.
 
-## Temp and output conventions
-- Use `tmp/pdfs/` for intermediate files; delete when done.
-- Write final artifacts under `output/pdf/` when working in this repo.
-- Keep filenames stable and descriptive.
+## Temp and output placement
+
+- Keep intermediate rendering files in an ephemeral runtime temporary
+  directory outside the ward, and remove them when done.
+- Use an exact final path supplied by the task when the Active Ward Template
+  allows it.
+- Otherwise resolve a declared resource area or file rule that permits PDF
+  output. Never assume an output directory or filename.
+- If no suitable durable role exists, write nothing and return
+  `role_not_declared` with the template digest.
+- Keep filenames stable and descriptive within the resolved destination.
 
 ## Dependencies (install if missing)
 Prefer `uv` for dependency management.

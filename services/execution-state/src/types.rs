@@ -889,6 +889,20 @@ pub struct SessionPlanSnapshot {
     pub source_event_sequence: u64,
 }
 
+/// Opaque persisted work-surface descriptor.
+///
+/// The execution-state layer owns retention and session lifecycle only.
+/// Gateway code owns semantic deserialization and catalog validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSurfaceRecord {
+    pub session_id: String,
+    pub surface_id: String,
+    pub execution_id: String,
+    pub surface_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Outcome of attempting to save a plan snapshot. Rejections are expected model
 /// input outcomes, while database failures are returned separately as errors.
 #[derive(Debug, Clone, PartialEq, Eq)]

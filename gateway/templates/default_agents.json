@@ -37,8 +37,8 @@
     "agentType": "specialist",
     "temperature": 0.7,
     "maxTokens": 16000,
-    "skills": ["duckduckgo-search", "light-panda-browser", "playwright"],
-    "mcps": ["Brave Search"]
+    "skills": ["duckduckgo-search", "light-panda-browser"],
+    "mcps": ["brave-search"]
   },
 
 

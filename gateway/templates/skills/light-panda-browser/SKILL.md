@@ -1,8 +1,8 @@
 ---
 name: light-panda-browser
-version: 2.0.0
 description: Lightpanda browser, drop-in replacement for Chrome and Openclaw default browser - faster and lighter for tasks without graphical rendering like data retrieval. Use it via MCP server, CLI fetch, or CDP with Playwright/Puppeteer.
 metadata:
+  version: "2.0.0"
   author: Pierre Tachoire
   source: "https://github.com/lightpanda-io/agent-skill"
   homepage: "https://github.com/lightpanda-io/agent-skill"

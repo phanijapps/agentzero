@@ -12,6 +12,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use agent_primitives::WardArchetypeId;
+
 const LEGACY_MCP_SERVERS_FILE: &str = "mcps.json";
 const LEGACY_SCHEDULES_FILE: &str = "cron_jobs.json";
 const LEGACY_MCP_OAUTH_PENDING_FILE: &str = "mcp_oauth_pending.json";
@@ -102,6 +104,31 @@ impl VaultPaths {
     /// Path to `config/agent-prompts/`.
     pub fn agent_prompts_dir(&self) -> PathBuf {
         self.config_dir().join("agent-prompts")
+    }
+
+    /// Directory containing user-editable templates seeded by z-Bot.
+    pub fn templates_dir(&self) -> PathBuf {
+        self.config_dir().join("templates")
+    }
+
+    /// Canonical user-editable Ward Layout Contract template.
+    pub fn ward_layout_template(&self) -> PathBuf {
+        self.templates_dir().join("ward-conf.yaml")
+    }
+
+    /// Canonical user-editable template used to scaffold Ward `AGENTS.md`.
+    pub fn ward_agent_template(&self) -> PathBuf {
+        self.templates_dir().join("ward-agent.md")
+    }
+
+    /// Canonical directory containing complete Ward Layout archetype bundles.
+    pub fn ward_archetype_registry_dir(&self) -> PathBuf {
+        self.templates_dir().join("wards")
+    }
+
+    /// Canonical bundle directory for one closed Ward Layout archetype.
+    pub fn ward_archetype_bundle(&self, archetype: WardArchetypeId) -> PathBuf {
+        self.ward_archetype_registry_dir().join(archetype.as_str())
     }
 
     /// Path to `config/auth/mcp/tokens.json`.
@@ -235,6 +262,16 @@ impl VaultPaths {
     /// Returns `wards/{ward_id}/`
     pub fn ward_dir(&self, ward_id: &str) -> PathBuf {
         self.vault_dir.join("wards").join(ward_id)
+    }
+
+    /// Independently activated Ward Layout Contract snapshot for one ward.
+    pub fn ward_layout_snapshot(&self, ward_id: &str) -> PathBuf {
+        self.ward_dir(ward_id).join("ward-conf.yaml")
+    }
+
+    /// Protected z-Bot control-plane state for one ward.
+    pub fn ward_layout_control_dir(&self, ward_id: &str) -> PathBuf {
+        self.ward_dir(ward_id).join(".zbot").join("ward-layout")
     }
 
     /// Path to `config/wards/` — language config directory for ward indexing
@@ -462,6 +499,39 @@ mod tests {
             paths.seeded_defaults(),
             dir.path().join("config").join("seeded-defaults.json")
         );
+        assert_eq!(
+            paths.ward_layout_template(),
+            dir.path()
+                .join("config")
+                .join("templates")
+                .join("ward-conf.yaml")
+        );
+        // STUB: AC1 — Ward doctrine has one canonical user-editable template path.
+        assert_eq!(
+            paths.ward_agent_template(),
+            dir.path()
+                .join("config")
+                .join("templates")
+                .join("ward-agent.md")
+        );
+    }
+
+    // STUB: AC4
+    #[test]
+    fn ward_archetype_bundle_is_confined() {
+        let dir = tempdir().unwrap();
+        let paths = VaultPaths::new(dir.path().to_path_buf());
+        let registry = dir.path().join("config").join("templates").join("wards");
+        assert_eq!(paths.ward_archetype_registry_dir(), registry);
+
+        for archetype in WardArchetypeId::ALL {
+            let bundle = paths.ward_archetype_bundle(archetype);
+            assert_eq!(bundle.parent(), Some(registry.as_path()));
+            assert_eq!(
+                bundle.file_name().and_then(|value| value.to_str()),
+                Some(archetype.as_str())
+            );
+        }
     }
 
     #[test]
@@ -499,6 +569,18 @@ mod tests {
         assert_eq!(
             paths.ward_dir("root"),
             dir.path().join("wards").join("root")
+        );
+        assert_eq!(
+            paths.ward_layout_snapshot("root"),
+            dir.path().join("wards").join("root").join("ward-conf.yaml")
+        );
+        assert_eq!(
+            paths.ward_layout_control_dir("root"),
+            dir.path()
+                .join("wards")
+                .join("root")
+                .join(".zbot")
+                .join("ward-layout")
         );
     }
 

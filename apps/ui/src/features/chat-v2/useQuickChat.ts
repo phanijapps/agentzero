@@ -109,6 +109,7 @@ async function bootstrapChatSession(
   conversationId: string;
   messages: QuickChatMessage[];
   artifacts: QuickChatArtifactRef[];
+  surfaces: WorkSurface[];
 } | null> {
   const init = await transport.initChatSession();
   if (!init.success || !init.data) return null;
@@ -117,12 +118,13 @@ async function bootstrapChatSession(
 
   // New sessions have no history or artifacts to fetch.
   if (created) {
-    return { sessionId, conversationId, messages: [], artifacts: [] };
+    return { sessionId, conversationId, messages: [], artifacts: [], surfaces: [] };
   }
 
-  const [history, artifacts] = await Promise.all([
+  const [history, artifacts, savedSurfaces] = await Promise.all([
     transport.getSessionMessages(sessionId, { scope: "root" }),
     fetchArtifacts(transport, sessionId),
+    transport.listSavedSessionSurfaces(sessionId).catch(() => ({ success: false } as const)),
   ]);
   const messages =
     history.success && history.data
@@ -132,7 +134,8 @@ async function bootstrapChatSession(
           .map(sessionMessageToQuickChat)
       : [];
 
-  return { sessionId, conversationId, messages, artifacts };
+  const surfaces = savedSurfaces.success && savedSurfaces.data ? savedSurfaces.data : [];
+  return { sessionId, conversationId, messages, artifacts, surfaces };
 }
 
 /** Build the WS event handler once; closure captures the stable pill sink. */
@@ -190,6 +193,7 @@ export function useQuickChat() {
         dispatch({ type: "ERROR", message: "Failed to initialise chat" });
         return;
       }
+      setSurfaces(result.surfaces);
       dispatch({
         type: "HYDRATE",
         sessionId: result.sessionId,
@@ -300,6 +304,7 @@ export function useQuickChat() {
       dispatch({ type: "ERROR", message: "Failed to initialise a new chat after clear" });
       return;
     }
+    setSurfaces([]);
     dispatch({
       type: "HYDRATE",
       sessionId: fresh.sessionId,

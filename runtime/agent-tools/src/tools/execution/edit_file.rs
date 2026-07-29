@@ -132,12 +132,13 @@ impl Tool for EditFileTool {
                 std::fs::write(&full_path, &new_content)
                     .map_err(|e| AgentError::Tool(format!("Failed to write {}: {}", path, e)))?;
                 tracing::debug!("edit_file: replaced (trimmed match) in {}", path);
-                return Ok(json!({
+                let result = json!({
                     "success": true,
                     "path": path,
                     "match_type": "trimmed",
                     "message": format!("Replaced 1 occurrence (trimmed match) in {}", path)
-                }));
+                });
+                return Ok(result);
             } else if trimmed_count > 1 {
                 return Ok(json!({
                     "success": false,
@@ -189,11 +190,12 @@ impl Tool for EditFileTool {
             });
         }
 
-        Ok(json!({
+        let result = json!({
             "success": true,
             "path": path,
             "message": format!("Edit applied to {}", path)
-        }))
+        });
+        Ok(result)
     }
 }
 

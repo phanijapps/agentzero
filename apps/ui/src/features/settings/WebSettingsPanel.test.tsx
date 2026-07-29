@@ -15,6 +15,9 @@ const mockListModels = vi.fn();
 const mockGetToolSettings = vi.fn();
 const mockGetLogSettings = vi.fn();
 const mockGetExecutionSettings = vi.fn();
+const mockGetPresentationSettings = vi.fn();
+const mockUpdatePresentationSettings = vi.fn();
+const mockClearSavedSurfaces = vi.fn();
 const mockGetEmbeddingsHealth = vi.fn();
 const mockGetEmbeddingsModels = vi.fn();
 const mockGetOllamaEmbeddingModels = vi.fn();
@@ -30,6 +33,9 @@ vi.mock("@/services/transport", async () => {
       getToolSettings: mockGetToolSettings,
       getLogSettings: mockGetLogSettings,
       getExecutionSettings: mockGetExecutionSettings,
+      getPresentationSettings: mockGetPresentationSettings,
+      updatePresentationSettings: mockUpdatePresentationSettings,
+      clearSavedSurfaces: mockClearSavedSurfaces,
       getEmbeddingsHealth: mockGetEmbeddingsHealth,
       getEmbeddingsModels: mockGetEmbeddingsModels,
       getOllamaEmbeddingModels: mockGetOllamaEmbeddingModels,
@@ -40,6 +46,7 @@ vi.mock("@/services/transport", async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/");
   mockListProviders.mockResolvedValue({ success: true, data: [] });
   mockListModels.mockResolvedValue({ success: true, data: {} });
   mockGetToolSettings.mockResolvedValue({ success: true, data: { tools: {} } });
@@ -50,6 +57,18 @@ beforeEach(() => {
   mockGetExecutionSettings.mockResolvedValue({
     success: true,
     data: { featureFlags: {} },
+  });
+  mockGetPresentationSettings.mockResolvedValue({
+    success: true,
+    data: { persistSurfaces: false, restartRequired: false },
+  });
+  mockUpdatePresentationSettings.mockResolvedValue({
+    success: true,
+    data: { persistSurfaces: true, restartRequired: false },
+  });
+  mockClearSavedSurfaces.mockResolvedValue({
+    success: true,
+    data: { deletedCount: 2 },
   });
   mockGetEmbeddingsHealth.mockResolvedValue({ success: true, data: { healthy: false } });
   // getEmbeddingsModels() returns CuratedModel[] directly (not wrapped).
@@ -87,6 +106,86 @@ describe("WebSettingsPanel — page chrome", () => {
       expect(mockGetToolSettings).toHaveBeenCalled();
       expect(mockGetLogSettings).toHaveBeenCalled();
       expect(mockGetExecutionSettings).toHaveBeenCalled();
+      expect(mockGetPresentationSettings).toHaveBeenCalled();
+    });
+  });
+});
+
+describe("WebSettingsPanel — infographic persistence", () => {
+  it("enables persistence immediately without requiring a restart", async () => {
+    render(<WebSettingsPanel />);
+    fireEvent.click(await screen.findByText("General"));
+
+    const toggle = await screen.findByRole("checkbox", { name: "Persist infographics" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText(/Turning this off keeps previously saved infographics/i)).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(mockUpdatePresentationSettings).toHaveBeenCalledWith({ persistSurfaces: true });
+      expect(screen.getByText("Saved")).toBeInTheDocument();
+    });
+  });
+
+  it("requires confirmation before clearing saved infographics", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<WebSettingsPanel />);
+    fireEvent.click(await screen.findByText("General"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Clear saved infographics" }));
+
+    expect(confirmSpy).toHaveBeenCalledOnce();
+    expect(mockClearSavedSurfaces).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("reports how many saved infographics were cleared", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<WebSettingsPanel />);
+    fireEvent.click(await screen.findByText("General"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Clear saved infographics" }));
+
+    await waitFor(() => {
+      expect(mockClearSavedSurfaces).toHaveBeenCalledOnce();
+      expect(screen.getByText("2 saved infographics cleared. Open chats are unchanged.")).toBeInTheDocument();
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("disables the clear action while deletion is pending", async () => {
+    let finishClear: ((value: { success: boolean; data: { deletedCount: number } }) => void) | undefined;
+    mockClearSavedSurfaces.mockReturnValueOnce(new Promise((resolve) => {
+      finishClear = resolve;
+    }));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<WebSettingsPanel />);
+    fireEvent.click(await screen.findByText("General"));
+
+    const clearButton = await screen.findByRole("button", { name: "Clear saved infographics" });
+    fireEvent.click(clearButton);
+
+    await waitFor(() => expect(clearButton).toBeDisabled());
+    finishClear?.({ success: true, data: { deletedCount: 0 } });
+    await waitFor(() => expect(clearButton).not.toBeDisabled());
+    confirmSpy.mockRestore();
+  });
+
+  it("restores the toggle and shows an error when saving fails", async () => {
+    mockUpdatePresentationSettings.mockResolvedValueOnce({
+      success: false,
+      error: "Settings unavailable",
+    });
+    render(<WebSettingsPanel />);
+    fireEvent.click(await screen.findByText("General"));
+
+    const toggle = await screen.findByRole("checkbox", { name: "Persist infographics" });
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(toggle).not.toBeChecked();
+      expect(screen.getByText("Settings unavailable")).toBeInTheDocument();
     });
   });
 });

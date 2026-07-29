@@ -8,6 +8,39 @@
 
 use tempfile::TempDir;
 
+#[test]
+fn planning_templates_are_agent_aware_template_directed_and_lint_is_explicit() {
+    let composer = include_str!("../../templates/skills/plan-composer/SKILL.md");
+    let planner = include_str!("../../templates/agents/planner-agent.md");
+    let builder = include_str!("../../templates/agents/builder-agent.md");
+    let ward_agent = include_str!("../../templates/ward-agent.md");
+
+    for instructions in [composer, planner] {
+        assert!(instructions.contains("recommended agent"));
+        assert!(instructions.contains("live agent catalog"));
+        assert!(instructions.contains("capabilities"));
+        assert!(instructions.contains("replan"));
+    }
+    for instructions in [composer, planner, builder] {
+        assert!(instructions.contains("Active Ward Template"));
+        assert!(!instructions.contains("<ward-lint-report>"));
+        assert!(!instructions.contains("surface lint nudges"));
+    }
+    assert!(builder.contains("explicit lint action"));
+    for instructions in [composer, ward_agent] {
+        assert!(instructions.contains("ward(action=\"create_concept\""));
+        assert!(instructions.contains("`ok: true` and `data.valid: true`"));
+        assert!(instructions.contains("stale"));
+        assert!(!instructions.contains("src/"));
+        assert!(!instructions.contains("data/"));
+        assert!(!instructions.contains("reports/"));
+        assert!(!instructions.contains("output/"));
+        assert!(!instructions.contains("generate navigation"));
+        assert!(!instructions.contains("generate backlinks"));
+        assert!(!instructions.contains("synchronize task"));
+    }
+}
+
 // ============================================================================
 // 1. WARD SCAFFOLDING — SCOPED TO RECOMMENDED SKILLS
 // ============================================================================
@@ -193,10 +226,6 @@ fn executor_rules_are_mode_specific() {
     assert!(direct.contains("direct_artifact"));
     assert!(direct.contains("Create the exact requested output files first"));
     assert!(!direct.contains("read AGENTS.md + memory-bank/core_docs.md"));
-
-    let hygiene = subagent_rules(SubagentRole::Executor, DelegationMode::WardHygiene);
-    assert!(hygiene.contains("ward_hygiene"));
-    assert!(hygiene.contains("fill only missing or empty AGENTS.md"));
 
     let backed = subagent_rules(SubagentRole::Executor, DelegationMode::WardBackedBuild);
     assert!(backed.contains("ward_backed_build"));

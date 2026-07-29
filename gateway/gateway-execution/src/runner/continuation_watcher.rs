@@ -9,10 +9,8 @@
 //!
 //! ## Spec deviations (intentional)
 //! - Struct has 2 fields (`event_bus`, `invoker`), not 3. `state_service`
-//!   was dropped because `clear_continuation` is now called inside
-//!   `RunnerContinuationInvoker::spawn_continuation` — the impl already
-//!   has access to `state_service` and clearing there keeps the watcher
-//!   free of that dependency.
+//!   was dropped because `clear_continuation` is called inside
+//!   `RunnerContinuationInvoker::spawn_continuation`.
 //! - `RunnerContinuationInvoker` is a private companion that holds the
 //!   cloned runner fields needed by `invoke_continuation`. It exists so
 //!   the watcher can be wired inside `ExecutionRunner::with_config`
@@ -90,9 +88,8 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
         session_id: String,
         root_agent_id: String,
     ) -> Result<(), String> {
-        // Clear continuation flag to prevent double-trigger.
-        if let Err(e) = self.state_service.clear_continuation(&session_id) {
-            tracing::warn!("Failed to clear continuation flag: {}", e);
+        if let Err(error) = self.state_service.clear_continuation(&session_id) {
+            tracing::warn!(%session_id, %error, "Failed to clear continuation flag");
         }
 
         invoke_continuation(ContinuationArgs {
@@ -181,13 +178,13 @@ impl ContinuationWatcher {
     }
 
     async fn handle(invoker: &dyn ContinuationSpawner, session_id: String, root_agent_id: String) {
-        if let Err(e) = invoker
+        if let Err(error) = invoker
             .spawn_continuation(session_id.clone(), root_agent_id)
             .await
         {
             tracing::error!(
                 session_id = %session_id,
-                error = %e,
+                %error,
                 "ContinuationWatcher: spawn_continuation failed"
             );
         }

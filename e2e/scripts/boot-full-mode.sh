@@ -9,6 +9,7 @@
 set -euo pipefail
 
 FIXTURE="${1:-}"
+FRESH_VAULT="${2:-}"
 if [[ -z "$FIXTURE" ]]; then
   echo "usage: boot-full-mode.sh <fixture-name>" >&2
   exit 64
@@ -22,7 +23,7 @@ if [[ ! -d "$FIXTURE_DIR" ]]; then
 fi
 
 HOST_DATA_DIR="${ZBOT_HOST_DATA_DIR:-$HOME/Documents/zbot}"
-if [[ ! -d "$HOST_DATA_DIR/config" ]]; then
+if [[ "$FRESH_VAULT" != "--fresh-vault" && ! -d "$HOST_DATA_DIR/config" ]]; then
   echo "seed config tree missing: $HOST_DATA_DIR/config" >&2
   echo "set ZBOT_HOST_DATA_DIR to a directory containing a config/ tree" >&2
   exit 66
@@ -33,16 +34,18 @@ DATA_DIR="$RUN_DIR/data"
 mkdir -p "$DATA_DIR/config" "$DATA_DIR/data"
 echo "$RUN_DIR" > /tmp/zbot-e2e-latest-run-dir
 
-# Seed config from host (only the text files — skip wards/shards subdirs
-# to keep the copy cheap; zerod recreates anything it needs).
-cp "$HOST_DATA_DIR/config/"*.json "$DATA_DIR/config/" 2>/dev/null || true
-cp "$HOST_DATA_DIR/config/"*.md "$DATA_DIR/config/" 2>/dev/null || true
-# Nested configuration used by runtime composition must travel with the seed.
-for sub in shards wards governance; do
-  if [[ -d "$HOST_DATA_DIR/config/$sub" ]]; then
-    cp -r "$HOST_DATA_DIR/config/$sub" "$DATA_DIR/config/"
-  fi
-done
+if [[ "$FRESH_VAULT" != "--fresh-vault" ]]; then
+  # Seed config from host (only the text files — skip wards/shards subdirs
+  # to keep the copy cheap; zerod recreates anything it needs).
+  cp "$HOST_DATA_DIR/config/"*.json "$DATA_DIR/config/" 2>/dev/null || true
+  cp "$HOST_DATA_DIR/config/"*.md "$DATA_DIR/config/" 2>/dev/null || true
+  # Nested configuration used by runtime composition must travel with the seed.
+  for sub in shards wards governance; do
+    if [[ -d "$HOST_DATA_DIR/config/$sub" ]]; then
+      cp -r "$HOST_DATA_DIR/config/$sub" "$DATA_DIR/config/"
+    fi
+  done
+fi
 
 # One shared venv for the mock server (boot-ui-mode.sh created it).
 VENV="$REPO/e2e/.venv"

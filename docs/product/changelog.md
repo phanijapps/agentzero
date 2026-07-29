@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Ward creation now supports explicit `generic` and `coding` archetypes from a
+  local, editable registry. Existing singular Ward templates transition
+  non-destructively into `generic`, while created Wards retain their copied
+  layout and recorded archetype.
 - First-time commissioning now offers an explicit recommended Full Zbot memory
   profile with built-in embeddings, pinned recall/governance configuration, and
   a restart-verified activation screen. The safe baseline remains available
@@ -26,7 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- (nothing yet)
+- New Wards for every bundled archetype now start with one Ward-named canonical
+  page, agent instructions, an append-only log, and their layout snapshot.
+  Specialized work folders, linked pages, sources, and
+  `.zbot/specs/<concept>/` planning files remain lazy.
+- `wards/index.md` is now the sole index and catalogs each Ward with a
+  canonical wikilink. Ward Markdown uses the filesystem-authoritative LLM Wiki
+  model without mandatory OKF frontmatter.
+- Journal Ward templates now route daily material to one
+  `entries/YYYY/YYYY-MM-DD.md` file per source day and reject loose Markdown
+  directly under `entries/`, avoiding accidental single-document compilation.
 
 ### Deprecated
 

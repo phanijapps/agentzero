@@ -15,6 +15,7 @@ import {
   type LogSettings,
   type UpdateLogSettingsRequest,
   type ExecutionSettings,
+  type PresentationSettings,
   type ProviderResponse,
   type ModelRegistryResponse,
 } from "@/services/transport";
@@ -113,6 +114,13 @@ export function WebSettingsPanel() {
   const [execSaveMessage, setExecSaveMessage] = useState<string | null>(null);
   const [execRestartRequired, setExecRestartRequired] = useState(false);
 
+  // ── Presentation settings state ──
+  const [presentationSettings, setPresentationSettings] = useState<PresentationSettings | null>(null);
+  const [isLoadingPresentation, setIsLoadingPresentation] = useState(true);
+  const [isSavingPresentation, setIsSavingPresentation] = useState(false);
+  const [presentationMessage, setPresentationMessage] = useState<string | null>(null);
+  const [isClearingSurfaces, setIsClearingSurfaces] = useState(false);
+
   // ── Section open/close (General tab) ──
   const [memoryOpen, setMemoryOpen] = useState(false);
 
@@ -126,15 +134,17 @@ export function WebSettingsPanel() {
     setIsLoadingTools(true);
     setIsLoadingLogs(true);
     setIsLoadingExec(true);
+    setIsLoadingPresentation(true);
     setProviderError(null);
     try {
       const transport = await getTransport();
-      const [providersResult, modelsResult, toolsResult, logsResult, execResult] = await Promise.all([
+      const [providersResult, modelsResult, toolsResult, logsResult, execResult, presentationResult] = await Promise.all([
         transport.listProviders(),
         transport.listModels(),
         transport.getToolSettings(),
         transport.getLogSettings(),
         transport.getExecutionSettings(),
+        transport.getPresentationSettings(),
       ]);
       if (providersResult.success && providersResult.data) {
         setProviders(providersResult.data);
@@ -147,6 +157,9 @@ export function WebSettingsPanel() {
       if (toolsResult.success && toolsResult.data) setToolSettings(toolsResult.data);
       if (logsResult.success && logsResult.data) setLogSettings(logsResult.data);
       if (execResult.success && execResult.data) setExecSettings(execResult.data);
+      if (presentationResult.success && presentationResult.data) {
+        setPresentationSettings({ persistSurfaces: presentationResult.data.persistSurfaces });
+      }
     } catch (err) {
       setProviderError(err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -154,6 +167,7 @@ export function WebSettingsPanel() {
       setIsLoadingTools(false);
       setIsLoadingLogs(false);
       setIsLoadingExec(false);
+      setIsLoadingPresentation(false);
     }
   };
 
@@ -295,6 +309,57 @@ export function WebSettingsPanel() {
     } finally {
       setIsSavingExec(false);
       setTimeout(() => setExecSaveMessage(null), 2500);
+    }
+  };
+
+  const handlePresentationChange = async (persistSurfaces: boolean) => {
+    if (!presentationSettings) return;
+    const previousSettings = presentationSettings;
+    const nextSettings = { persistSurfaces };
+    setPresentationSettings(nextSettings);
+    setIsSavingPresentation(true);
+    setPresentationMessage(null);
+    try {
+      const transport = await getTransport();
+      const result = await transport.updatePresentationSettings(nextSettings);
+      if (result.success) {
+        setPresentationMessage("Saved");
+      } else {
+        setPresentationSettings(previousSettings);
+        setPresentationMessage(result.error || "Failed to save");
+      }
+    } catch {
+      setPresentationSettings(previousSettings);
+      setPresentationMessage("Failed to save");
+    } finally {
+      setIsSavingPresentation(false);
+      setTimeout(() => setPresentationMessage(null), 2500);
+    }
+  };
+
+  const handleClearSavedSurfaces = async () => {
+    const confirmed = window.confirm(
+      "Clear every saved infographic? Infographics already visible in open chats will remain until you reload.",
+    );
+    if (!confirmed) return;
+
+    setIsClearingSurfaces(true);
+    setPresentationMessage(null);
+    try {
+      const transport = await getTransport();
+      const result = await transport.clearSavedSurfaces();
+      if (result.success && result.data) {
+        const count = result.data.deletedCount;
+        setPresentationMessage(
+          `${count} saved infographic${count === 1 ? "" : "s"} cleared. Open chats are unchanged.`,
+        );
+      } else {
+        setPresentationMessage(result.error || "Failed to clear saved infographics");
+      }
+    } catch {
+      setPresentationMessage("Failed to clear saved infographics");
+    } finally {
+      setIsClearingSurfaces(false);
     }
   };
 
@@ -498,6 +563,78 @@ export function WebSettingsPanel() {
                       )}
                     </div>
                   ) : null}
+                </div>
+              )}
+            </div>
+
+            {/* Infographic persistence */}
+            <div className="card card__padding--lg">
+              <div className="flex items-center gap-3" style={{ marginBottom: "var(--spacing-4)" }}>
+                <div className="card__icon card__icon--primary">
+                  <Sparkles style={{ width: 18, height: 18 }} />
+                </div>
+                <div>
+                  <h2 className="settings-section-header">Infographics</h2>
+                  <p className="page-subtitle">Control whether generated visual surfaces survive a refresh</p>
+                </div>
+              </div>
+
+              {isLoadingPresentation ? (
+                <div className="settings-loading"><Loader2 className="loading-spinner__icon" /></div>
+              ) : presentationSettings ? (
+                <div className="flex flex-col gap-4">
+                  <label
+                    className={`settings-toggle-option ${presentationSettings.persistSurfaces ? "settings-toggle-option--active" : ""}`}
+                    style={{ opacity: isSavingPresentation ? 0.7 : 1 }}
+                    aria-label="Persist infographics"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={presentationSettings.persistSurfaces}
+                      onChange={() => handlePresentationChange(!presentationSettings.persistSurfaces)}
+                      disabled={isSavingPresentation}
+                      className="settings-toggle-option__checkbox"
+                    />
+                    <div className="flex-1">
+                      <div className="settings-toggle-option__title">Persist infographics</div>
+                      <div className="settings-toggle-option__description">
+                        Restore validated infographics in Quick Chat and Research after refresh.
+                        Turning this off keeps previously saved infographics until you clear them.
+                      </div>
+                    </div>
+                  </label>
+
+                  <div>
+                    <button
+                      type="button"
+                      className="btn btn--outline btn--sm"
+                      onClick={handleClearSavedSurfaces}
+                      disabled={isClearingSurfaces}
+                    >
+                      {isClearingSurfaces && <Loader2 className="loading-spinner__icon" style={{ width: 14, height: 14 }} />}
+                      Clear saved infographics
+                    </button>
+                    <p className="settings-hint">
+                      Requires confirmation. Infographics currently visible in open chats are not removed.
+                    </p>
+                  </div>
+
+                  {presentationMessage && (
+                    <div className={`settings-alert ${
+                      presentationMessage === "Saved" || presentationMessage.includes("cleared")
+                        ? "settings-alert--success"
+                        : "settings-alert--error"
+                    }`}>
+                      {(presentationMessage === "Saved" || presentationMessage.includes("cleared")) && (
+                        <Check style={{ width: 14, height: 14 }} />
+                      )}
+                      {presentationMessage}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="settings-alert settings-alert--error">
+                  Failed to load infographic settings
                 </div>
               )}
             </div>

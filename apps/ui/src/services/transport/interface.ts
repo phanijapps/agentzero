@@ -36,6 +36,9 @@ import type {
   LogSettings,
   UpdateLogSettingsRequest,
   ExecutionSettings,
+  PresentationSettings,
+  ClearSavedSurfacesResponse,
+  WorkSurface,
   LogSession,
   SessionDetail,
   LogFilter,
@@ -301,6 +304,18 @@ export interface Transport {
 
   /** Update execution settings */
   updateExecutionSettings(settings: ExecutionSettings): Promise<TransportResult<ExecutionSettings & { restartRequired: boolean }>>;
+
+  /** Get live work-surface persistence settings. */
+  getPresentationSettings(): Promise<TransportResult<PresentationSettings & { restartRequired: false }>>;
+
+  /** Update work-surface persistence without restarting the daemon. */
+  updatePresentationSettings(settings: PresentationSettings): Promise<TransportResult<PresentationSettings & { restartRequired: false }>>;
+
+  /** Restore the validated saved surfaces for one session. */
+  listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<WorkSurface[]>>;
+
+  /** Irreversibly clear every saved surface descriptor. */
+  clearSavedSurfaces(): Promise<TransportResult<ClearSavedSurfacesResponse>>;
 
   // =========================================================================
   // Agent Commissioning Operations

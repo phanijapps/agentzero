@@ -25,6 +25,7 @@ import type {
   LogSession,
   SessionMessage,
   SessionStatus,
+  WorkSurface,
 } from "@/services/transport/types";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ const getSessionMessages = vi.fn<Transport["getSessionMessages"]>();
 const listSessionArtifacts = vi.fn<Transport["listSessionArtifacts"]>();
 const listLogSessions = vi.fn<Transport["listLogSessions"]>();
 const getSessionState = vi.fn<Transport["getSessionState"]>();
+const listSavedSessionSurfaces = vi.fn<Transport["listSavedSessionSurfaces"]>();
 const unsubscribeSpy = vi.fn<() => void>();
 // Ordered log of all transport calls to assert subscribe-before-invoke.
 const callLog: string[] = [];
@@ -51,6 +53,7 @@ vi.mock("@/services/transport", () => ({
     listSessionArtifacts,
     listLogSessions,
     getSessionState,
+    listSavedSessionSurfaces,
     // R14h recovery uses this to re-check session_id on reconnect.
     onConnectionStateChange: () => () => undefined,
   }),
@@ -158,6 +161,7 @@ beforeEach(() => {
   listSessionArtifacts.mockReset();
   listLogSessions.mockReset();
   getSessionState.mockReset();
+  listSavedSessionSurfaces.mockReset();
   unsubscribeSpy.mockReset();
 
   subscribeConversation.mockImplementation((convId: string) => {
@@ -188,6 +192,7 @@ beforeEach(() => {
       isLive: false,
     },
   });
+  listSavedSessionSurfaces.mockResolvedValue({ success: true, data: [] });
 });
 
 afterEach(() => {
@@ -353,6 +358,47 @@ describe("useResearchSession — subscription ordering (R14a)", () => {
     // subscribedConvIdRef — the subscribe must fire exactly once.
     expect(subscribeConversation).toHaveBeenCalledTimes(1);
     expect(executeAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces automatic surfaces by stable id", async () => {
+    const { result } = renderHook(() => useResearchSession(), {
+      wrapper: routerWrapper(TEST_INITIAL_PATH),
+    });
+    await act(async () => {
+      await result.current.sendMessage("compare the totals");
+    });
+    const onEvent = subscribeConversation.mock.calls[0][1].onEvent;
+    const created: WorkSurface = {
+      surface_id: "automatic-summary",
+      catalog_id: "zbot/work-surface/v1",
+      components: [{
+        id: "metric",
+        type: "MetricCard",
+        props: { title: "Total", value_path: "/value" },
+      }],
+      data: { value: 42 },
+    };
+
+    act(() => {
+      onEvent({
+        type: "surface_created",
+        timestamp: Date.now(),
+        session_id: "session-1",
+        execution_id: "execution-1",
+        surface: created,
+      } as ConversationEvent);
+      onEvent({
+        type: "surface_updated",
+        timestamp: Date.now(),
+        session_id: "session-1",
+        execution_id: "execution-1",
+        surface: { ...created, data: { value: 84 } },
+      } as ConversationEvent);
+    });
+
+    expect(result.current.surfaces).toHaveLength(1);
+    expect(result.current.surfaces[0].surface_id).toBe("automatic-summary");
+    expect(result.current.surfaces[0].data).toEqual({ value: 84 });
   });
 
   it("hydrate + sendMessage: subscribe fires with a fresh convId; invoke carries the sessionId", async () => {

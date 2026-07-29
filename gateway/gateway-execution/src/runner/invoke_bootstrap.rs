@@ -19,7 +19,7 @@ use std::sync::Arc;
 use agent_runtime::{AgentExecutor, BoxedAgentEngine, ChatMessage, ContextActorKind};
 use api_logs::LogService;
 use arc_swap::ArcSwapOption;
-use execution_state::{SessionWardClaim, StateService};
+use execution_state::StateService;
 use gateway_events::{EventBus, GatewayEvent};
 use gateway_services::{
     AgentService, McpService, ModelRegistry, ProviderService, SharedVaultPaths, SkillService,
@@ -36,8 +36,8 @@ use crate::invoke::{
 };
 use crate::lifecycle::{emit_agent_started, get_or_create_session, start_execution};
 use crate::middleware::intent_analysis::{
-    analyze_intent_with_capabilities, format_intent_injection, format_planner_task,
-    index_resources, ExecutionApproach, IntentAnalysis, WardAction, WardRecommendation,
+    analyze_intent_with_capabilities, format_intent_injection, index_resources, ExecutionApproach,
+    IntentAnalysis, WardAction,
 };
 use crate::session_title::{SessionTitleInputs, SessionTitleService};
 
@@ -155,12 +155,9 @@ struct IntentOutcome {
     is_graph: bool,
     instructions_injection: String,
     title_hint: String,
-    /// A ward accepted by the filesystem validation and graduation gate. This
-    /// is the only intent-derived ward identifier allowed into runtime state.
+    /// A ward accepted by filesystem validation. This is the only
+    /// intent-derived ward identifier allowed into runtime state.
     existing_ward_id: Option<String>,
-    /// Present only for a cold graph request. Bootstrap installs this in root
-    /// tool context so ward entry can deterministically trigger planner-agent.
-    planning_task: Option<String>,
     /// Host-owned full catalog used by planner-only `lookup_capabilities`.
     planning_capability_catalog: Option<serde_json::Value>,
     /// Sanitized intent data, held until the active ward is known. Delaying
@@ -172,17 +169,6 @@ struct IntentOutcome {
 // FREE FUNCTIONS
 // ============================================================================
 
-/// A graph request is cold when bootstrap did not bind a graduated ward-agent.
-/// Cold work must enter its ward before WardTool launches planner-agent.
-fn cold_graph_planning_task(
-    analysis: &IntentAnalysis,
-    existing_ward_id: Option<&str>,
-    original_message: &str,
-) -> Option<String> {
-    (analysis.execution_strategy.approach == ExecutionApproach::Graph && existing_ward_id.is_none())
-        .then(|| format_planner_task(analysis, Some(original_message)))
-}
-
 /// Return an existing ward identifier only when it names exactly one real,
 /// non-symlinked child of the real wards root.
 ///
@@ -192,9 +178,13 @@ fn cold_graph_planning_task(
 /// nested path, or symlink outside the vault.
 fn canonical_existing_ward_id(paths: &SharedVaultPaths, candidate: &str) -> Option<String> {
     if candidate.is_empty()
+        || candidate.len() > 64
         || candidate.trim() != candidate
         || candidate.contains(['/', '\\'])
         || matches!(candidate, "." | "..")
+        || !candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return None;
     }
@@ -224,52 +214,8 @@ fn canonical_existing_ward_id(paths: &SharedVaultPaths, candidate: &str) -> Opti
     Some(candidate.to_string())
 }
 
-/// A model can bind a session only when it explicitly chose an already
-/// existing ward. A matching path must never upgrade a `create_new` outcome.
-fn canonical_use_existing_ward_id(
-    paths: &SharedVaultPaths,
-    action: &WardAction,
-    candidate: &str,
-) -> Option<String> {
-    (action == &WardAction::UseExisting)
-        .then(|| canonical_existing_ward_id(paths, candidate))
-        .flatten()
-}
-
-/// A `create_new` recommendation has no directory to canonicalize yet, but
-/// its name must still be safe before it is included in the root agent's ward
-/// tool instruction. Keep this in lockstep with `WardTool`'s accepted name
-/// shape and reserve `scratch` for the fast Quick Chat surface.
-fn safe_new_ward_name(candidate: &str) -> Option<String> {
-    if candidate.is_empty()
-        || candidate.len() > 64
-        || candidate.eq_ignore_ascii_case("scratch")
-        || !candidate
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return None;
-    }
-
-    let mut components = Path::new(candidate).components();
-    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return None;
-    }
-
-    Some(candidate.to_string())
-}
-
-/// A safe, deliberately non-routable recommendation when the model's ward
-/// value cannot be used. The executor receives no model-derived path in this
-/// case and can ask the ward tool to list/create an appropriate workspace.
-fn unassigned_ward_recommendation() -> WardRecommendation {
-    WardRecommendation {
-        action: WardAction::CreateNew,
-        ward_name: "unassigned".to_string(),
-        subdirectory: None,
-        structure: HashMap::new(),
-        reason: "No validated existing ward was available for this request".to_string(),
-    }
+fn reusable_existing_ward_id(paths: &SharedVaultPaths, candidate: &str) -> Option<String> {
+    canonical_existing_ward_id(paths, candidate)
 }
 
 /// Returns a validated browser-supplied message id or mints a server id for
@@ -582,50 +528,8 @@ fn ledger_resume_system_context(config: &ExecutionConfig) -> Result<Option<Strin
         .transpose()
 }
 
-/// Doctrine half of the graduation gate: true when a ward's `AGENTS.md`
-/// carries either the canonical `## Purpose` section OR a rich, structured
-/// doctrine (≥2 distinct `## ` sections — e.g. Conventions + DO + DON'T).
-/// Rejects missing, empty, title-only, and single-section stub files. The
-/// full gate also requires ≥1 promoted procedure — see
-/// [`ward_has_promoted_procedure`] and §8 of the ward-as-agent design.
-fn ward_doctrine_is_graduated(agents_md: &str) -> bool {
-    if agents_md.contains("## Purpose") {
-        return true;
-    }
-    // Rich-doctrine fallback: a structured ward (≥2 sections) graduates even
-    // without the canonical `## Purpose` heading, so well-formed wards aren't
-    // silently forced cold. Single-section / empty / title-only files are stubs.
-    let sections = agents_md.lines().filter(|l| l.starts_with("## ")).count();
-    sections >= 2
-}
-
-/// Procedure half of the graduation gate (§8): a ward graduates to
-/// warm-routable only with ≥1 promoted procedure — one proven, reusable
-/// capability — on top of its doctrine. Returns `true` when no procedure
-/// store is wired (the requirement cannot be evaluated, so it must not block
-/// graduation) and `false` on a store error.
-async fn ward_has_promoted_procedure(
-    store: Option<&Arc<dyn zbot_stores_traits::ProcedureStore>>,
-    ward: &str,
-) -> bool {
-    let Some(store) = store else {
-        return true;
-    };
-    match store.list_by_ward(ward, 1).await {
-        Ok(procs) => !procs.is_empty(),
-        Err(e) => {
-            tracing::warn!(
-                ward = %ward,
-                error = %e,
-                "Procedure lookup failed; treating ward as not graduated"
-            );
-            false
-        }
-    }
-}
-
 /// Enumerate the wards on disk, each as `"<name> — <purpose blurb>"` (or just
-/// `"<name>"` when the AGENTS.md has no Purpose section). Feeds the intent
+/// `"<name>"` when doctrine is absent or has no Purpose section). Feeds the intent
 /// classifier the real ward list so it reuses an existing ward instead of
 /// inventing a near-duplicate name (P5 anti-fragmentation).
 fn list_existing_wards(paths: &SharedVaultPaths) -> Vec<String> {
@@ -638,11 +542,8 @@ fn list_existing_wards(paths: &SharedVaultPaths) -> Vec<String> {
         let Some(name) = canonical_existing_ward_id(paths, &name) else {
             continue;
         };
-        let agents_md = match std::fs::read_to_string(paths.ward_dir(&name).join("AGENTS.md")) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        wards.push(match ward_purpose_blurb(&agents_md) {
+        let agents_md = std::fs::read_to_string(paths.ward_dir(&name).join("AGENTS.md")).ok();
+        wards.push(match agents_md.as_deref().and_then(ward_purpose_blurb) {
             Some(blurb) => format!("{name} — {blurb}"),
             None => name,
         });
@@ -1155,7 +1056,7 @@ impl InvokeBootstrap {
         } = args;
 
         // Collect available agents and skills for executor state
-        let available_agents = collect_agents_summary(&self.agent_service).await;
+        let available_agents = collect_agents_summary(&self.agent_service, &self.paths).await;
         let available_skills = collect_skills_summary(&self.skill_service).await;
 
         // Get tool settings
@@ -1242,7 +1143,9 @@ impl InvokeBootstrap {
             let observer = std::sync::Arc::new(
                 crate::invoke::ward_usage_adapter::WardUsageAdapter::new(self.ward_usage.clone()),
             );
-            builder = builder.with_ward_usage(observer);
+            builder = builder
+                .with_ward_usage(observer)
+                .with_ward_usage_service(self.ward_usage.clone());
         }
         builder = builder.with_state_service(self.state_service.clone());
         if let Some(ref sr) = self.steering_registry {
@@ -1282,19 +1185,9 @@ impl InvokeBootstrap {
             .await;
         let mut effective_ward_id = ward_id.map(str::to_owned);
         if let Some(out) = outcome {
-            effective_ward_id = self
-                .bind_intent_selected_ward(
-                    session_id,
-                    execution_id,
-                    effective_ward_id.as_deref(),
-                    out.existing_ward_id.as_deref(),
-                )
-                .await?;
-
-            // A concurrent bootstrap may have won the compare-and-set with a
-            // different ward. Validate the returned effective value before
-            // using it as the scope for durable session-context facts.
-            self.validate_effective_ward(session_id, execution_id, effective_ward_id.as_deref())?;
+            if effective_ward_id.is_none() {
+                effective_ward_id = out.existing_ward_id.clone();
+            }
 
             // The snapshot is a sidecar for subagents, so it must use the
             // persisted active ward rather than the intent model's proposal.
@@ -1377,15 +1270,6 @@ impl InvokeBootstrap {
                         catalog.clone(),
                     );
                 }
-                if let Some(task) = out.planning_task.as_deref() {
-                    builder = builder.with_initial_state(
-                        agent_tools::guards::PLANNING_GATE_STATE,
-                        serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
-                            task,
-                        ))
-                        .expect("planning gate is serializable"),
-                    );
-                }
             }
             agent_for_build
                 .instructions
@@ -1395,12 +1279,6 @@ impl InvokeBootstrap {
             agent_for_build.instructions.push_str("\n\n");
             agent_for_build.instructions.push_str(&context);
         }
-
-        // Check again after asynchronous setup and immediately before this
-        // method forms filesystem paths or gives the value to the executor.
-        // This covers both this request's claimed ward and a concurrent
-        // request's winning effective ward.
-        self.validate_effective_ward(session_id, execution_id, effective_ward_id.as_deref())?;
 
         // Flag if placeholder specs exist — delegate tool uses this to block
         // ad-hoc delegations. Single source of truth lives in
@@ -1443,83 +1321,6 @@ impl InvokeBootstrap {
         );
 
         Ok((executor, recommended_skills, effective_ward_id))
-    }
-
-    /// Atomically establish a bootstrap-selected ward, without changing a
-    /// workspace that an earlier invocation already entered. `candidate` is
-    /// accepted only from [`Self::run_intent_analysis`], after canonical
-    /// filesystem validation.
-    async fn bind_intent_selected_ward(
-        &self,
-        session_id: &str,
-        execution_id: &str,
-        current_ward_id: Option<&str>,
-        candidate: Option<&str>,
-    ) -> Result<Option<String>, String> {
-        let Some(candidate) = candidate else {
-            return Ok(current_ward_id.map(str::to_owned));
-        };
-        if current_ward_id.is_some() {
-            return Ok(current_ward_id.map(str::to_owned));
-        }
-        if canonical_existing_ward_id(&self.paths, candidate).as_deref() != Some(candidate) {
-            tracing::error!(
-                session_id = %session_id,
-                execution_id = %execution_id,
-                "Intent-selected ward failed canonical validation before binding"
-            );
-            return Err("Unable to start this request".to_string());
-        }
-
-        match self
-            .state_service
-            .claim_session_ward_if_unset(session_id, candidate)
-        {
-            Ok(SessionWardClaim::Claimed(ward_id)) => {
-                self.event_bus
-                    .publish(GatewayEvent::WardChanged {
-                        session_id: session_id.to_string(),
-                        execution_id: execution_id.to_string(),
-                        ward_id: ward_id.clone(),
-                    })
-                    .await;
-                Ok(Some(ward_id))
-            }
-            Ok(SessionWardClaim::Existing(ward_id)) => Ok(Some(ward_id)),
-            Err(error) => {
-                tracing::error!(
-                    session_id = %session_id,
-                    execution_id = %execution_id,
-                    error = %error,
-                    "Failed to persist intent-selected ward"
-                );
-                Err("Unable to start this request".to_string())
-            }
-        }
-    }
-
-    /// Ensure every runtime-effective ward remains a canonical regular ward
-    /// immediately before it is persisted as context or used to construct
-    /// filesystem/executor state. This includes a value returned by a losing
-    /// concurrent claim, not merely this request's model-selected candidate.
-    fn validate_effective_ward(
-        &self,
-        session_id: &str,
-        execution_id: &str,
-        ward_id: Option<&str>,
-    ) -> Result<(), String> {
-        let Some(ward_id) = ward_id else {
-            return Ok(());
-        };
-        if canonical_existing_ward_id(&self.paths, ward_id).as_deref() == Some(ward_id) {
-            return Ok(());
-        }
-        tracing::error!(
-            session_id = %session_id,
-            execution_id = %execution_id,
-            "Effective ward failed canonical validation before runtime use"
-        );
-        Err("Unable to start this request".to_string())
     }
 
     /// Run the intent-analysis sub-pipeline. Mirrors the same-named method on
@@ -1694,51 +1495,25 @@ impl InvokeBootstrap {
             merge_root_assignment_skills(&mut analysis, &ctx.agent.id);
         }
 
-        // Intent is allowed to bind only an explicit `use_existing` result.
-        // A filesystem match does not upgrade a `create_new` result. A valid
-        // new-ward name is nevertheless retained so the root's mandatory
-        // first ward-tool call can create and enter that workspace before it
-        // delegates or runs a procedure.
-        //
-        // Graduation gate: a selected ward is warm-routable — delegated to as a
-        // ward-agent — only once it has GRADUATED. Graduation requires BOTH
-        // a real Purpose/Scope doctrine in AGENTS.md AND ≥1 promoted
-        // procedure (§8) — one proven, reusable capability. A ward missing
-        // either is still a scaffold; route cold so the planner builds it
-        // up. This can reject a `use_existing` request, but never upgrades a
-        // `create_new` request into a binding.
-        let existing_ward_id = canonical_use_existing_ward_id(
-            &self.paths,
-            &analysis.ward_recommendation.action,
-            &analysis.ward_recommendation.ward_name,
-        );
-        let existing_ward_id = if let Some(ward_id) = existing_ward_id {
-            let ward_dir = self.paths.ward_dir(&ward_id);
-            let doctrine_ok = std::fs::read_to_string(ward_dir.join("AGENTS.md"))
-                .map(|md| ward_doctrine_is_graduated(&md))
-                .unwrap_or(false);
-            if doctrine_ok
-                && ward_has_promoted_procedure(self.procedure_store.as_ref(), &ward_id).await
-            {
-                Some(ward_id)
-            } else {
-                None
-            }
+        // Filesystem existence is authoritative for reuse. Ward content and
+        // capabilities are governed by the injected template; they are not a
+        // second lifecycle gate that can turn an existing ward into a new one.
+        let existing_ward_id =
+            reusable_existing_ward_id(&self.paths, &analysis.ward_recommendation.ward_name);
+        let authoritative_action = if existing_ward_id.is_some() {
+            WardAction::UseExisting
         } else {
-            None
+            WardAction::CreateNew
         };
-        if let Some(ward_id) = existing_ward_id.as_ref() {
-            analysis.ward_recommendation.action = WardAction::UseExisting;
-            analysis.ward_recommendation.ward_name = ward_id.clone();
-        } else if analysis.ward_recommendation.action == WardAction::CreateNew
-            && safe_new_ward_name(&analysis.ward_recommendation.ward_name).is_some()
-        {
+        if analysis.ward_recommendation.action != authoritative_action {
             tracing::info!(
-                ward_name = %analysis.ward_recommendation.ward_name,
-                "Preserving validated new ward recommendation for explicit creation"
+                ward = %analysis.ward_recommendation.ward_name,
+                classifier_action = %analysis.ward_recommendation.action,
+                corrected = %authoritative_action,
+                exists = existing_ward_id.is_some(),
+                "Correcting ward action from filesystem ground truth"
             );
-        } else {
-            analysis.ward_recommendation = unassigned_ward_recommendation();
+            analysis.ward_recommendation.action = authoritative_action;
         }
 
         tracing::info!(
@@ -1796,10 +1571,6 @@ impl InvokeBootstrap {
             }
         };
 
-        // A graduated existing ward follows the warm ward-agent path. Every
-        // other graph request is cold: its root must establish a ward and the
-        // runtime gate will launch planner-agent from that transition.
-        let planning_task = cold_graph_planning_task(&analysis, existing_ward_id.as_deref(), msg);
         let planning_capability_catalog =
             if analysis.execution_strategy.approach == ExecutionApproach::Graph {
                 Some(
@@ -1825,7 +1596,6 @@ impl InvokeBootstrap {
                 Some(msg),
             ),
             existing_ward_id,
-            planning_task,
             planning_capability_catalog,
             intent_snapshot: intent_json,
         })
@@ -1877,7 +1647,7 @@ impl InvokeBootstrap {
     /// never appears as if intent analysis was skipped. Without this, a model
     /// that returns truncated/non-JSON (e.g. glm-5.2 intermittently cutting
     /// off mid-string) leaves no intent log even though analysis ran and
-    /// deliberately left workspace selection unassigned — which looked identical to
+    /// used the normal scratch fallback — which looked identical to
     /// "intent analysis off" on the /research info icon and in replay.
     async fn emit_intent_fallback_complete(
         &self,
@@ -1894,7 +1664,7 @@ impl InvokeBootstrap {
             "fallback": true,
             "ward_recommendation": {
                 "action": "create_new",
-                "ward_name": "unassigned",
+                "ward_name": "scratch",
                 "subdirectory": null,
                 "reason": ward_reason,
             },
@@ -1924,7 +1694,7 @@ impl InvokeBootstrap {
                 recommended_agents: vec![],
                 ward_recommendation: serde_json::json!({
                     "action": "create_new",
-                    "ward_name": "unassigned",
+                    "ward_name": "scratch",
                     "subdirectory": null,
                     "reason": ward_reason,
                 }),
@@ -1986,7 +1756,7 @@ impl InvokeBootstrap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::middleware::intent_analysis::ExecutionStrategy;
+    use crate::middleware::intent_analysis::{ExecutionStrategy, WardRecommendation};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -2055,30 +1825,6 @@ mod tests {
     }
 
     #[test]
-    fn ward_doctrine_is_graduated_true_for_canonical_agents_md() {
-        let md = "# automotive-research\n\n## Purpose / Scope\nIN — vehicles\n";
-        assert!(ward_doctrine_is_graduated(md));
-    }
-
-    #[test]
-    fn ward_doctrine_is_graduated_false_for_stub_or_old_format() {
-        assert!(!ward_doctrine_is_graduated(""));
-        assert!(!ward_doctrine_is_graduated("# automotive-research\n"));
-        assert!(!ward_doctrine_is_graduated(
-            "# automotive-research\n\n## Conventions\n- reuse core/\n"
-        ));
-    }
-
-    #[test]
-    fn ward_doctrine_is_graduated_for_rich_doctrine_without_purpose() {
-        // A ward with a rich, structured doctrine (≥2 sections) but no
-        // canonical `## Purpose` heading still graduates — so well-formed wards
-        // (e.g. Conventions + DO + DON'T) aren't silently forced cold.
-        let md = "# financial-analysis\n\n## Conventions\n- reuse core/\n\n## DO\n- fetch data\n\n## DON'T\n- skip json_safe\n";
-        assert!(ward_doctrine_is_graduated(md));
-    }
-
-    #[test]
     fn trivial_chat_prompt_classifier_skips_small_talk_only() {
         for prompt in ["hi", " hello! ", "thanks.", "Good morning"] {
             assert!(
@@ -2142,70 +1888,6 @@ mod tests {
     }
 
     #[test]
-    fn cold_graph_intent_installs_a_planner_task_but_warm_and_simple_paths_do_not() {
-        let graph = intent_with_approach(ExecutionApproach::Graph);
-        let task = cold_graph_planning_task(&graph, None, "Build a scene")
-            .expect("cold graph work requires planning");
-        assert!(task.contains("Original request: Build a scene"));
-        assert!(task.contains("creative-design"));
-
-        assert!(
-            cold_graph_planning_task(&graph, Some("graduated-ward"), "Build a scene").is_none(),
-            "a graduated ward-agent follows the warm path"
-        );
-        let simple = intent_with_approach(ExecutionApproach::Simple);
-        assert!(cold_graph_planning_task(&simple, None, "Hi").is_none());
-    }
-
-    struct FakeProcStore {
-        ward_procs: usize,
-        fail: bool,
-    }
-
-    #[async_trait::async_trait]
-    impl zbot_stores_traits::ProcedureStore for FakeProcStore {
-        async fn list_by_ward(
-            &self,
-            _ward_id: &str,
-            limit: usize,
-        ) -> Result<Vec<serde_json::Value>, String> {
-            if self.fail {
-                return Err("store unavailable".to_string());
-            }
-            Ok((0..self.ward_procs.min(limit))
-                .map(|_| serde_json::json!({}))
-                .collect())
-        }
-    }
-
-    #[tokio::test]
-    async fn graduation_procedure_gate() {
-        // No store wired — cannot evaluate, must not block graduation.
-        assert!(ward_has_promoted_procedure(None, "w").await);
-
-        // Doctrine present but zero procedures — not graduated.
-        let empty: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(FakeProcStore {
-            ward_procs: 0,
-            fail: false,
-        });
-        assert!(!ward_has_promoted_procedure(Some(&empty), "w").await);
-
-        // At least one promoted procedure — graduated.
-        let stocked: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(FakeProcStore {
-            ward_procs: 2,
-            fail: false,
-        });
-        assert!(ward_has_promoted_procedure(Some(&stocked), "w").await);
-
-        // Store error — conservatively treated as not graduated.
-        let broken: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(FakeProcStore {
-            ward_procs: 5,
-            fail: true,
-        });
-        assert!(!ward_has_promoted_procedure(Some(&broken), "w").await);
-    }
-
-    #[test]
     fn ward_purpose_blurb_extracts_purpose_section() {
         let md = "# foo\n\n## Purpose / Scope\nIN — vehicles and the market\nOUT — repair\n\n## Folder map\n- x\n";
         let blurb = ward_purpose_blurb(md).expect("blurb");
@@ -2230,13 +1912,18 @@ mod tests {
             "# travel-planning\n\n## Purpose / Scope\nIN — city itineraries\n",
         )
         .unwrap();
-        // A directory without an AGENTS.md is not a real ward — skipped.
+        // Existing directories remain reusable even before optional doctrine
+        // has been authored.
         std::fs::create_dir_all(wards.join("no-doctrine")).unwrap();
 
         let listed = list_existing_wards(&paths);
-        assert_eq!(listed.len(), 1);
-        assert!(listed[0].starts_with("travel-planning — "));
-        assert!(listed[0].contains("city itineraries"));
+        assert_eq!(
+            listed,
+            vec![
+                "no-doctrine".to_string(),
+                "travel-planning — IN — city itineraries".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -2251,15 +1938,6 @@ mod tests {
             canonical_existing_ward_id(&paths, "financial-analysis"),
             Some("financial-analysis".to_string())
         );
-        assert_eq!(
-            canonical_use_existing_ward_id(&paths, &WardAction::CreateNew, "financial-analysis"),
-            None,
-            "create_new must not be promoted into an automatic binding"
-        );
-        assert_eq!(
-            canonical_use_existing_ward_id(&paths, &WardAction::UseExisting, "financial-analysis"),
-            Some("financial-analysis".to_string())
-        );
         for invalid in [
             "",
             ".",
@@ -2269,6 +1947,10 @@ mod tests {
             "nested\\ward",
             "/tmp/outside",
             " financial-analysis",
+            ".hidden",
+            "bad ward",
+            "café",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ] {
             assert_eq!(
                 canonical_existing_ward_id(&paths, invalid),
@@ -2292,13 +1974,16 @@ mod tests {
     }
 
     #[test]
-    fn safe_new_ward_name_preserves_a_domain_name_but_never_scratch() {
+    fn existing_ward_is_reusable_without_graduation_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: SharedVaultPaths =
+            Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        std::fs::create_dir_all(paths.wards_dir().join("financial-analysis")).unwrap();
+
         assert_eq!(
-            safe_new_ward_name("hiring-analysis").as_deref(),
-            Some("hiring-analysis")
+            reusable_existing_ward_id(&paths, "financial-analysis"),
+            Some("financial-analysis".to_string())
         );
-        assert_eq!(safe_new_ward_name("scratch"), None);
-        assert_eq!(safe_new_ward_name("../escape"), None);
     }
 
     #[test]
@@ -2346,85 +2031,6 @@ mod tests {
             event_bus: Arc::new(EventBus::new()),
             handles,
         };
-    }
-
-    #[tokio::test]
-    async fn intent_binding_claims_once_and_publishes_only_for_the_winner() {
-        #[allow(deprecated)]
-        let dir = tempfile::tempdir().unwrap();
-        #[allow(deprecated)]
-        let path = dir.into_path();
-        let paths = Arc::new(VaultPaths::new(path));
-        std::fs::create_dir_all(paths.wards_dir().join("financial-analysis")).unwrap();
-        std::fs::create_dir_all(paths.wards_dir().join("travel-planning")).unwrap();
-        let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
-        let state_service = Arc::new(StateService::new(db.clone()));
-        let event_bus = Arc::new(EventBus::new());
-        let bootstrap = InvokeBootstrap {
-            agent_service: Arc::new(gateway_services::AgentService::new(paths.agents_dir())),
-            provider_service: Arc::new(gateway_services::ProviderService::new(paths.clone())),
-            mcp_service: Arc::new(gateway_services::McpService::new(paths.clone())),
-            skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
-            state_service: state_service.clone(),
-            log_service: Arc::new(LogService::new(db.clone())),
-            messages: Arc::new(zbot_conversation::SqliteMessageStore::new(
-                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
-            )),
-            paths,
-            memory_store: None,
-            memory_recall: None,
-            model_registry: Arc::new(ArcSwapOption::empty()),
-            rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            connector_registry: None,
-            bridge_registry: None,
-            bridge_outbox: None,
-            kg_store: None,
-            ingestion_adapter: None,
-            goal_adapter: None,
-            steering_registry: None,
-            agent_result_bus: None,
-            procedure_store: None,
-            procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig::default(),
-            ward_usage: Arc::new(gateway_services::WardUsage::new(
-                std::env::temp_dir().join("zbot-test-wards-intent-binding"),
-            )),
-            event_bus: event_bus.clone(),
-            handles: Arc::new(RwLock::new(HashMap::new())),
-        };
-        let (session, _) = state_service.create_session("root").unwrap();
-        let mut events = event_bus.subscribe_all();
-
-        let effective = bootstrap
-            .bind_intent_selected_ward(&session.id, "exec-first", None, Some("financial-analysis"))
-            .await
-            .unwrap();
-        assert_eq!(effective.as_deref(), Some("financial-analysis"));
-        assert_eq!(
-            state_service
-                .get_session(&session.id)
-                .unwrap()
-                .unwrap()
-                .ward_id
-                .as_deref(),
-            Some("financial-analysis")
-        );
-        assert!(matches!(
-            events.try_recv(),
-            Ok(GatewayEvent::WardChanged { ref session_id, ref execution_id, ref ward_id })
-                if session_id == &session.id
-                    && execution_id == "exec-first"
-                    && ward_id == "financial-analysis"
-        ));
-
-        let competing = bootstrap
-            .bind_intent_selected_ward(&session.id, "exec-second", None, Some("travel-planning"))
-            .await
-            .unwrap();
-        assert_eq!(competing.as_deref(), Some("financial-analysis"));
-        assert!(
-            events.try_recv().is_err(),
-            "losing claim must not emit WardChanged"
-        );
     }
 
     #[tokio::test]

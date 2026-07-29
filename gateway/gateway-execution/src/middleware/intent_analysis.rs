@@ -296,7 +296,7 @@ pub fn format_intent_injection(
         return out;
     }
 
-    // WARM PATH — the task belongs to an existing, graduated ward and needs
+    // WARM PATH — the task belongs to an existing ward and needs
     // multi-step orchestration: delegate the WHOLE task to that ward-agent in
     // one call. The ward-agent plans and
     // executes internally (see `synthesize_ward_agent` / the ward-as-agent
@@ -304,9 +304,8 @@ pub fn format_intent_injection(
     //
     // Simple one-shot work returns through the fast path above before ward
     // routing. For graph work, `use_existing` is authoritative: callers
-    // (invoke_bootstrap's graduation gate) set it only when the ward directory
-    // exists on disk and carries a real doctrine, so it always points at a
-    // genuine ward.
+    // (invoke_bootstrap's filesystem gate) set it only when the ward directory
+    // exists as a validated direct child of the wards root.
     if analysis.ward_recommendation.action == WardAction::UseExisting {
         let ward = analysis.ward_recommendation.ward_name.as_str();
         let mut ward_task = String::new();
@@ -343,38 +342,25 @@ pub fn format_intent_injection(
         return out;
     }
 
-    // No filesystem-validated ward was available. Do not propagate an
-    // untrusted model-suggested name into the ward tool; it is responsible
-    // for listing existing workspaces or creating a safe new one.
+    // Ward — preserve the exact classifier name. Bootstrap validates the
+    // filesystem and may correct only the action before this is rendered.
     let wr = &analysis.ward_recommendation;
-    if wr.ward_name == "unassigned" {
-        out.push_str(
-            "\n**Required workspace:** No existing workspace was selected. Before writing task files, \
-             call `ward(action=\"list\")` and then use an appropriate existing ward or create a \
-             reusable domain ward with a safe single-component name.\n",
-        );
+    let action_verb = if wr.action == WardAction::UseExisting {
+        "use"
     } else {
-        // Ward — phrased as a directive, not a suggestion. The agent has
-        // historically paraphrased the ward name to match task-specific
-        // terminology (e.g. "geopolitical-analysis" → "india-pok-analysis")
-        // which violates the reusable-domain rule. Show the exact tool call.
-        let action_verb = if wr.action == WardAction::UseExisting {
-            "use"
-        } else {
-            "create"
-        };
+        "create"
+    };
+    out.push_str(&format!(
+        "\n**Required workspace:** Your first tool call MUST be \
+         `ward(action=\"{}\", name=\"{}\")`. The ward name `{}` is mandatory — \
+         do not rename it to a task-specific alternative. Reason: {}\n",
+        action_verb, wr.ward_name, wr.ward_name, wr.reason
+    ));
+    if let Some(ref sub) = wr.subdirectory {
         out.push_str(&format!(
-            "\n**Required workspace:** Your first tool call MUST be \
-             `ward(action=\"{}\", name=\"{}\")`. The ward name `{}` is mandatory — \
-             do not rename it to a task-specific alternative. Reason: {}\n",
-            action_verb, wr.ward_name, wr.ward_name, wr.reason
+            "  Place task-specific work under subdirectory `{}/` within that ward.\n",
+            sub
         ));
-        if let Some(ref sub) = wr.subdirectory {
-            out.push_str(&format!(
-                "  Place task-specific work under subdirectory `{}/` within that ward.\n",
-                sub
-            ));
-        }
     }
 
     // Available resources
@@ -2508,35 +2494,6 @@ mod tests {
         let injection = format_intent_injection(&analysis, None, None);
         assert!(injection.contains("Ward Rule:"));
         assert!(injection.contains("test-ward"));
-    }
-
-    #[test]
-    fn format_intent_injection_never_turns_unassigned_into_a_path() {
-        let analysis = IntentAnalysis {
-            primary_intent: "research".to_string(),
-            hidden_intents: vec![],
-            recommended_skills: vec![],
-            recommended_agents: vec![],
-            recommended_capabilities: vec![],
-            ward_recommendation: WardRecommendation {
-                action: WardAction::CreateNew,
-                ward_name: "unassigned".to_string(),
-                subdirectory: None,
-                structure: Default::default(),
-                reason: "No validated existing ward was available".to_string(),
-            },
-            execution_strategy: ExecutionStrategy {
-                approach: ExecutionApproach::Graph,
-                graph: None,
-                explanation: "Requires research".to_string(),
-            },
-            rewritten_prompt: String::new(),
-            procedure_recommendation: None,
-        };
-
-        let injection = format_intent_injection(&analysis, None, None);
-        assert!(injection.contains("ward(action=\"list\")"));
-        assert!(!injection.contains("ward(action=\"create\", name="));
     }
 
     #[test]

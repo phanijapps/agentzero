@@ -40,7 +40,7 @@ use execution_state::StateService;
 use gateway_services::agents::Agent;
 use gateway_services::models::{ModelRegistry, DEFAULT_MAX_INPUT_TOKENS};
 use gateway_services::providers::Provider;
-use gateway_services::{McpService, SettingsService, SkillService, VaultPaths};
+use gateway_services::{McpService, SettingsService, SharedVaultPaths, SkillService, VaultPaths};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -251,6 +251,7 @@ enum ToolCapability {
     Respond,
     Shell,
     SkillLoad,
+    SurfacePresent,
     WardRead,
     WardWrite,
 }
@@ -276,6 +277,7 @@ impl ToolCapability {
             Self::Respond => "respond",
             Self::Shell => "process.shell",
             Self::SkillLoad => "skill.load",
+            Self::SurfacePresent => "surface.present",
             Self::WardRead => "ward.read",
             Self::WardWrite => "ward.write",
         }
@@ -302,6 +304,7 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::ProcedureRun
                 | ToolCapability::Respond
                 | ToolCapability::Shell
+                | ToolCapability::SurfacePresent
                 | ToolCapability::WardRead
                 | ToolCapability::WardWrite
         ),
@@ -362,6 +365,7 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
         ToolCapability::Respond,
         ToolCapability::Shell,
         ToolCapability::SkillLoad,
+        ToolCapability::SurfacePresent,
         ToolCapability::WardRead,
         ToolCapability::WardWrite,
     ];
@@ -526,6 +530,7 @@ fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
         "respond" => vec![ToolCapability::Respond],
         "run_procedure" => vec![ToolCapability::ProcedureRun],
         "shell" => vec![ToolCapability::Shell],
+        "present_surface" => vec![ToolCapability::SurfacePresent],
         "update_plan" => vec![ToolCapability::PlanWrite],
         "ward" => vec![ToolCapability::WardRead, ToolCapability::WardWrite],
         _ => Vec::new(),
@@ -555,6 +560,7 @@ fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
                 | ToolCapability::IngestWrite
                 | ToolCapability::MemoryWrite
                 | ToolCapability::PlanWrite
+                | ToolCapability::SurfacePresent
                 | ToolCapability::WardWrite
         )
     }) {
@@ -626,6 +632,7 @@ fn token_hint_for_tool(name: &str) -> Option<u32> {
         "connector_invoke" => Some(300),
         "shell" | "read" => Some(400),
         "wait_agent" => Some(120),
+        "present_surface" => Some(300),
         _ => Some(200),
     }
 }
@@ -636,6 +643,7 @@ fn owner_crate_for_tool(name: &str) -> &'static str {
         "handoff_to_agent"
         | "kill_agent"
         | "list_session_agents"
+        | "present_surface"
         | "steer_agent"
         | "wait_agent" => "gateway-execution",
         _ => "agent-tools",
@@ -645,6 +653,8 @@ fn owner_crate_for_tool(name: &str) -> &'static str {
 fn audit_policy_for_tool(name: &str, capabilities: &[ToolCapability]) -> &'static str {
     if name == "wait_agent" {
         "join_audit"
+    } else if name == "present_surface" {
+        "presentation_audit"
     } else if capabilities.contains(&ToolCapability::Shell) {
         "execution_audit"
     } else if matches!(
@@ -675,6 +685,7 @@ fn visibility_policy_for_tool(name: &str, _actor: RuntimeActorKind) -> &'static 
         "connector_resource" => "default_visible_connector_resource_read",
         "connector_invoke" => "default_visible_connector_invoke_action",
         "load_skill" => "default_visible_bounded_packet",
+        "present_surface" => "default_visible_automatic_presentation",
         "shell" | "ward" => "default_visible_action_tool",
         _ => "default_visible",
     }
@@ -790,6 +801,9 @@ pub struct ExecutorBuilder {
     /// Observer for ward-tool creation events — bumps the curator sidecar's
     /// `created_by = "agent"` on every freshly-scaffolded ward.
     ward_usage: Option<Arc<dyn agent_tools::WardUsageAccess>>,
+    /// Shared concrete sidecar service used by Ward layout creation so
+    /// publication and durable provenance use the runner's serialization lock.
+    ward_usage_service: Option<Arc<gateway_services::WardUsage>>,
     steering_registry: Option<Arc<agent_runtime::SteeringRegistry>>,
     agent_result_bus: Option<Arc<AgentResultBus>>,
     state_service: Option<Arc<StateService<DatabaseManager>>>,
@@ -818,6 +832,7 @@ impl ExecutorBuilder {
             ingestion_adapter: None,
             goal_adapter: None,
             ward_usage: None,
+            ward_usage_service: None,
             steering_registry: None,
             agent_result_bus: None,
             state_service: None,
@@ -935,6 +950,13 @@ impl ExecutorBuilder {
     /// Set the ward-usage observer for the `ward` tool's create action.
     pub fn with_ward_usage(mut self, observer: Arc<dyn agent_tools::WardUsageAccess>) -> Self {
         self.ward_usage = Some(observer);
+        self
+    }
+
+    /// Set the runner-owned Ward usage service used by transactional Ward
+    /// creation and provenance reads.
+    pub fn with_ward_usage_service(mut self, usage: Arc<gateway_services::WardUsage>) -> Self {
+        self.ward_usage_service = Some(usage);
         self
     }
 
@@ -1087,10 +1109,38 @@ impl ExecutorBuilder {
             serde_json::Value::String(session_id.to_string()),
         );
 
-        // Restore ward_id from session so continuations keep the active ward
+        let mut ward_template_prompt = None;
         if let Some(ward) = ward_id {
             executor_config = executor_config
                 .with_initial_state("ward_id", serde_json::Value::String(ward.to_string()));
+
+            // The template is root-orchestrator context only. Loading failure is
+            // represented in state and never prevents orchestration from starting.
+            if matches!(self.actor_kind, RuntimeActorKind::Root) {
+                let root_context_id = uuid::Uuid::now_v7().to_string();
+                let layout = self
+                    .ward_usage_service
+                    .clone()
+                    .map(|usage| {
+                        super::ward_layout_adapter::GatewayWardLayoutAccess::with_usage(
+                            self.vault_dir.clone(),
+                            usage,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        super::ward_layout_adapter::GatewayWardLayoutAccess::new(
+                            self.vault_dir.clone(),
+                        )
+                    })
+                    .state(ward, session_id, &root_context_id);
+                ward_template_prompt = layout.context;
+                executor_config = executor_config
+                    .with_initial_state("ward_template", layout.packet)
+                    .with_initial_state(
+                        "ward_template_context_id",
+                        serde_json::Value::String(root_context_id),
+                    );
+            }
         }
 
         executor_config = executor_config.with_initial_state(
@@ -1240,7 +1290,10 @@ impl ExecutorBuilder {
         let mcp_manager = self.build_mcp_manager(agent, mcp_service).await;
 
         // Build final executor config with system instruction
-        executor_config.system_instruction = Some(agent.instructions.clone());
+        executor_config.system_instruction = Some(match ward_template_prompt {
+            Some(template) => format!("{}\n\n{}", agent.instructions, template),
+            None => agent.instructions.clone(),
+        });
         executor_config.conversation_id = Some(conversation_id.to_string());
         executor_config.temperature = agent.temperature;
         executor_config.max_tokens = effective_max_output;
@@ -1353,6 +1406,16 @@ impl ExecutorBuilder {
             .clone()
             .zip(recall_authorization)
             .filter(|(recall, _)| recall.provider_scope().is_some());
+        let ward_layout: Arc<dyn agent_tools::WardLayoutAccess> =
+            Arc::new(match self.ward_usage_service.clone() {
+                Some(usage) => super::ward_layout_adapter::GatewayWardLayoutAccess::with_usage(
+                    self.vault_dir.clone(),
+                    usage,
+                ),
+                None => {
+                    super::ward_layout_adapter::GatewayWardLayoutAccess::new(self.vault_dir.clone())
+                }
+            });
         register_if_allowed(
             &mut tool_registry,
             actor,
@@ -1403,6 +1466,7 @@ impl ExecutorBuilder {
                 fs_context.clone(),
                 self.fact_store.clone(),
                 self.ward_usage.clone(),
+                ward_layout,
             )),
         );
         register_if_allowed(
@@ -1452,6 +1516,12 @@ impl ExecutorBuilder {
             actor,
             &[ToolCapability::PlanWrite],
             Arc::new(UpdatePlanTool::new()),
+        );
+        register_if_allowed(
+            &mut tool_registry,
+            actor,
+            &[ToolCapability::SurfacePresent],
+            Arc::new(crate::tools::PresentSurfaceTool::new()),
         );
         register_if_allowed(
             &mut tool_registry,
@@ -1657,8 +1727,9 @@ pub(crate) fn mcp_startup_failure_observer(
 /// Helper to collect available agents summary for executor state.
 pub async fn collect_agents_summary(
     agent_service: &gateway_services::AgentService,
+    paths: &SharedVaultPaths,
 ) -> Vec<serde_json::Value> {
-    match agent_service.list().await {
+    let mut summaries = match agent_service.list().await {
         Ok(all_agents) => all_agents
             .iter()
             .map(|a| {
@@ -1670,7 +1741,36 @@ pub async fn collect_agents_summary(
             })
             .collect(),
         Err(_) => vec![],
+    };
+
+    let wards_dir = paths.wards_dir();
+    let wards_root_is_real = std::fs::symlink_metadata(&wards_dir)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+    if wards_root_is_real {
+        if let Ok(entries) = std::fs::read_dir(wards_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let valid_name = !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+                let real_directory = entry
+                    .file_type()
+                    .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink());
+                if valid_name && real_directory {
+                    summaries.push(serde_json::json!({
+                        "id": format!("ward:{name}"),
+                        "name": format!("Ward Agent: {name}"),
+                        "description": format!("Delegatable agent for the existing {name} ward"),
+                    }));
+                }
+            }
+        }
     }
+
+    summaries.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    summaries
 }
 
 /// Helper to collect available skills summary for executor state.
@@ -1698,10 +1798,81 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::Value;
     use std::collections::{BTreeSet, HashMap};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct StubSummaryClient;
 
+    struct SurfaceJourneyLlm {
+        calls: Arc<AtomicUsize>,
+        arguments: Value,
+    }
+
+    #[async_trait]
+    impl LlmClient for SurfaceJourneyLlm {
+        fn model(&self) -> &str {
+            "surface-journey"
+        }
+
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        async fn chat(
+            &self,
+            _messages: Vec<agent_runtime::ChatMessage>,
+            _tools: Option<Value>,
+        ) -> Result<ChatResponse, LlmError> {
+            unreachable!()
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<agent_runtime::ChatMessage>,
+            _tools: Option<Value>,
+            _callback: StreamCallback,
+        ) -> Result<ChatResponse, LlmError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(ChatResponse {
+                    content: String::new(),
+                    tool_calls: Some(vec![agent_runtime::ToolCall::new(
+                        "surface-call".to_string(),
+                        "present_surface".to_string(),
+                        self.arguments.clone(),
+                    )]),
+                    reasoning: None,
+                    usage: None,
+                })
+            } else {
+                Ok(ChatResponse {
+                    content: "canonical answer".to_string(),
+                    tool_calls: None,
+                    reasoning: None,
+                    usage: None,
+                })
+            }
+        }
+    }
+
     struct MockConnectorProvider;
+
+    #[tokio::test]
+    async fn available_agents_include_existing_wards_as_virtual_agents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths: SharedVaultPaths =
+            Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        std::fs::create_dir_all(paths.wards_dir().join("financial-analysis")).unwrap();
+        std::fs::create_dir_all(paths.wards_dir().join(".hidden")).unwrap();
+        let service = gateway_services::AgentService::new(paths.agents_dir());
+
+        let summaries = collect_agents_summary(&service, &paths).await;
+
+        assert!(summaries.iter().any(|agent| {
+            agent["id"] == "ward:financial-analysis"
+                && agent["name"] == "Ward Agent: financial-analysis"
+        }));
+        assert!(!summaries.iter().any(|agent| agent["id"] == "ward:.hidden"));
+    }
 
     #[async_trait]
     impl ConnectorResourceProvider for MockConnectorProvider {
@@ -1860,6 +2031,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        gateway_services::create_ward_from_template(&paths, "financial-analysis")
+            .expect("template ward");
         let mcp_service = McpService::new(paths);
         let mut agent = sample_agent();
         agent.mcps.clear();
@@ -1884,6 +2059,101 @@ mod tests {
         assert_eq!(
             executor.config().initial_state.get("ward_id"),
             Some(&serde_json::Value::String("financial-analysis".to_string()))
+        );
+        let packet = executor
+            .config()
+            .initial_state
+            .get("ward_template")
+            .expect("root template packet");
+        assert_eq!(packet["status"], "available");
+        assert_eq!(packet["session_id"], "session-1");
+        assert_eq!(packet["ward_id"], "financial-analysis");
+        let instruction = executor.config().system_instruction.as_deref().unwrap();
+        assert!(instruction.starts_with(&agent.instructions));
+        assert!(instruction.contains("# Active Ward Template"));
+        assert!(instruction.contains(packet["digest"].as_str().unwrap()));
+        assert!(!executor
+            .config()
+            .initial_state
+            .contains_key("ward_lint_report"));
+    }
+
+    #[tokio::test]
+    async fn invalid_template_is_non_terminal_and_not_injected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        gateway_services::create_ward_from_template(&paths, "broken").expect("ward");
+        std::fs::write(paths.ward_layout_snapshot("broken"), "not: [valid")
+            .expect("corrupt snapshot");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-broken",
+                "session-broken",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("broken"),
+            )
+            .await
+            .expect("template failure must not stop root orchestration");
+
+        assert_eq!(
+            executor.config().initial_state["ward_template"]["status"],
+            "unavailable"
+        );
+        assert_eq!(
+            executor.config().system_instruction.as_deref(),
+            Some(agent.instructions.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn delegated_executor_receives_no_template_packet_or_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        gateway_services::create_ward_from_template(&paths, "existing").expect("ward");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-child",
+                "session-child",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("existing"),
+            )
+            .await
+            .expect("delegated executor");
+
+        assert!(!executor
+            .config()
+            .initial_state
+            .contains_key("ward_template"));
+        assert_eq!(
+            executor.config().system_instruction.as_deref(),
+            Some(agent.instructions.as_str())
         );
     }
 
@@ -2218,6 +2488,303 @@ mod tests {
             .iter()
             .map(|tool| tool.name().to_string())
             .collect()
+    }
+
+    // STUB: AC2, AC3 — valid create/update calls emit bounded surface markers
+    #[tokio::test]
+    async fn present_surface_emits_bounded_create_and_update_markers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::Root)
+            .build_tool_registry(fs_context);
+        let tool = registry
+            .find("present_surface")
+            .expect("root registry must expose present_surface");
+        let ctx: Arc<dyn agent_primitives::ToolContext> =
+            Arc::new(agent_runtime::ToolContext::new());
+        let descriptor = serde_json::json!({
+            "surface_id": "automatic-summary",
+            "components": [{
+                "id": "metric",
+                "type": "MetricCard",
+                "props": {"title": "Total", "value_path": "/value"}
+            }],
+            "data": {"value": 42}
+        });
+
+        let created = tool
+            .execute(ctx.clone(), descriptor.clone())
+            .await
+            .expect("valid descriptor");
+        assert_eq!(created["__work_surface"], true);
+        assert_eq!(created["surface"]["catalog_id"], "zbot/work-surface/v1");
+        assert_eq!(created["surface"]["surface_id"], "automatic-summary");
+
+        let mut update = descriptor;
+        update["update"] = serde_json::json!(true);
+        update["data"]["value"] = serde_json::json!(84);
+        let updated = tool
+            .execute(ctx, update)
+            .await
+            .expect("valid update descriptor");
+        assert_eq!(updated["__work_surface_updated"], true);
+        assert_eq!(updated["surface"]["data"]["value"], 84);
+        assert!(updated.get("__work_surface").is_none());
+    }
+
+    #[tokio::test]
+    async fn real_present_surface_tool_reaches_validated_gateway_events() {
+        for (update, valid) in [(false, true), (true, true), (false, false)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+            let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+                .with_actor_kind(RuntimeActorKind::Root)
+                .build_tool_registry(fs_context);
+            let arguments = if valid {
+                serde_json::json!({
+                    "surface_id": "integrated-surface",
+                    "components": [{
+                        "id": "metric",
+                        "type": "MetricCard",
+                        "props": {"value_path": "/value"}
+                    }],
+                    "data": {"value": 42},
+                    "update": update
+                })
+            } else {
+                serde_json::json!({
+                    "surface_id": "integrated-surface",
+                    "components": [{
+                        "id": "approval",
+                        "type": "ApprovalGate",
+                        "props": {"action_id": "inspect", "target": "private"}
+                    }],
+                    "data": {}
+                })
+            };
+            let config =
+                agent_runtime::ExecutorConfig::new("root".into(), "test".into(), "test".into());
+            let executor = agent_runtime::AgentExecutor::new(
+                config,
+                Arc::new(SurfaceJourneyLlm {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    arguments,
+                }),
+                registry,
+                Arc::new(agent_runtime::McpManager::new()),
+                Arc::new(agent_runtime::MiddlewarePipeline::new()),
+            )
+            .expect("executor");
+            let mut runtime_events = Vec::new();
+            executor
+                .execute_stream("show the metrics", &[], |event| runtime_events.push(event))
+                .await
+                .expect("execution");
+            let gateway_events = runtime_events
+                .into_iter()
+                .filter_map(|event| {
+                    crate::events::convert_stream_event(
+                        event,
+                        "root",
+                        "conversation",
+                        "session",
+                        "execution",
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let has_created = gateway_events.iter().any(|event| {
+                matches!(
+                    event,
+                    gateway_events::GatewayEvent::SurfaceCreated { surface, .. }
+                        if surface.surface_id == "integrated-surface"
+                )
+            });
+            let has_updated = gateway_events.iter().any(|event| {
+                matches!(
+                    event,
+                    gateway_events::GatewayEvent::SurfaceUpdated { surface, .. }
+                        if surface.surface_id == "integrated-surface"
+                )
+            });
+            assert_eq!(has_created, valid && !update);
+            assert_eq!(has_updated, valid && update);
+        }
+    }
+
+    // STUB: AC5, AC9, AC11 — reject actions/executable fields without payload echo
+    #[tokio::test]
+    async fn present_surface_rejects_actionable_or_executable_descriptors_without_echo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::Root)
+            .build_tool_registry(fs_context);
+        let tool = registry
+            .find("present_surface")
+            .expect("root registry must expose present_surface");
+        let ctx: Arc<dyn agent_primitives::ToolContext> =
+            Arc::new(agent_runtime::ToolContext::new());
+        let rejected = [
+            serde_json::json!({
+                "surface_id": "actionable",
+                "components": [{
+                    "id": "approval",
+                    "type": "ApprovalGate",
+                    "props": {"action_id": "inspect", "target": "secret-target"}
+                }],
+                "data": {}
+            }),
+            serde_json::json!({
+                "surface_id": "executable",
+                "components": [{
+                    "id": "metric",
+                    "type": "MetricCard",
+                    "props": {
+                        "value_path": "/value",
+                        "url": "https://secret.invalid",
+                        "html": "<script>secret-payload</script>",
+                        "code": "secret-code",
+                        "action": "secret-action"
+                    }
+                }],
+                "data": {"value": "secret-value"}
+            }),
+            serde_json::json!({
+                "surface_id": "malformed-pointer",
+                "components": [{
+                    "id": "metric",
+                    "type": "MetricCard",
+                    "props": {"value_path": "not-a-json-pointer"}
+                }],
+                "data": {"value": "secret-value"}
+            }),
+            serde_json::json!({
+                "surface_id": "oversized",
+                "components": [{
+                    "id": "metric",
+                    "type": "MetricCard",
+                    "props": {"value_path": "/value"}
+                }],
+                "data": {"value": "secret-value".repeat(10_000)}
+            }),
+            serde_json::json!({
+                "surface_id": "unknown-component",
+                "components": [{
+                    "id": "unknown",
+                    "type": "RemoteIframe",
+                    "props": {}
+                }],
+                "data": {}
+            }),
+        ];
+
+        for descriptor in rejected {
+            let error = tool
+                .execute(ctx.clone(), descriptor)
+                .await
+                .expect_err("actionable/executable descriptor must fail")
+                .to_string();
+            assert!(error.len() <= 256, "tool errors must remain bounded");
+            for secret in [
+                "secret-target",
+                "secret.invalid",
+                "secret-payload",
+                "secret-code",
+                "secret-action",
+                "secret-value",
+            ] {
+                assert!(!error.contains(secret), "error echoed rejected payload");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_present_surface_does_not_block_canonical_response() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::Root)
+            .build_tool_registry(fs_context);
+        let present = registry
+            .find("present_surface")
+            .expect("root registry must expose present_surface");
+        let respond = registry
+            .find("respond")
+            .expect("root registry must retain respond");
+        let ctx = Arc::new(agent_runtime::ToolContext::new());
+
+        present
+            .execute(
+                ctx.clone(),
+                serde_json::json!({
+                    "surface_id": "invalid",
+                    "components": [{
+                        "id": "approval",
+                        "type": "ApprovalGate",
+                        "props": {"action_id": "inspect", "target": "private"}
+                    }],
+                    "data": {}
+                }),
+            )
+            .await
+            .expect_err("invalid surface must fail closed");
+
+        respond
+            .execute(
+                ctx.clone(),
+                serde_json::json!({"message": "The canonical answer remains available."}),
+            )
+            .await
+            .expect("respond must remain available");
+        let actions = agent_primitives::ToolContext::actions(ctx.as_ref());
+        let response = actions.respond.expect("respond action");
+        assert_eq!(response.message, "The canonical answer remains available.");
+    }
+
+    // STUB: AC6, AC9 — presentation is limited to user-facing actors
+    #[test]
+    fn present_surface_is_limited_to_user_facing_actors() {
+        assert_has(
+            &registry_names(RuntimeActorKind::Root),
+            &["present_surface"],
+        );
+        assert_has(
+            &registry_names(RuntimeActorKind::WardAgent),
+            &["present_surface"],
+        );
+        assert_missing(
+            &registry_names(RuntimeActorKind::DelegatedExecutor),
+            &["present_surface"],
+        );
+        assert_missing(
+            &registry_names(RuntimeActorKind::DelegatedReviewer),
+            &["present_surface"],
+        );
+
+        let catalog = catalog_for_actor(RuntimeActorKind::Root);
+        let capability = catalog_capability(&catalog, "present_surface");
+        assert_eq!(capability.side_effects, ContextSideEffects::WriteLocal);
+        assert_eq!(capability.risk_level, ContextRiskLevel::Low);
+        assert!(capability.default_visible);
+        let description = capability.description.to_ascii_lowercase();
+        for required in [
+            "use when",
+            "do not use",
+            "canonical response",
+            "secrets",
+            "system prompts",
+            "developer instructions",
+            "hidden reasoning",
+            "unrelated connector",
+            "unrelated tool data",
+        ] {
+            assert!(
+                description.contains(required),
+                "present_surface guidance must mention {required}"
+            );
+        }
     }
 
     #[test]

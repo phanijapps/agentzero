@@ -44,6 +44,19 @@ pub struct AppSettings {
     /// portable semantic intent only; provisioning stays outside the gateway.
     #[serde(default)]
     pub commissioning: CommissioningSettings,
+
+    /// Display-only work-surface presentation preferences.
+    #[serde(default)]
+    pub presentation: PresentationSettings,
+}
+
+/// Live presentation settings persisted in `settings.json`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationSettings {
+    /// Save validated display-only surfaces and restore them on session load.
+    #[serde(default)]
+    pub persist_surfaces: bool,
 }
 
 /// Durable readiness state for the Agent Commissioning flow.
@@ -641,6 +654,19 @@ impl SettingsService {
         settings.execution = execution_settings;
         self.save(&settings)
     }
+
+    pub fn get_presentation_settings(&self) -> Result<PresentationSettings, String> {
+        Ok(self.load()?.presentation)
+    }
+
+    pub fn update_presentation_settings(
+        &self,
+        presentation: PresentationSettings,
+    ) -> Result<(), String> {
+        let mut settings = self.load().unwrap_or_default();
+        settings.presentation = presentation;
+        self.save(&settings)
+    }
 }
 
 #[cfg(test)]
@@ -663,6 +689,41 @@ mod tests {
             settings.commissioning.semantic_profile.base_pack_ids,
             ["zbot.base:v1", "zbot.general:v1"]
         );
+        // STUB: AC3/AC6 — persistence is an explicit typed opt-in.
+        let serialized = serde_json::to_value(&settings).unwrap();
+        assert_eq!(
+            serialized["presentation"]["persistSurfaces"].as_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn presentation_settings_round_trip_preserves_unrelated_settings() {
+        // STUB: AC3/AC6 — typed presentation updates keep other config intact.
+        let dir = tempdir().unwrap();
+        let service = SettingsService::from_vault_dir(dir.path().to_path_buf());
+        let config_dir = dir.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("settings.json"),
+            r#"{
+              "presentation": {"persistSurfaces": true},
+              "thirdParty": {"keep": "yes"}
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = service.load().unwrap();
+        let serialized = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(
+            serialized["presentation"]["persistSurfaces"].as_bool(),
+            Some(true)
+        );
+        service.save(&loaded).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config_dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(raw["thirdParty"]["keep"].as_str(), Some("yes"));
     }
 
     #[test]

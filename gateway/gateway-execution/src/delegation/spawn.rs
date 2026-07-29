@@ -386,7 +386,7 @@ pub async fn spawn_delegated_agent(
     }
 
     // Collect available agents and skills for executor state
-    let available_agents = collect_agents_summary(&agent_service).await;
+    let available_agents = collect_agents_summary(&agent_service, &paths).await;
     let available_skills = collect_skills_summary(&skill_service).await;
 
     // Get tool settings
@@ -1237,7 +1237,6 @@ struct HandleExecutionSuccess<'a> {
     fact_store_for_ctx: Option<&'a Arc<dyn zbot_stores::MemoryFactStore>>,
 }
 
-/// Handle successful execution completion.
 async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     let HandleExecutionSuccess {
         messages,
@@ -1313,7 +1312,6 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     // Check if this was the last delegation and continuation is needed
     match state_service.complete_delegation(session_id) {
         Ok(true) => {
-            // Get root execution for continuation
             if let Ok(Some(root_exec)) = state_service.get_root_execution(session_id) {
                 event_bus
                     .publish(GatewayEvent::SessionContinuationReady {
@@ -1463,6 +1461,7 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
                     .await;
                 tracing::info!(
                     session_id = %session_id,
+                    root_execution_id = %root_exec.id,
                     "All delegations complete (including failed), continuation ready"
                 );
             }

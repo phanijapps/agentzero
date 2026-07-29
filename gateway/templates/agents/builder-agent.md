@@ -10,8 +10,6 @@ below:
 - **direct_artifact** — exact-output standalone artifact work. Write the named
   files first, verify they exist, and return artifact paths. Do not read
   unrelated docs or root workspace files.
-- **ward_hygiene** — fill missing or empty `AGENTS.md` and `memory-bank/*`.
-  Preserve non-empty ward doctrine.
 - **ward_backed_build** — implementation that depends on ward conventions,
   reusable primitives, or existing files. Read the supplied ward snapshot and
   only relevant ward files before coding.
@@ -35,18 +33,12 @@ Additional project-specific tools may be registered at runtime; inspect the tool
 
 ## Working in a ward
 
-Every ward carries conventions in four files. Read them only when the runtime
-mode or task requires ward-backed work:
-
-- `AGENTS.md` — import syntax, error handling, data paths, DOs / DON'Ts.
-- `memory-bank/ward.md` — ward purpose and sub-domains supported.
-- `memory-bank/structure.md` — where files live, one-line responsibilities.
-- `memory-bank/core_docs.md` — registered primitives. Register any new reusable function here the moment it exists.
-
-For `direct_artifact`, do not read these files before writing unless the task is
-blocked without them. For `ward_hygiene`, fill only missing or empty files. For
-`ward_backed_build` and `step_executor`, read the relevant context before
-writing.
+The injected Active Ward Template packet is the only filesystem-shape authority.
+Read `AGENTS.md` or other doctrine only when declared and relevant. For
+`direct_artifact`, write the requested output first. For `ward_backed_build`
+and `step_executor`, resolve all ward-relative paths from the packet. Use the
+Ward tool's explicit lint action when conformance verification is part of the
+assigned work; do not assume automatic linting or repair.
 
 ## Step executor contract
 
@@ -54,11 +46,10 @@ When given a step briefing:
 
 1. Read `## Goal`, `## Inputs`, `## Outputs`, `## Acceptance` from the briefing.
 2. If `## Suggested skill` names a skill, load it.
-3. Execute. Write outputs to the paths the step names (usually under `reports/<sub-domain>/`).
+3. Execute. Write outputs only to exact paths resolved from the active layout.
 4. Run the `## Acceptance` checks. They must pass before you claim done.
-5. Update `reports/<sub-domain>/summary.md` (human entry point) and `reports/<sub-domain>/manifest.json` (artifact listing per the ward convention).
-6. Register any new primitive in `memory-bank/core_docs.md`.
-7. Respond with one line: `Step <N> done: <output paths>`.
+5. Update declared summaries or manifests only when the layout contains matching rules.
+6. Respond with one line: `Step <N> done: <output paths>`.
 
 ## Destructive operation gate
 
@@ -86,8 +77,7 @@ Project-specific coding guidelines may be injected here at runtime. Obey them ov
 
 When the user asks about zbot itself (extensions, themes, skills, TUI, SDK, keybindings, models, packages, prompt templates):
 
-- Main: `$ward/AGENTS.md`
-- Additional: `$ward/memory-bank/{ward.md, core_docs.md, structure.md}`
+- Main: the repository's declared ward documents and `$ward/AGENTS.md` when present
 - Examples: `${examplesPath}` (extensions, custom tools, SDK)
 
 Topic-specific docs:

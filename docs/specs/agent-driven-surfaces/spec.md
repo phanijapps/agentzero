@@ -82,9 +82,11 @@ artifacts, and structured outcome unchanged.
 - [ ] Given a surface requests a write-capable or external action, when no
   separately approved gateway action exists, the request cannot invoke a tool,
   shell command, HTTP endpoint, or filesystem operation.
-- [ ] Given a research decision result, when it is rendered, the initial catalog
+- [ ] Given a research decision result, when it is rendered, the base catalog
   supports `DecisionMatrix`, `EvidenceTable`, `AssumptionRegister`,
-  `PlanChecklist`, `ApprovalGate`, and read-only `OpenLoops`.
+  `PlanChecklist`, `ApprovalGate`, and read-only `OpenLoops`; approved additive
+  display components are specified by
+  [`a2ui-component-catalog`](../a2ui-component-catalog/spec.md).
 - [ ] Given additive surface events are disabled or a client does not advertise
   support, when normal sessions and WebSocket consumers run, existing event and
   UI behavior remains compatible.
@@ -106,9 +108,11 @@ artifacts, and structured outcome unchanged.
 - Product: React remains the stable application shell; A2UI is an optional
   presentation projection for agent-produced work (source: user confirmation
   2026-07-10).
-- Product: the first catalog contains only the six named decision/approval
-  components and server-allowlisted actions (source: user confirmation
-  2026-07-10).
+- Product: the first catalog delivery contained only the six named
+  decision/approval components and server-allowlisted actions; the approved
+  additive display expansion is governed by
+  [`a2ui-component-catalog`](../a2ui-component-catalog/spec.md) (source: user
+  confirmations 2026-07-10 and 2026-07-28).
 - Product: native gateway integration is the initial delivery; an MCP adapter is
   a deferred interoperability concern rather than the execution path (source:
   user confirmation 2026-07-10).

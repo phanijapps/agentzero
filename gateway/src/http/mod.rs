@@ -49,16 +49,71 @@ use crate::config::GatewayConfig;
 use crate::state::AppState;
 use crate::websocket::{axum_ws_upgrade_handler, WebSocketHandler};
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, FromRequestParts},
+    http::{header, request::Parts, StatusCode},
     routing::{delete, get, post, put},
-    Extension, Router,
+    Extension, Json, Router,
 };
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+#[derive(Debug, Serialize)]
+pub(super) struct HttpErrorResponse {
+    pub error: String,
+}
+
+/// Browser-origin guard for settings and saved-surface persistence endpoints.
+///
+/// Native clients omit Origin and inherit the gateway's configured
+/// single-owner reachability boundary. Browser callers must be same-origin.
+pub(super) struct SameOrigin;
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for SameOrigin
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<HttpErrorResponse>);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if same_origin_or_native(&parts.headers) {
+            Ok(Self)
+        } else {
+            Err((
+                StatusCode::FORBIDDEN,
+                Json(HttpErrorResponse {
+                    error: "origin is not allowed".to_owned(),
+                }),
+            ))
+        }
+    }
+}
+
+fn same_origin_or_native(headers: &axum::http::HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    origin
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<axum::http::Uri>().ok())
+        .and_then(|uri| {
+            uri.authority()
+                .map(|authority| authority.as_str().to_owned())
+        })
+        .zip(
+            headers
+                .get(header::HOST)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+        )
+        .is_some_and(|(origin_authority, host)| origin_authority.eq_ignore_ascii_case(&host))
+}
 
 /// Create the HTTP router with all endpoints.
 ///
@@ -125,6 +180,14 @@ pub fn create_http_router(
         )
         .route("/api/autonomy/:id", get(autonomy::get_item))
         .route("/api/surfaces/actions", post(surfaces::invoke_action))
+        .route(
+            "/api/sessions/:session_id/surfaces",
+            get(surfaces::list_saved_session_surfaces),
+        )
+        .route(
+            "/api/surfaces/saved",
+            delete(surfaces::clear_saved_surfaces),
+        )
         .route(
             "/api/autonomy/:id/transition",
             post(autonomy::transition_item),
@@ -237,6 +300,10 @@ pub fn create_http_router(
         .route(
             "/api/settings/execution",
             put(settings::update_execution_settings),
+        )
+        .route(
+            "/api/settings/presentation",
+            get(settings::get_presentation_settings).put(settings::update_presentation_settings),
         )
         .route("/api/settings/network", get(settings::get_network_settings))
         .route(
@@ -472,4 +539,31 @@ pub fn create_http_router(
         .layer(Extension(ws_handler))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+#[cfg(test)]
+mod same_origin_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn same_origin_guard_accepts_native_and_matching_host_only() {
+        // STUB: AC8 — guard semantics are explicit and fail closed.
+        assert!(same_origin_or_native(&HeaderMap::new()));
+
+        let mut matching = HeaderMap::new();
+        matching.insert(header::HOST, HeaderValue::from_static("zbot.local:18791"));
+        matching.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://zbot.local:18791"),
+        );
+        assert!(same_origin_or_native(&matching));
+
+        let mut foreign = matching;
+        foreign.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://attacker.example"),
+        );
+        assert!(!same_origin_or_native(&foreign));
+    }
 }

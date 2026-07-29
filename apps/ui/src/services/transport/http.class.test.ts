@@ -280,6 +280,15 @@ describe('HttpTransport — path-id encoding', () => {
     expect(url).toBe(`${HTTP}/api/sessions/sess%20%20with%20%20spaces`);
     expect(init.method).toBe('DELETE');
   });
+
+  it('encodes session ids when listing saved surfaces', async () => {
+    fetchMock.mockResolvedValue(mockResponse({ body: [] }));
+    const t = newTransport();
+    await t.listSavedSessionSurfaces('session/with?syntax');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${HTTP}/api/sessions/session%2Fwith%3Fsyntax/surfaces`);
+    expect(init.method).toBe('GET');
+  });
 });
 
 // ===========================================================================
@@ -537,6 +546,39 @@ describe('HttpTransport — settings envelope', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body)).toEqual({ fileTools: false });
+  });
+
+  it('gets and updates presentation settings through the settings envelope', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({
+        body: { success: true, data: { persistSurfaces: false, restartRequired: false } },
+      }))
+      .mockResolvedValueOnce(mockResponse({
+        body: { success: true, data: { persistSurfaces: true, restartRequired: false } },
+      }));
+    const t = newTransport();
+
+    const before = await t.getPresentationSettings();
+    const after = await t.updatePresentationSettings({ persistSurfaces: true });
+
+    expect(before.data).toEqual({ persistSurfaces: false, restartRequired: false });
+    expect(after.data).toEqual({ persistSurfaces: true, restartRequired: false });
+    expect(fetchMock.mock.calls[0][0]).toBe(`${HTTP}/api/settings/presentation`);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT' });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ persistSurfaces: true });
+  });
+
+  it('clears saved surfaces with the fixed confirmation body', async () => {
+    fetchMock.mockResolvedValue(mockResponse({ body: { deletedCount: 3 } }));
+    const t = newTransport();
+
+    const result = await t.clearSavedSurfaces();
+
+    expect(result).toEqual({ success: true, data: { deletedCount: 3 } });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${HTTP}/api/surfaces/saved`);
+    expect(init.method).toBe('DELETE');
+    expect(JSON.parse(init.body)).toEqual({ confirmation: 'clear_saved_infographics' });
   });
 });
 

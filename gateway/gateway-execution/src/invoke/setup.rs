@@ -5,7 +5,10 @@
 use crate::delegation::DelegationMode;
 use agent_tools::ToolSettings;
 use gateway_services::providers::Provider;
-use gateway_services::{AgentService, ProviderService, SettingsService, SharedVaultPaths};
+use gateway_services::{
+    load_bounded_vault_utf8_file, AgentService, BoundedFileError, ProviderService, SettingsService,
+    SharedVaultPaths, WARD_AGENT_TEMPLATE_MAX_BYTES,
+};
 use std::sync::Arc;
 
 // ============================================================================
@@ -341,7 +344,7 @@ impl<'a> AgentLoader<'a> {
             ));
         }
 
-        let doctrine = std::fs::read_to_string(ward_dir.join("AGENTS.md")).unwrap_or_default();
+        let loaded_doctrine = load_ward_doctrine(&self.paths, ward_name);
 
         let mut identity = format!(
             "You are the `{ward}` ward-agent — you own the `{ward}` domain end \
@@ -371,8 +374,17 @@ impl<'a> AgentLoader<'a> {
              partial result — call `respond` with a single line: \
              `RESULT: CAPABILITY_MISSING — <the missing capability>`.\n",
         );
-        let instructions =
-            compose_ward_agent_instructions(&identity, &self.paths, ward_name, &doctrine);
+        if let Some(diagnostic) = loaded_doctrine.diagnostic {
+            identity.push('\n');
+            identity.push_str(diagnostic);
+            identity.push('\n');
+        }
+        let instructions = compose_ward_agent_instructions(
+            &identity,
+            &self.paths,
+            ward_name,
+            &loaded_doctrine.doctrine,
+        );
 
         // Ward-agent LLM config resolves in three tiers: the ward's own
         // `config.yaml` overrides the orchestrator (Settings > Advanced >
@@ -426,7 +438,7 @@ impl<'a> AgentLoader<'a> {
         tracing::info!(
             ward = ward_name,
             instructions_bytes = agent.instructions.len(),
-            doctrine_bytes = doctrine.len(),
+            doctrine_bytes = loaded_doctrine.doctrine.len(),
             "Synthesized ward-agent for delegation"
         );
         Ok((agent, provider))
@@ -552,15 +564,10 @@ fn executor_rules(mode: DelegationMode) -> &'static str {
             Create the exact requested output files first. Do not read unrelated documentation or root workspace docs.\n\
             Use write_file/edit_file/shell as needed, verify the files exist, and respond with artifact paths, commands run, and errors.\n"
         }
-        DelegationMode::WardHygiene => {
-            "\n\n# RULES: ward_hygiene\n\
-            Enter the ward and fill only missing or empty AGENTS.md and memory-bank/{ward.md,structure.md,core_docs.md} files.\n\
-            Preserve non-empty ward doctrine. Respond with updated paths, checks run, and errors.\n"
-        }
         DelegationMode::WardBackedBuild => {
             "\n\n# RULES: ward_backed_build\n\
             Read the supplied ward_snapshot and only the relevant ward files before coding. Reuse registered primitives before creating new ones.\n\
-            Execute with write_file/edit_file/shell and update memory-bank/core_docs.md only for new reusable primitives or changed reusable structure.\n\
+            Execute with write_file/edit_file/shell and follow the exact paths supplied in the delegated task.\n\
             Respond with files changed, commands run, memory updates, and errors.\n"
         }
         DelegationMode::StepExecutor => {
@@ -682,6 +689,45 @@ fn compose_ward_agent_instructions(
         ));
     }
     instructions
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LoadedWardDoctrine {
+    doctrine: String,
+    diagnostic: Option<&'static str>,
+}
+
+const DOCTRINE_TOO_LARGE: &str = "[WARD_DOCTRINE_UNAVAILABLE:too_large] Ward doctrine was not loaded. Ask the user to repair AGENTS.md.";
+const DOCTRINE_INVALID_UTF8: &str = "[WARD_DOCTRINE_UNAVAILABLE:invalid_utf8] Ward doctrine was not loaded. Ask the user to repair AGENTS.md.";
+const DOCTRINE_UNSAFE_FILE: &str = "[WARD_DOCTRINE_UNAVAILABLE:unsafe_file] Ward doctrine was not loaded. Ask the user to repair AGENTS.md.";
+const DOCTRINE_IO_ERROR: &str = "[WARD_DOCTRINE_UNAVAILABLE:io_error] Ward doctrine was not loaded. Ask the user to repair AGENTS.md.";
+
+fn load_ward_doctrine(paths: &SharedVaultPaths, ward_name: &str) -> LoadedWardDoctrine {
+    match load_bounded_vault_utf8_file(
+        paths.vault_dir(),
+        &["wards", ward_name, "AGENTS.md"],
+        WARD_AGENT_TEMPLATE_MAX_BYTES,
+    ) {
+        Ok(doctrine) => LoadedWardDoctrine {
+            doctrine,
+            diagnostic: None,
+        },
+        Err(BoundedFileError::Missing) => LoadedWardDoctrine::default(),
+        Err(error) => {
+            let (code, diagnostic) = match error {
+                BoundedFileError::TooLarge => ("too_large", DOCTRINE_TOO_LARGE),
+                BoundedFileError::InvalidUtf8 => ("invalid_utf8", DOCTRINE_INVALID_UTF8),
+                BoundedFileError::Unsafe => ("unsafe_file", DOCTRINE_UNSAFE_FILE),
+                BoundedFileError::Io(_) => ("io_error", DOCTRINE_IO_ERROR),
+                BoundedFileError::Missing => unreachable!("missing handled above"),
+            };
+            tracing::warn!(ward = ward_name, code, "Ward doctrine rejected");
+            LoadedWardDoctrine {
+                doctrine: String::new(),
+                diagnostic: Some(diagnostic),
+            }
+        }
+    }
 }
 
 /// Per-ward LLM config from `wards/<ward>/config.yaml`. Each `None` field
@@ -885,11 +931,15 @@ mod tests {
             "You are the maritime ward-agent.",
             &paths,
             "maritime",
-            "## Purpose\nVessel tracking.",
+            "## Identity\nPersistent maritime steward.\n\n## Persona\nEvidence-led and explicit about uncertainty.\n\n## Self-Maintenance\nPropose durable doctrine changes and edit only with explicit user direction.",
         );
         assert!(out.starts_with("You are the maritime ward-agent."));
         assert!(out.contains("# --- WARD DOCTRINE: maritime ---"));
-        assert!(out.contains("Vessel tracking."));
+        assert!(out.contains("Persistent maritime steward."));
+        assert!(out.contains("Evidence-led and explicit about uncertainty."));
+        assert!(out.contains(
+            "Propose durable doctrine changes and edit only with explicit user direction."
+        ));
     }
 
     #[test]
@@ -900,5 +950,132 @@ mod tests {
         paths.ensure_dirs_exist().unwrap();
         let out = compose_ward_agent_instructions("identity line", &paths, "maritime", "   ");
         assert!(!out.contains("WARD DOCTRINE"));
+    }
+
+    // STUB: AC5
+    #[test]
+    fn load_ward_doctrine_preserves_complete_valid_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths: SharedVaultPaths =
+            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        paths.ensure_dirs_exist().unwrap();
+        let ward = paths.ward_dir("maritime");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("AGENTS.md"), "  exact doctrine\nbody  \n").unwrap();
+
+        let loaded = load_ward_doctrine(&paths, "maritime");
+        assert_eq!(loaded.doctrine, "  exact doctrine\nbody  \n");
+        assert!(loaded.diagnostic.is_none());
+        let out = compose_ward_agent_instructions("identity", &paths, "maritime", &loaded.doctrine);
+        assert!(out.contains("# --- WARD DOCTRINE: maritime ---\n\nexact doctrine\nbody\n"));
+    }
+
+    // STUB: AC6
+    #[test]
+    fn load_ward_doctrine_rejects_oversized_without_partial_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths: SharedVaultPaths =
+            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        paths.ensure_dirs_exist().unwrap();
+        let ward = paths.ward_dir("oversized");
+        std::fs::create_dir_all(&ward).unwrap();
+        let payload = "secret-marker".repeat(2048);
+        std::fs::write(ward.join("AGENTS.md"), &payload).unwrap();
+
+        let loaded = load_ward_doctrine(&paths, "oversized");
+        assert!(loaded.doctrine.is_empty());
+        let diagnostic = loaded.diagnostic.expect("fixed diagnostic");
+        assert!(diagnostic.is_ascii());
+        assert!(diagnostic.len() <= 160);
+        assert!(diagnostic.contains("WARD_DOCTRINE_UNAVAILABLE:too_large"));
+        assert!(!diagnostic.contains("secret-marker"));
+        assert!(!diagnostic.contains('/'));
+    }
+
+    // STUB: AC7
+    #[test]
+    fn load_ward_doctrine_treats_missing_as_empty_without_diagnostic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths: SharedVaultPaths =
+            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        paths.ensure_dirs_exist().unwrap();
+        std::fs::create_dir_all(paths.ward_dir("empty")).unwrap();
+
+        let loaded = load_ward_doctrine(&paths, "empty");
+        assert!(loaded.doctrine.is_empty());
+        assert!(loaded.diagnostic.is_none());
+    }
+
+    // STUB: AC6
+    #[cfg(unix)]
+    #[test]
+    fn load_ward_doctrine_rejects_symlink_hardlink_special_and_non_utf8() {
+        use std::os::unix::fs::symlink;
+
+        for case in ["symlink", "hardlink", "fifo", "non-utf8"] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let paths: SharedVaultPaths =
+                Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+            paths.ensure_dirs_exist().unwrap();
+            let ward = paths.ward_dir(case);
+            std::fs::create_dir_all(&ward).unwrap();
+            let doctrine = ward.join("AGENTS.md");
+            match case {
+                "symlink" => {
+                    let source = tmp.path().join("outside.md");
+                    std::fs::write(&source, "secret-symlink").unwrap();
+                    symlink(source, &doctrine).unwrap();
+                }
+                "hardlink" => {
+                    let source = tmp.path().join("outside.md");
+                    std::fs::write(&source, "secret-hardlink").unwrap();
+                    std::fs::hard_link(source, &doctrine).unwrap();
+                }
+                "fifo" => {
+                    assert!(std::process::Command::new("mkfifo")
+                        .arg(&doctrine)
+                        .status()
+                        .unwrap()
+                        .success());
+                }
+                "non-utf8" => std::fs::write(&doctrine, [0xff, 0xfe]).unwrap(),
+                _ => unreachable!(),
+            }
+
+            let loaded = load_ward_doctrine(&paths, case);
+            assert!(loaded.doctrine.is_empty(), "case {case}");
+            let diagnostic = loaded.diagnostic.expect("fixed diagnostic");
+            assert!(diagnostic.is_ascii(), "case {case}");
+            assert!(diagnostic.len() <= 160, "case {case}");
+            assert!(!diagnostic.contains("secret"), "case {case}");
+            assert!(!diagnostic.contains('/'), "case {case}");
+        }
+    }
+
+    #[test]
+    fn scaffolded_ward_persona_is_preserved_as_synthesized_doctrine() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths: SharedVaultPaths =
+            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        paths.ensure_dirs_exist().unwrap();
+        gateway_services::seed_default_ward_layout_template(&paths).unwrap();
+        gateway_services::seed_default_ward_agent_template(&paths).unwrap();
+        let created = gateway_services::create_ward_from_template(&paths, "market-research")
+            .expect("scaffold ward");
+        let doctrine = std::fs::read_to_string(created.path.join("AGENTS.md")).unwrap();
+
+        let out = compose_ward_agent_instructions(
+            "You are the market-research ward-agent.",
+            &paths,
+            "market-research",
+            &doctrine,
+        );
+
+        assert!(out.contains("# --- WARD DOCTRINE: market-research ---"));
+        assert!(out.contains("# Market Research Ward Agent"));
+        assert!(out.contains("## Identity"));
+        assert!(out.contains("## Persona"));
+        assert!(out.contains("## Self-Maintenance"));
+        assert!(out.contains("Never delete or rewrite existing persona text"));
     }
 }

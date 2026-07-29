@@ -73,11 +73,14 @@ pub use tools::{
     UnifiedRecallRequest,
     UnifiedRecallResponse,
     UpdatePlanTool,
+    WardLayoutAccess,
+    WardLayoutState,
     // Orchestrator tools
     WardTool,
     // Ward-curator observer trait (see gateway/gateway-execution/.../ward_usage_adapter.rs)
     WardUsageAccess,
     WriteFileTool,
+    ensure_ward_catalog,
     recall_parameters_schema,
 };
 

@@ -23,6 +23,7 @@ const transportMock = {
   initChatSession: vi.fn(),
   getSessionMessages: vi.fn(),
   listSessionArtifacts: vi.fn(),
+  listSavedSessionSurfaces: vi.fn(),
   subscribeConversation: vi.fn(),
   executeAgent: vi.fn(),
   stopAgent: vi.fn(),
@@ -47,6 +48,7 @@ beforeEach(() => {
   // Sensible defaults — individual tests override.
   transportMock.subscribeConversation.mockReturnValue(() => {});
   transportMock.listSessionArtifacts.mockResolvedValue({ success: true, data: [] });
+  transportMock.listSavedSessionSurfaces.mockResolvedValue({ success: true, data: [] });
 });
 
 afterEach(() => {
@@ -67,6 +69,31 @@ describe("useQuickChat — bootstrap", () => {
     expect(result.current.state.messages).toEqual([]);
     // No history fetch on a brand-new session.
     expect(transportMock.getSessionMessages).not.toHaveBeenCalled();
+  });
+
+  it("hydrates saved surfaces once for an existing session", async () => {
+    // STUB: AC4 — refresh restores the bounded server snapshot.
+    transportMock.initChatSession.mockResolvedValue({
+      success: true,
+      data: { sessionId: "s-saved", conversationId: "c-saved", created: false },
+    });
+    transportMock.getSessionMessages.mockResolvedValue({ success: true, data: [] });
+    const saved = {
+      surface_id: "surface-saved",
+      catalog_id: "zbot/work-surface/v1",
+      components: [],
+      data: {},
+    };
+    transportMock.listSavedSessionSurfaces.mockResolvedValue({
+      success: true,
+      data: [saved],
+    });
+
+    const { result } = renderHook(() => useQuickChat());
+
+    await waitFor(() => expect(result.current.state.sessionId).toBe("s-saved"));
+    expect(result.current.surfaces).toEqual([saved]);
+    expect(transportMock.listSavedSessionSurfaces).toHaveBeenCalledWith("s-saved");
   });
 
   it("hydrates from history + artifacts when the session already exists", async () => {
@@ -186,6 +213,37 @@ describe("useQuickChat — WS subscription lifecycle", () => {
     await waitFor(() => expect(transportMock.subscribeConversation).toHaveBeenCalled());
     unmount();
     await waitFor(() => expect(unsubscribe).toHaveBeenCalled());
+  });
+
+  it("replaces an existing surface when surface_updated arrives", async () => {
+    transportMock.initChatSession.mockResolvedValue({
+      success: true,
+      data: { sessionId: "s1", conversationId: "c1", created: true },
+    });
+
+    const { result } = renderHook(() => useQuickChat());
+    await waitFor(() => expect(transportMock.subscribeConversation).toHaveBeenCalled());
+    const subscription = transportMock.subscribeConversation.mock.calls[0][1] as {
+      onEvent: (event: Record<string, unknown>) => void;
+    };
+    const descriptor = {
+      surface_id: "surface-1",
+      catalog_id: "zbot/work-surface/v1",
+      components: [],
+      data: { value: 1 },
+    };
+
+    act(() => {
+      subscription.onEvent({ type: "surface_created", surface: descriptor });
+      subscription.onEvent({
+        type: "surface_updated",
+        surface: { ...descriptor, data: { value: 2 } },
+      });
+    });
+
+    expect(result.current.surfaces).toEqual([
+      expect.objectContaining({ surface_id: "surface-1", data: { value: 2 } }),
+    ]);
   });
 });
 
@@ -307,6 +365,21 @@ describe("useQuickChat — clearSession", () => {
 
     const { result } = renderHook(() => useQuickChat());
     await waitFor(() => expect(result.current.state.sessionId).toBe("s1"));
+    const subscription = transportMock.subscribeConversation.mock.calls[0][1] as {
+      onEvent: (event: Record<string, unknown>) => void;
+    };
+    act(() => {
+      subscription.onEvent({
+        type: "surface_created",
+        surface: {
+          surface_id: "old-surface",
+          catalog_id: "zbot/work-surface/v1",
+          components: [],
+          data: {},
+        },
+      });
+    });
+    expect(result.current.surfaces).toHaveLength(1);
 
     await act(async () => {
       await result.current.clearSession();
@@ -314,6 +387,7 @@ describe("useQuickChat — clearSession", () => {
 
     expect(transportMock.deleteChatSession).toHaveBeenCalled();
     await waitFor(() => expect(result.current.state.sessionId).toBe("s2"));
+    expect(result.current.surfaces).toEqual([]);
   });
 
   it("dispatches ERROR when deleteChatSession fails", async () => {

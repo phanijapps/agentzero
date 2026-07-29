@@ -1,13 +1,13 @@
 ---
 name: "eagle-eye"
 description: "Visual intelligence skill — use when asked to analyze images, screenshots, diagrams, charts, PDFs with visuals, or any task requiring sight. Extracts structured insights from visual content using the multimodal_analyze tool. Works even when the current agent runs on a text-only model."
-trigger_keywords: ["image", "screenshot", "diagram", "chart", "visual", "picture", "photo", "pdf", "analyze image", "describe image", "what do you see", "look at this"]
-domain_hints: ["vision", "multimodal", "visual-analysis", "document-understanding"]
-tools: ["multimodal_analyze"]
+allowed-tools: multimodal_analyze
 metadata:
   author: "agentzero"
   version: "1.0.0"
   tags: "vision,multimodal,image-analysis,document-understanding"
+  trigger_keywords: "image,screenshot,diagram,chart,visual,picture,photo,pdf,analyze image,describe image,what do you see,look at this"
+  domain_hints: "vision,multimodal,visual-analysis,document-understanding"
 ---
 
 # Eagle Eye — Visual Intelligence

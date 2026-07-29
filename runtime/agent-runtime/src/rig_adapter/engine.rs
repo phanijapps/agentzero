@@ -28,6 +28,7 @@
 //! sets the per-call `function_call_id` from `StepEvent::ToolCall`.
 //! `tool_concurrency(1)` keeps the shared context race-free.
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -177,6 +178,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         let mut final_message = String::new();
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
+        let mut tool_names_by_call_id = HashMap::new();
         while let Some(item) = stream.next().await {
             if let Some(flag) = &stop_flag {
                 if flag.load(Ordering::Acquire) {
@@ -201,6 +203,8 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                             .call_id
                             .clone()
                             .unwrap_or_else(|| tool_call.id.clone());
+                        tool_names_by_call_id
+                            .insert(tool_id.clone(), tool_call.function.name.clone());
                         on_event(StreamEvent::ToolCallStart {
                             timestamp: current_timestamp(),
                             tool_id,
@@ -224,6 +228,9 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 MultiTurnStreamItem::StreamUserItem(user_content) => match user_content {
                     StreamedUserContent::ToolResult { tool_result, .. } => {
                         let result_text = tool_result_text(&tool_result);
+                        let is_surface_tool = tool_names_by_call_id
+                            .remove(&tool_result.id)
+                            .is_some_and(|name| name == "present_surface");
                         on_event(StreamEvent::ToolResult {
                             timestamp: current_timestamp(),
                             tool_id: tool_result.id.clone(),
@@ -272,52 +279,54 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                         // output. Without this, legacy marker producers never
                         // publish the corresponding stream events.
                         if let Ok(parsed) = serde_json::from_str::<Value>(&result_text) {
-                            if parsed
-                                .get("__work_surface")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                if let Some(surface) = parsed
-                                    .get("surface")
-                                    .cloned()
-                                    .and_then(|value| serde_json::from_value(value).ok())
+                            if is_surface_tool {
+                                if parsed
+                                    .get("__work_surface")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false)
                                 {
-                                    on_event(StreamEvent::WorkSurface {
-                                        timestamp: current_timestamp(),
-                                        surface,
-                                    });
+                                    if let Some(surface) = parsed
+                                        .get("surface")
+                                        .cloned()
+                                        .and_then(|value| serde_json::from_value(value).ok())
+                                    {
+                                        on_event(StreamEvent::WorkSurface {
+                                            timestamp: current_timestamp(),
+                                            surface,
+                                        });
+                                    }
                                 }
-                            }
-                            if parsed
-                                .get("__work_surface_updated")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                if let Some(surface) = parsed
-                                    .get("surface")
-                                    .cloned()
-                                    .and_then(|value| serde_json::from_value(value).ok())
+                                if parsed
+                                    .get("__work_surface_updated")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false)
                                 {
-                                    on_event(StreamEvent::WorkSurfaceUpdated {
-                                        timestamp: current_timestamp(),
-                                        surface,
-                                    });
+                                    if let Some(surface) = parsed
+                                        .get("surface")
+                                        .cloned()
+                                        .and_then(|value| serde_json::from_value(value).ok())
+                                    {
+                                        on_event(StreamEvent::WorkSurfaceUpdated {
+                                            timestamp: current_timestamp(),
+                                            surface,
+                                        });
+                                    }
                                 }
-                            }
-                            if parsed
-                                .get("__work_surface_deleted")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                if let Some(surface_id) = parsed
-                                    .get("surface_id")
-                                    .and_then(Value::as_str)
-                                    .filter(|id| !id.is_empty() && id.len() <= 128)
+                                if parsed
+                                    .get("__work_surface_deleted")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false)
                                 {
-                                    on_event(StreamEvent::WorkSurfaceDeleted {
-                                        timestamp: current_timestamp(),
-                                        surface_id: surface_id.to_owned(),
-                                    });
+                                    if let Some(surface_id) = parsed
+                                        .get("surface_id")
+                                        .and_then(Value::as_str)
+                                        .filter(|id| !id.is_empty() && id.len() <= 128)
+                                    {
+                                        on_event(StreamEvent::WorkSurfaceDeleted {
+                                            timestamp: current_timestamp(),
+                                            surface_id: surface_id.to_owned(),
+                                        });
+                                    }
                                 }
                             }
                             if parsed
@@ -1275,5 +1284,65 @@ mod tests {
             )),
             "SessionTitleChanged must surface; got {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn surface_markers_require_the_presentation_tool_on_rig_path() {
+        struct MarkerTool {
+            name: &'static str,
+        }
+        #[async_trait::async_trait]
+        impl agent_primitives::Tool for MarkerTool {
+            fn name(&self) -> &str {
+                self.name
+            }
+            fn description(&self) -> &str {
+                "return a test marker"
+            }
+            async fn execute(
+                &self,
+                _ctx: Arc<dyn agent_primitives::ToolContext>,
+                _args: Value,
+            ) -> Result<Value, agent_primitives::error::AgentError> {
+                Ok(serde_json::json!({
+                    "__work_surface": true,
+                    "surface": {
+                        "surface_id": "rig-surface",
+                        "catalog_id": "zbot/work-surface/v1",
+                        "components": [{
+                            "id": "status",
+                            "type": "StatusBadge",
+                            "props": {"value_path": "/status"}
+                        }],
+                        "data": {"status": "ready"}
+                    }
+                }))
+            }
+        }
+
+        for (tool_name, should_emit) in [("present_surface", true), ("untrusted_marker", false)] {
+            let engine = RigAgentEngine::new(
+                sample_config(),
+                ToolCallModel::new(tool_name),
+                vec![RigToolAdapter::boxed(Arc::new(MarkerTool {
+                    name: tool_name,
+                }))],
+                Arc::new(crate::tools::context::ToolContext::default()),
+            );
+            let mut events = Vec::new();
+            engine
+                .execute_stream("hi", &[], &mut |event| events.push(event))
+                .await
+                .expect("run");
+
+            assert_eq!(
+                events.iter().any(|event| matches!(
+                    event,
+                    StreamEvent::WorkSurface { surface, .. }
+                        if surface.surface_id == "rig-surface"
+                )),
+                should_emit
+            );
+        }
     }
 }

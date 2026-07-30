@@ -369,14 +369,35 @@ pub async fn list_entities_respects_agent<S: KnowledgeGraphStore>(store: &S) {
         )
         .await
         .unwrap();
+    store
+        .upsert_entity(
+            "__global__",
+            Entity::new(
+                "__global__".into(),
+                EntityType::Concept,
+                "SharedAcrossAgents".into(),
+            ),
+        )
+        .await
+        .unwrap();
 
     let a_list = store
         .list_entities("agent-iso-a", None, 100, 0)
         .await
         .unwrap();
     assert!(
-        a_list.iter().all(|e| e.agent_id == "agent-iso-a"),
-        "list should be agent-isolated"
+        a_list.iter().any(|e| e.name == "OnlyA"),
+        "list should retain the requested agent's entity"
+    );
+    assert!(
+        a_list.iter().any(|e| e.name == "SharedAcrossAgents"),
+        "list should retain explicitly global entities"
+    );
+    assert!(
+        a_list
+            .iter()
+            .all(|e| e.agent_id == "agent-iso-a" || e.agent_id == "__global__"),
+        "list should include only the requested agent and explicitly global entities"
     );
 }
 

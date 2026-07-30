@@ -1,6 +1,6 @@
 # Spec: Subagent Capability Policy
 
-- **Status:** Done
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none

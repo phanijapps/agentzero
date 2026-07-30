@@ -1,6 +1,6 @@
 # Spec: Memory Hygiene
 
-- **Status:** Closed
+- **Status:** Archived
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0002: Memory Hygiene; RFC-0001: Unified Compaction and Memory Policy; [`runtime-context-control`](../runtime-context-control/spec.md)

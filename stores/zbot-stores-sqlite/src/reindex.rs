@@ -29,7 +29,10 @@
 
 use std::sync::Arc;
 
-use crate::KnowledgeDatabase;
+use crate::{
+    knowledge_schema::cleanup_orphan_reindex_tables, vector_index::read_table_dim,
+    KnowledgeDatabase,
+};
 use agent_runtime::llm::EmbeddingClient;
 
 const BATCH_SIZE: usize = 100;
@@ -395,8 +398,18 @@ pub async fn reindex_all(
     new_dim: usize,
     on_progress: ProgressFn<'_>,
 ) -> Result<Vec<(ReindexTarget, ReindexSummary)>, String> {
+    db.with_connection(|conn| {
+        cleanup_orphan_reindex_tables(conn)?;
+        Ok(())
+    })?;
+
     let mut out = Vec::with_capacity(REINDEX_TARGETS.len());
     for target in REINDEX_TARGETS {
+        if read_table_dim(db, target.table, target.id_column, target.embedding_column).ok()
+            == Some(new_dim)
+        {
+            continue;
+        }
         let summary = reindex_table(db, client.clone(), target, new_dim, |t, c, n| {
             on_progress(t, c, n);
         })
@@ -413,6 +426,7 @@ pub async fn reindex_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vector_index::extract_dim_from_ddl;
     use agent_runtime::llm::embedding::{EmbeddingClient as Trait, EmbeddingError};
     use async_trait::async_trait;
     use gateway_services::VaultPaths;
@@ -610,14 +624,89 @@ mod tests {
     async fn reindex_all_processes_every_target() {
         let (_tmp, db) = fresh_db();
         seed_memory_facts(&db, 2);
-        let client: Arc<dyn Trait> = Arc::new(MockClient::new(384));
+        let client: Arc<dyn Trait> = Arc::new(MockClient::new(1024));
         let calls = AtomicUsize::new(0);
         let calls_ref = &calls;
         let cb = move |_: &'static str, _: usize, _: usize| {
             calls_ref.fetch_add(1, Ordering::SeqCst);
         };
-        let out = reindex_all(&db, client, 384, &cb).await.unwrap();
+        let out = reindex_all(&db, client, 1024, &cb).await.unwrap();
         assert_eq!(out.len(), REINDEX_TARGETS.len());
+    }
+
+    #[tokio::test]
+    async fn reindex_all_rebuilds_only_a_missing_target() {
+        let (_tmp, db) = fresh_db();
+        db.with_connection(|conn| {
+            conn.execute_batch("DROP TABLE memory_facts_index")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let client: Arc<dyn Trait> = Arc::new(MockClient::new(384));
+        let out = reindex_all(&db, client, 384, &|_, _, _| {}).await.unwrap();
+        let rebuilt: Vec<_> = out.iter().map(|(target, _)| target.table).collect();
+
+        assert_eq!(rebuilt, ["memory_facts_index"]);
+        assert_eq!(
+            table_dim(&db, "memory_facts_index")
+                .as_deref()
+                .and_then(extract_dim_from_ddl),
+            Some(384)
+        );
+    }
+
+    #[tokio::test]
+    async fn reindex_all_rebuilds_only_a_malformed_target() {
+        let (_tmp, db) = fresh_db();
+        db.with_connection(|conn| {
+            conn.execute_batch(
+                "DROP TABLE memory_facts_index;
+                 CREATE VIRTUAL TABLE memory_facts_index USING vec0(
+                    fact_id TEXT PRIMARY KEY,
+                    embedding FLOAT[384],
+                    unexpected_embedding FLOAT[384]
+                 );",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let client: Arc<dyn Trait> = Arc::new(MockClient::new(384));
+        let out = reindex_all(&db, client, 384, &|_, _, _| {}).await.unwrap();
+        let rebuilt: Vec<_> = out.iter().map(|(target, _)| target.table).collect();
+
+        assert_eq!(rebuilt, ["memory_facts_index"]);
+        assert_eq!(
+            table_dim(&db, "memory_facts_index")
+                .as_deref()
+                .and_then(extract_dim_from_ddl),
+            Some(384)
+        );
+    }
+
+    #[tokio::test]
+    async fn reindex_all_cleans_orphan_without_rebuilding_matching_tables() {
+        let (_tmp, db) = fresh_db();
+        db.with_connection(|conn| {
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE memory_facts_index__new USING vec0(
+                    fact_id TEXT PRIMARY KEY,
+                    embedding FLOAT[1024]
+                 );",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let client: Arc<dyn Trait> = Arc::new(MockClient::new(384));
+        let out = reindex_all(&db, client, 384, &|_, _, _| {}).await.unwrap();
+
+        assert!(out.is_empty(), "matching live tables must not rebuild");
+        assert!(
+            table_dim(&db, "memory_facts_index__new").is_none(),
+            "orphan reindex table must still be cleaned"
+        );
     }
 
     #[tokio::test]

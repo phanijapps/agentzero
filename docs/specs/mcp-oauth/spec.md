@@ -1,6 +1,6 @@
 # Spec: MCP OAuth
 
-- **Status:** Done
+- **Status:** Archived
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none

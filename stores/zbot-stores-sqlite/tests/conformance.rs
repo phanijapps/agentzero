@@ -1,5 +1,44 @@
 mod fixtures;
 
+use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
+use async_trait::async_trait;
+use gateway_services::paths::VaultPaths;
+use std::sync::Arc;
+use tempfile::TempDir;
+use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_sqlite::kg::storage::GraphStorage;
+use zbot_stores_sqlite::knowledge_db::KnowledgeDatabase;
+use zbot_stores_sqlite::SqliteKgStore;
+
+struct FixedEmbeddingClient {
+    dimensions: usize,
+}
+
+#[async_trait]
+impl EmbeddingClient for FixedEmbeddingClient {
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        Ok(texts.iter().map(|_| vec![0.0; self.dimensions]).collect())
+    }
+
+    fn dimensions(&self) -> usize {
+        self.dimensions
+    }
+
+    fn model_name(&self) -> String {
+        format!("test-{}d", self.dimensions)
+    }
+}
+
+async fn sqlite_store_with_embedding_dim(dimensions: usize) -> (TempDir, SqliteKgStore) {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+    let kdb = Arc::new(KnowledgeDatabase::new(paths).expect("kdb"));
+    let storage = Arc::new(GraphStorage::new(kdb).expect("storage"));
+    let client = Arc::new(FixedEmbeddingClient { dimensions });
+    let store = SqliteKgStore::with_embedding_client(storage, client);
+    (tmp, store)
+}
+
 #[tokio::test]
 async fn entity_round_trip() {
     let (_tmp, store) = fixtures::sqlite_store().await;
@@ -72,15 +111,28 @@ async fn fts_finds_match() {
     zbot_stores_conformance::fts_finds_match(&store).await;
 }
 
-// Conformance gap (SQLite): reindex_embeddings requires SqliteKgStore to be
-// constructed via with_embedding_client(). The minimal `sqlite_store()`
-// fixture builds without one; this scenario is gated behind a fixture
-// upgrade that's deferred. SurrealDB passes the scenario today.
-#[ignore = "SQLite fixture needs embedding client wiring (TD follow-up)"]
 #[tokio::test]
 async fn reindex_idempotent_when_dim_matches() {
-    let (_tmp, store) = fixtures::sqlite_store().await;
-    zbot_stores_conformance::reindex_idempotent_when_dim_matches(&store).await;
+    let (_tmp, store) = sqlite_store_with_embedding_dim(1024).await;
+    let first = store.reindex_embeddings(1024).await.unwrap();
+    assert_eq!(
+        first.tables_rebuilt,
+        &[
+            "memory_facts_index",
+            "kg_name_index",
+            "session_episodes_index",
+            "wiki_articles_index",
+            "procedures_index",
+        ],
+        "first request should report every mismatched SQLite target"
+    );
+
+    let second = store.reindex_embeddings(1024).await.unwrap();
+    assert!(
+        second.tables_rebuilt.is_empty(),
+        "matching dimension should be a no-op, got {:?}",
+        second.tables_rebuilt
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 # Spec: Conversation Compatibility Retirement
 
-- **Status:** Complete
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`conversation-store-revamp`](../conversation-store-revamp/spec.md)

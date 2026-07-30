@@ -1,9 +1,9 @@
 ---
-name: codegraph-first
+name: engram-index
 description: Understand a codebase quickly — index it, then get the structural overview (central symbols, communities, bridges, stats). Uses the unified engram MCP. Trigger on "understand this codebase", "what does this repo do", "give me an overview", or first encounter with a new repository.
 ---
 
-# Codegraph: First Look
+# Engram: Index
 
 Get a structural overview of a codebase — no file reading needed. Uses the
 **engram** MCP (which supersedes the old `codegraph` MCP).

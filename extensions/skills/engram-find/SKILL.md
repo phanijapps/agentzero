@@ -1,9 +1,9 @@
 ---
-name: codegraph-onboarding
+name: engram-find
 description: Onboard a new developer to a codebase — map the architecture, identify key abstractions and critical paths. Uses the unified engram MCP. Trigger on "I'm new to this codebase", "how does this work", "explain the architecture", "where do I start".
 ---
 
-# Codegraph: Developer Onboarding
+# Engram: Find
 
 Map the architecture and trace the code graph for a new developer. Uses the
 **engram** MCP (which supersedes the old `codegraph` MCP).

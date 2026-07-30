@@ -55,7 +55,9 @@ let wsMock: MockWebSocket;
 
 // Build a mock WebSocket constructor that carries the static constants
 function makeMockWsConstructor(): ReturnType<typeof vi.fn> {
-  const ctor = vi.fn(() => wsMock);
+  const ctor = vi.fn(function MockWebSocketConstructor() {
+    return wsMock;
+  });
   // The real-code checks `WebSocket.OPEN`, `WebSocket.CLOSED`, etc.
   // Without these, `null?.readyState === WebSocket.OPEN` becomes
   // `undefined === undefined` which is true, causing wrong code paths.

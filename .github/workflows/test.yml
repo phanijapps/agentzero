@@ -134,7 +134,59 @@ jobs:
         run: cargo build -p daemon --bin zbotd
 
       - name: Run E2E tests (quick scenarios only)
-        run: cd apps/ui && npm run test:e2e -- --grep-invert "long-running"
+        run: |
+          set -euo pipefail
+          daemon_log="$RUNNER_TEMP/zbotd-e2e.log"
+          data_dir="$RUNNER_TEMP/zbot-e2e"
+          mkdir -p "$data_dir"
+
+          ./target/debug/zbotd \
+            --host 127.0.0.1 \
+            --data-dir "$data_dir" \
+            --static-dir dist \
+            >"$daemon_log" 2>&1 &
+          daemon_pid=$!
+
+          cleanup() {
+            kill "$daemon_pid" 2>/dev/null || true
+            wait "$daemon_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:18791/api/health >/dev/null 2>&1; then
+              if ! kill -0 "$daemon_pid" 2>/dev/null; then
+                echo "another process answered health after zbotd exited"
+                cat "$daemon_log"
+                exit 1
+              fi
+              ready=true
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null; then
+              echo "zbotd exited before becoming ready"
+              cat "$daemon_log"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [[ "$ready" != true ]]; then
+            echo "zbotd did not become ready within 60 seconds"
+            cat "$daemon_log"
+            exit 1
+          fi
+
+          playwright_status=0
+          (
+            cd apps/ui
+            npm run test:e2e -- --grep-invert "long-running"
+          ) || playwright_status=$?
+          if (( playwright_status != 0 )); then
+            cat "$daemon_log"
+            exit "$playwright_status"
+          fi
         env:
           CI: true
 

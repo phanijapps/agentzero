@@ -4,6 +4,7 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [SQLite Reindex Conformance](sqlite-reindex-conformance/spec.md) | Shipped | Makes SQLite embedding reindexing skip already-matching vec tables while preserving repair of missing or mismatched targets. |
 | [SQLite Agent Isolation](sqlite-agent-isolation/spec.md) | Shipped | Makes the agent-scoped list-entities contract executable: requested-agent plus explicitly global rows, never another private agent. |
 | [P0 Supply-Chain Gates](p0-supply-chain-gates/spec.md) | Shipped | Updates vulnerable Rust dependencies and restores evidence-backed dependency license checks without advisory or unlicensed bypasses. |
 | [LLM Wiki Ward Foundation](llm-wiki-ward-foundation/spec.md) | Shipped | Gives every fresh archetype one Ward-named canonical page and append-only log, keeps one global catalog, replaces mandatory OKF with compact plain Markdown, and leaves optional Wiki namespaces lazy. |

@@ -1,6 +1,6 @@
 # Spec: Builder Delegation Hygiene
 
-- **Status:** Done
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** RFC-0005: Builder Delegation and Ward Context Hygiene

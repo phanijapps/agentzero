@@ -1,6 +1,6 @@
 # Spec: Fluid Ward Template and Conformance
 
-- **Status:** Implemented (Phase 1)
+- **Status:** Archived
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [ADR-0001](../../adr/0001-use-versioned-ward-layout-contracts.md), [RFC-0016](../../rfc/0016-generic-ward-configuration-and-layout-resolution.md)

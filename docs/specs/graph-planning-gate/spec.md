@@ -1,6 +1,6 @@
 # Spec: Graph Planning Gate
 
-- **Status:** Complete
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none

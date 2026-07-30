@@ -48,6 +48,29 @@ describe("CommissioningScreen", () => {
     expect(screen.getByRole("button", { name: /^personal knowledge$/i })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("keeps the wizard open when rerunning setup after commissioning is complete", async () => {
+    getCommissioningStatus.mockResolvedValue({
+      success: true,
+      data: {
+        state: "complete",
+        restartRequired: false,
+        semanticProfile: { version: 1, basePackIds: [], domainPackIds: [], provisioning: "deferred" },
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/setup"]}>
+        <Routes>
+          <Route path="/setup" element={<CommissioningScreen rerunSetup />} />
+          <Route path="/research" element={<p>Research page</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/let’s commission your agent/i)).toBeInTheDocument();
+    expect(screen.queryByText("Research page")).not.toBeInTheDocument();
+  });
+
   it("shows an actionable local-runtime diagnosis and available models", async () => {
     diagnoseLocalRuntime.mockResolvedValue({
       success: true,
@@ -64,6 +87,23 @@ describe("CommissioningScreen", () => {
       expect(screen.getByText(/your local runtime is ready/i)).toBeInTheDocument();
     });
     expect(screen.getByRole("option", { name: "llama3.3" })).toBeInTheDocument();
+  });
+
+  it("recommends Ollama Cloud models and clears keys across provider changes", () => {
+    renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: /build & code/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "openai-key" } });
+    fireEvent.click(screen.getByRole("button", { name: /ollama cloud/i }));
+    expect(screen.getByLabelText(/api key/i)).toHaveValue("");
+    expect(screen.getByRole("note", { name: /ollama cloud model recommendation/i })).toHaveTextContent("glm-5.2:cloud");
+    expect(screen.getByRole("note", { name: /ollama cloud model recommendation/i })).toHaveTextContent("gemma4:31b-cloud");
+
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "ollama-key" } });
+    fireEvent.click(screen.getByRole("button", { name: /local model/i }));
+    fireEvent.click(screen.getByRole("button", { name: /cloud provider/i }));
+    expect(screen.getByLabelText(/api key/i)).toHaveValue("");
   });
 
   // AC2 — memory behavior requires an explicit informed choice.

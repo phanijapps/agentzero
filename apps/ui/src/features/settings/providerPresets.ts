@@ -34,11 +34,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     name: "Ollama Cloud",
-    baseUrl: "http://localhost:11434/v1",
-    models: "gemma4:31b-cloud, nemotron-3-super:cloud, glm-5:cloud, gemini-3-flash-preview:cloud, deepseek-v3.2:cloud, kimi-k2.5:cloud, qwen3.5:cloud, devstral-2:cloud, minimax-m2.7:cloud",
-    apiKeyHint: "",
-    apiKeyPlaceholder: "",
-    noApiKey: true,
+    baseUrl: "https://ollama.com/v1",
+    models: "glm-5.2:cloud, gemma4:31b-cloud, nemotron-3-super:cloud, gemini-3-flash-preview:cloud, deepseek-v3.2:cloud, kimi-k2.5:cloud, qwen3.5:cloud, devstral-2:cloud, minimax-m2.7:cloud",
+    apiKeyHint: "ollama.com/settings/keys",
+    apiKeyPlaceholder: "Paste your Ollama API key",
     featured: true,
   },
   {

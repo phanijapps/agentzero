@@ -8,7 +8,7 @@ interface BootFullSummary {
   gateway_http_url: string;
   gateway_ws_url: string;
   ui_url: string;
-  vault: string;
+  data_dir: string;
   fixture: string;
 }
 
@@ -16,20 +16,24 @@ export interface FullHarnessHandle {
   uiUrl(path: string): string;
   gatewayUrl(path: string): string;
   mockLlmUrl(path: string): string;
+  dataDir(): string;
   assertZeroDrift(request: APIRequestContext): Promise<void>;
 }
 
 export function bootFullMode(opts: {
   fixture: string;
+  freshVault?: boolean;
 }): { handle: FullHarnessHandle; test: typeof baseTest } {
   let summary: BootFullSummary;
   let teardownCalled = false;
   const test = baseTest.extend<{}>({});
 
   test.beforeAll(async () => {
+    const args = ["../scripts/boot-full-mode.sh", opts.fixture];
+    if (opts.freshVault) args.push("--fresh-vault");
     const result = spawnSync(
       "bash",
-      ["../scripts/boot-full-mode.sh", opts.fixture],
+      args,
       { encoding: "utf-8", timeout: 120_000 },
     );
     if (result.status !== 0) {
@@ -62,6 +66,9 @@ export function bootFullMode(opts: {
     },
     mockLlmUrl(path: string) {
       return new URL(path, summary.mock_llm_url).toString();
+    },
+    dataDir() {
+      return summary.data_dir;
     },
     async assertZeroDrift(request: APIRequestContext) {
       const r = await request.get(

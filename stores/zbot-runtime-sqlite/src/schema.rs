@@ -6,7 +6,7 @@
 use rusqlite::{Connection, Result};
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 24;
+const SCHEMA_VERSION: i32 = 25;
 
 /// Run migrations for existing databases.
 ///
@@ -397,6 +397,25 @@ fn migrate_database(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // v24 → v25: persist a bounded set of validated work surfaces per session.
+    if version < 25 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_surfaces (
+                session_id TEXT NOT NULL,
+                surface_id TEXT NOT NULL,
+                execution_id TEXT NOT NULL,
+                surface_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, surface_id),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_surfaces_updated
+                ON session_surfaces(session_id, updated_at DESC);",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -541,6 +560,31 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
             FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
             FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
         )",
+        [],
+    )?;
+
+    // =========================================================================
+    // PERSISTED WORK SURFACES
+    // Latest validated display-only descriptors for one session
+    // =========================================================================
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS session_surfaces (
+            session_id TEXT NOT NULL,
+            surface_id TEXT NOT NULL,
+            execution_id TEXT NOT NULL,
+            surface_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, surface_id),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY (execution_id) REFERENCES agent_executions(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_surfaces_updated
+         ON session_surfaces(session_id, updated_at DESC)",
         [],
     )?;
 
@@ -781,7 +825,23 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 24, "schema version should be 24");
+        // STUB: AC1 — schema version advances with persistent surfaces.
+        assert_eq!(version, 25, "schema version should be 25");
+    }
+
+    #[test]
+    fn session_surfaces_fresh_schema_has_composite_key_cascade_and_v25() {
+        // STUB: AC1 — fresh current schema contains the bounded session-owned table.
+        let conn = setup_db();
+        let table_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_surfaces'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("session_surfaces table");
+        assert!(table_sql.contains("PRIMARY KEY (session_id, surface_id)"));
+        assert!(table_sql.contains("ON DELETE CASCADE"));
     }
 
     #[test]
@@ -808,6 +868,42 @@ mod tests {
                 .expect("read migrated table");
             assert_eq!(exists, 1, "{table} should exist after migration");
         }
+    }
+
+    #[test]
+    fn session_surfaces_schema_migrates_from_v24_without_data_loss() {
+        // STUB: AC1 — v24 session data survives the additive v25 migration.
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO sessions (id, root_agent_id, created_at) VALUES ('sess-keep', 'root', '2026-07-28T00:00:00Z')",
+            [],
+        )
+        .expect("seed session");
+        conn.execute_batch(
+            "DROP TABLE session_surfaces;
+             DELETE FROM schema_version;
+             INSERT INTO schema_version (version) VALUES (24);",
+        )
+        .expect("seed v24 schema");
+
+        initialize_database(&conn).expect("migrate v24 database");
+
+        let session_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'sess-keep'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read preserved session");
+        let surface_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_surfaces'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated table");
+        assert_eq!(session_count, 1);
+        assert_eq!(surface_table_count, 1);
     }
 
     #[test]

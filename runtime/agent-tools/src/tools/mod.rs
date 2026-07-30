@@ -47,7 +47,7 @@ pub use recall::{
     UnifiedRecallRequest, UnifiedRecallResponse, recall_parameters_schema,
 };
 pub use search::GlobTool;
-pub use ward::{WardTool, WardUsageAccess};
+pub use ward::{WardLayoutAccess, WardLayoutState, WardTool, WardUsageAccess, ensure_ward_catalog};
 
 // ============================================================================
 // TOOL SETTINGS

@@ -15,6 +15,22 @@ use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
 
 pub struct MultimodalAnalyzeTool;
 
+async fn bounded_error_text(mut response: reqwest::Response) -> String {
+    const LIMIT: usize = 64 * 1024;
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let remaining = LIMIT.saturating_sub(body.len());
+        if remaining == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if chunk.len() > remaining {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
 impl Default for MultimodalAnalyzeTool {
     fn default() -> Self {
         Self::new()
@@ -92,6 +108,15 @@ impl Tool for MultimodalAnalyzeTool {
             .ok_or_else(|| {
                 AgentError::Tool("multimodal provider baseUrl not resolved".to_string())
             })?;
+        let provider_id = config
+            .get("providerId")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if provider_id == "provider-ollama-cloud" && base_url != "https://ollama.com/v1" {
+            return Err(AgentError::Tool(
+                "Ollama Cloud endpoint must be https://ollama.com/v1".to_string(),
+            ));
+        }
         let api_key = config.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
         let model = config
             .get("model")
@@ -185,7 +210,11 @@ impl Tool for MultimodalAnalyzeTool {
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         tracing::info!("multimodal_analyze: calling {} with model {}", url, model);
 
-        let client = reqwest::Client::builder().build().expect("reqwest client");
+        let mut client_builder = reqwest::Client::builder();
+        if provider_id == "provider-ollama-cloud" {
+            client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
+        }
+        let client = client_builder.build().expect("reqwest client");
         let mut request = client
             .post(&url)
             .header("Content-Type", "application/json")
@@ -202,7 +231,12 @@ impl Tool for MultimodalAnalyzeTool {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
+            let error_text = bounded_error_text(response).await;
+            let error_text = if api_key.is_empty() {
+                error_text
+            } else {
+                error_text.replace(api_key, "[redacted]")
+            };
             return Err(AgentError::Tool(format!(
                 "Multimodal API error ({}): {}",
                 status, error_text

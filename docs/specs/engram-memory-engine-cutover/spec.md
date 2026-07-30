@@ -189,10 +189,10 @@ Protected public contract matrix:
 - Technical: the current workspace already contains `stores/zbot-engram-adapter`
   and includes it in the root Cargo workspace (source: `Cargo.toml`;
   `stores/zbot-engram-adapter/src/lib.rs`).
-- Technical: the local Engram checkout at `/home/videogamer/projects/mem-alpha`
-  provides public SQLite open options and SQLite stores for memory, knowledge,
-  belief, and hierarchy (source: `/home/videogamer/projects/mem-alpha/core/runtime/src/options.rs`;
-  local Engram adapter manifests).
+- Technical: the public Engram repository at
+  `https://github.com/phanijapps/engram` provides SQLite open options and
+  SQLite stores for memory, knowledge, belief, and hierarchy (source: the
+  Engram adapter manifests and the revision recorded in `Cargo.lock`).
 - Technical: Rig is now the execution framework, but the Rig migration spec
   intentionally left memory/knowledge ownership in AgentZero; this spec changes
   that backing framework through a separate adapter boundary (source:

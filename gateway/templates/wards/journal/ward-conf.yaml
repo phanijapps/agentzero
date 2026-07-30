@@ -1,0 +1,50 @@
+apiVersion: zbot.dev/v1alpha1
+kind: WardLayout
+
+definitions:
+  journal-year:
+    kind: directory
+    children:
+      - { id: daily-entry, match: "*.md", kind: file, required: false, repeat: true, format: markdown }
+
+  specification:
+    kind: directory
+    children:
+      - { id: specification, match: spec.md, kind: file, format: markdown }
+      - { id: plan, match: plan.md, kind: file, format: markdown }
+      - id: tasks
+        match: tasks
+        kind: directory
+        required: false
+        children:
+          - { id: task, match: "*.md", kind: file, required: false, repeat: true, format: markdown }
+
+root:
+  kind: directory
+  children:
+    - { id: canonical, match: "{ward}.md", kind: file, format: markdown }
+    - { id: agent-instructions, match: AGENTS.md, kind: file, format: markdown }
+    - { id: log, match: log.md, kind: file, format: markdown }
+    - { id: pages, match: pages, kind: directory, required: false }
+    - { id: sources, match: sources, kind: directory, required: false }
+    - id: entries
+      match: entries
+      kind: directory
+      required: false
+      children:
+        - { id: entry-year, match: "*", required: false, repeat: true, $ref: journal-year }
+    - { id: topics, match: topics, kind: directory, required: false }
+    - { id: attachments, match: attachments, kind: directory, required: false }
+    - id: zbot
+      match: .zbot
+      kind: directory
+      required: false
+      children:
+        - id: specifications
+          match: specs
+          kind: directory
+          required: false
+          children:
+            - { id: specification-node, match: "*", required: false, repeat: true, $ref: specification }
+
+extensions: {}

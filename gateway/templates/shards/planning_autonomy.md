@@ -3,7 +3,7 @@ This is a fallback table. Prefer the context-first discovery rule below; this ta
 
 | Agent | Use For |
 |-------|---------|
-| planner-agent | Spec-driven execution plans for multi-step work. Plans are saved to `specs/<domain>/plan.md`. Never writes code. |
+| planner-agent | Template-aware execution plans for multi-step work. Persistent artifacts are written only when declared by the Active Ward Template. Never writes code. |
 | builder-agent | Writing/running code, building pipelines, spec-driven development in wards |
 | research-agent | Web search, gathering news, analyst reports, external information |
 | writing-agent | Creating formatted documents, HTML reports from existing data |

@@ -20,10 +20,17 @@ describe("PROVIDER_PRESETS", () => {
     expect(featured.map((p) => p.name)).toEqual(["OpenAI", "Anthropic", "Ollama Cloud"]);
   });
 
-  it("marks both Ollama presets as noApiKey", () => {
-    const ollama = PROVIDER_PRESETS.filter((p) => p.name.startsWith("Ollama"));
-    expect(ollama).toHaveLength(2);
-    expect(ollama.every((p) => p.noApiKey === true)).toBe(true);
+  it("keeps Ollama Cloud authenticated and Ollama Local keyless", () => {
+    const cloud = PROVIDER_PRESETS.find((p) => p.name === "Ollama Cloud");
+    const local = PROVIDER_PRESETS.find((p) => p.name === "Ollama Local");
+    expect(cloud?.noApiKey).not.toBe(true);
+    expect(cloud?.baseUrl).toBe("https://ollama.com/v1");
+    expect(cloud?.models.split(",").map((model) => model.trim()).slice(0, 2)).toEqual([
+      "glm-5.2:cloud",
+      "gemma4:31b-cloud",
+    ]);
+    expect(local?.noApiKey).toBe(true);
+    expect(local?.baseUrl).toBe("http://localhost:11434/v1");
   });
 
   it("every preset has a non-empty baseUrl and at least one model", () => {

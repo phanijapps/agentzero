@@ -683,6 +683,7 @@ impl WardCurator {
             state: WardState::Active,
             pinned: false,
             archived_at: None,
+            archetype: None,
         };
         map.insert(into.to_string(), rec);
 

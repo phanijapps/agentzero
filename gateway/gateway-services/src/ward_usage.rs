@@ -12,11 +12,16 @@
 //! the sidecar at any moment.
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use agent_primitives::WardArchetypeId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+const MAX_WARD_USAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// How a ward came into existence. Drives whether the curator may act on it.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +67,10 @@ pub struct WardRecord {
     pub pinned: bool,
     #[serde(default)]
     pub archived_at: Option<DateTime<Utc>>,
+    /// Creation-time provenance only. The copied `ward-conf.yaml` snapshot
+    /// remains the structural authority if this metadata is absent or stale.
+    #[serde(default)]
+    pub archetype: Option<WardArchetypeId>,
 }
 
 impl WardRecord {
@@ -76,6 +85,7 @@ impl WardRecord {
             state: WardState::Active,
             pinned: false,
             archived_at: None,
+            archetype: None,
         }
     }
 }
@@ -86,6 +96,321 @@ pub type WardUsageMap = BTreeMap<String, WardRecord>;
 pub struct WardUsage {
     wards_dir: PathBuf,
     lock: Mutex<()>,
+}
+
+#[cfg(target_os = "linux")]
+fn save_sidecar_linux(wards_dir: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let directory = open_verified_wards_directory_linux(wards_dir)?;
+
+    let temporary = format!(".usage.{}.tmp", uuid::Uuid::new_v4());
+    let mut file = create_sidecar_temp_at(&directory, &temporary).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
+            return Err("ward usage temporary file is unsafe".into());
+        }
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        rename_sidecar_at(&directory, &temporary, ".usage.json")
+            .map_err(|error| error.to_string())?;
+        directory.sync_all().map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = unlink_sidecar_at(&directory, &temporary);
+    }
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn open_verified_wards_directory_linux(wards_dir: &Path) -> Result<File, String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    const O_DIRECTORY: i32 = 0o200000;
+    const O_NOFOLLOW: i32 = 0o400000;
+    const O_CLOEXEC: i32 = 0o2000000;
+    let before = std::fs::symlink_metadata(wards_dir).map_err(|error| error.to_string())?;
+    if before.file_type().is_symlink() || !before.is_dir() {
+        return Err("wards directory is unsafe".into());
+    }
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        .open(wards_dir)
+        .map_err(|error| error.to_string())?;
+    let opened = directory.metadata().map_err(|error| error.to_string())?;
+    if before.dev() != opened.dev() || before.ino() != opened.ino() || !opened.is_dir() {
+        return Err("wards directory changed while opening".into());
+    }
+    Ok(directory)
+}
+
+#[cfg(target_os = "linux")]
+fn create_sidecar_temp_at(parent: &File, name: &str) -> std::io::Result<File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    unsafe extern "C" {
+        fn openat(dirfd: i32, pathname: *const std::ffi::c_char, flags: i32, ...) -> i32;
+    }
+    let name = CString::new(name).map_err(|_| std::io::Error::other("invalid temp name"))?;
+    let flags = 0o1 | 0o100 | 0o200 | 0o400000 | 0o2000000;
+    // SAFETY: `name` is NUL-terminated, `parent` is a live directory fd,
+    // and a mode is supplied because O_CREAT is set.
+    let fd = unsafe { openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o600) };
+    if fd == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        // SAFETY: `openat` returned a fresh descriptor now owned by `File`.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rename_sidecar_at(parent: &File, old_name: &str, new_name: &str) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+
+    unsafe extern "C" {
+        fn renameat(
+            olddirfd: i32,
+            oldpath: *const std::ffi::c_char,
+            newdirfd: i32,
+            newpath: *const std::ffi::c_char,
+        ) -> i32;
+    }
+    let old_name =
+        CString::new(old_name).map_err(|_| std::io::Error::other("invalid temp name"))?;
+    let new_name =
+        CString::new(new_name).map_err(|_| std::io::Error::other("invalid sidecar name"))?;
+    // SAFETY: both names are NUL-terminated and `parent` is a live directory fd.
+    if unsafe {
+        renameat(
+            parent.as_raw_fd(),
+            old_name.as_ptr(),
+            parent.as_raw_fd(),
+            new_name.as_ptr(),
+        )
+    } == -1
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn unlink_sidecar_at(parent: &File, name: &str) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+
+    unsafe extern "C" {
+        fn unlinkat(dirfd: i32, pathname: *const std::ffi::c_char, flags: i32) -> i32;
+    }
+    let name = CString::new(name).map_err(|_| std::io::Error::other("invalid temp name"))?;
+    // SAFETY: `name` is NUL-terminated and `parent` is a live directory fd.
+    if unsafe { unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn load_sidecar_linux(wards_dir: &Path) -> Result<Option<String>, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let directory = open_verified_wards_directory_linux(wards_dir)?;
+    let mut file = match open_sidecar_at(&directory, ".usage.json") {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
+        return Err("ward usage sidecar is unsafe".into());
+    }
+    if metadata.len() > MAX_WARD_USAGE_BYTES as u64 {
+        return Err("ward usage sidecar exceeds the byte limit".into());
+    }
+    let mut bytes = Vec::with_capacity((metadata.len() as usize).min(MAX_WARD_USAGE_BYTES));
+    Read::by_ref(&mut file)
+        .take((MAX_WARD_USAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_WARD_USAGE_BYTES {
+        return Err("ward usage sidecar exceeds the byte limit".into());
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "ward usage sidecar must be valid UTF-8".into())
+}
+
+#[cfg(target_os = "linux")]
+fn open_sidecar_at(parent: &File, name: &str) -> std::io::Result<File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    unsafe extern "C" {
+        fn openat(dirfd: i32, pathname: *const std::ffi::c_char, flags: i32, ...) -> i32;
+    }
+    let name = CString::new(name).map_err(|_| std::io::Error::other("invalid sidecar name"))?;
+    let flags = 0o4000 | 0o400000 | 0o2000000;
+    // SAFETY: `name` is NUL-terminated and `parent` is a live directory fd.
+    let fd = unsafe { openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if fd == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        // SAFETY: `openat` returned a fresh descriptor now owned by `File`.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn save_sidecar_portable(wards_dir: &Path, bytes: &[u8]) -> Result<(), String> {
+    let root = std::fs::symlink_metadata(wards_dir).map_err(|error| error.to_string())?;
+    if root.file_type().is_symlink() || !root.is_dir() {
+        return Err("wards directory is unsafe".into());
+    }
+    let canonical_root = std::fs::canonicalize(wards_dir).map_err(|error| error.to_string())?;
+    let temporary = wards_dir.join(format!(".usage.{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| error.to_string())?;
+    let result = (|| {
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || !portable_metadata_has_single_link(&metadata)
+        {
+            return Err("ward usage temporary file is unsafe".into());
+        }
+        if !std::fs::canonicalize(&temporary)
+            .map_err(|error| error.to_string())?
+            .starts_with(&canonical_root)
+        {
+            return Err("ward usage temporary file escaped the wards directory".into());
+        }
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        replace_sidecar_portable(&temporary, &wards_dir.join(".usage.json"))
+            .map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(all(not(target_os = "linux"), not(windows)))]
+fn replace_sidecar_portable(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_sidecar_portable(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    // SAFETY: both paths are NUL-terminated UTF-16 buffers alive for the call.
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn load_sidecar_portable(wards_dir: &Path) -> Result<Option<String>, String> {
+    let path = wards_dir.join(".usage.json");
+    let before = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !before.is_file()
+        || before.file_type().is_symlink()
+        || !portable_metadata_has_single_link(&before)
+        || before.len() > MAX_WARD_USAGE_BYTES as u64
+    {
+        return Err("ward usage sidecar is unsafe or oversized".into());
+    }
+    let canonical_root = std::fs::canonicalize(wards_dir).map_err(|error| error.to_string())?;
+    let canonical_path = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+    if !canonical_path.starts_with(canonical_root) {
+        return Err("ward usage sidecar escaped the wards directory".into());
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(&path)
+        .map_err(|error| error.to_string())?;
+    let opened = file.metadata().map_err(|error| error.to_string())?;
+    if !opened.is_file()
+        || opened.file_type().is_symlink()
+        || !portable_metadata_has_single_link(&opened)
+        || opened.len() > MAX_WARD_USAGE_BYTES as u64
+    {
+        return Err("ward usage sidecar is unsafe or oversized".into());
+    }
+    let mut bytes = Vec::with_capacity((opened.len() as usize).min(MAX_WARD_USAGE_BYTES));
+    Read::by_ref(&mut file)
+        .take((MAX_WARD_USAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_WARD_USAGE_BYTES {
+        return Err("ward usage sidecar exceeds the byte limit".into());
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "ward usage sidecar must be valid UTF-8".into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn portable_metadata_has_single_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return metadata.nlink() == 1;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return metadata.number_of_links() == Some(1);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = metadata;
+        true
+    }
 }
 
 impl WardUsage {
@@ -102,24 +427,35 @@ impl WardUsage {
     }
 
     fn load_inner(&self) -> WardUsageMap {
-        match std::fs::read_to_string(self.sidecar_path()) {
-            Ok(raw) if raw.trim().is_empty() => BTreeMap::new(),
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+        #[cfg(target_os = "linux")]
+        let loaded = load_sidecar_linux(&self.wards_dir);
+        #[cfg(not(target_os = "linux"))]
+        let loaded = load_sidecar_portable(&self.wards_dir);
+        match loaded {
+            Ok(None) => BTreeMap::new(),
+            Ok(Some(raw)) if raw.trim().is_empty() => BTreeMap::new(),
+            Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "ward .usage.json malformed; treating as empty");
                 BTreeMap::new()
             }),
-            Err(_) => BTreeMap::new(),
+            Err(error) => {
+                tracing::warn!(error = %error, "ward .usage.json unsafe or unreadable; treating as empty");
+                BTreeMap::new()
+            }
         }
     }
 
     fn save_inner(&self, map: &WardUsageMap) -> Result<(), String> {
         std::fs::create_dir_all(&self.wards_dir).map_err(|e| e.to_string())?;
-        let dest = self.sidecar_path();
-        let tmp = dest.with_extension("json.tmp");
         let raw = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-        std::fs::write(&tmp, raw).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
-        Ok(())
+        #[cfg(target_os = "linux")]
+        {
+            save_sidecar_linux(&self.wards_dir, raw.as_bytes())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            save_sidecar_portable(&self.wards_dir, raw.as_bytes())
+        }
     }
 
     /// Read the whole sidecar. Returns an empty map when the file is
@@ -176,12 +512,26 @@ impl WardUsage {
     /// `created_by` so a previously-unknown record can be corrected once
     /// the real provenance is known.
     pub fn mark_created(&self, ward: &str, created_by: WardProvenance) -> Result<(), String> {
+        self.mark_created_with_archetype(ward, created_by, None)
+    }
+
+    /// Record creation provenance and the selected archetype in one sidecar
+    /// mutation. Passing `None` preserves an existing archetype value.
+    pub fn mark_created_with_archetype(
+        &self,
+        ward: &str,
+        created_by: WardProvenance,
+        archetype: Option<WardArchetypeId>,
+    ) -> Result<(), String> {
         self.mutate(|map| {
             let now = Utc::now();
             let entry = map
                 .entry(ward.to_string())
                 .or_insert_with(|| WardRecord::new_at(now, created_by));
             entry.created_by = created_by;
+            if archetype.is_some() {
+                entry.archetype = archetype;
+            }
         })
     }
 
@@ -261,6 +611,71 @@ mod tests {
         assert_eq!(reread["alpha"].created_by, WardProvenance::Agent);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_sidecar_symlink_without_writing_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, usage) = make_temp();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "unchanged").unwrap();
+        symlink(&victim, usage.path()).unwrap();
+        let mut map = WardUsageMap::new();
+        map.insert(
+            "alpha".to_string(),
+            WardRecord::new_at(Utc::now(), WardProvenance::Agent),
+        );
+
+        usage.save(&map).unwrap();
+
+        assert_eq!(std::fs::read_to_string(victim).unwrap(), "unchanged");
+        assert!(!std::fs::symlink_metadata(usage.path())
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            usage.get("alpha").unwrap().created_by,
+            WardProvenance::Agent
+        );
+        assert!(!std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_and_oversized_sidecars_are_bounded_and_treated_as_empty() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, usage) = make_temp();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, r#"{"injected":{}}"#).unwrap();
+        symlink(&victim, usage.path()).unwrap();
+        assert!(usage.load().is_empty());
+
+        std::fs::remove_file(usage.path()).unwrap();
+        std::fs::write(usage.path(), vec![b'x'; MAX_WARD_USAGE_BYTES + 1]).unwrap();
+        assert!(usage.load().is_empty());
+
+        std::fs::remove_file(usage.path()).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(usage.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(usage.load().is_empty());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn portable_ward_usage_updates_existing_sidecar() {
+        let (_dir, usage) = make_temp();
+        usage.bump_use("alpha").unwrap();
+        usage.bump_use("alpha").unwrap();
+        assert_eq!(usage.get("alpha").unwrap().use_count, 2);
+    }
+
     #[test]
     fn bump_use_increments_and_stamps() {
         let (_dir, usage) = make_temp();
@@ -302,6 +717,32 @@ mod tests {
         let rec = usage.get("alpha").expect("record");
         assert_eq!(rec.created_by, WardProvenance::Bundled);
         assert_eq!(rec.use_count, 1);
+    }
+
+    #[test]
+    fn creation_archetype_roundtrips_and_legacy_records_default_to_absent() {
+        let (_dir, usage) = make_temp();
+        usage
+            .mark_created_with_archetype(
+                "compiler",
+                WardProvenance::Agent,
+                Some(WardArchetypeId::Coding),
+            )
+            .unwrap();
+        assert_eq!(
+            usage.get("compiler").unwrap().archetype,
+            Some(WardArchetypeId::Coding)
+        );
+
+        let legacy = r#"{
+          "legacy": {
+            "created_at": "2026-01-01T00:00:00Z",
+            "created_by": "agent",
+            "state": "active"
+          }
+        }"#;
+        std::fs::write(usage.path(), legacy).unwrap();
+        assert_eq!(usage.get("legacy").unwrap().archetype, None);
     }
 
     #[test]

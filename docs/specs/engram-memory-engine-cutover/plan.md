@@ -176,8 +176,9 @@ Protected contract artifacts:
 
 ### Dependencies & integration
 
-- Local Engram crates come from `/home/videogamer/projects/mem-alpha` until a
-  pinned upstream source is selected.
+- Engram crates come from the public `https://github.com/phanijapps/engram`
+  repository's `main` branch; `Cargo.lock` records the resolved commit for
+  reproducible builds.
 - First used crates: `engram-integration`, `engram-conformance`, Engram port
   crates, and only the remaining low-level SQLite crates needed inside store
   compatibility sidecars until provider handles fully cover the parity surface.

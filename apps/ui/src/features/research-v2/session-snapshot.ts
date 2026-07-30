@@ -27,6 +27,7 @@ import type {
   Artifact,
   LogSession,
   SessionMessage,
+  WorkSurface,
 } from "@/services/transport/types";
 import type {
   AgentTurn,
@@ -82,6 +83,7 @@ export interface ResearchSnapshot {
   intentAnalyzing: boolean;
   /** Recorded primary intent, when the session completed intent analysis. */
   intentClassification: string | null;
+  surfaces: WorkSurface[];
 }
 
 /**
@@ -95,7 +97,7 @@ export async function snapshotSession(
   transport: Transport,
   sessionId: string,
 ): Promise<ResearchSnapshot | null> {
-  const [logsRes, msgsRes, artifactsRes, stateRes] = await Promise.all([
+  const [logsRes, msgsRes, artifactsRes, stateRes, surfacesRes] = await Promise.all([
     // Do not fetch the default, globally-limited execution list and filter it
     // locally. That loses child executions from older sessions once unrelated
     // agent work has filled the global page, so a reopened Research thread no
@@ -109,6 +111,7 @@ export async function snapshotSession(
     // re-populates the header ward chip + clickable folder link. Soft
     // fail: older backends without the endpoint just leave ward null.
     transport.getSessionState(sessionId).catch(() => ({ success: false } as const)),
+    transport.listSavedSessionSurfaces(sessionId).catch(() => ({ success: false } as const)),
   ]);
 
   if (!logsRes.success || !logsRes.data) return null;
@@ -152,6 +155,7 @@ export async function snapshotSession(
     ? primaryIntent.trim()
     : null;
   const intentAnalyzing = stateRes.success && stateRes.data?.phase === "intent";
+  const surfaces = surfacesRes.success && surfacesRes.data ? surfacesRes.data : [];
 
   // Build per-turn rollup using only root-execution messages (subagent
   // executions carry their own user-role rows from delegation context).
@@ -186,6 +190,7 @@ export async function snapshotSession(
     conversationId: null,
     intentAnalyzing,
     intentClassification,
+    surfaces,
   };
 }
 

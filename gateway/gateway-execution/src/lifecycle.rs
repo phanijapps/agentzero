@@ -235,13 +235,13 @@ pub async fn complete_execution(ctx: CompleteExecution<'_>) {
     if session_completed {
         match state_service.complete_session_plan(session_id, execution_id) {
             Ok(Some(snapshot)) => {
-                event_bus
-                    .publish(GatewayEvent::SurfaceUpdated {
-                        session_id: session_id.to_string(),
-                        execution_id: execution_id.to_string(),
-                        surface: crate::invoke::build_session_plan_surface(session_id, &snapshot),
-                    })
-                    .await;
+                let event = GatewayEvent::SurfaceUpdated {
+                    session_id: session_id.to_string(),
+                    execution_id: execution_id.to_string(),
+                    surface: crate::invoke::build_session_plan_surface(session_id, &snapshot),
+                };
+                crate::invoke::persist_gateway_surface(state_service, &event);
+                event_bus.publish(event).await;
             }
             Ok(None) => {}
             Err(error) => tracing::warn!(
@@ -403,14 +403,11 @@ pub async fn crash_execution(ctx: CrashExecution<'_>) {
         error,
         crash_session,
     } = ctx;
-    // Update execution status to CRASHED
     if let Err(e) = state_service.crash_execution(execution_id, error) {
         tracing::warn!("Failed to crash execution: {}", e);
     }
 
-    // Optionally crash the session too (for root executions)
     if crash_session {
-        // crash_session() already aggregates tokens
         if let Err(e) = state_service.crash_session(session_id) {
             tracing::warn!("Failed to crash session: {}", e);
         }
@@ -613,6 +610,7 @@ mod tests {
         paths.ensure_dirs_exist().expect("vault directories");
         let db = Arc::new(DatabaseManager::new(paths).expect("database"));
         let state = StateService::new(db.clone());
+        state.set_surface_persistence_enabled(true);
         let logs = LogService::new(db);
         let (session, execution) = state.create_session("root-agent").expect("session");
         state
@@ -674,6 +672,13 @@ mod tests {
             .plan
             .iter()
             .all(|step| step.status == SessionPlanStepStatus::Completed));
+        assert_eq!(
+            state
+                .list_session_surfaces(&session.id)
+                .expect("saved terminal surface")
+                .len(),
+            1
+        );
     }
 
     /// Regression: `emit_delegation_started` must populate `parent_conversation_id`

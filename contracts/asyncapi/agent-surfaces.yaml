@@ -5,33 +5,37 @@ info:
   description: Additive capability-gated work-surface events over the existing zbot WebSocket.
 x-spec:
   - docs/specs/agent-driven-surfaces/
+  - docs/specs/a2ui-component-catalog/
+  - docs/specs/automatic-work-surfaces/
+  - docs/specs/persistent-work-surfaces/
+  - docs/specs/dynamic-surface-titles/
 channels:
   sessionSurface:
     address: /ws
     messages:
       surfaceCreated:
-        $ref: '#/components/messages/SurfaceCreated'
+        $ref: "#/components/messages/SurfaceCreated"
       surfaceUpdated:
-        $ref: '#/components/messages/SurfaceUpdated'
+        $ref: "#/components/messages/SurfaceUpdated"
       surfaceDeleted:
-        $ref: '#/components/messages/SurfaceDeleted'
+        $ref: "#/components/messages/SurfaceDeleted"
       surfaceValidationFailed:
-        $ref: '#/components/messages/SurfaceValidationFailed'
+        $ref: "#/components/messages/SurfaceValidationFailed"
 operations:
   receiveSessionSurface:
     action: receive
     channel:
-      $ref: '#/channels/sessionSurface'
+      $ref: "#/channels/sessionSurface"
 components:
   messages:
     SurfaceCreated:
       name: surface.created
       payload:
-        $ref: '#/components/schemas/WorkSurface'
+        $ref: "#/components/schemas/WorkSurface"
     SurfaceUpdated:
       name: surface.updated
       payload:
-        $ref: '#/components/schemas/WorkSurface'
+        $ref: "#/components/schemas/WorkSurface"
     SurfaceDeleted:
       name: surface.deleted
       payload:
@@ -56,7 +60,16 @@ components:
   schemas:
     WorkSurface:
       type: object
-      required: [type, session_id, execution_id, surface_id, catalog_id, components, data]
+      required:
+        [
+          type,
+          session_id,
+          execution_id,
+          surface_id,
+          catalog_id,
+          components,
+          data,
+        ]
       properties:
         type: { enum: [surface.created, surface.updated] }
         session_id: { type: string }
@@ -67,13 +80,280 @@ components:
           type: array
           maxItems: 64
           items:
-            type: object
-            required: [id, type]
-            properties:
-              id: { type: string, maxLength: 128 }
-              type:
-                enum: [DecisionMatrix, EvidenceTable, AssumptionRegister, PlanChecklist, ApprovalGate, OpenLoops]
-              props: { type: object, additionalProperties: true }
+            $ref: "#/components/schemas/SurfaceComponent"
         data:
           type: object
           additionalProperties: true
+          description: Surface validation rejects the complete payload above 64 KiB and applies component-specific binding budgets before publication.
+    SurfaceComponent:
+      type: object
+      required: [id, type]
+      additionalProperties: false
+      properties:
+        id: { type: string, minLength: 1, maxLength: 128 }
+        type:
+          enum:
+            [
+              DecisionMatrix,
+              EvidenceTable,
+              AssumptionRegister,
+              PlanChecklist,
+              ApprovalGate,
+              OpenLoops,
+              MetricCard,
+              ProgressBar,
+              StatusBadge,
+              Callout,
+              KeyValueList,
+              DataTable,
+              Timeline,
+              LineChart,
+              BarChart,
+              PieChart,
+            ]
+        props: { type: object }
+      allOf:
+        - if: { properties: { type: { const: DecisionMatrix } } }
+          then:
+            {
+              properties:
+                { props: { $ref: "#/components/schemas/DecisionMatrixProps" } },
+            }
+        - if: { properties: { type: { const: EvidenceTable } } }
+          then:
+            {
+              properties:
+                { props: { $ref: "#/components/schemas/EvidenceTableProps" } },
+            }
+        - if: { properties: { type: { const: AssumptionRegister } } }
+          then:
+            {
+              properties:
+                {
+                  props:
+                    { $ref: "#/components/schemas/AssumptionRegisterProps" },
+                },
+            }
+        - if: { properties: { type: { const: PlanChecklist } } }
+          then:
+            {
+              properties:
+                { props: { $ref: "#/components/schemas/PlanChecklistProps" } },
+            }
+        - if: { properties: { type: { const: ApprovalGate } } }
+          then:
+            {
+              properties:
+                { props: { $ref: "#/components/schemas/ApprovalGateProps" } },
+            }
+        - if: { properties: { type: { const: OpenLoops } } }
+          then:
+            {
+              properties:
+                { props: { $ref: "#/components/schemas/OpenLoopsProps" } },
+            }
+        - if: { properties: { type: { const: MetricCard } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/MetricCardProps" } },
+            }
+        - if: { properties: { type: { const: ProgressBar } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/ProgressBarProps" } },
+            }
+        - if: { properties: { type: { const: StatusBadge } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/StatusBadgeProps" } },
+            }
+        - if: { properties: { type: { const: Callout } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/CalloutProps" } },
+            }
+        - if: { properties: { type: { const: KeyValueList } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/KeyValueListProps" } },
+            }
+        - if: { properties: { type: { const: DataTable } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/DataTableProps" } },
+            }
+        - if: { properties: { type: { const: Timeline } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/TimelineProps" } },
+            }
+        - if: { properties: { type: { const: LineChart } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/CartesianChartProps" } },
+            }
+        - if: { properties: { type: { const: BarChart } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/CartesianChartProps" } },
+            }
+        - if: { properties: { type: { const: PieChart } } }
+          then:
+            {
+              required: [props],
+              properties:
+                { props: { $ref: "#/components/schemas/PieChartProps" } },
+            }
+    Title:
+      type: string
+      maxLength: 128
+    Label:
+      type: string
+      maxLength: 128
+    FieldKey:
+      type: string
+      minLength: 1
+      maxLength: 64
+    JsonPointer:
+      type: string
+      pattern: "^(?:$|/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*)$"
+    DecisionMatrixProps:
+      type: object
+      additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+    EvidenceTableProps:
+      type: object
+      additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+    AssumptionRegisterProps:
+      type: object
+      additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+    PlanChecklistProps:
+      type: object
+      additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+    ApprovalGateProps:
+      type: object
+      additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+    OpenLoopsProps:
+      type: object
+      additionalProperties: true
+      properties:
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+    MetricCardProps:
+      type: object
+      required: [value_path]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        label: { $ref: "#/components/schemas/Label" }
+        value_path: { $ref: "#/components/schemas/JsonPointer" }
+        detail_path: { $ref: "#/components/schemas/JsonPointer" }
+    ProgressBarProps:
+      type: object
+      required: [value_path]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        label: { $ref: "#/components/schemas/Label" }
+        value_path: { $ref: "#/components/schemas/JsonPointer" }
+        max: { type: number, exclusiveMinimum: 0 }
+    StatusBadgeProps:
+      type: object
+      required: [value_path]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        label: { $ref: "#/components/schemas/Label" }
+        value_path: { $ref: "#/components/schemas/JsonPointer" }
+    CalloutProps:
+      type: object
+      required: [message_path]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        message_path: { $ref: "#/components/schemas/JsonPointer" }
+        tone: { enum: [info, success, warning, error] }
+    KeyValueListProps:
+      type: object
+      required: [items_path]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        items_path: { $ref: "#/components/schemas/JsonPointer" }
+    DataTableProps:
+      type: object
+      required: [rows_path]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        rows_path: { $ref: "#/components/schemas/JsonPointer" }
+        columns:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/FieldKey" }
+    TimelineProps:
+      type: object
+      required: [items_path]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        items_path: { $ref: "#/components/schemas/JsonPointer" }
+    CartesianChartProps:
+      type: object
+      required: [data_path, x_key, series]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        data_path: { $ref: "#/components/schemas/JsonPointer" }
+        x_key: { $ref: "#/components/schemas/FieldKey" }
+        series:
+          type: array
+          minItems: 1
+          maxItems: 8
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/FieldKey" }
+    PieChartProps:
+      type: object
+      required: [data_path, name_key, value_key]
+      additionalProperties: false
+      properties:
+        title: { $ref: "#/components/schemas/Title" }
+        title_path: { $ref: "#/components/schemas/JsonPointer" }
+        data_path: { $ref: "#/components/schemas/JsonPointer" }
+        name_key: { $ref: "#/components/schemas/FieldKey" }
+        value_key: { $ref: "#/components/schemas/FieldKey" }

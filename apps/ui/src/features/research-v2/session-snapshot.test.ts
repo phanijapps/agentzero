@@ -29,6 +29,7 @@ const listLogSessions = vi.fn<Transport["listLogSessions"]>();
 const getSessionMessages = vi.fn<Transport["getSessionMessages"]>();
 const listSessionArtifacts = vi.fn<Transport["listSessionArtifacts"]>();
 const getSessionState = vi.fn<Transport["getSessionState"]>();
+const listSavedSessionSurfaces = vi.fn<Transport["listSavedSessionSurfaces"]>();
 
 function makeTransport(): Transport {
   // getSessionState defaults to a benign no-ward response; individual
@@ -53,6 +54,7 @@ function makeTransport(): Transport {
     getSessionMessages,
     listSessionArtifacts,
     getSessionState,
+    listSavedSessionSurfaces,
   } as unknown as Transport;
 }
 
@@ -140,6 +142,8 @@ beforeEach(() => {
   getSessionMessages.mockReset();
   listSessionArtifacts.mockReset();
   getSessionState.mockReset();
+  listSavedSessionSurfaces.mockReset();
+  listSavedSessionSurfaces.mockResolvedValue({ success: true, data: [] });
 });
 
 // -----------------------------------------------------------------------------
@@ -175,6 +179,28 @@ describe("snapshotSession — null returns", () => {
 // -----------------------------------------------------------------------------
 
 describe("snapshotSession — completed session", () => {
+  it("includes saved work surfaces in the hydration snapshot", async () => {
+    // STUB: AC4 — Research restore uses the same bounded server snapshot.
+    listLogSessions.mockResolvedValueOnce({
+      success: true,
+      data: [makeRow()],
+    });
+    getSessionMessages.mockResolvedValueOnce({ success: true, data: [] });
+    listSessionArtifacts.mockResolvedValueOnce({ success: true, data: [] });
+    const saved = {
+      surface_id: "surface-research",
+      catalog_id: "zbot/work-surface/v1" as const,
+      components: [],
+      data: {},
+    };
+    listSavedSessionSurfaces.mockResolvedValueOnce({ success: true, data: [saved] });
+
+    const snapshot = await snapshotSession(makeTransport(), SESSION_ID);
+
+    expect(snapshot?.surfaces).toEqual([saved]);
+    expect(listSavedSessionSurfaces).toHaveBeenCalledWith(SESSION_ID);
+  });
+
   it("carries the recorded primary intent into the hydrated snapshot", async () => {
     const rootRow = makeRow({ parent_session_id: undefined });
     listLogSessions.mockResolvedValueOnce({ success: true, data: [rootRow] });

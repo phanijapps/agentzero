@@ -56,6 +56,22 @@ edition = "2021"
 authors = ["agentzero"]
 license = "MIT"
 
+# Keep local builds debuggable without retaining full debug information for
+# every workspace and native dependency artifact.
+[profile.dev]
+debug = 1
+incremental = true
+
+[profile.test]
+debug = 1
+incremental = false
+
+[profile.dev.package.libduckdb-sys]
+debug = 0
+
+[profile.test.package.libduckdb-sys]
+debug = 0
+
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

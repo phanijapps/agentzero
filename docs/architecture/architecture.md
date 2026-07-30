@@ -2172,3 +2172,29 @@ Typical daemon (`zbotd`) memory usage: **~150 MB** at idle after first request.
 - **Reduce pool size**: Lower `max_size` to 4 — saves ~32 MB (trades throughput under load)
 - **Reduce cache_size**: Set `PRAGMA cache_size = -4000` — saves ~4 MB per connection
 - **Lazy model loading**: Defer fastembed init until first `recall`/`save_fact` — saves startup RAM if memory features unused
+
+## Ward Layout and Template Security
+
+Ward layout YAML, doctrine, and starter Markdown are local user-editable data.
+They never grant tool authority and must not be interpreted as shell commands,
+environment expressions, executable hooks, remote includes, or higher-priority
+agent instructions.
+
+The blessed implementation path is:
+
+- `load_bounded_vault_bytes` and `load_bounded_vault_utf8_file` for literal,
+  size-bounded, no-follow reads beneath the configured vault;
+- `load_ward_layout_bytes` and `CompiledWardLayout::compile` for strict,
+  versioned YAML and finite rule validation;
+- `validate_ward_archetype_doctrine` and starter validation for bounded
+  placeholders and prompt-injection markers with content-redacted errors;
+- `seed_literal_vault_file` for create-once bundle installation;
+- `create_ward_from_archetype`, `publish_tree_no_replace`, and their anchored
+  platform helpers for snapshot materialization and atomic publication; and
+- `lint_ward` for validating a Ward against its local immutable snapshot.
+
+Callers preserve canonical containment, reject symlinks and hardlink aliases,
+detect case-fold collisions, validate every literal component, and avoid
+check-then-use path resolution. Template synchronization and backups are
+restricted to `<vault>/config/templates/wards`; they never traverse or mutate
+`<vault>/wards`.

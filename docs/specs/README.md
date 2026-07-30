@@ -4,8 +4,21 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [LLM Wiki Ward Foundation](llm-wiki-ward-foundation/spec.md) | Shipped | Gives every fresh archetype one Ward-named canonical page and append-only log, keeps one global catalog, replaces mandatory OKF with compact plain Markdown, and leaves optional Wiki namespaces lazy. |
+| [Ward Archetype Registry and Creation](ward-archetype-registry-and-creation/spec.md) | Draft | Adds the closed local registry, explicit generic/coding creation, bounded doctrine/starters, immutable snapshots, and durable provenance. |
+| [Intent Ward Archetype Selection](intent-ward-archetype-selection/spec.md) | Draft | Binds a closed create-only intent recommendation to ward creation with explicit override, deterministic generic fallback, and immutable reuse. |
+| [Compact Bundled Ward Archetypes](bundled-ward-archetypes/spec.md) | Shipped | Makes all seven bundles complete but lazy, with shared concept-local planning, one canonical Ward page, and discrete date-routed journal entries. |
+| [Ward Agent Doctrine Template](ward-agent-doctrine-template/spec.md) | Shipped | Moves new-Ward persona scaffolding into a bounded, user-editable template while preserving existing wards and orchestration behavior. |
+| [Ward Agent Persona](ward-agent-persona/spec.md) | Shipped | Makes every ward a persistent, user-editable agent with a ward-specific identity, persona, operating contract, self-maintenance rules, and handoff. |
+| [OKF Ward Tool Capabilities](okf-ward-tool-capabilities/spec.md) | Shipped | Injects one active template into root context/state and confines OKF behavior to the Ward tool plus generic agent and skill Markdown. |
+| [OKF Mini-Obsidian UI](okf-mini-obsidian-ui/spec.md) | Archived | Adds validated Markdown authoring, backlinks, graph navigation, filters, and concept-local spec/plan/task views over the superseded OKF foundation. |
+| [Ollama Cloud Provider](ollama-cloud-provider/spec.md) | Draft | Adds authenticated Ollama Cloud commissioning with aligned `glm-5.2:cloud` agents, a `gemma4:31b-cloud` multimodal fallback, and strict separation from Ollama Local. |
 | [Autonomy Ledger](autonomy-ledger/spec.md) | Shipped | Adds durable, approved cross-session decision threads with bounded resume context, Mission Control visibility, and read-only trigger eligibility. |
 | [Agent-Driven Surfaces](agent-driven-surfaces/spec.md) | Draft | Adds capability-gated, catalog-constrained agent work surfaces with channel-neutral results and server-owned actions. |
+| [A2UI Component Catalog](a2ui-component-catalog/spec.md) | Shipped | Adds bounded native metrics, status, structured records, timelines, and dynamic charts to the display-only work-surface catalog. |
+| [Dynamic Surface Titles](dynamic-surface-titles/spec.md) | Shipped | Replaces generic A2UI type headings with bound, static, or humanized content-aware titles. |
+| [Automatic Work Surfaces](automatic-work-surfaces/spec.md) | Shipped | Lets user-facing agents automatically publish validated display-only A2UI surfaces when structure materially improves an answer. |
+| [Persistent Work Surfaces](persistent-work-surfaces/spec.md) | Shipped | Adds opt-in, bounded persistence and reload restoration for validated Quick Chat and Research infographics, plus an explicit clear action. |
 | [Agent Commissioning](agent-commissioning/spec.md) | Shipped | Replaces the legacy setup wizard with durable, personalized model commissioning and a portable semantic profile. |
 | [Commissioning Memory Profile](commissioning-memory-profile/spec.md) | Shipped | Adds an explicit recommended Full Zbot memory choice with built-in embeddings, pinned recall/governance files, and restart-verified activation. |
 | [Engram Provider Adoption](engram-provider-adoption/spec.md) | Implementing | Makes the semantic-memory adapter use Engram's provider facade and expose capability-gated services without changing agent or UI behavior. |

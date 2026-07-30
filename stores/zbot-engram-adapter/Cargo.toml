@@ -10,12 +10,12 @@ description = "AgentZero compatibility adapter scaffold for Engram-backed stores
 agent-runtime = { path = "../../runtime/agent-runtime" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-engram-domain = { path = "../../../mem-alpha/core/domain" }
-engram-belief = { path = "../../../mem-alpha/core/belief" }
-engram-memory = { path = "../../../mem-alpha/core/memory" }
-engram-integration = { path = "../../../mem-alpha/core/integration", features = ["sqlite"] }
-engram-hierarchy = { path = "../../../mem-alpha/core/hierarchy" }
-engram-knowledge = { path = "../../../mem-alpha/core/knowledge" }
+engram-domain = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-belief = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-memory = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-integration = { git = "https://github.com/phanijapps/engram", branch = "main", features = ["sqlite"] }
+engram-hierarchy = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-knowledge = { git = "https://github.com/phanijapps/engram", branch = "main" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { workspace = true }

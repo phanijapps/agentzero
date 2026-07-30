@@ -1,167 +1,44 @@
-# Research archetype contract (shared)
+# Research archetype contract
 
-Every research-producer skill (`stock-analysis`, `news-research`,
-`product-research`, `competitive-analysis`, `academic-research`,
-`market-research`, `technical-research`, `policy-research`, and any
-future archetype) follows this contract. Each archetype's SKILL.md
-declares only the differences: activation triggers, subject slug
-convention, typical artifact filenames, and cross-source ingest profile.
+Research-producing skills share this workflow while retaining their own
+activation triggers and domain methods.
 
-Everything structural lives here.
+## Placement
 
-## Ward folder layout
+- Treat the Active Ward Template as the only layout and format authority.
+- Use exact task paths only when the template permits them.
+- Do not assume a research root, dated snapshot directory, index filename,
+  document format, archive, or auxiliary knowledge vault.
+- If no declared rule can hold a requested persistent artifact, keep that
+  result ephemeral and return `role_not_declared` with the template digest.
 
-```
-research/<archetype>/<subject>/<date-slug>/
-├── _index.md                 # session MOC
-├── <artifact-1>.md           # flat — no subfolders under the session
-└── <artifact-N>.md
-```
+## Workflow
 
-- `<archetype>` — the producer skill's name, kebab-case.
-- `<subject>` — what was researched: ticker, topic, product, industry,
-  paper family, policy. Kebab-case. Defaults to the ward slug when the
-  archetype skill can't derive something more specific.
-- `<date-slug>` — ISO date, optionally with a user-meaningful suffix
-  (`2026-04-16`, `2026-04-16-q1`, `2026-04-16-pre-earnings`,
-  `2026-04-16-morning`). Same-day collision on the same subject appends
-  `-2`, `-3`, … so each run is its own folder.
+1. Search the active ward and injected graph/context for prior work on the
+   subject.
+2. Gather evidence using the archetype's approved capabilities.
+3. Preserve source provenance and distinguish current observations from durable
+   findings.
+4. Write only task-specified or template-declared artifacts. Use the declared
+   format and required metadata rather than a fixed heading or frontmatter
+   schema.
+5. When the template declares an overview/index role, link it to the created
+   artifacts using the declared format's link mechanism. Otherwise return a
+   response-level inventory.
+6. When graph ingestion is requested and available, submit one bounded summary
+   entity plus evidence-backed cross-source entities and relationships.
+7. Save memory only for durable findings likely to matter across sessions; omit
+   ephemeral snapshot values.
 
-## Vault destination
+## Retrieval and retention
 
-`wiki` moves `research/` → `40_Research/` whole-tree. No router changes
-needed per archetype; the nesting is preserved.
+Resolve previous artifacts through ward search, returned paths, and graph
+properties. Never reconstruct a path from a remembered convention. Preserve
+prior snapshots unless the user explicitly requests replacement or cleanup.
 
-## `_index.md` shape
+## Boundaries
 
-Frontmatter per [`obsidian_conventions.md`](obsidian_conventions.md),
-with these research-specific keys:
-
-```yaml
----
-title: "<Session title>"
-type: research
-archetype: <archetype>
-subject: <subject>
-date_slug: <date-slug>
-date_conducted: 2026-04-16
-tags: [research, <archetype>, <subject-tag>, …]
-aliases: [...]
-source: "ward: <ward-name>"
----
-```
-
-Body (omit any empty section — do not leave empty headings):
-
-```markdown
-# <Session title>
-
-> Synopsis — thesis and verdict in one paragraph.
-
-## What was done
-
-- <process step>
-- <process step>
-
-## Outputs
-
-- [[<artifact-1>]] — one-liner
-- [[<artifact-N>]] — one-liner
-
-## Key findings
-
-- <finding>
-- <finding>
-
-<!-- manual -->
-<!-- /manual -->
-```
-
-## Artifact files
-
-Flat under the session folder (no subfolders). Filename is kebab-case
-`.md`, decided by the agent based on content (archetype SKILL.md lists
-typical examples). Frontmatter:
-
-```yaml
----
-title: "<Artifact title>"
-type: report
-archetype: <archetype>
-subject: <subject>
-date_slug: <date-slug>
-source: "ward: <ward-name>"
-date_generated: 2026-04-16
-tags: [<archetype>, <subject-tag>]
----
-```
-
-Body is the artifact content — no forced section vocabulary. Wikilink
-rewriting is optional (research artifacts are often figure-and-table
-heavy; forced rewriting hurts readability).
-
-## Main-KG ingest — one call at the end
-
-Payload:
-
-- **Exactly one** `research:<archetype>:<subject>:<date-slug>` summary
-  entity. Properties include `vault_path` → `_index.md`, `archetype`,
-  `subject`, `date_slug`, `date_conducted`, `thesis`, `artifacts` list,
-  `tags`.
-- **Archetype-specific cross-source entities** — each archetype declares
-  which real-world entities it ingests (organizations, people, products,
-  works, policies). IDs use the standard `<type>-<kebab-slug>` scheme so
-  entities collapse across sessions (`organization-tesla-inc` is ONE
-  node whether it came from `stock-analysis/tsla/*` or
-  `news-research/tsla/*`).
-- **Optional relationships** — typed edges from the session summary to
-  its subjects are allowed and encouraged:
-  - `about: <entity-id>` — the session is about this entity
-  - `mentions: <entity-id>` — entity appears but isn't the subject
-  - `cites: <entity-id>` — source material cited (news-research,
-    academic-research)
-
-Relationships carry `properties.evidence` pointing at the artifact or
-`_index.md` lines where the entity features.
-
-## Memory facts
-
-- One `domain.research.<archetype>.<subject>.<date-slug>.summary` fact
-  (default scope) — title, thesis, key findings.
-- Global-scope facts for findings durable beyond this snapshot, keyed
-  `domain.research.<archetype>.<subject>.finding.<kebab-name>`. Examples:
-  `domain.research.stock-analysis.tsla.finding.margin-compression-thesis`.
-- Skip ephemeral per-session numbers (Q1 2026 gross margin 17.3%) —
-  those live in the artifact file, not in memory.
-
-## Retrieval
-
-Find prior snapshots of a subject:
-- Use injected knowledge graph/context resources for
-  `research:<archetype>:<subject>:*` when present — they return dated
-  snapshot summary nodes with `vault_path` properties.
-- Or vault walk: `40_Research/<archetype>/<subject>/*/_index.md`.
-
-Find all archetype activity on a real entity (e.g. "every session that
-mentioned Tesla"):
-- Use injected neighbor/entity context when present; otherwise search the
-  research vault indexes for the entity. The `organization-tesla-inc` node
-  accumulates `about` / `mentions` edges from every research session.
-
-## Retention
-
-Each snapshot is durable — do not overwrite or prune prior dated
-snapshots programmatically. The user decides when to archive
-(`60_Archive/` manually).
-
-## What research archetypes do NOT do
-
-- Do not decompose the subject into entity pages inside the session
-  folder. (That's book-reader territory — fictional characters, themes,
-  events. Research is session-shaped: process + outputs + findings.)
-- Do not emit `*.kg.json` or per-artifact graph JSON. The session
-  summary entity + cross-source entities go to the main KG; everything
-  else is prose.
-- Do not rename or reshape artifact files once written — they are the
-  session's record.
-- Do not edit memory-bank, AGENTS.md, or any ward infrastructure.
+- Do not create entity-page trees unless the active template declares them.
+- Do not emit auxiliary graph files unless the task/template requests them.
+- Do not rename existing artifacts merely to match a preferred layout.
+- Do not edit ward instructions or infrastructure unless explicitly assigned.

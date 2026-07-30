@@ -3,17 +3,16 @@
 // Agent-managed project containers (named directories)
 // ============================================================================
 
+use std::io::{Read, Seek, Write};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use agent_primitives::{
-    AgentError, DelegateAction, FileSystemContext, Result, Tool, ToolContext, ToolPermissions,
+    AgentError, FileSystemContext, Result, Tool, ToolContext, ToolPermissions, WardArchetypeId,
 };
 use zbot_stores_traits::MemoryFactStore;
-
-use crate::tools::guards::start_planning_after_ward;
 
 /// AGENTS.md file name - living readme for agent executions
 const WARD_AGENTS_MD: &str = "AGENTS.md";
@@ -30,7 +29,37 @@ pub trait WardUsageAccess: Send + Sync + 'static {
     /// Called immediately after the ward tool creates a new ward directory,
     /// before the tool returns. Implementations should not panic — telemetry
     /// is best-effort.
-    async fn mark_created_agent(&self, ward: &str);
+    async fn mark_created_agent(&self, ward: &str, archetype: WardArchetypeId);
+}
+
+/// Gateway-provided access to the user-owned ward layout template.
+///
+/// The tool intentionally knows nothing about layout roles or YAML fields. It
+/// receives only a bounded context packet and lint report from the lower-level
+/// generic interpreter.
+pub trait WardLayoutAccess: Send + Sync + 'static {
+    fn create(
+        &self,
+        ward: &str,
+        archetype: Option<WardArchetypeId>,
+    ) -> std::result::Result<WardLayoutState, String>;
+    fn rollback_created(&self, ward: &str) -> std::result::Result<(), String>;
+    fn load(&self, ward: &str) -> std::result::Result<WardLayoutState, String>;
+    fn validate(&self, ward: &str, expected_digest: &str) -> std::result::Result<(), String>;
+    fn lint(&self, ward: &str, expected_digest: &str) -> std::result::Result<Value, String>;
+    fn concept(
+        &self,
+        ward: &str,
+        components: &[String],
+        expected_digest: &str,
+        apply: bool,
+    ) -> std::result::Result<Value, String>;
+}
+
+#[derive(Debug, Clone)]
+pub struct WardLayoutState {
+    pub context: Option<String>,
+    pub packet: Value,
 }
 
 /// Tool for managing wards (named project directories).
@@ -50,9 +79,25 @@ pub struct WardTool {
     /// `use`/`create` action scaffolds a new ward directory. `None` is a
     /// valid no-op (tests, minimal configurations).
     ward_usage: Option<Arc<dyn WardUsageAccess>>,
+    ward_layout: Arc<dyn WardLayoutAccess>,
 }
 
 impl WardTool {
+    fn validate_ward_name(name: &str) -> Result<()> {
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(AgentError::Tool(
+                "Ward name must be 1-64 ASCII letters, numbers, hyphens, or underscores"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a new WardTool with file system context, optional fact store,
     /// and optional ward-usage observer.
     #[must_use]
@@ -60,11 +105,13 @@ impl WardTool {
         fs: Arc<dyn FileSystemContext>,
         fact_store: Option<Arc<dyn MemoryFactStore>>,
         ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
     ) -> Self {
         Self {
             fs,
             fact_store,
             ward_usage,
+            ward_layout,
         }
     }
 
@@ -95,52 +142,31 @@ impl WardTool {
         std::fs::read_to_string(&agents_md_path).ok()
     }
 
-    /// Write a minimal AGENTS.md seed for a new ward.
-    ///
-    /// The seed is intentionally just the ward name as an H1 heading — the
-    /// agent curates all other content during sessions. We never overwrite an
-    /// existing AGENTS.md.
-    fn write_agents_md(ward_dir: &std::path::Path, ward_name: &str) {
-        let agents_md_path = ward_dir.join(WARD_AGENTS_MD);
-        if agents_md_path.exists() {
-            return;
+    fn register_ward(wards_root: &std::path::Path, ward_name: &str) -> std::io::Result<()> {
+        let index = wards_root.join("index.md");
+        let before = std::fs::symlink_metadata(&index)?;
+        validate_catalog_metadata(&before)?;
+        let mut file = open_catalog_for_update(&index, &before)?;
+        let mut content = String::new();
+        file.read_to_string(&mut content)?;
+        let display_name = ward_display_name(ward_name);
+        let entry = format!("- [[{ward_name}/{ward_name}|{display_name}]]");
+        if !content.lines().any(|line| line.trim() == entry) {
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(&entry);
+            content.push('\n');
+            file.seek(std::io::SeekFrom::Start(0))?;
+            file.set_len(0)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
         }
-
-        let content = format!("# {}\n", ward_name);
-
-        if let Err(e) = std::fs::write(&agents_md_path, content) {
-            tracing::warn!("Failed to create AGENTS.md in ward '{}': {}", ward_name, e);
-        }
+        Ok(())
     }
 
-    /// Create the empty memory-bank scaffold (directory + three zero-byte files).
-    /// The agent owns the contents. No other directories are pre-created — the
-    /// agent picks language-appropriate names for reusable-primitive locations
-    /// (`core/`, `pkg/`, `lib/`, `src/`, etc.).
-    fn scaffold_empty_dirs(ward_dir: &std::path::Path, ward_name: &str) {
-        let memory_bank = ward_dir.join("memory-bank");
-        if let Err(e) = std::fs::create_dir_all(&memory_bank) {
-            tracing::warn!(
-                "Failed to create memory-bank dir in ward '{}': {}",
-                ward_name,
-                e
-            );
-            return;
-        }
-
-        for file in ["ward.md", "structure.md", "core_docs.md"] {
-            let path = memory_bank.join(file);
-            if !path.exists()
-                && let Err(e) = std::fs::write(&path, "")
-            {
-                tracing::warn!(
-                    "Failed to create empty memory-bank/{} in ward '{}': {}",
-                    file,
-                    ward_name,
-                    e
-                );
-            }
-        }
+    fn ensure_ward_catalog(wards_root: &std::path::Path) -> std::io::Result<()> {
+        ensure_ward_catalog(wards_root)
     }
 
     /// Recall facts relevant to the ward being entered.
@@ -215,6 +241,674 @@ impl WardTool {
     }
 }
 
+pub fn ensure_ward_catalog(wards_root: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(wards_root)?;
+    let root_metadata = std::fs::symlink_metadata(wards_root)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(std::io::Error::other("wards root must be a real directory"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let root = open_directory_nofollow(wards_root)?;
+        let opened = root.metadata()?;
+        if root_metadata.dev() != opened.dev() || root_metadata.ino() != opened.ino() {
+            return Err(std::io::Error::other(
+                "wards root changed while it was opened",
+            ));
+        }
+        ensure_ward_catalog_at(&root)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        ensure_ward_catalog_portable(wards_root)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_ward_catalog_portable(wards_root: &std::path::Path) -> std::io::Result<()> {
+    let index = wards_root.join("index.md");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&index)
+    {
+        Ok(mut file) => {
+            file.write_all(b"# Wards\n")?;
+            file.sync_all()
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_catalog_metadata(&std::fs::symlink_metadata(index)?)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_ward_catalog_at(root: &std::fs::File) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let name = CString::new("index.md").expect("static catalog filename");
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: `name` is NUL-terminated and `root` owns a live directory fd.
+    let fd = unsafe { libc::openat(root.as_raw_fd(), name.as_ptr(), flags, 0o666) };
+    if fd >= 0 {
+        // SAFETY: `openat` returned a fresh descriptor now owned by `file`.
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        file.write_all(b"# Wards\n")?;
+        return file.sync_all();
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() != std::io::ErrorKind::AlreadyExists {
+        return Err(error);
+    }
+
+    let fd = unsafe {
+        libc::openat(
+            root.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `openat` returned a fresh descriptor now owned by `file`.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    validate_catalog_metadata(&file.metadata()?)
+}
+
+fn validate_catalog_metadata(metadata: &std::fs::Metadata) -> std::io::Result<()> {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::other(
+            "wards/index.md must be a real regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(std::io::Error::other(
+                "wards/index.md must have exactly one link",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ward_display_name(ward: &str) -> String {
+    ward.split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn validate_same_catalog_file(
+    before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+) -> std::io::Result<()> {
+    validate_catalog_metadata(opened)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err(std::io::Error::other(
+                "wards/index.md changed while it was opened",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn open_catalog_for_update(
+    index: &std::path::Path,
+    before: &std::fs::Metadata,
+) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let file = options.open(index)?;
+    let opened = file.metadata()?;
+    validate_same_catalog_file(before, &opened)?;
+    fs2::FileExt::lock_exclusive(&file)?;
+    let after = std::fs::symlink_metadata(index)?;
+    validate_same_catalog_file(&opened, &after)?;
+    Ok(file)
+}
+
+fn required_name<'a>(args: &'a Value, action: &str) -> Result<&'a str> {
+    args.get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AgentError::Tool(format!("Missing 'name' parameter for {action}")))
+}
+
+fn reject_unknown_fields(action: &str, args: &Value) -> Result<()> {
+    let allowed: &[&str] = match action {
+        "list" => &["action"],
+        "use" | "info" | "lint" => &["action", "name"],
+        "create" => &["action", "name", "archetype"],
+        "search" => &["action", "name", "query", "tags", "limit"],
+        "dry_run" => &["action", "name", "operation", "components"],
+        "create_concept" => &["action", "name", "components"],
+        _ => return Ok(()),
+    };
+    if let Some(key) = args
+        .as_object()
+        .and_then(|object| object.keys().find(|key| !allowed.contains(&key.as_str())))
+    {
+        return Err(AgentError::Tool(format!(
+            "ward: unknown field '{key}' for action '{action}'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_template_context(
+    ctx: &dyn ToolContext,
+    ward: &str,
+) -> std::result::Result<String, &'static str> {
+    if ctx
+        .get_state("app:actor_kind")
+        .and_then(|v| v.as_str().map(str::to_owned))
+        != Some("root".to_string())
+    {
+        return Err("root_required");
+    }
+    let packet = ctx
+        .get_state("ward_template")
+        .ok_or("template_unavailable")?;
+    if packet.get("status").and_then(Value::as_str) != Some("available") {
+        return Err("template_unavailable");
+    }
+    if packet.get("ward_id").and_then(Value::as_str) != Some(ward)
+        || packet.get("session_id").and_then(Value::as_str) != Some(ctx.session_id())
+        || packet.get("root_context_id").and_then(Value::as_str)
+            != ctx
+                .get_state("ward_template_context_id")
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .as_deref()
+        || ctx
+            .get_state("ward_id")
+            .and_then(|v| v.as_str().map(str::to_owned))
+            != Some(ward.to_string())
+    {
+        return Err("template_stale");
+    }
+    packet
+        .get("digest")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or("template_stale")
+}
+
+fn parse_tags(args: &Value) -> Result<Vec<String>> {
+    let values = args
+        .get("tags")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if values.len() > 32 {
+        return Err(AgentError::Tool(
+            "ward search accepts at most 32 tags".into(),
+        ));
+    }
+    values
+        .into_iter()
+        .map(|value| {
+            let tag = value
+                .as_str()
+                .filter(|tag| !tag.is_empty() && tag.len() <= 64)
+                .ok_or_else(|| AgentError::Tool("ward search tag is invalid".into()))?;
+            Ok(tag.to_lowercase())
+        })
+        .collect()
+}
+
+fn parse_components(args: &Value) -> Result<Vec<String>> {
+    let values = args
+        .get("components")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AgentError::Tool("Missing 'components' parameter".into()))?;
+    if values.is_empty() || values.len() > 16 {
+        return Err(AgentError::Tool("concept path is invalid".into()));
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| AgentError::Tool("concept path is invalid".into()))
+        })
+        .collect()
+}
+
+fn ok_envelope(action: &str, ward: &str, digest: &str, data: Value) -> Value {
+    json!({"ok":true,"action":action,"ward_id":ward,"template_digest":digest,"data":data})
+}
+
+fn error_envelope(action: &str, ward: &str, digest: &str, code: &str) -> Value {
+    json!({
+        "ok":false,"action":action,"ward_id":ward,"template_digest":digest,
+        "error":{"code":code,"message":"The Ward operation could not be completed."}
+    })
+}
+
+fn search_markdown(
+    root: &std::path::Path,
+    query: &str,
+    required_tags: &[String],
+    limit: usize,
+) -> std::result::Result<Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        search_markdown_linux(root, query, required_tags, limit)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        search_markdown_portable(root, query, required_tags, limit)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn search_markdown_linux(
+    root: &std::path::Path,
+    query: &str,
+    required_tags: &[String],
+    limit: usize,
+) -> std::result::Result<Value, String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    if query.len() > 256 || !(1..=50).contains(&limit) {
+        return Err("invalid_search".into());
+    }
+    let wards_path = root
+        .parent()
+        .ok_or_else(|| "ward_unavailable".to_string())?;
+    let ward_name = root
+        .file_name()
+        .ok_or_else(|| "ward_unavailable".to_string())?;
+    let before =
+        std::fs::symlink_metadata(wards_path).map_err(|_| "ward_unavailable".to_string())?;
+    if before.file_type().is_symlink() || !before.is_dir() {
+        return Err("ward_unavailable".into());
+    }
+    let wards = open_directory_nofollow(wards_path).map_err(|_| "ward_unavailable".to_string())?;
+    let opened = wards
+        .metadata()
+        .map_err(|_| "ward_unavailable".to_string())?;
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err("search_race".into());
+        }
+    }
+    let ward_fd =
+        open_at_nofollow(&wards, ward_name, true).map_err(|_| "ward_unavailable".to_string())?;
+    // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+    let ward = unsafe { std::fs::File::from_raw_fd(ward_fd) };
+    let mut pending = vec![(ward, std::path::PathBuf::new())];
+    let mut results = Vec::new();
+    let mut files_visited = 0usize;
+    let mut bytes_read = 0usize;
+    let mut entries_visited = 0usize;
+    let mut truncated = false;
+    let query = query.to_lowercase();
+
+    while let Some((directory, relative_dir)) = pending.pop() {
+        let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+        let remaining_entries = 10_000usize.saturating_sub(entries_visited);
+        let mut source = std::fs::read_dir(fd_path).map_err(|_| "search_failed".to_string())?;
+        let mut entries: Vec<_> = source
+            .by_ref()
+            .filter_map(|entry| entry.ok())
+            .take(remaining_entries.saturating_add(1))
+            .collect();
+        if entries.len() > remaining_entries {
+            entries.pop();
+            truncated = true;
+        }
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries.into_iter().rev() {
+            entries_visited += 1;
+            if entries_visited > 10_000 {
+                truncated = true;
+                break;
+            }
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if let Ok(fd) = open_at_nofollow(&directory, &name, true) {
+                // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+                let child = unsafe { std::fs::File::from_raw_fd(fd) };
+                pending.push((child, relative_dir.join(&name)));
+                continue;
+            }
+            if std::path::Path::new(&name)
+                .extension()
+                .and_then(|value| value.to_str())
+                != Some("md")
+            {
+                continue;
+            }
+            if files_visited >= 2_000 || bytes_read >= 8 * 1024 * 1024 {
+                truncated = true;
+                break;
+            }
+            let fd = match open_at_nofollow(&directory, &name, false) {
+                Ok(fd) => fd,
+                Err(_) => continue,
+            };
+            // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+            let file = unsafe { std::fs::File::from_raw_fd(fd) };
+            if !file
+                .metadata()
+                .map_err(|_| "search_failed".to_string())?
+                .is_file()
+            {
+                continue;
+            }
+            files_visited += 1;
+            let remaining = 8 * 1024 * 1024 - bytes_read;
+            let Some(content) = read_open_file_bounded(file, remaining)? else {
+                truncated = true;
+                break;
+            };
+            bytes_read += content.len();
+            let relative = relative_dir.join(&name);
+            let (title, tags) = markdown_metadata(&content, &relative);
+            let haystack = format!("{}\n{}\n{}", relative.display(), title, content).to_lowercase();
+            if !query.is_empty() && !haystack.contains(&query) {
+                continue;
+            }
+            let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
+            if !required_tags.iter().all(|tag| lowered.contains(tag)) {
+                continue;
+            }
+            results.push(json!({
+                "path": relative.to_string_lossy().replace('\\', "/"),
+                "title": title,
+                "tags": tags,
+            }));
+        }
+        if truncated {
+            break;
+        }
+    }
+    results.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    if results.len() > limit {
+        results.truncate(limit);
+        truncated = true;
+    }
+    Ok(json!({
+        "results": results, "truncated": truncated,
+        "files_visited": files_visited, "bytes_read": bytes_read
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn open_directory_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+#[cfg(target_os = "linux")]
+fn open_at_nofollow(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    directory: bool,
+) -> std::io::Result<i32> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    unsafe extern "C" {
+        fn openat(dirfd: i32, pathname: *const std::ffi::c_char, flags: i32, ...) -> i32;
+    }
+    let name = CString::new(name.as_bytes()).map_err(|_| std::io::Error::other("invalid name"))?;
+    let mut flags = 0o400000 | 0o2000000; // O_NOFOLLOW | O_CLOEXEC
+    if directory {
+        flags |= 0o200000; // O_DIRECTORY
+    }
+    // SAFETY: name is NUL-terminated and parent owns a live directory fd.
+    let fd = unsafe { openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if fd == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(fd)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_open_file_bounded(
+    file: std::fs::File,
+    limit: usize,
+) -> std::result::Result<Option<String>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "search_failed".to_string())?;
+    if bytes.len() > limit {
+        return Ok(None);
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "search_failed".to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn search_markdown_portable(
+    root: &std::path::Path,
+    query: &str,
+    required_tags: &[String],
+    limit: usize,
+) -> std::result::Result<Value, String> {
+    if query.len() > 256 || !(1..=50).contains(&limit) {
+        return Err("invalid_search".into());
+    }
+    let wards_root = root
+        .parent()
+        .ok_or_else(|| "ward_unavailable".to_string())?;
+    let wards_metadata =
+        std::fs::symlink_metadata(wards_root).map_err(|_| "ward_unavailable".to_string())?;
+    let root_metadata =
+        std::fs::symlink_metadata(root).map_err(|_| "ward_unavailable".to_string())?;
+    if wards_metadata.file_type().is_symlink()
+        || root_metadata.file_type().is_symlink()
+        || !root_metadata.is_dir()
+    {
+        return Err("ward_unavailable".into());
+    }
+    let wards_root = wards_root
+        .canonicalize()
+        .map_err(|_| "ward_unavailable".to_string())?;
+    let root = root
+        .canonicalize()
+        .map_err(|_| "ward_unavailable".to_string())?;
+    if root.parent() != Some(wards_root.as_path()) {
+        return Err("path_escape".into());
+    }
+    let mut pending = vec![root.clone()];
+    let mut results = Vec::new();
+    let mut files_visited = 0usize;
+    let mut bytes_read = 0usize;
+    let mut entries_visited = 0usize;
+    let mut truncated = false;
+    let query = query.to_lowercase();
+
+    while let Some(directory) = pending.pop() {
+        let canonical_directory = directory
+            .canonicalize()
+            .map_err(|_| "path_escape".to_string())?;
+        if !canonical_directory.starts_with(&root) {
+            return Err("path_escape".into());
+        }
+        let remaining_entries = 10_000usize.saturating_sub(entries_visited);
+        let mut source = std::fs::read_dir(&directory).map_err(|_| "search_failed".to_string())?;
+        let mut entries: Vec<_> = source
+            .by_ref()
+            .filter_map(|entry| entry.ok())
+            .take(remaining_entries.saturating_add(1))
+            .collect();
+        if entries.len() > remaining_entries {
+            entries.pop();
+            truncated = true;
+        }
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries.into_iter().rev() {
+            entries_visited += 1;
+            if entries_visited > 10_000 {
+                truncated = true;
+                break;
+            }
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let file_type = entry.file_type().map_err(|_| "search_failed".to_string())?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            if entry.path().extension().and_then(|value| value.to_str()) != Some("md") {
+                continue;
+            }
+            if files_visited >= 2_000 || bytes_read >= 8 * 1024 * 1024 {
+                truncated = true;
+                break;
+            }
+            files_visited += 1;
+            let remaining = 8 * 1024 * 1024 - bytes_read;
+            let Some(content) = read_markdown_bounded(&entry.path(), remaining)? else {
+                truncated = true;
+                break;
+            };
+            bytes_read += content.len();
+            let (title, tags) = markdown_metadata(&content, &entry.path());
+            let entry_path = entry.path();
+            let path = entry_path
+                .strip_prefix(&root)
+                .map_err(|_| "path_escape".to_string())?;
+            let haystack = format!("{}\n{}\n{}", path.display(), title, content).to_lowercase();
+            if !query.is_empty() && !haystack.contains(&query) {
+                continue;
+            }
+            let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
+            if !required_tags.iter().all(|tag| lowered.contains(tag)) {
+                continue;
+            }
+            results.push(
+                json!({"path":path.to_string_lossy().replace('\\', "/"),"title":title,"tags":tags}),
+            );
+        }
+        if truncated {
+            break;
+        }
+    }
+    results.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    if results.len() > limit {
+        results.truncate(limit);
+        truncated = true;
+    }
+    Ok(
+        json!({"results":results,"truncated":truncated,"files_visited":files_visited,"bytes_read":bytes_read}),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_markdown_bounded(
+    path: &std::path::Path,
+    limit: usize,
+) -> std::result::Result<Option<String>, String> {
+    use std::io::Read;
+    let before = std::fs::symlink_metadata(path).map_err(|_| "search_failed".to_string())?;
+    if before.file_type().is_symlink() || !before.is_file() {
+        return Ok(None);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(0x20000); // O_NOFOLLOW
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| "search_failed".to_string())?;
+    let opened = file.metadata().map_err(|_| "search_failed".to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err("search_race".into());
+        }
+    }
+    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "search_failed".to_string())?;
+    if bytes.len() > limit {
+        return Ok(None);
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "search_failed".to_string())
+}
+
+fn markdown_metadata(content: &str, path: &std::path::Path) -> (String, Vec<String>) {
+    let fallback = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_string();
+    if !content.starts_with("---\n") {
+        return (fallback, Vec::new());
+    }
+    let Some(end) = content[4..].find("\n---") else {
+        return (fallback, Vec::new());
+    };
+    let frontmatter = &content[4..4 + end];
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) else {
+        return (fallback, Vec::new());
+    };
+    let title = value
+        .get("title")
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or(&fallback)
+        .to_string();
+    let tags = value
+        .get("tags")
+        .and_then(serde_yaml::Value::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_yaml::Value::as_str)
+                .take(32)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    (title, tags)
+}
+
 #[async_trait]
 impl Tool for WardTool {
     fn name(&self) -> &str {
@@ -223,31 +917,51 @@ impl Tool for WardTool {
 
     fn description(&self) -> &str {
         "Manage code wards (named project directories). Wards persist across sessions.\n\
-         Arguments: `action` (required, one of use|create|list|info) and `name` (string).\n\
-         No other fields are accepted — do not pass `title`, `label`, or `description`.\n\
+         Arguments are action-specific; unknown fields are rejected.\n\
          Actions:\n\
          - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
          - create: Alias for use. Creates and switches to a new ward.\n\
          - list: List all wards with descriptions.\n\
-         - info: Detailed info about a specific ward."
+         - info: Detailed info about a specific ward.\n\
+         - search: Search Markdown in the active ward by text and exact tags.\n\
+         - lint: Check the active ward against its ward-conf.yaml snapshot.\n\
+         - dry_run: Preview a template-directed create_concept operation.\n\
+         - create_concept: Create the concept node annotated by the active template."
     }
 
     fn parameters_schema(&self) -> Option<Value> {
-        Some(json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["use", "create", "list", "info"],
-                    "description": "The ward operation to perform"
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Ward name (required for use, create, info). Use concise, descriptive names."
-                }
-            },
-            "required": ["action"]
-        }))
+        let named = |actions: Value| {
+            json!({
+                "type": "object",
+                "properties": {"action": actions, "name": {"type": "string"}},
+                "required": ["action", "name"],
+                "additionalProperties": false
+            })
+        };
+        Some(json!({"oneOf": [
+            named(json!({"enum": ["use", "info", "lint"]})),
+            {"type":"object","properties":{
+                "action":{"const":"create"},
+                "name":{"type":"string"},
+                "archetype":{"enum":["generic","coding","documentation","journal","ebook","research","news"]}
+            },"required":["action","name"],"additionalProperties":false},
+            {"type":"object","properties":{"action":{"const":"list"}},"required":["action"],"additionalProperties":false},
+            {"type":"object","properties":{
+                "action":{"const":"search"}, "name":{"type":"string"},
+                "query":{"type":"string","maxLength":256},
+                "tags":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":64}},
+                "limit":{"type":"integer","minimum":1,"maximum":50}
+            },"required":["action","name"],"additionalProperties":false},
+            {"type":"object","properties":{
+                "action":{"const":"dry_run"}, "name":{"type":"string"},
+                "operation":{"const":"create_concept"},
+                "components":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","maxLength":64}}
+            },"required":["action","name","operation","components"],"additionalProperties":false},
+            {"type":"object","properties":{
+                "action":{"const":"create_concept"}, "name":{"type":"string"},
+                "components":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","maxLength":64}}
+            },"required":["action","name","components"],"additionalProperties":false}
+        ]}))
     }
 
     fn permissions(&self) -> ToolPermissions {
@@ -269,6 +983,7 @@ impl Tool for WardTool {
                 "ward: missing 'action' parameter (one of: use, create, list, info)".to_string(),
             )
         })?;
+        reject_unknown_fields(action, &args)?;
 
         let wards_root = self
             .fs
@@ -280,23 +995,26 @@ impl Tool for WardTool {
                 let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
                     AgentError::Tool("Missing 'name' parameter for use/create".to_string())
                 })?;
+                let archetype = if action == "create" {
+                    args.get("archetype")
+                        .and_then(Value::as_str)
+                        .map(str::parse::<WardArchetypeId>)
+                        .transpose()
+                        .map_err(|_| {
+                            AgentError::Tool(
+                                "ward: invalid archetype; expected generic, coding, documentation, journal, ebook, research, or news"
+                                    .to_string(),
+                            )
+                        })?
+                } else {
+                    None
+                };
 
-                // Validate ward name: alphanumeric, hyphens, underscores only
-                if !name
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                {
-                    return Err(AgentError::Tool(
-                        "Ward name must contain only letters, numbers, hyphens, and underscores"
-                            .to_string(),
-                    ));
-                }
+                Self::ensure_ward_catalog(&wards_root).map_err(|error| {
+                    AgentError::Tool(format!("Failed to initialize Ward catalog: {error}"))
+                })?;
 
-                if name.is_empty() || name.len() > 64 {
-                    return Err(AgentError::Tool(
-                        "Ward name must be 1-64 characters".to_string(),
-                    ));
-                }
+                Self::validate_ward_name(name)?;
 
                 let ward_dir = wards_root.join(name);
                 let created = !ward_dir.exists();
@@ -314,58 +1032,51 @@ impl Tool for WardTool {
                     )));
                 }
 
-                // Create ward directory if needed
-                if created {
-                    std::fs::create_dir_all(&ward_dir).map_err(|e| {
-                        AgentError::Tool(format!("Failed to create ward directory: {}", e))
+                let mut layout_state = if created {
+                    let state = self.ward_layout.create(name, archetype).map_err(|error| {
+                        AgentError::Tool(format!("Ward template nudge: {error}"))
                     })?;
-                }
-
-                // Create ward scaffold for new wards. The seed is intentionally
-                // minimal — just the AGENTS.md heading and empty memory-bank +
-                // core scaffolds. The agent curates all content itself.
-                if created {
-                    Self::write_agents_md(&ward_dir, name);
-                    Self::scaffold_empty_dirs(&ward_dir, name);
-                    let _ = std::fs::create_dir_all(ward_dir.join("specs"));
+                    if let Err(error) = Self::register_ward(&wards_root, name) {
+                        self.ward_layout.rollback_created(name).map_err(|rollback| {
+                            AgentError::Tool(format!(
+                                "Failed to update Ward catalog and roll back the new Ward: {error}; {rollback}"
+                            ))
+                        })?;
+                        return Err(AgentError::Tool(format!(
+                            "Failed to update Ward catalog; the new Ward was rolled back: {error}"
+                        )));
+                    }
 
                     // Tell the ward-curator telemetry sidecar that this ward
                     // is agent-authored. Curator-eligible wards must have
                     // `created_by = "agent"`; without this hook every
                     // scaffolded ward lazy-inserts as `user` and is skipped.
                     if let Some(observer) = self.ward_usage.as_ref() {
-                        observer.mark_created_agent(name).await;
+                        observer
+                            .mark_created_agent(name, archetype.unwrap_or_default())
+                            .await;
                     }
-                }
+                    state
+                } else {
+                    self.ward_layout
+                        .load(name)
+                        .unwrap_or_else(|_| WardLayoutState {
+                            context: None,
+                            packet: json!({
+                                "status":"unavailable",
+                                "ward_id":name,
+                                "diagnostic":{"code":"template_unavailable"}
+                            }),
+                        })
+                };
 
-                // Set ward_id in context state
+                layout_state.packet["session_id"] = json!(ctx.session_id());
+                layout_state.packet["ward_id"] = json!(name);
                 ctx.set_state("ward_id".to_string(), json!(name));
-
-                // Cold graph work has no durable plan yet. Once root has
-                // established the workspace, launch planner-agent directly
-                // from this successful state transition rather than relying
-                // on the model to obey a prompt-only delegation instruction.
-                let planner_task = start_planning_after_ward(ctx.as_ref(), name);
-                if let Some(task) = planner_task.as_ref() {
-                    let mut actions = ctx.actions();
-                    actions.delegate = Some(DelegateAction {
-                        agent_id: "planner-agent".to_string(),
-                        task: task.clone(),
-                        context: None,
-                        wait_for_result: true,
-                        max_iterations: None,
-                        output_schema: None,
-                        skills: Vec::new(),
-                        capability_assignment: None,
-                        planning_capability_catalog: ctx
-                            .get_state("app:planning_capability_catalog"),
-                        complexity: None,
-                        mode: None,
-                        parallel: false,
-                        child_execution_id: None,
-                    });
-                    ctx.set_actions(actions);
-                }
+                // The bootstrap packet is immutable for this executor because
+                // it is also embedded in the system instruction. A ward
+                // switch takes effect for ordinary file tools immediately,
+                // but template-dependent actions wait for the next root turn.
 
                 // List files in the ward
                 let files = self.list_ward_files(&ward_dir);
@@ -386,14 +1097,11 @@ impl Tool for WardTool {
                     "files": files,
                     "file_count": files.len(),
                     "agents_md": agents_md,
+                    "ward_template": layout_state.packet,
                 });
 
                 if let Some(knowledge) = ward_knowledge {
                     result["ward_knowledge"] = knowledge;
-                }
-
-                if planner_task.is_some() {
-                    result["planner_started"] = json!(true);
                 }
 
                 // Nudge the agent to recall ward-specific knowledge
@@ -446,6 +1154,7 @@ impl Tool for WardTool {
                 let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
                     AgentError::Tool("Missing 'name' parameter for info".to_string())
                 })?;
+                Self::validate_ward_name(name)?;
 
                 let ward_dir = wards_root.join(name);
                 if !ward_dir.exists() {
@@ -468,6 +1177,65 @@ impl Tool for WardTool {
                 }))
             }
 
+            "lint" => {
+                let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    AgentError::Tool("Missing 'name' parameter for lint".to_string())
+                })?;
+                Self::validate_ward_name(name)?;
+                let digest = match validate_template_context(ctx.as_ref(), name) {
+                    Ok(digest) => digest,
+                    Err(code) => return Ok(error_envelope(action, name, "", code)),
+                };
+                match self.ward_layout.lint(name, &digest) {
+                    Ok(report) => Ok(ok_envelope(action, name, &digest, report)),
+                    Err(code) => Ok(error_envelope(action, name, &digest, &code)),
+                }
+            }
+
+            "search" => {
+                let name = required_name(&args, action)?;
+                Self::validate_ward_name(name)?;
+                let digest = match validate_template_context(ctx.as_ref(), name) {
+                    Ok(digest) => digest,
+                    Err(code) => return Ok(error_envelope(action, name, "", code)),
+                };
+                let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+                let tags = parse_tags(&args)?;
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+                if let Err(code) = self.ward_layout.validate(name, &digest) {
+                    return Ok(error_envelope(action, name, &digest, &code));
+                }
+                match search_markdown(&wards_root.join(name), query, &tags, limit) {
+                    Ok(data) => Ok(ok_envelope(action, name, &digest, data)),
+                    Err(code) => Ok(error_envelope(action, name, &digest, &code)),
+                }
+            }
+
+            "dry_run" | "create_concept" => {
+                let name = required_name(&args, action)?;
+                Self::validate_ward_name(name)?;
+                let digest = match validate_template_context(ctx.as_ref(), name) {
+                    Ok(digest) => digest,
+                    Err(code) => return Ok(error_envelope(action, name, "", code)),
+                };
+                if action == "dry_run"
+                    && args.get("operation").and_then(Value::as_str) != Some("create_concept")
+                {
+                    return Ok(error_envelope(
+                        action,
+                        name,
+                        &digest,
+                        "unsupported_operation",
+                    ));
+                }
+                let components = parse_components(&args)?;
+                let apply = action == "create_concept";
+                match self.ward_layout.concept(name, &components, &digest, apply) {
+                    Ok(data) => Ok(ok_envelope(action, name, &digest, data)),
+                    Err(code) => Ok(error_envelope(action, name, &digest, &code)),
+                }
+            }
+
             _ => Err(AgentError::Tool(format!("Unknown ward action: {}", action))),
         }
     }
@@ -484,8 +1252,171 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::TempDir;
 
+    // STUB: AC4
+    #[test]
+    fn ward_catalog_registers_one_canonical_wikilink() {
+        let root = tempfile::tempdir().unwrap();
+        WardTool::ensure_ward_catalog(root.path()).unwrap();
+        WardTool::register_ward(root.path(), "financial-analysis").unwrap();
+        WardTool::register_ward(root.path(), "financial-analysis").unwrap();
+
+        let content = std::fs::read_to_string(root.path().join("index.md")).unwrap();
+        let expected = "- [[financial-analysis/financial-analysis|Financial Analysis]]";
+        assert_eq!(content.lines().filter(|line| *line == expected).count(), 1);
+    }
+
+    #[test]
+    fn concurrent_catalog_registrations_preserve_every_ward_link() {
+        let root = tempfile::tempdir().unwrap();
+        WardTool::ensure_ward_catalog(root.path()).unwrap();
+        let wards_root = std::sync::Arc::new(root.path().to_path_buf());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let threads = (0..16)
+            .map(|index| {
+                let wards_root = wards_root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    WardTool::register_ward(&wards_root, &format!("ward-{index}")).unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let content = std::fs::read_to_string(root.path().join("index.md")).unwrap();
+        for index in 0..16 {
+            let expected = format!("- [[ward-{index}/ward-{index}|Ward {index}]]");
+            assert_eq!(
+                content.lines().filter(|line| *line == expected).count(),
+                1,
+                "{expected}"
+            );
+        }
+    }
+
     struct TestFs {
         base: PathBuf,
+    }
+
+    struct TestLayout {
+        base: PathBuf,
+    }
+
+    impl WardLayoutAccess for TestLayout {
+        fn create(
+            &self,
+            ward: &str,
+            archetype: Option<WardArchetypeId>,
+        ) -> std::result::Result<WardLayoutState, String> {
+            let path = self.base.join("wards").join(ward);
+            std::fs::create_dir(&path).map_err(|error| error.to_string())?;
+            std::fs::write(path.join("ward-conf.yaml"), "test")
+                .map_err(|error| error.to_string())?;
+            let mut state = self.load(ward)?;
+            state.packet["archetype"] = json!(archetype.unwrap_or_default());
+            Ok(state)
+        }
+
+        fn rollback_created(&self, ward: &str) -> std::result::Result<(), String> {
+            std::fs::remove_dir_all(self.base.join("wards").join(ward))
+                .map_err(|error| error.to_string())
+        }
+
+        fn load(&self, ward: &str) -> std::result::Result<WardLayoutState, String> {
+            if !self
+                .base
+                .join("wards")
+                .join(ward)
+                .join("ward-conf.yaml")
+                .is_file()
+            {
+                return Err("rebuild_required: ward-conf.yaml is missing".into());
+            }
+            Ok(WardLayoutState {
+                context: Some("<ward-layout digest=\"test\">{}</ward-layout>".into()),
+                packet: json!({"status": "available", "digest": "test"}),
+            })
+        }
+
+        fn validate(&self, ward: &str, expected_digest: &str) -> std::result::Result<(), String> {
+            self.load(ward)?;
+            (expected_digest == "test")
+                .then_some(())
+                .ok_or_else(|| "template_stale".to_string())
+        }
+
+        fn lint(&self, ward: &str, expected_digest: &str) -> std::result::Result<Value, String> {
+            self.validate(ward, expected_digest)?;
+            Ok(json!({"valid": true, "findings": []}))
+        }
+
+        fn concept(
+            &self,
+            ward: &str,
+            components: &[String],
+            _expected_digest: &str,
+            apply: bool,
+        ) -> std::result::Result<Value, String> {
+            self.load(ward)?;
+            let path = components.join("/");
+            if apply {
+                std::fs::create_dir(self.base.join("wards").join(ward).join(&path))
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(json!({"changes":[{"operation":"create","path":path,"size":0,"digest":"test"}]}))
+        }
+    }
+
+    fn test_layout(base: &std::path::Path) -> Arc<dyn WardLayoutAccess> {
+        Arc::new(TestLayout {
+            base: base.to_path_buf(),
+        })
+    }
+
+    struct CatalogBreakingLayout {
+        inner: TestLayout,
+    }
+
+    impl WardLayoutAccess for CatalogBreakingLayout {
+        fn create(
+            &self,
+            ward: &str,
+            archetype: Option<WardArchetypeId>,
+        ) -> std::result::Result<WardLayoutState, String> {
+            let state = self.inner.create(ward, archetype)?;
+            let catalog = self.inner.base.join("wards/index.md");
+            std::fs::remove_file(&catalog).map_err(|error| error.to_string())?;
+            std::fs::create_dir(&catalog).map_err(|error| error.to_string())?;
+            Ok(state)
+        }
+
+        fn rollback_created(&self, ward: &str) -> std::result::Result<(), String> {
+            self.inner.rollback_created(ward)
+        }
+
+        fn load(&self, ward: &str) -> std::result::Result<WardLayoutState, String> {
+            self.inner.load(ward)
+        }
+
+        fn validate(&self, ward: &str, expected_digest: &str) -> std::result::Result<(), String> {
+            self.inner.validate(ward, expected_digest)
+        }
+
+        fn lint(&self, ward: &str, expected_digest: &str) -> std::result::Result<Value, String> {
+            self.inner.lint(ward, expected_digest)
+        }
+
+        fn concept(
+            &self,
+            ward: &str,
+            components: &[String],
+            expected_digest: &str,
+            apply: bool,
+        ) -> std::result::Result<Value, String> {
+            self.inner.concept(ward, components, expected_digest, apply)
+        }
     }
 
     struct GateContext {
@@ -496,16 +1427,8 @@ mod tests {
 
     impl GateContext {
         fn cold_graph() -> Self {
-            let mut state = HashMap::new();
-            state.insert(
-                crate::tools::guards::PLANNING_GATE_STATE.to_string(),
-                serde_json::to_value(crate::tools::guards::PlanningGate::awaiting_ward(
-                    "Plan the requested 3D model",
-                ))
-                .unwrap(),
-            );
             Self {
-                state: Mutex::new(state),
+                state: Mutex::new(HashMap::new()),
                 actions: Mutex::new(EventActions::default()),
                 content: Content::user(""),
             }
@@ -518,6 +1441,23 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert("app:is_delegated".to_string(), json!(true));
+            context
+        }
+
+        fn active_root(ward: &str) -> Self {
+            let context = Self::cold_graph();
+            let mut state = context.state.lock().unwrap();
+            state.insert("app:actor_kind".into(), json!("root"));
+            state.insert("ward_id".into(), json!(ward));
+            state.insert(
+                "ward_template".into(),
+                json!({
+                    "status":"available", "session_id":"test", "ward_id":ward,
+                    "root_context_id":"root-test", "digest":"test", "projection":{}
+                }),
+            );
+            state.insert("ward_template_context_id".into(), json!("root-test"));
+            drop(state);
             context
         }
     }
@@ -605,7 +1545,7 @@ mod tests {
         let fs = Arc::new(TestFs {
             base: dir.path().to_path_buf(),
         });
-        let tool = WardTool::new(fs, None, None);
+        let tool = WardTool::new(fs, None, None, test_layout(dir.path()));
         let ward_dir = dir.path().join("wards").join("test");
         std::fs::create_dir_all(&ward_dir).unwrap();
 
@@ -619,7 +1559,7 @@ mod tests {
         let fs = Arc::new(TestFs {
             base: dir.path().to_path_buf(),
         });
-        let tool = WardTool::new(fs, None, None);
+        let tool = WardTool::new(fs, None, None, test_layout(dir.path()));
         let ward_dir = dir.path().join("wards").join("test");
         std::fs::create_dir_all(&ward_dir).unwrap();
 
@@ -644,7 +1584,7 @@ mod tests {
         let fs = Arc::new(TestFs {
             base: dir.path().to_path_buf(),
         });
-        let tool = WardTool::new(fs, None, None);
+        let tool = WardTool::new(fs, None, None, test_layout(dir.path()));
 
         std::fs::write(
             dir.path().join("AGENTS.md"),
@@ -662,64 +1602,78 @@ mod tests {
         let fs = Arc::new(TestFs {
             base: dir.path().to_path_buf(),
         });
-        let tool = WardTool::new(fs, None, None);
+        let tool = WardTool::new(fs, None, None, test_layout(dir.path()));
 
         let desc = tool.ward_description(dir.path());
         assert!(desc.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_write_agents_md_minimal_seed() {
-        let ward_dir = TempDir::new().unwrap();
-        let ward_path = ward_dir.path().to_path_buf();
+    fn ward_catalog_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
 
-        WardTool::write_agents_md(&ward_path, "test-project");
-
-        let content = std::fs::read_to_string(ward_path.join("AGENTS.md")).unwrap();
-        // Heading is the only non-whitespace content
-        let non_ws_lines: Vec<&str> = content
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .collect();
-        assert_eq!(non_ws_lines, vec!["# test-project"]);
-        // No opinionated sections
-        assert!(!content.contains("## Purpose"));
-        assert!(!content.contains("## Directory Layout"));
-        assert!(!content.contains("## Core Modules"));
-        assert!(!content.contains("## History"));
+        let dir = TempDir::new().unwrap();
+        let wards = dir.path().join("wards");
+        std::fs::create_dir(&wards).unwrap();
+        let outside = dir.path().join("outside.md");
+        std::fs::write(&outside, "keep").unwrap();
+        symlink(&outside, wards.join("index.md")).unwrap();
+        assert!(WardTool::ensure_ward_catalog(&wards).is_err());
+        assert!(WardTool::register_ward(&wards, "safe").is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "keep");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_ward_create_scaffolds_empty_memory_bank_files() {
-        let ward_dir = TempDir::new().unwrap();
-        let ward_path = ward_dir.path().to_path_buf();
+    fn catalog_open_rejects_a_raced_symlink_to_the_previously_checked_inode() {
+        use std::os::unix::fs::symlink;
 
-        WardTool::scaffold_empty_dirs(&ward_path, "minimal");
+        let dir = TempDir::new().unwrap();
+        let index = dir.path().join("index.md");
+        let moved = dir.path().join("moved.md");
+        std::fs::write(&index, "# Wards\n").unwrap();
+        let before = std::fs::symlink_metadata(&index).unwrap();
+        std::fs::rename(&index, &moved).unwrap();
+        symlink(&moved, &index).unwrap();
 
-        for file in ["ward.md", "structure.md", "core_docs.md"] {
-            let path = ward_path.join("memory-bank").join(file);
-            assert!(path.exists(), "memory-bank/{} should exist", file);
-            let meta = std::fs::metadata(&path).unwrap();
-            assert_eq!(meta.len(), 0, "memory-bank/{} should be empty", file);
-        }
+        assert!(open_catalog_for_update(&index, &before).is_err());
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "# Wards\n");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn test_ward_create_does_not_precreate_code_dirs() {
-        // No opinionated directories like core/, pkg/, lib/, src/ are
-        // pre-created — the agent picks names appropriate for the language.
-        let ward_dir = TempDir::new().unwrap();
-        let ward_path = ward_dir.path().to_path_buf();
+    fn catalog_seed_stays_anchored_when_the_wards_path_is_replaced() {
+        use std::os::unix::fs::symlink;
 
-        WardTool::scaffold_empty_dirs(&ward_path, "minimal");
+        let dir = TempDir::new().unwrap();
+        let wards = dir.path().join("wards");
+        let moved = dir.path().join("moved-wards");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&wards).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let opened = open_directory_nofollow(&wards).unwrap();
+        std::fs::rename(&wards, &moved).unwrap();
+        symlink(&outside, &wards).unwrap();
 
-        for opinionated in ["core", "pkg", "lib", "src", "internal"] {
-            assert!(
-                !ward_path.join(opinionated).exists(),
-                "ward scaffold must not pre-create {opinionated}/"
-            );
-        }
+        ensure_ward_catalog_at(&opened).unwrap();
+        assert!(moved.join("index.md").is_file());
+        assert!(!outside.join("index.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ward_catalog_rejects_hardlink_aliases() {
+        let dir = TempDir::new().unwrap();
+        let wards = dir.path().join("wards");
+        std::fs::create_dir(&wards).unwrap();
+        let outside = dir.path().join("outside.md");
+        std::fs::write(&outside, "keep").unwrap();
+        std::fs::hard_link(&outside, wards.join("index.md")).unwrap();
+
+        assert!(WardTool::ensure_ward_catalog(&wards).is_err());
+        assert!(WardTool::register_ward(&wards, "safe").is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "keep");
     }
 
     #[test]
@@ -728,7 +1682,7 @@ mod tests {
         let fs = Arc::new(TestFs {
             base: dir.path().to_path_buf(),
         });
-        let tool = WardTool::new(fs, None, None);
+        let tool = WardTool::new(fs, None, None, test_layout(dir.path()));
 
         std::fs::write(dir.path().join("AGENTS.md"), "# My Project\n\nTest content").unwrap();
 
@@ -738,81 +1692,196 @@ mod tests {
     }
 
     #[test]
-    fn test_create_agents_md_does_not_overwrite() {
-        let ward_dir = TempDir::new().unwrap();
-        let ward_path = ward_dir.path().to_path_buf();
-        std::fs::write(ward_path.join("AGENTS.md"), "# Custom content").unwrap();
-
-        WardTool::write_agents_md(&ward_path, "existing");
-
-        let content = std::fs::read_to_string(ward_path.join("AGENTS.md")).unwrap();
-        assert!(content.contains("# Custom content")); // Not overwritten
+    fn ward_schema_exposes_template_directed_actions_and_rejects_extra_fields() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let schema = tool.parameters_schema().unwrap().to_string();
+        for action in [
+            "search",
+            "lint",
+            "dry_run",
+            "create_concept",
+            "coding",
+            "generic",
+        ] {
+            assert!(schema.contains(action));
+        }
+        assert!(schema.contains("additionalProperties"));
     }
 
     #[tokio::test]
-    async fn cold_graph_ward_entry_starts_planner_once_with_actual_ward() {
+    async fn create_accepts_closed_archetype_and_invalid_value_has_no_effects() {
         let dir = TempDir::new().unwrap();
-        let fs = Arc::new(TestFs {
-            base: dir.path().to_path_buf(),
-        });
-        let tool = WardTool::new(fs, None, None);
-        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::cold_graph());
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::active_root("scratch"));
 
-        let result = tool
+        let invalid = tool
             .execute(
                 ctx.clone(),
-                json!({ "action": "create", "name": "creative-design" }),
+                json!({"action":"create","name":"unsafe","archetype":"../coding"}),
             )
             .await
-            .expect("ward creation succeeds");
+            .unwrap_err();
+        assert!(invalid.to_string().contains("invalid archetype"));
+        assert!(!dir.path().join("wards").exists());
+
+        let created = tool
+            .execute(
+                ctx,
+                json!({"action":"create","name":"compiler","archetype":"coding"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created["ward_template"]["archetype"], "coding");
+    }
+
+    #[tokio::test]
+    async fn catalog_failure_rolls_back_only_the_new_ward() {
+        let dir = TempDir::new().unwrap();
+        let wards = dir.path().join("wards");
+        std::fs::create_dir_all(wards.join("existing")).unwrap();
+        std::fs::write(wards.join("existing/keep.md"), "keep").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            Arc::new(CatalogBreakingLayout {
+                inner: TestLayout {
+                    base: dir.path().to_path_buf(),
+                },
+            }),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::active_root("scratch"));
+
+        let error = tool
+            .execute(ctx, json!({"action":"create","name":"new-ward"}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("rolled back"));
+        assert!(!wards.join("new-ward").exists());
+        assert_eq!(
+            std::fs::read_to_string(wards.join("existing/keep.md")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_is_root_scoped_bounded_and_filters_exact_tags() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        std::fs::write(
+            ward.join("apple.md"),
+            "---\ntitle: Apple valuation\ntags:\n  - equity\n  - apple\n---\n\nIntrinsic value research\n",
+        ).unwrap();
+        std::fs::write(ward.join("book.md"), "# Apple book\n").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::active_root("research"));
+
+        let result = tool.execute(ctx, json!({
+            "action":"search", "name":"research", "query":"value", "tags":["EQUITY"], "limit":10
+        })).await.unwrap();
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["data"]["results"].as_array().unwrap().len(), 1);
+        assert_eq!(result["data"]["results"][0]["path"], "apple.md");
+    }
+
+    #[tokio::test]
+    async fn template_actions_reject_delegated_context() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::delegated_cold_graph());
+        let result = tool
+            .execute(ctx, json!({"action":"lint","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"]["code"], "root_required");
+    }
+
+    #[tokio::test]
+    async fn ward_switch_does_not_replace_the_bootstrap_template_packet() {
+        let dir = TempDir::new().unwrap();
+        for ward in ["research", "other"] {
+            let path = dir.path().join("wards").join(ward);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("ward-conf.yaml"), "test").unwrap();
+        }
+        std::fs::write(dir.path().join("wards/index.md"), "# Wards\n").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::active_root("research"));
+
+        tool.execute(ctx.clone(), json!({"action":"use","name":"other"}))
+            .await
+            .unwrap();
 
         assert_eq!(
-            result.get("planner_started").and_then(Value::as_bool),
-            Some(true)
+            ctx.get_state("ward_template").unwrap()["ward_id"],
+            "research"
         );
-        let action = ctx.actions().delegate.expect("planner action is emitted");
-        assert_eq!(action.agent_id, "planner-agent");
-        assert!(action.wait_for_result);
-        assert!(!action.parallel);
-        assert!(action.task.contains("Active ward:"));
-        assert!(action.task.contains("creative-design"));
-
-        let second = tool
-            .execute(
-                ctx.clone(),
-                json!({ "action": "use", "name": "creative-design" }),
-            )
+        let stale = tool
+            .execute(ctx, json!({"action":"lint","name":"other"}))
             .await
-            .expect("re-entering the ward succeeds");
-        assert!(second.get("planner_started").is_none());
+            .unwrap();
+        assert_eq!(stale["error"]["code"], "template_stale");
     }
 
-    #[tokio::test]
-    async fn listing_or_delegated_ward_entry_never_starts_the_root_planner() {
+    #[cfg(unix)]
+    #[test]
+    fn search_rejects_a_symlinked_ward_root() {
+        use std::os::unix::fs::symlink;
         let dir = TempDir::new().unwrap();
-        let fs = Arc::new(TestFs {
-            base: dir.path().to_path_buf(),
-        });
-        let tool = WardTool::new(fs, None, None);
+        let outside = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("wards")).unwrap();
+        std::fs::write(outside.path().join("secret.md"), "secret").unwrap();
+        symlink(outside.path(), dir.path().join("wards/research")).unwrap();
 
-        let list_ctx: Arc<dyn ToolContext> = Arc::new(GateContext::cold_graph());
-        let listed = tool
-            .execute(list_ctx.clone(), json!({ "action": "list" }))
-            .await
-            .expect("listing wards succeeds");
-        assert!(listed.get("planner_started").is_none());
-        assert!(list_ctx.actions().delegate.is_none());
-
-        std::fs::create_dir_all(dir.path().join("wards").join("creative-design")).unwrap();
-        let delegated_ctx: Arc<dyn ToolContext> = Arc::new(GateContext::delegated_cold_graph());
-        let entered = tool
-            .execute(
-                delegated_ctx.clone(),
-                json!({ "action": "use", "name": "creative-design" }),
-            )
-            .await
-            .expect("a delegated ward entry can use the existing ward");
-        assert!(entered.get("planner_started").is_none());
-        assert!(delegated_ctx.actions().delegate.is_none());
+        assert_eq!(
+            search_markdown(&dir.path().join("wards/research"), "secret", &[], 10).unwrap_err(),
+            "ward_unavailable"
+        );
     }
 }

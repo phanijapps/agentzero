@@ -12,8 +12,6 @@ use std::str::FromStr;
 pub enum DelegationMode {
     /// Exact-output standalone artifact work; write first, verify, return paths.
     DirectArtifact,
-    /// Fill missing or empty ward doctrine and memory-bank files.
-    WardHygiene,
     /// Implementation work that depends on existing ward context.
     WardBackedBuild,
     /// Execute a planned/spec step with acceptance criteria.
@@ -24,7 +22,6 @@ impl DelegationMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::DirectArtifact => "direct_artifact",
-            Self::WardHygiene => "ward_hygiene",
             Self::WardBackedBuild => "ward_backed_build",
             Self::StepExecutor => "step_executor",
         }
@@ -41,7 +38,6 @@ impl FromStr for DelegationMode {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "direct_artifact" => Ok(Self::DirectArtifact),
-            "ward_hygiene" => Ok(Self::WardHygiene),
             "ward_backed_build" => Ok(Self::WardBackedBuild),
             "step_executor" => Ok(Self::StepExecutor),
             other => Err(format!("unknown delegation mode '{other}'")),
@@ -68,9 +64,6 @@ pub fn infer_delegation_mode(
     if looks_like_step_executor(&lower) {
         return DelegationMode::StepExecutor;
     }
-    if looks_like_ward_hygiene(&lower) {
-        return DelegationMode::WardHygiene;
-    }
     if looks_like_direct_artifact(child_agent_id, &lower) {
         return DelegationMode::DirectArtifact;
     }
@@ -83,18 +76,6 @@ fn looks_like_step_executor(task_lower: &str) -> bool {
         && (task_lower.contains("## acceptance") || task_lower.contains("acceptance criteria")))
         || task_lower.contains("steps/step")
         || task_lower.contains("step_")
-}
-
-fn looks_like_ward_hygiene(task_lower: &str) -> bool {
-    task_lower.contains("ward_hygiene")
-        || task_lower.contains("ward hygiene")
-        || (task_lower.contains("agents.md")
-            && task_lower.contains("memory-bank")
-            && (task_lower.contains("fill")
-                || task_lower.contains("missing")
-                || task_lower.contains("empty")
-                || task_lower.contains("stale")
-                || task_lower.contains("update")))
 }
 
 fn looks_like_direct_artifact(child_agent_id: &str, task_lower: &str) -> bool {
@@ -318,10 +299,6 @@ mod tests {
             DelegationMode::DirectArtifact
         );
         assert_eq!(
-            "ward_hygiene".parse::<DelegationMode>().unwrap(),
-            DelegationMode::WardHygiene
-        );
-        assert_eq!(
             "ward_backed_build".parse::<DelegationMode>().unwrap(),
             DelegationMode::WardBackedBuild
         );
@@ -357,18 +334,6 @@ mod tests {
         assert_eq!(
             infer_delegation_mode("builder-agent", "Execute specs/foo/steps/step2.md", None),
             DelegationMode::StepExecutor
-        );
-    }
-
-    #[test]
-    fn infers_ward_hygiene_for_doc_memory_updates() {
-        assert_eq!(
-            infer_delegation_mode(
-                "builder-agent",
-                "Fill missing AGENTS.md and memory-bank/ward.md files",
-                None
-            ),
-            DelegationMode::WardHygiene
         );
     }
 

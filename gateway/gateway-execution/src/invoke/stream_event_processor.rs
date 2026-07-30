@@ -4,7 +4,9 @@
 //! and extracts response deltas for accumulation.
 
 use agent_runtime::StreamEvent;
-use agent_surfaces::{ComponentType, SurfaceComponent, WorkSurface, ZBOT_WORK_SURFACE_CATALOG};
+use agent_surfaces::{
+    is_persistable_surface, ComponentType, SurfaceComponent, WorkSurface, ZBOT_WORK_SURFACE_CATALOG,
+};
 use execution_state::{SessionPlanInput, SessionPlanSaveOutcome, SessionPlanSnapshot};
 use gateway_events::{EventBus, GatewayEvent};
 use std::collections::BTreeMap;
@@ -44,6 +46,9 @@ pub fn process_stream_event(
             &ctx.execution_id,
         )
     };
+    if let Some(event) = gateway_event.as_ref() {
+        persist_gateway_surface(&ctx.state_service, event);
+    }
 
     let response_delta = extract_response_delta(&gateway_event);
     (gateway_event, response_delta)
@@ -86,7 +91,66 @@ fn publish_projected_surface(
         &ctx.session_id,
         &ctx.execution_id,
     ) {
+        persist_gateway_surface(&ctx.state_service, &surface_event);
         ctx.event_bus.publish_sync(surface_event);
+    }
+}
+
+/// Persist an already-validated gateway surface event when the live setting is
+/// enabled. Failure is supplementary and never blocks event publication.
+pub(crate) fn persist_gateway_surface(
+    state_service: &execution_state::StateService<zbot_runtime_sqlite::DatabaseManager>,
+    event: &GatewayEvent,
+) {
+    if !state_service.surface_persistence_enabled() {
+        return;
+    }
+    let result = match event {
+        GatewayEvent::SurfaceCreated {
+            session_id,
+            execution_id,
+            surface,
+        }
+        | GatewayEvent::SurfaceUpdated {
+            session_id,
+            execution_id,
+            surface,
+        } if is_persistable_surface(surface) => serde_json::to_string(surface)
+            .map_err(|error| error.to_string())
+            .and_then(|surface_json| {
+                state_service.save_session_surface(
+                    session_id,
+                    execution_id,
+                    &surface.surface_id,
+                    &surface_json,
+                )
+            }),
+        GatewayEvent::SurfaceDeleted {
+            session_id,
+            surface_id,
+            ..
+        } => state_service
+            .delete_session_surface(session_id, surface_id)
+            .map(|_| ()),
+        GatewayEvent::SurfaceCreated {
+            session_id,
+            surface,
+            ..
+        }
+        | GatewayEvent::SurfaceUpdated {
+            session_id,
+            surface,
+            ..
+        } => state_service
+            .delete_session_surface(session_id, &surface.surface_id)
+            .map(|_| ()),
+        _ => return,
+    };
+    if result.is_err() {
+        tracing::warn!(
+            event = "surface_persistence_failed",
+            "could not update saved work surface"
+        );
     }
 }
 
@@ -516,6 +580,91 @@ mod tests {
         );
         assert!(surface.data.get("open_loops").is_none());
         assert_eq!(surface.data["plan"][0]["status"], "in_progress");
+    }
+
+    #[test]
+    fn surface_events_persist_only_when_enabled_and_reject_actionable_components() {
+        // STUB: AC2/AC3/AC5 — publication is independent of durable storage.
+        let harness = setup();
+        let snapshot = SessionPlanSnapshot {
+            execution_id: harness.root_execution.id.clone(),
+            explanation: None,
+            plan: vec![SessionPlanStep {
+                step: "Inspect".to_owned(),
+                status: SessionPlanStepStatus::Pending,
+            }],
+            updated_at: "2026-07-28T00:00:00Z".to_owned(),
+            source_event_timestamp: 1,
+            source_event_sequence: 1,
+        };
+        let surface = build_plan_surface("surface-persist".to_owned(), &snapshot);
+        let created = GatewayEvent::SurfaceCreated {
+            session_id: harness.session_id.clone(),
+            execution_id: harness.root_execution.id.clone(),
+            surface: surface.clone(),
+        };
+
+        persist_gateway_surface(&harness.state, &created);
+        assert!(harness
+            .state
+            .list_session_surfaces(&harness.session_id)
+            .unwrap()
+            .is_empty());
+
+        harness.state.set_surface_persistence_enabled(true);
+        persist_gateway_surface(&harness.state, &created);
+        assert_eq!(
+            harness
+                .state
+                .list_session_surfaces(&harness.session_id)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut actionable = surface;
+        actionable.components[0].component_type = ComponentType::ApprovalGate;
+        persist_gateway_surface(
+            &harness.state,
+            &GatewayEvent::SurfaceUpdated {
+                session_id: harness.session_id.clone(),
+                execution_id: harness.root_execution.id.clone(),
+                surface: actionable,
+            },
+        );
+        assert_eq!(
+            harness
+                .state
+                .list_session_surfaces(&harness.session_id)
+                .unwrap()
+                .len(),
+            0,
+            "a non-persistable update must evict the older saved descriptor"
+        );
+
+        persist_gateway_surface(&harness.state, &created);
+        assert_eq!(
+            harness
+                .state
+                .list_session_surfaces(&harness.session_id)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        persist_gateway_surface(
+            &harness.state,
+            &GatewayEvent::SurfaceDeleted {
+                session_id: harness.session_id.clone(),
+                execution_id: harness.root_execution.id.clone(),
+                surface_id: "surface-persist".to_owned(),
+            },
+        );
+        assert!(harness
+            .state
+            .list_session_surfaces(&harness.session_id)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

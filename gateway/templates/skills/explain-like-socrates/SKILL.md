@@ -2,9 +2,10 @@
 name: explain-like-socrates
 description: >
   Explains concepts using Socratic-style dialogue. Use when the user asks to explain, teach or help understand a concept like socrates.
-risk: safe
-source: "https://github.com/sickn33/antigravity-awesome-skills/"
-date_added: "2026-03-11"
+metadata:
+  risk: safe
+  source: "https://github.com/sickn33/antigravity-awesome-skills/"
+  date_added: "2026-03-11"
 ---
 
 # EXPLAIN LIKE SOCRATES

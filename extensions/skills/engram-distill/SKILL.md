@@ -1,144 +1,116 @@
 ---
 name: engram-distill
-description: Distill knowledge from any source — docs, code reviews, conversations, session transcripts — into the engram knowledge graph. Extract entities, relationships, and facts; classify them against the project's multi-layer ontology (technical/domain/business); and persist them so future recall surfaces them. Use after any learning event worth remembering. Extraction is your reasoning; the server never calls an LLM.
+description: Distill knowledge from docs, transcripts, or code notes into the engram knowledge graph via the engram-mcp tools. Extract entities, relationships, and facts, classify them against the project's configured ontology, and BRIDGE every concept to the code/doc artifact it describes or realizes so the graph stays connected. Extraction + bridging are the agent's own reasoning; the server never calls an LLM.
 ---
 
 # engram-distill
 
-Turn anything you just learned into a persistent, queryable knowledge graph by
-writing it through the **engram** MCP server.
+Turn unstructured material (Markdown docs, transcripts, design notes) plus code
+into a queryable, multi-layer knowledge graph by writing it through the
+**engram-mcp** server. The server is a deterministic store — *you* (the agent)
+do the extraction, classification, and **bridging**; the server persists and
+retrieves.
 
-**`engram-ingest`** vs **`engram-distill`**: `engram-ingest` is for **raw docs**
-(chunk + index the text). `engram-distill` is for **extracted knowledge** — the
-structured entities/relationships/facts you distill from any source (a doc you
-read, a code review, a design conversation, a session transcript). Use both
-together: `engram-ingest` for the raw text, `engram-distill` for the extracted
-graph.
+> **Bridging is mandatory, not optional.** A concept not linked to the code or doc
+> it describes/realizes is an orphan in a disconnected subgraph. The deterministic
+> `scan_repo` already links docs to code by **exact name match**; your job is the
+> **semantic** links the scan cannot infer — e.g. a doc section titled
+> *Authentication* that explains `auth_middleware`, even though the words differ.
 
 ## When to run
 
-- You just read a doc / RFC / README / design note and learned something.
-- You reviewed code and discovered an important relationship or pattern.
-- A conversation or session revealed domain knowledge worth remembering.
-- You want to build a project's multi-layer KG (technical + domain + business).
+- You just read a doc / transcript / RFC / README that the project should remember.
+- You are building up a project's knowledge graph (technical + domain + business).
+- After `scan_repo`, to add the conceptual layer that explains the code.
+
+## Prerequisites
+
+The `engram` MCP server is configured (stdio JSON-RPC). Its launch flags fix the
+**project** scope and the **ontology + taxonomy**:
+
+```
+engram-mcp --storage <dir> --project <name> [--ontology <layers.json>] [--taxonomy <concepts.json>]
+```
+
+All writes land in one fused-per-project workspace; `recall` sees them together.
 
 ## Workflow
 
-### 1. Read the active ontology + taxonomy
+1. **Read the active ontology + taxonomy** — `ontology_read` then `taxonomy_read`.
+   Classify every entity into an ontology class; use only declared predicates. The
+   `across` predicates (`describes`, `realized_by`, `governs`, `extracted_from`)
+   are the ones that bridge layers — concept → code, business → technical.
 
-```
-ontology_read     → learn the layers (technical/domain/business), their classes,
-                    and the allowed within/across predicates.
-taxonomy_read     → learn the concept hierarchy for classification.
-```
+2. **Ensure code is indexed** — if the repo has not been scanned, call
+   `scan_repo {path}`. This populates the `technical` layer (function/class/struct
+   entities + call edges) that your concepts will bridge **to**. Do this before
+   bridging so the link targets exist.
 
-**Every entity you extract must map to a class in one of the ontology layers.**
-**Every relationship must use a configured predicate.** Do not invent.
+3. **Index raw docs** (optional) — for material you want retrievable verbatim,
+   `index_docs {content, path, kind}`. The server chunks it into the `docs` lane.
 
-### 2. Index raw docs (if you have the source text)
+4. **Discover existing code entities** — before bridging, find out what code
+   symbols already exist so you link to REAL names, not invented ones. Call
+   `search {query}` for each domain/area (e.g. `"auth"`, `"payment"`), or
+   `resolve_entity {name}` for a specific symbol. Keep the code entity names you find.
 
-```
-index_docs({ "content": "<markdown>", "path": "docs/design.md" })
-```
+5. **Extract** (your reasoning) — from the material, produce:
+   - **facts** — `{ "content": "…" }` free-text observations worth remembering.
+   - **entities** — `{ "name", "kind" }` mapped to an ontology class.
+   - **relationships** — `{ "subject", "predicate", "object" }` using only the
+     ontology's predicates.
 
-This chunks the doc into retrievable sections (docs lane) — verbatim text that
-`recall` can surface alongside the extracted KG.
+6. **Bridge (REQUIRED)** — for every concept/entity you extracted, link it to the
+   code or doc artifact it relates to, using an `across` predicate:
+   - A domain concept a function/class/module implements →
+     `concept -[describes]-> function` (or `-[realized_by]->`).
+   - A business capability realized by a module → `capability -[realized_by]-> module`.
+   - A doc that governs a process → `doc-concept -[governs]-> …`.
+   Use the code entity names you discovered in step 4 as the `object`. If a concept
+   genuinely has no code/doc counterpart, record that in a fact instead of
+   fabricating an edge — a fabricated link is worse than an honest orphan.
 
-### 3. Extract (your reasoning)
+7. **Write the batch** — `store_knowledge {facts, entities, relationships,
+   idempotency_key}`. Include the bridging relationships in the same batch. Supply a
+   **stable `idempotency_key`** so re-runs converge, not duplicate. Best-effort, not ACID.
 
-From the material, produce three kinds of structured knowledge:
-
-**Facts** — free-text observations worth remembering:
-```json
-{ "content": "The SessionDistiller extracts facts from transcripts after each session." }
-```
-
-**Entities** — named things, classified across layers:
-```json
-{ "name": "SessionDistiller", "kind": "function" }       // technical
-{ "name": "Distillation", "kind": "concept" }             // domain
-{ "name": "Onboarding Flow", "kind": "concept" }          // business
-```
-
-Valid kinds: `function`, `module`, `struct`, `trait`, `repository`, `concept`,
-`api`, `organization`, `project`, … Unknown kinds are **rejected**.
-
-**Relationships** — using only configured predicates:
-
-| Layer | Predicates |
-|---|---|
-| within (same layer) | `depends_on`, `implements`, `contains`, `part_of`, `uses` |
-| across (cross-layer) | `realized_by`, `describes`, `governs`, `distilled_from`, `extracted_from`, `contradicts` |
-
-**Cross-layer edges are the point** — they bridge layers:
-- `SessionDistiller` —`realized_by`→ `Distillation` (technical → domain)
-- `Onboarding Flow` —`governs`→ `SessionDistiller` (business → technical)
-- `docs/design.md` —`describes`→ `SessionDistiller` (doc → code)
-
-### 4. Write the batch
-
-```
-store_knowledge({
-  "idempotency_key": "distill-<source>-v1",
-  "facts": [...],
-  "entities": [...],
-  "relationships": [...]
-})
-```
-
-- **Stable `idempotency_key`** — re-sending the same batch dedups, not doubles.
-- **Best-effort, not ACID** — the result surfaces per-step status.
-- Malformed entries are skipped and reported.
-
-### 5. Verify
-
-```
-recall({ "query": "distillation" })           → fused retrieval
-search({ "query": "SessionDistiller" })        → entity by name
-get_context({ "focus": "Distillation" })        → context packet
-```
+8. **Verify** — `graph_neighbors {name}` on a bridged concept; confirm it now links
+   to the code entity. Then `recall {query}` to confirm retrieval. If the link is
+   missing, the batch was malformed — fix and re-send (idempotency makes this safe).
 
 ## Rules
 
-- **You classify, the server stores.** The server never calls an LLM.
+- **You classify AND bridge; the server stores.** Decide each entity's ontology
+  class and each relationship's predicate from `ontology_read`; do not invent predicates.
+- **Bridge to real artifacts.** Link only to code/doc names that exist (discovered in
+  step 4 or written in this same batch). Never invent a link target.
+- **Semantic bridging is your value-add.** The scan links by exact name; you link by
+  meaning (concept ↔ the code that realizes it). Aim for every extracted concept to
+  carry at least one `across` edge.
 - **One project, one graph.** Writes are scoped to the launch `--project`.
-- **Ground concepts in artifacts.** Prefer `across` predicates that link a
-  domain/business concept to the code or doc that realizes it.
-- **Idempotency.** Same `idempotency_key` → converges, not duplicates.
+- **Idempotency.** Same `idempotency_key` → converge, not duplicate.
+- **Honest orphans.** A concept with no real counterpart gets a fact noting that, not
+  a fabricated edge.
 
-## Example: distilling a design doc
+## Example call sequence
 
 ```
-ontology_read                                     → learn layers + predicates
-index_docs   {content: doc-text, path: "docs/auth-design.md"}  → raw doc
-store_knowledge {
-  idempotency_key: "distill-auth-design-v1",
-  facts: [
-    {content: "AuthService uses JWT for stateless auth."},
-    {content: "Rate limiting is enforced at the gateway, not per-handler."}
-  ],
-  entities: [
-    {name: "AuthService", kind: "function"},        // technical
-    {name: "JWT", kind: "concept"},                 // domain
-    {name: "Rate Limiting", kind: "concept"},       // domain
-    {name: "Gateway", kind: "module"}               // technical
-  ],
-  relationships: [
-    {subject: "AuthService", predicate: "uses", object: "JWT"},
-    {subject: "Rate Limiting", predicate: "governs", object: "Gateway"},
-    {subject: "AuthService", predicate: "realized_by", object: "Gateway"}
-  ]
-}
-recall({query: "rate limiting"})                   → verify
+ontology_read                              → learn layers + predicates
+taxonomy_read                              → learn concept hierarchy
+scan_repo      {path}                      → index code (technical layer)
+search         {query: "auth"}             → discover auth-related code symbols
+index_docs     {content, path}             → persist the raw doc (docs lane)
+store_knowledge {facts, entities,          → persist KG + REQUIRED bridges
+                 relationships,              (include: concept -[describes]-> function)
+                 idempotency_key}
+graph_neighbors {name: "Authentication"}   → verify the concept now links to code
+recall         {query}                     → confirm retrieval
 ```
 
-## Entity kind → ontology layer
+## Bridge coverage (self-check)
 
-| Ontology layer | Typical kinds | Examples |
-|---|---|---|
-| technical | `module`, `function`, `struct`, `trait`, `repository` | zbot-stores, SessionDistiller, EngramProvider |
-| domain | `concept` | Distillation, MemoryFact, Belief, Episode, Procedure |
-| business | `concept` | Onboarding Flow, Workflow, Stakeholder, Capability |
-
-When a domain/business entity doesn't have a specific code-level kind, use
-`concept` and rely on the ontology class (via `ontology_read`) for classification.
+After writing, sample 2–3 concepts via `graph_neighbors`. Each should show at least
+one `across` edge (`describes`/`realized_by`/`governs`) to a code/doc entity. If a
+sampled concept has no across-edge and you did not intentionally mark it an orphan,
+go back and add the bridge — an unbridged concept is a disconnected subgraph, which
+is the defect this skill exists to prevent.

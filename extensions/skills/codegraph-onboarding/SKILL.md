@@ -32,7 +32,7 @@ Index first if needed: `scan_repo({ "path": "..." })`.
    Returns: blast radius + dependency paths.
 
 4. **Get a context packet.** Call `get_context` for a fused overview.
-   Returns: recall (docs + memories) + code neighborhood.
+   Returns: recall (docs + memories) + code neighborhood (+ `[Graph]` links).
 
 ## How to synthesize
 

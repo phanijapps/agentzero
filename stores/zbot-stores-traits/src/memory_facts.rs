@@ -739,8 +739,7 @@ mod tests {
     use super::*;
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::task::{Context, Poll, Waker};
 
     use serde_json::json;
 
@@ -784,15 +783,8 @@ mod tests {
         }
     }
 
-    struct NoopWake;
-
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     fn block_on_ready<F: Future>(future: F) -> F::Output {
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         let mut future = Box::pin(future);
         match Pin::as_mut(&mut future).poll(&mut cx) {
             Poll::Ready(output) => output,

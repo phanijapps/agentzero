@@ -4,6 +4,7 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [SQLite Agent Isolation](sqlite-agent-isolation/spec.md) | Shipped | Makes the agent-scoped list-entities contract executable: requested-agent plus explicitly global rows, never another private agent. |
 | [P0 Supply-Chain Gates](p0-supply-chain-gates/spec.md) | Shipped | Updates vulnerable Rust dependencies and restores evidence-backed dependency license checks without advisory or unlicensed bypasses. |
 | [LLM Wiki Ward Foundation](llm-wiki-ward-foundation/spec.md) | Shipped | Gives every fresh archetype one Ward-named canonical page and append-only log, keeps one global catalog, replaces mandatory OKF with compact plain Markdown, and leaves optional Wiki namespaces lazy. |
 | [Ward Archetype Registry and Creation](ward-archetype-registry-and-creation/spec.md) | Draft | Adds the closed local registry, explicit generic/coding creation, bounded doctrine/starters, immutable snapshots, and durable provenance. |

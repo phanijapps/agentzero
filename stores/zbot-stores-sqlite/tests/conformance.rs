@@ -101,10 +101,6 @@ async fn mark_archival_sets_class() {
     zbot_stores_conformance::mark_archival_sets_class(&store).await;
 }
 
-// Conformance gap (SQLite): list_entities currently leaks cross-agent rows
-// when called with agent_id filter. SurrealDB passes the scenario today.
-// Surfaced by conformance — fix in a SQLite-side TD follow-up.
-#[ignore = "SQLite list_entities cross-agent leak (TD follow-up)"]
 #[tokio::test]
 async fn list_entities_respects_agent() {
     let (_tmp, store) = fixtures::sqlite_store().await;

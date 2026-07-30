@@ -94,6 +94,91 @@ describe("A2uiSurfaceRenderer expanded structured catalog", () => {
   });
 });
 
+describe("A2uiSurfaceRenderer dynamic titles", () => {
+  it("resolves bound static and humanized component titles without raw type fallbacks", () => {
+    render(<A2uiSurfaceRenderer surface={surface([
+      { id: "summary-callout", type: "Callout", props: { title_path: "/titles/callout", title: "Static notice", message_path: "/message" } },
+      { id: "service-table", type: "DataTable", props: { title: "Static services", rows_path: "/rows", columns: ["name", "state"] } },
+      { id: "monthly-revenue_chart", type: "Callout", props: { message_path: "/fallbackMessage" } },
+      { id: "release-approval", type: "ApprovalGate", props: { title_path: "/titles/approval", action_id: "inspect", target: "release", expected_state: "ready" } },
+      { id: "static-approval", type: "ApprovalGate", props: { title: "Inspect release", action_id: "inspect", target: "release", expected_state: "ready" } },
+      { id: "ignored-bound", type: "Callout", props: { title_path: "/missing", title: "Static fallback", message_path: "/fallbackMessage" } },
+      { id: "wrong-shaped-bound", type: "Callout", props: { title_path: "/wrong", title: "Wrong shaped fallback", message_path: "/fallbackMessage" } },
+      { id: "empty-bound", type: "Callout", props: { title_path: "/empty", title: "Empty fallback", message_path: "/fallbackMessage" } },
+      { id: "callout", type: "Callout", props: { message_path: "/fallbackMessage" } },
+    ], {
+      titles: {
+        callout: "Revenue warning",
+        approval: "Release approval",
+      },
+      message: "Revenue is below plan.",
+      fallbackMessage: "Fallback content remains visible.",
+      rows: [{ name: "api", state: "ready" }],
+      wrong: { title: "Not a string" },
+      empty: "   ",
+    })} />);
+
+    expect(screen.getByRole("heading", { name: "Revenue warning" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Static notice" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Static services" })).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "Static services" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Monthly revenue chart" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Release approval" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Inspect release" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Static fallback" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Wrong shaped fallback" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Empty fallback" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Component" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Callout" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "ApprovalGate" })).not.toBeInTheDocument();
+  });
+
+  it("rerenders bound headings and title-derived labels from replacement data", () => {
+    const initial = surface([
+      { id: "trend", type: "LineChart", props: { title_path: "/title", title: "Static trend", data_path: "/points", x_key: "day", series: ["requests"] } },
+      { id: "deployments", type: "DataTable", props: { title_path: "/tableTitle", rows_path: "/rows", columns: ["name", "state"] } },
+    ], {
+      title: "Monday traffic",
+      tableTitle: "Monday deployments",
+      points: [{ day: "Mon", requests: 10 }],
+      rows: [{ name: "api", state: "ready" }],
+    });
+
+    const { rerender } = render(<A2uiSurfaceRenderer surface={initial} />);
+    expect(screen.getByRole("group", { name: "Monday traffic" })).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "Monday deployments" })).toBeInTheDocument();
+
+    rerender(<A2uiSurfaceRenderer surface={{
+      ...initial,
+      data: {
+        title: "Tuesday traffic",
+        tableTitle: "Tuesday deployments",
+        points: [{ day: "Tue", requests: 25 }],
+        rows: [{ name: "worker", state: "deploying" }],
+      },
+    }} />);
+
+    expect(screen.queryByRole("group", { name: "Monday traffic" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Monday deployments" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tuesday traffic" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Tuesday traffic" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tuesday deployments" })).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "Tuesday deployments" })).toBeInTheDocument();
+  });
+
+  it("renders HTML-like bound title text inertly", () => {
+    render(<A2uiSurfaceRenderer surface={surface([
+      { id: "html-title", type: "Callout", props: { title_path: "/title", message_path: "/message" } },
+    ], {
+      title: "<img src=x onerror=alert(1)>",
+      message: "Still safe.",
+    })} />);
+
+    expect(screen.getByRole("heading", { name: "<img src=x onerror=alert(1)>" })).toBeInTheDocument();
+    expect(document.querySelector("img")).toBeNull();
+  });
+});
+
 // STUB: AC2, AC3, AC6
 describe("A2uiSurfaceRenderer expanded chart catalog", () => {
   it("renders_accessible_dynamic_charts", () => {

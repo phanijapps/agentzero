@@ -2779,6 +2779,9 @@ mod tests {
             "hidden reasoning",
             "unrelated connector",
             "unrelated tool data",
+            "contextual title",
+            "title_path",
+            "never rely on generic component type labels",
         ] {
             assert!(
                 description.contains(required),

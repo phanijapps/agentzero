@@ -51,7 +51,9 @@ impl Tool for PresentSurfaceTool {
          LineChart/BarChart(data_path, x_key, series), where data_path is a JSON \
          pointer such as /points and series is an array of field-name strings such \
          as [\"value\"]; PieChart(data_path, name_key, value_key). \
-         Optional title is supported by every component."
+         Every component supports optional title and title_path. Prefer a specific \
+         contextual title, or title_path when the heading should come from data; \
+         never rely on generic component type labels like LineChart or Callout."
     }
 
     fn parameters_schema(&self) -> Option<Value> {

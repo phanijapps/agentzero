@@ -1,6 +1,6 @@
 # Spec: P4 CI and E2E Debt Cleanup
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none
@@ -89,9 +89,9 @@ with broader known vulnerabilities.
   owner-bound, expiring, and invalidated by RSC source markers; `7.18.2`
   remains installed rather than downgrading to a more broadly vulnerable
   release.
-- [ ] Remove the React Router exception and install patched `8.3.0` or newer
-  once that release is available from npm. (deferred: p4-react-router-830)
-- [ ] Frontend lint, build, unit tests, E2E ownership tests, required
+- [ ] Remove the React Router exception (deferred: p4-react-router-830) and
+  install patched `8.3.0` or newer once that release is available from npm.
+- [x] Frontend lint, build, unit tests, E2E ownership tests, required
   Playwright listing, workflow validation, security scans, and live PR CI pass.
 
 ## Assumptions
@@ -134,4 +134,9 @@ with broader known vulnerabilities.
 - `cargo fmt --all --check`, `cargo check --workspace`,
   `cargo clippy --all-targets -- -D warnings`, and `cargo test --workspace`:
   passed.
-- Live pull-request workflow evidence remains pending.
+- Pull request [#233](https://github.com/phanijapps/zbot/pull/233):
+  [`Tests` run 30600913546](https://github.com/phanijapps/zbot/actions/runs/30600913546)
+  passed unit, integration, coverage, macOS/Windows Ward portability, and the
+  required E2E lane; [`Security checks` run
+  30600913566](https://github.com/phanijapps/zbot/actions/runs/30600913566)
+  passed the action-runtime policy, Rust policy, npm audit, and secret scan.

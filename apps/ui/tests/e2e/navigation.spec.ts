@@ -1,4 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { mockCommissioningComplete } from './fixtures';
+
+test.beforeEach(async ({ page }) => {
+  await mockCommissioningComplete(page);
+});
 
 /**
  * Navigation E2E Tests

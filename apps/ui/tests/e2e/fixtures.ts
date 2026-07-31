@@ -1,5 +1,22 @@
 import { test as base, expect, Page } from '@playwright/test';
 
+/** Keep protected-route tests independent from the host vault's first-run state. */
+export async function mockCommissioningComplete(page: Page) {
+  await page.route('**/api/commissioning/status', async (route) => {
+    await route.fulfill({
+      json: {
+        state: 'complete',
+        semanticProfile: {
+          version: 1,
+          basePackIds: [],
+          domainPackIds: [],
+          provisioning: 'deferred',
+        },
+      },
+    });
+  });
+}
+
 /**
  * Page Object: Dashboard
  * Encapsulates dashboard page interactions for cleaner tests.

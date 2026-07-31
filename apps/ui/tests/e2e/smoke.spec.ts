@@ -1,4 +1,8 @@
-import { test, expect } from './fixtures';
+import { test, expect, mockCommissioningComplete } from './fixtures';
+
+test.beforeEach(async ({ page }) => {
+  await mockCommissioningComplete(page);
+});
 
 /**
  * Smoke tests - verify basic app functionality.

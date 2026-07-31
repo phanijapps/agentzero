@@ -1,6 +1,6 @@
 # P3 CI Stabilization Plan
 
-- **Status:** Executing
+- **Status:** Done
 - **Spec:** [spec.md](spec.md)
 
 ## Decisions
@@ -83,3 +83,6 @@ No public API, persistence schema, or user-facing behavior changes. This repairs
 
 - 2026-07-30: implemented all tasks and ran local gates: `cargo fmt --all --check`, `cargo check --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, focused `gateway-services` portable tests, `npm ci`, `npm run lint`, `npm run build`, `npm run test`, `npm run test:coverage`, `node scripts/npm-audit-high.mjs apps/ui`, and a local daemon health smoke.
 - 2026-07-30: attempted `cargo check -p gateway-services --target x86_64-pc-windows-msvc`; blocked by this Linux host missing Windows C toolchain/linker support for existing native dependencies (`onig_sys`, `ring`, `libsqlite3-sys`), not by `gateway-services` Windows metadata usage.
+- 2026-07-30: live PR Security checks and Tests workflows passed on
+  `a8228ca8`, including stable Windows and macOS Ward jobs, the bounded
+  22-test UI lane, and the fresh-vault Ward archetype E2E.

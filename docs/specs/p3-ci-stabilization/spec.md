@@ -1,6 +1,6 @@
 # Spec: P3 CI Stabilization
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [RFC-0017](../../rfc/0017-ward-layout-archetypes.md), [RFC-0018](../../rfc/0018-filesystem-authoritative-llm-wiki-wards.md), [ADR-0002](../../adr/0002-select-complete-ward-archetypes-at-creation.md), [ADR-0003](../../adr/0003-use-filesystem-authoritative-llm-wiki-wards.md)
@@ -81,10 +81,10 @@ The bounded deterministic E2E job MUST start the built daemon before Playwright,
 
 - [x] The security workflow uses a writable per-job Cargo home, its UI lockfile has no unaccepted high-or-critical Node advisories, and it still runs fmt, Clippy, Rust audit/deny, Node audit, and secret scanning.
 - [x] Portable-path tests prove that an absent component is `Missing`, while aliases and duplicates remain `Unsafe`; required callers still fail on `Missing`, and only the confined optional legacy-template probe tolerates it.
-- [ ] `gateway-services` cross-checks for Windows on stable Rust without `windows_by_handle`, and opened-file single-link and identity checks remain enforced.
+- [x] `gateway-services` cross-checks for Windows on stable Rust without `windows_by_handle`, and opened-file single-link and identity checks remain enforced.
 - [x] The UI E2E step starts `zbotd`, reaches health readiness or fails quickly with logs, and runs the explicit bounded smoke/navigation/persistent-surface specs instead of implicitly collecting debug, dashboard-era, or provider-backed suites.
 - [x] No required audit, security control, supported platform, or bounded deterministic E2E assertion is skipped; no timeout-only or nightly-toolchain workaround is introduced.
-- [ ] Formatting, workspace check, Clippy, tests, relevant cross-target checks, and live PR CI pass.
+- [x] Formatting, workspace check, Clippy, tests, relevant cross-target checks, and live PR CI pass.
 
 ## Verification Evidence
 
@@ -104,8 +104,17 @@ The bounded deterministic E2E job MUST start the built daemon before Playwright,
 - `cd apps/ui && npm run test:e2e -- tests/e2e/navigation.spec.ts`
 - `cd apps/ui && npm run test:e2e -- tests/e2e/persistent-surfaces.spec.ts`
 - local daemon health smoke matching the E2E workflow shape: build `zbotd`, start with isolated data and `--static-dir dist`, poll `/api/health`, then clean up.
+- GitHub Actions Security checks run
+  [`30597312890`](https://github.com/phanijapps/zbot/actions/runs/30597312890)
+  passed on commit `a8228ca8`, including fmt, Clippy, Cargo audit/deny,
+  the Rig boundary check, the narrowed Node audit policy, and Gitleaks.
+- GitHub Actions Tests run
+  [`30597312840`](https://github.com/phanijapps/zbot/actions/runs/30597312840)
+  passed on commit `a8228ca8`, including Linux unit/integration/coverage,
+  macOS and Windows Ward portability, the 22-test bounded UI E2E lane,
+  and the fresh-vault Ward archetype E2E.
 
-The local Linux environment cannot complete `cargo check -p gateway-services --target x86_64-pc-windows-msvc` because existing native C dependencies require MSVC linker/toolchain programs (`lib.exe`) and Windows-target C build support. The code no longer uses `windows_by_handle`; the Windows Actions job remains the platform proof for stable Windows compilation and handle-based safety tests. Live PR CI remains pending until this branch is pushed.
+The local Linux environment cannot complete `cargo check -p gateway-services --target x86_64-pc-windows-msvc` because existing native C dependencies require MSVC linker/toolchain programs (`lib.exe`) and Windows-target C build support. The code no longer uses `windows_by_handle`; the passing Windows Actions job is the platform proof for stable Windows compilation and handle-based safety tests.
 
 ## Failure and Recovery
 

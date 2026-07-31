@@ -546,7 +546,7 @@ impl BeliefSidecar {
             .map(|entry| entry.belief)
             .filter(|belief| belief.partition_id == partition_id)
             .collect::<Vec<_>>();
-        beliefs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        beliefs.sort_by_key(|belief| std::cmp::Reverse(belief.updated_at));
         beliefs.truncate(limit);
         Ok(beliefs)
     }
@@ -558,7 +558,7 @@ impl BeliefSidecar {
             .map(|entry| entry.belief)
             .filter(|belief| belief.partition_id == partition_id && belief.stale)
             .collect::<Vec<_>>();
-        beliefs.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+        beliefs.sort_by_key(|belief| belief.updated_at);
         beliefs.truncate(limit);
         Ok(beliefs)
     }
@@ -696,7 +696,7 @@ impl BeliefSidecar {
     ) -> Result<Vec<BeliefContradiction>, String> {
         let mut rows = self.load_all_contradictions()?;
         rows.retain(|row| row.belief_a_id == belief_id || row.belief_b_id == belief_id);
-        rows.sort_by(|left, right| right.detected_at.cmp(&left.detected_at));
+        rows.sort_by_key(|row| std::cmp::Reverse(row.detected_at));
         Ok(rows)
     }
 
@@ -711,7 +711,7 @@ impl BeliefSidecar {
             .filter(|(partition, _)| partition == partition_id)
             .map(|(_, contradiction)| contradiction)
             .collect::<Vec<_>>();
-        rows.sort_by(|left, right| right.detected_at.cmp(&left.detected_at));
+        rows.sort_by_key(|row| std::cmp::Reverse(row.detected_at));
         rows.truncate(limit);
         Ok(rows)
     }

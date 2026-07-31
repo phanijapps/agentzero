@@ -592,7 +592,6 @@ impl McpService {
                 name,
                 description,
                 enabled,
-                auth: _,
                 ..
             } => McpServerSummary {
                 id: id.clone().unwrap_or_else(|| name.clone()),
@@ -607,7 +606,6 @@ impl McpService {
                 name,
                 description,
                 enabled,
-                auth: _,
                 ..
             } => McpServerSummary {
                 id: id.clone().unwrap_or_else(|| name.clone()),
@@ -622,7 +620,6 @@ impl McpService {
                 name,
                 description,
                 enabled,
-                auth: _,
                 ..
             } => McpServerSummary {
                 id: id.clone().unwrap_or_else(|| name.clone()),

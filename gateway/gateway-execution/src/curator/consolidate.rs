@@ -142,10 +142,9 @@ fn render_table(candidates: &[WardCandidate]) -> String {
 fn extract_yaml_block(text: &str) -> Option<&str> {
     let (open_idx, open_len) = if let Some(i) = text.find("```yaml") {
         (i, "```yaml".len())
-    } else if let Some(i) = text.find("```") {
-        (i, "```".len())
     } else {
-        return None;
+        let i = text.find("```")?;
+        (i, "```".len())
     };
     let after_open = &text[open_idx + open_len..];
     // Skip past the rest of the opening fence line.

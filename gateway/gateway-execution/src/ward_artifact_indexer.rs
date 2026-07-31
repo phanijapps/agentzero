@@ -198,7 +198,7 @@ async fn index_one_file(
     // zip stops at the shorter length; extract_entities and object_iter_for_schema
     // align filters so lengths match. If they diverge we gracefully emit only
     // what pairs — best-effort, no panic.
-    for (entity, obj) in primary_entities.into_iter().zip(paired_objects.into_iter()) {
+    for (entity, obj) in primary_entities.into_iter().zip(paired_objects) {
         let (ents, rels) =
             entity_with_relationships(entity, &obj, agent_id, &episode_id, &source_ref);
         all_entities.extend(ents);

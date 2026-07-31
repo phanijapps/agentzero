@@ -20,6 +20,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure writable Cargo home
+        run: |
+          mkdir -p "$RUNNER_TEMP/cargo-home/bin"
+          printf 'CARGO_HOME=%s/cargo-home\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf '%s/cargo-home/bin\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       # ---------- Rust ----------
       - name: Setup Rust
@@ -47,7 +55,7 @@ jobs:
         run: cargo deny check
 
       - name: Rig dependency boundary
-        run: python scripts/rig_boundary_check.py
+        run: python3 scripts/rig_boundary_check.py
 
       # ---------- Node / React ----------
       - name: Setup Node
@@ -67,8 +75,7 @@ jobs:
         working-directory: apps/ui
 
       - name: NPM audit (high+)
-        run: npm audit --audit-level=high
-        working-directory: apps/ui
+        run: node scripts/npm-audit-high.mjs apps/ui
 
       # ---------- Secrets scanning ----------
       - name: Clean stale gitleaks tmp (self-hosted runner)

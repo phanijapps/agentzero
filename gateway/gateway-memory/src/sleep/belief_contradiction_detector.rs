@@ -174,7 +174,7 @@ impl BeliefContradictionDetector {
         stats.neighborhoods_examined = by_neighborhood.len() as u64;
 
         let mut groups: Vec<(String, Vec<Belief>)> = by_neighborhood.into_iter().collect();
-        groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        groups.sort_by_key(|group| std::cmp::Reverse(group.1.len()));
 
         let mut budget_remaining = self.config.budget_per_cycle;
 

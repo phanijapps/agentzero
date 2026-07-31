@@ -135,10 +135,7 @@ impl OllamaClient {
             let bytes = chunk.map_err(|e| format!("ollama stream: {e}"))?;
             buf.extend_from_slice(&bytes);
             // Drain complete NDJSON lines.
-            loop {
-                let Some(nl) = buf.iter().position(|b| *b == b'\n') else {
-                    break;
-                };
+            while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = buf.drain(..=nl).collect();
                 let line_str = String::from_utf8_lossy(&line).trim().to_string();
                 if line_str.is_empty() {

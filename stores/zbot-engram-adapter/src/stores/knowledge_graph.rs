@@ -1761,7 +1761,7 @@ impl KnowledgeGraphSidecar {
                 )
             })
             .collect::<Vec<_>>();
-        most_connected_entities.sort_by(|left, right| right.1.cmp(&left.1));
+        most_connected_entities.sort_by_key(|entity| std::cmp::Reverse(entity.1));
         most_connected_entities.truncate(10);
         Ok(GraphStats {
             entity_count: entities.len(),

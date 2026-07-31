@@ -31,6 +31,9 @@ pub mod ward_layout;
 pub mod ward_usage;
 pub mod watcher;
 
+#[cfg(windows)]
+mod windows_file;
+
 pub use agent_registry::AgentRegistry;
 pub use agents::AgentService;
 pub use embedding_service::{

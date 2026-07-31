@@ -536,7 +536,8 @@ fn seed_literal_vault_file_portable(
         .open(&target)
     {
         Ok(mut file) => {
-            validate_bounded_regular_file(&file.metadata()?)
+            let metadata = file.metadata()?;
+            validate_opened_bounded_regular_file(&file, &metadata)
                 .map_err(|error| LayoutError::Invalid(error.to_string()))?;
             require_seed_entry_state(&parent, final_component, true)?;
             if !std::fs::canonicalize(&target)?.starts_with(&canonical_root) {
@@ -755,7 +756,7 @@ pub fn load_ward_layout(path: &Path) -> Result<LoadedWardLayout, LayoutError> {
     let before = std::fs::symlink_metadata(path)?;
     validate_regular_single_link(&before)?;
     let mut file = OpenOptions::new().read(true).open(path)?;
-    validate_same_opened_file(&before, &file.metadata()?)?;
+    validate_same_opened_file(path, &before, &file)?;
     let mut bytes = Vec::with_capacity(MAX_BYTES.min(8192));
     Read::by_ref(&mut file)
         .take((MAX_BYTES + 1) as u64)
@@ -859,7 +860,7 @@ fn load_bounded_vault_bytes(
     let file = open_vault_file_portable(vault_root, components)?;
 
     let metadata = file.metadata().map_err(BoundedFileError::Io)?;
-    validate_bounded_regular_file(&metadata)?;
+    validate_opened_bounded_regular_file(&file, &metadata)?;
     if metadata.len() > max_bytes as u64 {
         return Err(BoundedFileError::TooLarge);
     }
@@ -898,12 +899,17 @@ fn validate_bounded_regular_file(metadata: &std::fs::Metadata) -> Result<(), Bou
             return Err(BoundedFileError::Unsafe);
         }
     }
+    Ok(())
+}
+
+fn validate_opened_bounded_regular_file(
+    _file: &File,
+    metadata: &std::fs::Metadata,
+) -> Result<(), BoundedFileError> {
+    validate_bounded_regular_file(metadata)?;
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.number_of_links() != Some(1) {
-            return Err(BoundedFileError::Unsafe);
-        }
+    if !crate::windows_file::has_single_link(_file).map_err(BoundedFileError::Io)? {
+        return Err(BoundedFileError::Unsafe);
     }
     Ok(())
 }
@@ -1017,7 +1023,8 @@ fn seed_literal_vault_file_linux(
         Ok(mut file) => {
             require_exact_linux_entry(&directory, final_component)
                 .map_err(|error| LayoutError::Invalid(error.to_string()))?;
-            validate_bounded_regular_file(&file.metadata()?)
+            let metadata = file.metadata()?;
+            validate_opened_bounded_regular_file(&file, &metadata)
                 .map_err(|error| LayoutError::Invalid(error.to_string()))?;
             file.write_all(bytes)?;
             file.sync_all()?;
@@ -1037,7 +1044,7 @@ fn seed_literal_vault_file_linux(
 
 fn validate_opened_bounded_file(file: File, max_bytes: usize) -> Result<(), BoundedFileError> {
     let metadata = file.metadata().map_err(BoundedFileError::Io)?;
-    validate_bounded_regular_file(&metadata)?;
+    validate_opened_bounded_regular_file(&file, &metadata)?;
     if metadata.len() > max_bytes as u64 {
         return Err(BoundedFileError::TooLarge);
     }
@@ -1192,16 +1199,14 @@ fn open_vault_file_portable(
         .open(&path)
         .map_err(map_open_error)?;
     let opened = file.metadata().map_err(BoundedFileError::Io)?;
-    validate_bounded_regular_file(&opened)?;
+    validate_opened_bounded_regular_file(&file, &opened)?;
     let canonical_after = std::fs::canonicalize(&path).map_err(BoundedFileError::Io)?;
     if canonical_after != canonical_before || !canonical_after.starts_with(&canonical_root) {
         return Err(BoundedFileError::Unsafe);
     }
     let after = std::fs::symlink_metadata(&path).map_err(BoundedFileError::Io)?;
     validate_bounded_regular_file(&after)?;
-    if !same_opened_file(&before, &opened) || !same_opened_file(&after, &opened) {
-        return Err(BoundedFileError::Unsafe);
-    }
+    validate_portable_opened_identity(&path, &file, &before, &opened, &after)?;
     Ok(file)
 }
 
@@ -1222,10 +1227,15 @@ fn require_exact_portable_entry(parent: &Path, expected: &str) -> Result<(), Bou
             aliases += 1;
         }
     }
-    if exact == 1 && aliases == 0 {
-        Ok(())
-    } else {
-        Err(BoundedFileError::Unsafe)
+    classify_portable_entry_counts(exact, aliases)
+}
+
+#[cfg(any(test, not(target_os = "linux")))]
+fn classify_portable_entry_counts(exact: usize, aliases: usize) -> Result<(), BoundedFileError> {
+    match (exact, aliases) {
+        (0, 0) => Err(BoundedFileError::Missing),
+        (1, 0) => Ok(()),
+        _ => Err(BoundedFileError::Unsafe),
     }
 }
 
@@ -1259,7 +1269,7 @@ fn seed_ward_agent_template_portable(paths: &VaultPaths) -> Result<bool, LayoutE
     {
         Ok(mut file) => {
             let opened = file.metadata()?;
-            validate_bounded_regular_file(&opened)
+            validate_opened_bounded_regular_file(&file, &opened)
                 .map_err(|error| LayoutError::Invalid(error.to_string()))?;
             if !std::fs::canonicalize(&target)?.starts_with(&canonical_root) {
                 return invalid("ward agent template target escaped the vault");
@@ -1267,9 +1277,7 @@ fn seed_ward_agent_template_portable(paths: &VaultPaths) -> Result<bool, LayoutE
             let after = std::fs::symlink_metadata(&target)?;
             validate_bounded_regular_file(&after)
                 .map_err(|error| LayoutError::Invalid(error.to_string()))?;
-            if !same_opened_file(&opened, &after) {
-                return invalid("ward agent template target changed while it was opened");
-            }
+            validate_portable_seed_identity(&target, &file, &opened, &after)?;
             file.write_all(DEFAULT_WARD_AGENT_TEMPLATE.as_bytes())?;
             file.sync_all()?;
             Ok(true)
@@ -1285,24 +1293,77 @@ fn same_opened_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool
     left.dev() == right.dev() && left.ino() == right.ino()
 }
 
-#[cfg(windows)]
-fn same_opened_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    matches!(
-        (
-            left.volume_serial_number(),
-            left.file_index(),
-            right.volume_serial_number(),
-            right.file_index(),
-        ),
-        (Some(left_volume), Some(left_index), Some(right_volume), Some(right_index))
-            if left_volume == right_volume && left_index == right_index
-    )
-}
-
 #[cfg(all(not(target_os = "linux"), not(unix), not(windows)))]
 fn same_opened_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(all(not(target_os = "linux"), not(windows)))]
+fn validate_portable_opened_identity(
+    _path: &Path,
+    _file: &File,
+    before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+    after: &std::fs::Metadata,
+) -> Result<(), BoundedFileError> {
+    if same_opened_file(before, opened) && same_opened_file(after, opened) {
+        Ok(())
+    } else {
+        Err(BoundedFileError::Unsafe)
+    }
+}
+
+#[cfg(windows)]
+fn validate_portable_opened_identity(
+    path: &Path,
+    file: &File,
+    _before: &std::fs::Metadata,
+    _opened: &std::fs::Metadata,
+    _after: &std::fs::Metadata,
+) -> Result<(), BoundedFileError> {
+    let reopened = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(map_open_error)?;
+    let metadata = reopened.metadata().map_err(BoundedFileError::Io)?;
+    validate_opened_bounded_regular_file(&reopened, &metadata)?;
+    if crate::windows_file::same_file(file, &reopened).map_err(BoundedFileError::Io)? {
+        Ok(())
+    } else {
+        Err(BoundedFileError::Unsafe)
+    }
+}
+
+#[cfg(all(not(target_os = "linux"), not(windows)))]
+fn validate_portable_seed_identity(
+    _path: &Path,
+    _file: &File,
+    opened: &std::fs::Metadata,
+    after: &std::fs::Metadata,
+) -> Result<(), LayoutError> {
+    if same_opened_file(opened, after) {
+        Ok(())
+    } else {
+        invalid("ward agent template target changed while it was opened")
+    }
+}
+
+#[cfg(windows)]
+fn validate_portable_seed_identity(
+    path: &Path,
+    file: &File,
+    _opened: &std::fs::Metadata,
+    _after: &std::fs::Metadata,
+) -> Result<(), LayoutError> {
+    let reopened = OpenOptions::new().read(true).open(path)?;
+    let metadata = reopened.metadata()?;
+    validate_opened_bounded_regular_file(&reopened, &metadata)
+        .map_err(|error| LayoutError::Invalid(error.to_string()))?;
+    if crate::windows_file::same_file(file, &reopened)? {
+        Ok(())
+    } else {
+        invalid("ward agent template target changed while it was opened")
+    }
 }
 
 fn validate_regular_single_link(metadata: &std::fs::Metadata) -> Result<(), LayoutError> {
@@ -1320,16 +1381,44 @@ fn validate_regular_single_link(metadata: &std::fs::Metadata) -> Result<(), Layo
 }
 
 fn validate_same_opened_file(
+    path: &Path,
     before: &std::fs::Metadata,
-    opened: &std::fs::Metadata,
+    file: &File,
 ) -> Result<(), LayoutError> {
-    validate_regular_single_link(opened)?;
+    let opened = file.metadata()?;
+    validate_regular_single_link(&opened)?;
+    let after = std::fs::symlink_metadata(path)?;
+    validate_regular_single_link(&after)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+        if before.dev() != opened.dev()
+            || before.ino() != opened.ino()
+            || after.dev() != opened.dev()
+            || after.ino() != opened.ino()
+        {
             return invalid("layout target changed while it was opened");
         }
+    }
+    #[cfg(windows)]
+    {
+        if !crate::windows_file::has_single_link(file)? {
+            return invalid("layout target must have exactly one link");
+        }
+        let reopened = OpenOptions::new().read(true).open(path)?;
+        let reopened_metadata = reopened.metadata()?;
+        validate_regular_single_link(&reopened_metadata)?;
+        if !crate::windows_file::has_single_link(&reopened)? {
+            return invalid("layout target must have exactly one link");
+        }
+        if !crate::windows_file::same_file(file, &reopened)? {
+            return invalid("layout target changed while it was opened");
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, before, file);
+        return invalid("layout target identity is unsupported on this platform");
     }
     Ok(())
 }
@@ -1546,6 +1635,53 @@ fn validate_supported_contract(document: &WardLayoutDocument) -> Result<(), Layo
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // STUB: AC2
+    #[test]
+    fn portable_entry_counts_distinguish_missing_from_unsafe() {
+        assert!(matches!(
+            classify_portable_entry_counts(0, 0),
+            Err(BoundedFileError::Missing)
+        ));
+        assert!(classify_portable_entry_counts(1, 0).is_ok());
+        assert!(matches!(
+            classify_portable_entry_counts(0, 1),
+            Err(BoundedFileError::Unsafe)
+        ));
+        assert!(matches!(
+            classify_portable_entry_counts(2, 0),
+            Err(BoundedFileError::Unsafe)
+        ));
+        assert!(matches!(
+            classify_portable_entry_counts(1, 1),
+            Err(BoundedFileError::Unsafe)
+        ));
+    }
+
+    // STUB: AC2
+    #[test]
+    fn required_bounded_vault_component_remains_missing() {
+        let vault = tempdir().unwrap();
+        assert!(matches!(
+            load_bounded_vault_bytes(vault.path(), &["required.md"], 64),
+            Err(BoundedFileError::Missing)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn portable_windows_layout_rejects_hard_links() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("ward-conf.yaml");
+        let alias = directory.path().join("ward-conf-alias.yaml");
+        std::fs::write(&path, DEFAULT_WARD_LAYOUT).unwrap();
+        std::fs::hard_link(&path, alias).unwrap();
+
+        assert!(matches!(
+            load_ward_layout(&path),
+            Err(LayoutError::Invalid(message)) if message.contains("exactly one link")
+        ));
+    }
 
     // STUB: AC1, AC2, AC3
     #[test]

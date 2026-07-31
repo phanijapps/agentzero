@@ -83,7 +83,6 @@ impl McpManager {
                 name,
                 url,
                 headers,
-                auth: _,
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
@@ -101,7 +100,6 @@ impl McpManager {
                 name,
                 url,
                 headers,
-                auth: _,
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
@@ -119,7 +117,6 @@ impl McpManager {
                 name,
                 url,
                 headers,
-                auth: _,
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
@@ -181,7 +178,7 @@ impl McpManager {
         let mut all_tools = Vec::new();
         let servers = self.servers.read().await;
 
-        for (_id, client) in servers.iter() {
+        for client in servers.values() {
             let tools = client.list_tools().await?;
             all_tools.extend(tools);
         }

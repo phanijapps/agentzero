@@ -181,7 +181,13 @@ jobs:
           playwright_status=0
           (
             cd apps/ui
-            npm run test:e2e -- --grep-invert "long-running"
+            # This required job is the bounded deterministic lane. Debug,
+            # dashboard-era, and provider-backed suites belong in separately
+            # provisioned jobs.
+            npm run test:e2e -- \
+              tests/e2e/smoke.spec.ts \
+              tests/e2e/navigation.spec.ts \
+              tests/e2e/persistent-surfaces.spec.ts
           ) || playwright_status=$?
           if (( playwright_status != 0 )); then
             cat "$daemon_log"

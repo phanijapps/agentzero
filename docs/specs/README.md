@@ -4,7 +4,7 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
-| [P3 CI Stabilization](p3-ci-stabilization/spec.md) | Implemented | Restores security, macOS and Windows Ward portability, and UI E2E gates without weakening their safety controls. |
+| [P3 CI Stabilization](p3-ci-stabilization/spec.md) | Implementing | Restores security, macOS and Windows Ward portability, and UI E2E gates without weakening their safety controls. |
 | [SQLite Reindex Conformance](sqlite-reindex-conformance/spec.md) | Shipped | Makes SQLite embedding reindexing skip already-matching vec tables while preserving repair of missing or mismatched targets. |
 | [SQLite Agent Isolation](sqlite-agent-isolation/spec.md) | Shipped | Makes the agent-scoped list-entities contract executable: requested-agent plus explicitly global rows, never another private agent. |
 | [P0 Supply-Chain Gates](p0-supply-chain-gates/spec.md) | Shipped | Updates vulnerable Rust dependencies and restores evidence-backed dependency license checks without advisory or unlicensed bypasses. |

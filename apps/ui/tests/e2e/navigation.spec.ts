@@ -8,8 +8,7 @@ test.describe('Navigation', () => {
   test('home page loads', async ({ page }) => {
     await page.goto('/');
 
-    // Should have a title containing AgentZero or Agent
-    await expect(page).toHaveTitle(/AgentZero|Agent/i);
+    await expect(page).toHaveTitle(/z-Bot/i);
   });
 
   test('home page shows main content', async ({ page }) => {
@@ -19,14 +18,11 @@ test.describe('Navigation', () => {
     await expect(page.locator('body')).toBeVisible();
   });
 
-  test('can navigate to dashboard via URL', async ({ page }) => {
+  test('root redirects to research workspace', async ({ page }) => {
     await page.goto('/');
 
-    // Should be on dashboard (root URL)
-    await expect(page).toHaveURL(/\/$/);
-    // Wait for dashboard to load before checking heading
-    await page.waitForSelector('h1:has-text("Dashboard")', { state: 'visible', timeout: 15_000 });
-    await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+    await expect(page).toHaveURL(/\/research$/);
+    await expect(page.getByRole('textbox', { name: /what would you like to work on/i })).toBeVisible();
   });
 
   test('can navigate to settings via URL', async ({ page }) => {
@@ -59,7 +55,7 @@ test.describe('Navigation', () => {
   });
 
   test('can navigate between pages', async ({ page }) => {
-    // Start at home (dashboard)
+    // Start at the root workspace.
     await page.goto('/');
     await expect(page.locator('body')).toBeVisible();
 
@@ -67,7 +63,7 @@ test.describe('Navigation', () => {
     await page.goto('/settings');
     await expect(page).toHaveURL(/settings/);
 
-    // Go back home
+    // Go back to the root workspace.
     await page.goto('/');
     await expect(page.locator('body')).toBeVisible();
   });
@@ -82,9 +78,9 @@ test.describe('Navigation', () => {
     await page.goBack();
     await expect(page).toHaveURL(/settings/);
 
-    // Go back to home
+    // Go back to the root workspace.
     await page.goBack();
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/research$/);
 
     // Go forward to settings
     await page.goForward();
@@ -113,10 +109,10 @@ test.describe('Navigation - Error Handling', () => {
     // Try invalid route
     await page.goto('/invalid-page-12345');
 
-    // Should be able to navigate to valid page (dashboard at root)
+    // Should be able to navigate to the valid root workspace.
     await page.goto('/');
-    await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+    await expect(page).toHaveURL(/\/research$/);
+    await expect(page.getByRole('textbox', { name: /what would you like to work on/i })).toBeVisible();
   });
 });
 
@@ -130,12 +126,11 @@ test.describe('Navigation - Deep Links', () => {
     await expect(page).toHaveURL(/settings/);
   });
 
-  test('dashboard is accessible as deep link', async ({ page }) => {
-    await page.goto('/');
-    await expect(page).toHaveURL(/\/$/);
+  test('legacy dashboard deep link redirects to Mission Control', async ({ page }) => {
+    await page.goto('/dashboard');
+    await expect(page).toHaveURL(/\/mission-control$/);
 
-    // Page should load without requiring prior navigation
-    await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /attention radar/i })).toBeVisible();
   });
 });
 
@@ -147,8 +142,8 @@ test.describe('Navigation - Responsiveness', () => {
     await page.goto('/');
     await expect(page.locator('body')).toBeVisible();
 
-    // Verify dashboard loads
-    await expect(page).toHaveURL(/\/$/);
+    // Verify the root workspace loads.
+    await expect(page).toHaveURL(/\/research$/);
   });
 
   test('navigation works on tablet viewport', async ({ page }) => {
@@ -158,7 +153,7 @@ test.describe('Navigation - Responsiveness', () => {
     await page.goto('/');
     await expect(page.locator('body')).toBeVisible();
 
-    // Verify dashboard loads
-    await expect(page).toHaveURL(/\/$/);
+    // Verify the root workspace loads.
+    await expect(page).toHaveURL(/\/research$/);
   });
 });

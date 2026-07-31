@@ -9,7 +9,7 @@ test.describe('Smoke Tests', () => {
     await page.goto('/');
 
     // Should have a title
-    await expect(page).toHaveTitle(/AgentZero|Agent/i);
+    await expect(page).toHaveTitle(/z-Bot/i);
   });
 
   test('navigation works', async ({ page }) => {
@@ -20,11 +20,10 @@ test.describe('Smoke Tests', () => {
   });
 
   test('can navigate to dashboard', async ({ page }) => {
-    // Dashboard is at root '/'
+    // Root intentionally redirects to the primary research workspace.
     await page.goto('/');
 
-    // Should navigate successfully (no error)
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/research$/);
   });
 
   test('can navigate to settings', async ({ page }) => {
@@ -35,12 +34,11 @@ test.describe('Smoke Tests', () => {
   });
 });
 
-test.describe('Dashboard Page', () => {
-  test('dashboard loads', async ({ dashboardPage, page }) => {
+test.describe('Research Page', () => {
+  test('root loads the research workspace', async ({ dashboardPage, page }) => {
     await dashboardPage.goto();
 
-    // Dashboard is at root '/'
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/research$/);
   });
 });
 

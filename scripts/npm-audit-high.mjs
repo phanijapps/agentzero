@@ -20,6 +20,8 @@ const acceptedAdvisories = new Map([
     "https://github.com/advisories/GHSA-qwww-vcr4-c8h2",
     {
       package: "react-router",
+      owner: "z-Bot maintainers",
+      expires: "2026-10-31",
       reason:
         "React Router RSC action handling is not exposed by the Vite client-only dashboard; the source tree is checked for RSC markers before this exception is accepted.",
     },
@@ -30,6 +32,11 @@ const audit = spawnSync("npm", ["audit", "--audit-level=high", "--json"], {
   cwd: projectDir,
   encoding: "utf8",
 });
+
+if (audit.error) {
+  console.error(`Failed to run npm audit: ${audit.error.message}`);
+  process.exit(1);
+}
 
 if (!audit.stdout.trim()) {
   process.stderr.write(audit.stderr);
@@ -46,6 +53,20 @@ try {
   process.exit(1);
 }
 
+if (report.error || !report.vulnerabilities || !report.metadata?.vulnerabilities) {
+  console.error("npm audit did not return a valid vulnerability report:");
+  console.error(JSON.stringify(report.error ?? report, null, 2));
+  process.exit(1);
+}
+
+const today = new Date().toISOString().slice(0, 10);
+for (const [url, exception] of acceptedAdvisories) {
+  if (today > exception.expires) {
+    console.error(`Expired npm audit exception: ${url} (expired ${exception.expires})`);
+    process.exit(1);
+  }
+}
+
 const vulnerabilities = report.vulnerabilities ?? {};
 const unexpected = [];
 const accepted = [];
@@ -59,6 +80,9 @@ function viaNames(vulnerability) {
 }
 
 for (const [name, vulnerability] of Object.entries(vulnerabilities)) {
+  if (!["high", "critical"].includes(vulnerability.severity)) {
+    continue;
+  }
   const advisories = advisoryObjects(vulnerability);
   if (advisories.length > 0) {
     const unaccepted = advisories.filter((advisory) => {
@@ -102,6 +126,7 @@ if ((report.metadata?.vulnerabilities?.total ?? 0) > 0) {
   console.warn("Accepted npm audit advisory exception(s):");
   for (const [url, acceptedAdvisory] of acceptedAdvisories) {
     console.warn(`- ${acceptedAdvisory.package}: ${url}`);
+    console.warn(`  Owner: ${acceptedAdvisory.owner}; expires: ${acceptedAdvisory.expires}`);
     console.warn(`  ${acceptedAdvisory.reason}`);
   }
 }

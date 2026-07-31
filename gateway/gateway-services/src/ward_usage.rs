@@ -366,7 +366,7 @@ fn load_sidecar_portable(wards_dir: &Path) -> Result<Option<String>, String> {
     }
     let canonical_root = std::fs::canonicalize(wards_dir).map_err(|error| error.to_string())?;
     let canonical_path = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
-    if !canonical_path.starts_with(canonical_root) {
+    if !canonical_path.starts_with(&canonical_root) {
         return Err("ward usage sidecar escaped the wards directory".into());
     }
     let mut file = OpenOptions::new()

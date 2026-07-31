@@ -1,6 +1,6 @@
 # P3 CI Stabilization Plan
 
-- **Status:** Implemented
+- **Status:** Executing
 - **Spec:** [spec.md](spec.md)
 
 ## Decisions
@@ -51,7 +51,7 @@ Done when: the stable Windows cross-target check has no `windows_by_handle` use 
 Depends on: T3  
 Tests:
 
-- no stub (goal-based): a local bounded daemon health smoke test exercises the command and live CI exercises Playwright through Vite's API proxy.
+- no stub (goal-based): a local bounded daemon health smoke test exercises the command and the explicit smoke/navigation/persistent-surfaces spec set proves the UI is served through Vite without implicitly collecting debug or provider-backed suites.
 
 Approach: start the built daemon with isolated data, poll health with a fixed bound, surface logs on failure, trap cleanup, then run Playwright.  
 Files: `.github/workflows/test.yml`  

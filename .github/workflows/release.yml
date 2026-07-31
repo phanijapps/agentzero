@@ -17,10 +17,10 @@ jobs:
   build-frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -33,7 +33,7 @@ jobs:
         run: npm run build --prefix apps/ui
 
       - name: Upload dashboard dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-dist
           path: dist/
@@ -50,7 +50,7 @@ jobs:
             archive: linux-aarch64
             linker: aarch64-linux-gnu-gcc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux build dependencies
         run: |
@@ -58,7 +58,7 @@ jobs:
           sudo apt-get install -y pkg-config gcc-aarch64-linux-gnu
 
       - name: Download dashboard dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-dist
           path: dist/
@@ -97,7 +97,7 @@ jobs:
           tar -czf "zbot-${VERSION}-${{ matrix.archive }}.tar.gz" -C package "zbot-${VERSION}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zbot-${{ matrix.archive }}
           path: zbot-*.tar.gz
@@ -113,10 +113,10 @@ jobs:
           - target: aarch64-apple-darwin
             archive: macos-aarch64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download dashboard dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-dist
           path: dist/
@@ -153,7 +153,7 @@ jobs:
           tar -czf "zbot-${VERSION}-${{ matrix.archive }}.tar.gz" -C package "zbot-${VERSION}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zbot-${{ matrix.archive }}
           path: zbot-*.tar.gz
@@ -167,10 +167,10 @@ jobs:
           - target: x86_64-pc-windows-msvc
             archive: windows-x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download dashboard dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-dist
           path: dist/
@@ -207,7 +207,7 @@ jobs:
           Compress-Archive -Path "package/zbot-$version" -DestinationPath "zbot-$version-${{ matrix.archive }}.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zbot-${{ matrix.archive }}
           path: zbot-*.zip
@@ -218,10 +218,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: zbot-*
           path: artifacts/
@@ -237,7 +237,7 @@ jobs:
         run: ls -la artifacts/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.version || github.ref_name }}
           name: zbot ${{ github.event.inputs.version || github.ref_name }}

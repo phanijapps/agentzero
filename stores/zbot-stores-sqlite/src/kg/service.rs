@@ -78,7 +78,7 @@ impl GraphService {
                     .map(|name| (name.to_string(), count))
             })
             .collect();
-        connection_vec.sort_by(|a, b| b.1.cmp(&a.1));
+        connection_vec.sort_by_key(|connection| std::cmp::Reverse(connection.1));
         connection_vec.truncate(10);
 
         Ok(GraphStats {
@@ -179,7 +179,7 @@ impl GraphService {
             let count = self.storage.count_relationships_for(&e.id)?;
             scored.push((e, count));
         }
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         Ok(scored.into_iter().take(limit).map(|(e, _)| e).collect())
     }
 

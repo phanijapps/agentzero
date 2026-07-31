@@ -334,7 +334,7 @@ where
                 let pairs: Vec<(String, Vec<f32>)> = batch
                     .iter()
                     .map(|(id, _)| id.clone())
-                    .zip(embeddings.into_iter())
+                    .zip(embeddings)
                     .collect();
 
                 if let Err(e) = insert_batch(db, target, &pairs) {

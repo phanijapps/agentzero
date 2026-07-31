@@ -171,28 +171,27 @@ Scope tags:
 
 ### Non-functional / UI build hygiene
 
-#### TD-043 🟡 [B] 89 pre-existing TypeScript errors in UI test files block `npm run build`
-- **Location:** `apps/ui/src/` — 11 affected `*.test.ts(x)` files:
-  - `App.extra.test.tsx`
+#### TD-043 ✅ [B] UI tests share the production TypeScript build gate
+- **Measured baseline (2026-07-31):** The live base-project check reported 36
+  errors across seven test files. Earlier counts of 89 errors in 11 files had
+  gone stale as fixtures were repaired by intervening feature work.
+- **Locations repaired:**
   - `features/logs/log-hooks-extended.test.ts`
   - `features/logs/useSessionTrace.test.ts`
   - `features/memory/command-deck/SearchResults.test.tsx`
-  - `features/setup/SetupWizard.test.tsx`
-  - `features/setup/steps/AgentsStep.test.tsx`
-  - `features/setup/steps/ProvidersStep.test.tsx`
-  - `features/setup/steps/ReviewStep.test.tsx`
-  - `features/setup/steps/SkillsStep.test.tsx`
+  - `features/research-v2/IntentInfoButton.test.tsx`
+  - `features/research-v2/useResearchSession.test.ts`
   - `services/transport/http.embeddings.test.ts`
   - `services/transport/http.ws.test.ts`
-- **Why debt:** `tsc` type-checks all of `src/` (including tests) before `vite build`. 89 errors in test fixtures stop the build dead. Production code itself has **zero** TS errors — verified by counting errors with the test files excluded. The errors fall into four patterns:
-  1. Stale fixtures missing fields after API type expansion (`ProviderResponse.{description, apiKey, baseUrl}`, `SkillResponse.instructions`, `AgentResponse.description`).
-  2. Narrowed string-literal unions that tests use loosely (`"global"` not assignable to `MemoryScope`, `"code"` not assignable to `MemoryCategory`, `"root"` not in `SubscriptionScope`).
-  3. `Array.prototype.at` usage — added in ES2022; `tsconfig.json` targets ES2020.
-  4. General drift between test mocks and current type definitions.
-- **Immediate fix (this PR):** Created `apps/ui/tsconfig.build.json` that extends `tsconfig.json` and excludes `**/*.test.ts(x)` + `**/*.spec.ts(x)` + `tests/**`. Updated `package.json` build script from `"tsc && vite build"` to `"tsc -p tsconfig.build.json && vite build"`. Production type-check + bundle now works; IDE/vitest still type-check tests via the base config.
-- **Why this is "tech debt" not a real bug:** Production code passes type-check cleanly. Tests run via vitest (which has its own type behavior) regardless of this build-script exclusion. The errors are real but they reflect outdated test fixtures, not production correctness.
-- **Followup fix (separate PR or piecemeal):** Update each test file's fixtures to match current type definitions. Bump `lib` to ES2022 to unblock `Array.prototype.at`. Tighten string-literal usage where types narrowed.
-- **Status:** mitigated (build unblocked); test fixtures still need updates — fix opportunistically as files are touched, or batch as a cleanup PR.
+- **Resolution:** Updated stale fixtures to the current transport/domain types,
+  removed obsolete response fields and invalid enum examples, and adopted the
+  ES2022 compiler target/library required by existing `Array.prototype.at`
+  usage. Deleted `tsconfig.build.json` and restored `npm run build` to `tsc &&
+  vite build`, so production and test sources now pass one compiler project.
+- **Verification:** `npx tsc --noEmit`, `npm run lint`, all 1,352 Vitest tests,
+  and `npm run build` pass without TypeScript suppression directives or
+  production-code changes.
+- **Status:** done — P5 UI test type-debt cleanup.
 
 ---
 

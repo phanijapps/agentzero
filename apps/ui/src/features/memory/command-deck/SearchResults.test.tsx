@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { SearchResults } from './SearchResults';
 import type { HybridSearchResponse } from '@/services/transport/types';
 
@@ -13,8 +13,6 @@ function emptyData(): HybridSearchResponse {
     wiki: { hits: [], latency_ms: 5 },
     procedures: { hits: [], latency_ms: 5 },
     episodes: { hits: [], latency_ms: 5 },
-    query: 'test',
-    total_hits: 0,
   };
 }
 

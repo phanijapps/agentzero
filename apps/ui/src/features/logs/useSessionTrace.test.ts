@@ -5,8 +5,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
 import type { Transport } from "@/services/transport";
+import type {
+  ExecutionLog,
+  LogSession,
+  TransportResult,
+} from "@/services/transport/types";
 
-const getLogSession = vi.fn<Transport["getLogSession"]>();
+type WireLogSession = Omit<LogSession, "status"> & { status: string };
+type WireSessionDetail = { session: WireLogSession; logs: ExecutionLog[] };
+type GetLogSessionWire = (
+  sessionId: string,
+) => Promise<TransportResult<WireSessionDetail>>;
+
+const getLogSession = vi.fn<GetLogSessionWire>();
 const getSessionMessages = vi.fn<Transport["getSessionMessages"]>();
 
 vi.mock("@/services/transport", () => ({
@@ -20,9 +31,9 @@ import { useSessionTrace } from "./useSessionTrace";
 function makeSession(
   id: string,
   agentId = "root",
-  status = "completed",
+  status: LogSession["status"] = "completed",
   childIds: string[] = [],
-) {
+): LogSession {
   return {
     session_id: id,
     conversation_id: id.startsWith("exec-") ? "sess-1" : id,
@@ -33,35 +44,45 @@ function makeSession(
     started_at: "2024-01-01T00:00:00Z",
     duration_ms: 100,
     token_count: 50,
+    tool_call_count: 0,
+    error_count: 0,
     child_session_ids: childIds,
   };
 }
 
 function makeLog(
   id: string,
-  category: string,
+  category: ExecutionLog["category"],
   opts: Record<string, unknown> = {},
-) {
+): ExecutionLog {
   return {
     id,
     agent_id: "root",
     session_id: "s1",
+    conversation_id: "s1",
     category,
     message: (opts.message as string) ?? `log ${id}`,
-    level: (opts.level as string) ?? "info",
+    level: (opts.level as ExecutionLog["level"]) ?? "info",
     timestamp: "2024-01-01T00:00:01Z",
     duration_ms: 10,
-    metadata: (opts.metadata as Record<string, unknown>) ?? null,
+    metadata: (opts.metadata as Record<string, unknown>) ?? undefined,
   };
 }
 
-function makeDetail(sessionId: string, logs = [], childIds: string[] = []) {
+function makeWireSession(status: string): WireLogSession {
+  return { ...makeSession("s1"), status };
+}
+
+function makeDetail(
+  sessionId: string,
+  logs: ExecutionLog[] = [],
+  childIds: string[] = [],
+) {
   return {
     success: true as const,
     data: {
       session: makeSession(sessionId, "root", "completed", childIds),
       logs,
-      executions: [],
     },
   };
 }
@@ -139,7 +160,6 @@ describe("useSessionTrace", () => {
       data: {
         session: makeSession("s1", "root", "completed", []),
         logs: [toolLog, resultLog],
-        executions: [],
       },
     });
     const { result } = renderHook(() => useSessionTrace("s1"));
@@ -203,7 +223,6 @@ describe("useSessionTrace", () => {
       data: {
         session: makeSession("s1", "root", "completed", []),
         logs: [errLog],
-        executions: [],
       },
     });
     const { result } = renderHook(() => useSessionTrace("s1"));
@@ -224,7 +243,6 @@ describe("useSessionTrace", () => {
         data: {
           session: makeSession("s1", "root", "completed", ["s2"]),
           logs: [delegLog],
-          executions: [],
         },
       })
       // Child session
@@ -233,7 +251,6 @@ describe("useSessionTrace", () => {
         data: {
           session: makeSession("s2", "code-agent", "completed", []),
           logs: [],
-          executions: [],
         },
       });
 
@@ -256,7 +273,6 @@ describe("useSessionTrace", () => {
       data: {
         session: makeSession("s1"),
         logs: [internalLog, externalLog],
-        executions: [],
       },
     });
     const { result } = renderHook(() => useSessionTrace("s1"));
@@ -279,9 +295,9 @@ describe("useSessionTrace", () => {
       getLogSession.mockResolvedValueOnce({
         success: true,
         data: {
-          session: makeSession("s1", "root", status, []),
+          // Exercise legacy/unknown wire values beyond the declared API union.
+          session: makeWireSession(status),
           logs: [],
-          executions: [],
         },
       });
       const { result } = renderHook(() => useSessionTrace("s1"));

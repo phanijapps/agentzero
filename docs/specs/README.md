@@ -4,6 +4,7 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [UI Test Type-Debt Cleanup](ui-test-type-debt/spec.md) | Implementing | Restores one TypeScript gate across UI production and test sources by repairing stale fixtures and removing the build exclusion. |
 | [P4 CI and E2E Debt Cleanup](p4-tech-debt/spec.md) | Shipped | Makes UI E2E ownership executable, upgrades deprecated action runtimes, and tracks removal of the temporary React Router advisory exception. |
 | [P3 CI Stabilization](p3-ci-stabilization/spec.md) | Shipped | Restores security, macOS and Windows Ward portability, and UI E2E gates without weakening their safety controls. |
 | [SQLite Reindex Conformance](sqlite-reindex-conformance/spec.md) | Shipped | Makes SQLite embedding reindexing skip already-matching vec tables while preserving repair of missing or mismatched targets. |

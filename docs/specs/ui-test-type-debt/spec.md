@@ -1,6 +1,6 @@
 # Spec: UI Test Type-Debt Cleanup
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none
@@ -87,3 +87,7 @@ test-excluding build configuration without changing application behavior.
 - `npm run build`: the unified `tsc && vite build` command passed.
 - The scoped repository search found no TypeScript suppression directive or
   `tsconfig.build.json` reference in the changed UI configuration/tests.
+- [PR #235](https://github.com/phanijapps/zbot/pull/235) passed all eight live
+  checks on implementation commit `8b069bf5`: unit, integration, end-to-end,
+  Rust and frontend coverage, macOS and Windows Ward portability, and the
+  Rust + Node security scan.

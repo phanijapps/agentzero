@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -28,7 +28,7 @@ jobs:
         run: cargo test --workspace --lib
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -46,7 +46,7 @@ jobs:
     needs: unit-tests
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -58,7 +58,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -79,7 +79,7 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -96,10 +96,10 @@ jobs:
     needs: integration-tests
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -184,10 +184,7 @@ jobs:
             # This required job is the bounded deterministic lane. Debug,
             # dashboard-era, and provider-backed suites belong in separately
             # provisioned jobs.
-            npm run test:e2e -- \
-              tests/e2e/smoke.spec.ts \
-              tests/e2e/navigation.spec.ts \
-              tests/e2e/persistent-surfaces.spec.ts
+            npm run test:e2e:required
           ) || playwright_status=$?
           if (( playwright_status != 0 )); then
             cat "$daemon_log"
@@ -203,7 +200,7 @@ jobs:
 
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: apps/ui/playwright-report/
@@ -211,7 +208,7 @@ jobs:
 
       - name: Upload Ward archetype E2E results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ward-archetype-playwright-report
           path: e2e/playwright/playwright-report/
@@ -226,7 +223,7 @@ jobs:
     timeout-minutes: 30
     continue-on-error: true  # Don't fail the whole workflow if coverage fails
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -256,7 +253,7 @@ jobs:
             --ignore-filename-regex '(runtime/agent-runtime/src/(mcp/(stdio|http|sse|manager)\.rs|logging\.rs)|gateway/src/(server\.rs|services/runtime\.rs|websocket/.*\.rs|http/(artifacts|bridge|chat|connectors|cron|embeddings|events|graph|ingest|mcps|memory|models|network|openapi|plugins|providers|sessions|settings|setup|skills|tools|upload|ward_actions|webhooks)\.rs))'
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: rust-lcov.info
           flags: rust
@@ -269,10 +266,10 @@ jobs:
     timeout-minutes: 15
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -291,7 +288,7 @@ jobs:
         run: cd apps/ui && npm run test:coverage
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: apps/ui/coverage/lcov.info
           flags: frontend

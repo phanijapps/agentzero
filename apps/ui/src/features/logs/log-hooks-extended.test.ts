@@ -172,9 +172,10 @@ describe("useSessionDetail", () => {
     const detail = makeDetail();
     getLogSession.mockResolvedValue({ success: true, data: detail });
 
+    const initialProps: { id: string | null } = { id: "sess-1" };
     const { result, rerender } = renderHook(
       ({ id }: { id: string | null }) => useSessionDetail(id),
-      { initialProps: { id: "sess-1" } },
+      { initialProps },
     );
     await waitFor(() => expect(result.current.detail).not.toBeNull());
 

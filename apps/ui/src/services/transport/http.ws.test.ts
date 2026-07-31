@@ -439,7 +439,7 @@ describe('HttpTransport — subscribeConversation()', () => {
     wsMock.send.mockClear();
 
     // Re-subscribe with a different scope
-    t.subscribeConversation('conv-1', { onEvent: vi.fn(), scope: 'root' });
+    t.subscribeConversation('conv-1', { onEvent: vi.fn(), scope: 'session' });
     const cmd = JSON.parse(wsMock.send.mock.calls.at(-1)?.[0]);
     expect(cmd.type).toBe('subscribe');
   });

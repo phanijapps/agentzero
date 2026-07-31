@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.build.json && vite build",
+    "build": "tsc && vite build",
     "preview": "vite preview",
     "daemon": "cargo watch -x \"run --manifest-path application/daemon/Cargo.toml\"",
     "test": "vitest run",

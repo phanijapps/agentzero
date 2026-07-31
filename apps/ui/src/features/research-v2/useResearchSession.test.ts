@@ -803,7 +803,7 @@ describe("useResearchSession — snapshot flow (R14f)", () => {
         phase: "completed",
         response: null,
         intentAnalysis: null,
-        ward: { name: "stock-analysis" },
+        ward: { name: "stock-analysis", content: "" },
         recalledFacts: [],
         plan: [],
         subagents: [],

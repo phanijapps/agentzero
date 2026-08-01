@@ -3355,6 +3355,26 @@ mod tests {
         assert_eq!(entities.len(), 2);
     }
 
+    #[test]
+    fn list_entities_scopes_to_requested_agent_and_global() {
+        let storage = create_test_storage();
+        seed_entity_raw(&storage, "agent-a-only", "agent-a");
+        seed_entity_raw(&storage, "agent-b-only", "agent-b");
+        seed_entity_raw(&storage, "shared", "__global__");
+
+        let entities = storage.list_entities("agent-a", None, 100, 0).unwrap();
+        assert!(
+            entities
+                .iter()
+                .all(|entity| entity.agent_id == "agent-a" || entity.agent_id == "__global__"),
+            "listing agent-a must not return an unrelated private-agent row"
+        );
+
+        let mut ids: Vec<_> = entities.into_iter().map(|entity| entity.id).collect();
+        ids.sort();
+        assert_eq!(ids, ["agent-a-only", "shared"]);
+    }
+
     #[tokio::test]
     async fn test_list_relationships_with_pagination() {
         let storage = create_test_storage();

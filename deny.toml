@@ -71,6 +71,13 @@ allow = [
 # Confidence threshold for license text detection (0.0-1.0)
 confidence-threshold = 0.8
 
+# These resolved crates use the OSI-approved Zlib license. Keep the exception
+# crate- and version-specific so another Zlib dependency requires review.
+exceptions = [
+    { crate = "foldhash@0.1.5", allow = ["Zlib"] },
+    { crate = "zlib-rs@0.5.5", allow = ["Zlib"] },
+]
+
 # Allow exceptions for specific crates (USE WITH CAUTION)
 [[licenses.clarify]]
 # The name of the crate to clarify
@@ -80,6 +87,24 @@ expression = "MIT AND ISC AND OpenSSL"
 # One or more files in the crate's source used as the "source of truth"
 license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
+]
+
+[[licenses.clarify]]
+crate = "engram-integration"
+expression = "MIT"
+# Upstream: phanijapps/engram@0149f9d3f72a2f89ae781e142edee7ca70d2dcbb
+# LICENSE sha256: 63de6ec6f495050785e7d4e203cc5552c3d76e8ccc4819657a4ff29dc83c4342
+license-files = [
+    { path = "../../LICENSE", hash = 0xf35f574f },
+]
+
+[[licenses.clarify]]
+crate = "engram-store-sqlite"
+expression = "MIT"
+# Upstream: phanijapps/engram@0149f9d3f72a2f89ae781e142edee7ca70d2dcbb
+# LICENSE sha256: 63de6ec6f495050785e7d4e203cc5552c3d76e8ccc4819657a4ff29dc83c4342
+license-files = [
+    { path = "../../LICENSE", hash = 0xf35f574f },
 ]
 
 [licenses.private]

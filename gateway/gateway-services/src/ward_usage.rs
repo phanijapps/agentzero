@@ -284,7 +284,7 @@ fn save_sidecar_portable(wards_dir: &Path, bytes: &[u8]) -> Result<(), String> {
         let metadata = file.metadata().map_err(|error| error.to_string())?;
         if !metadata.is_file()
             || metadata.file_type().is_symlink()
-            || !portable_metadata_has_single_link(&metadata)
+            || !portable_opened_file_has_single_link(&file)
         {
             return Err("ward usage temporary file is unsafe".into());
         }
@@ -366,7 +366,7 @@ fn load_sidecar_portable(wards_dir: &Path) -> Result<Option<String>, String> {
     }
     let canonical_root = std::fs::canonicalize(wards_dir).map_err(|error| error.to_string())?;
     let canonical_path = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
-    if !canonical_path.starts_with(canonical_root) {
+    if !canonical_path.starts_with(&canonical_root) {
         return Err("ward usage sidecar escaped the wards directory".into());
     }
     let mut file = OpenOptions::new()
@@ -376,10 +376,23 @@ fn load_sidecar_portable(wards_dir: &Path) -> Result<Option<String>, String> {
     let opened = file.metadata().map_err(|error| error.to_string())?;
     if !opened.is_file()
         || opened.file_type().is_symlink()
-        || !portable_metadata_has_single_link(&opened)
+        || !portable_opened_file_has_single_link(&file)
         || opened.len() > MAX_WARD_USAGE_BYTES as u64
     {
         return Err("ward usage sidecar is unsafe or oversized".into());
+    }
+    let canonical_after = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+    if canonical_after != canonical_path || !canonical_after.starts_with(&canonical_root) {
+        return Err("ward usage sidecar changed or escaped while opening".into());
+    }
+    let after = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+    if !after.is_file()
+        || after.file_type().is_symlink()
+        || !portable_metadata_has_single_link(&after)
+        || after.len() > MAX_WARD_USAGE_BYTES as u64
+        || !portable_opened_file_matches_path(&path, &file, &before, &opened, &after)?
+    {
+        return Err("ward usage sidecar changed or became unsafe while opening".into());
     }
     let mut bytes = Vec::with_capacity((opened.len() as usize).min(MAX_WARD_USAGE_BYTES));
     Read::by_ref(&mut file)
@@ -401,16 +414,72 @@ fn portable_metadata_has_single_link(metadata: &std::fs::Metadata) -> bool {
         use std::os::unix::fs::MetadataExt;
         return metadata.nlink() == 1;
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        return metadata.number_of_links() == Some(1);
-    }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     {
         let _ = metadata;
         true
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn portable_opened_file_has_single_link(file: &File) -> bool {
+    #[cfg(windows)]
+    {
+        return crate::windows_file::has_single_link(file).unwrap_or(false);
+    }
+    #[cfg(not(windows))]
+    {
+        file.metadata()
+            .is_ok_and(|metadata| portable_metadata_has_single_link(&metadata))
+    }
+}
+
+#[cfg(all(unix, any(test, not(target_os = "linux"))))]
+fn portable_opened_file_matches_path(
+    _path: &Path,
+    _file: &File,
+    before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+    after: &std::fs::Metadata,
+) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(before.dev() == opened.dev()
+        && before.ino() == opened.ino()
+        && after.dev() == opened.dev()
+        && after.ino() == opened.ino())
+}
+
+#[cfg(windows)]
+fn portable_opened_file_matches_path(
+    path: &Path,
+    file: &File,
+    _before: &std::fs::Metadata,
+    _opened: &std::fs::Metadata,
+    _after: &std::fs::Metadata,
+) -> Result<bool, String> {
+    let reopened = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    let metadata = reopened.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || !portable_opened_file_has_single_link(&reopened)
+    {
+        return Ok(false);
+    }
+    crate::windows_file::same_file(file, &reopened).map_err(|error| error.to_string())
+}
+
+#[cfg(all(not(target_os = "linux"), not(any(unix, windows))))]
+fn portable_opened_file_matches_path(
+    _path: &Path,
+    _file: &File,
+    _before: &std::fs::Metadata,
+    _opened: &std::fs::Metadata,
+    _after: &std::fs::Metadata,
+) -> Result<bool, String> {
+    Ok(false)
 }
 
 impl WardUsage {
@@ -674,6 +743,26 @@ mod tests {
         usage.bump_use("alpha").unwrap();
         usage.bump_use("alpha").unwrap();
         assert_eq!(usage.get("alpha").unwrap().use_count, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_sidecar_identity_rejects_replaced_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(".usage.json");
+        let moved = directory.path().join(".usage.original.json");
+        std::fs::write(&path, "{}").unwrap();
+
+        let before = std::fs::symlink_metadata(&path).unwrap();
+        let file = File::open(&path).unwrap();
+        let opened = file.metadata().unwrap();
+        std::fs::rename(&path, moved).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        let after = std::fs::symlink_metadata(&path).unwrap();
+
+        assert!(
+            !portable_opened_file_matches_path(&path, &file, &before, &opened, &after).unwrap()
+        );
     }
 
     #[test]

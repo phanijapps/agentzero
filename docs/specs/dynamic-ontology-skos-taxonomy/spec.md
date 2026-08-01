@@ -1,6 +1,6 @@
 # Spec: Dynamic Ontology and SKOS Taxonomy
 
-- **Status:** Closed with deferred follow-ups
+- **Status:** Archived
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`RFC-0011`](../../rfc/0011-engram-memory-engine-cutover.md); [`RFC-0012`](../../rfc/0012-engram-upstream-risk-reduction.md); [`engram-memory-engine-cutover`](../engram-memory-engine-cutover/spec.md)

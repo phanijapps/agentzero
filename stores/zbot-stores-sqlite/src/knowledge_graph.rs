@@ -1280,7 +1280,7 @@ fn compute_graph_stats(storage: &GraphStorage, agent_id: &str) -> StoreResult<Gr
                 .map(|name| (name.to_string(), count))
         })
         .collect();
-    connection_vec.sort_by(|a, b| b.1.cmp(&a.1));
+    connection_vec.sort_by_key(|connection| std::cmp::Reverse(connection.1));
     connection_vec.truncate(10);
 
     Ok(GraphStats {

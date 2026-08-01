@@ -153,7 +153,7 @@ impl RecallTaxonomyExpander for EngramTaxonomyRecallExpander {
                 concept.status == ConceptStatus::Active
                     && configured_concept_ids.contains(concept.id.as_str())
             });
-            concepts.sort_by(|left, right| left.id.to_string().cmp(&right.id.to_string()));
+            concepts.sort_by_key(|concept| concept.id.to_string());
             let mut scheme_candidates = expand_scheme(
                 &request.query,
                 &scheme_id,

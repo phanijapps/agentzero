@@ -30,6 +30,16 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
 
 ---
 
+## p4-react-router-830
+
+- **P4 CI and E2E Debt Cleanup AC7:** Remove the narrow
+  `GHSA-qwww-vcr4-c8h2` audit exception and upgrade `react-router-dom` once npm
+  publishes the advisory's patched `8.3.0` or newer release. Blocked because
+  the registry's latest release is `7.18.2` and `8.3.0` returns `E404`;
+  downgrading to `7.11.0` is not acceptable because its dependency graph has
+  multiple other high-severity advisories. Unblocked when the patched release
+  is installable and passes install, audit, lint, build, unit, and E2E gates.
+
 ## engram-pinned-source-before-release
 
 - **engram-memory-engine-cutover AC5:** Release/publish still needs Engram

@@ -1,6 +1,6 @@
 # Spec: Release On Main
 
-- **Status:** Done for now
+- **Status:** Archived
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** `docs/architecture/future-state/2026-05-03-release-on-main-workflow-design.md`; `docs/architecture/future-state/2026-05-03-versioning-and-rename-plan.md`; existing `.github/workflows/release.yml`; existing `scripts/release.sh`

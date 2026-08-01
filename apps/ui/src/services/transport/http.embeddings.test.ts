@@ -335,24 +335,24 @@ describe('HttpTransport — additional methods', () => {
   it('listAllMemory builds correct query string', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ facts: [], total: 0 }) });
     const t = newTransport();
-    await t.listAllMemory({ agent_id: 'root', scope: 'global', limit: 5, offset: 0 });
+    await t.listAllMemory({ agent_id: 'root', scope: 'shared', limit: 5, offset: 0 });
     const [url] = fetchMock.mock.calls[0];
     const u = new URL(url);
     expect(u.pathname).toBe('/api/memory');
     expect(u.searchParams.get('agent_id')).toBe('root');
-    expect(u.searchParams.get('scope')).toBe('global');
+    expect(u.searchParams.get('scope')).toBe('shared');
     expect(u.searchParams.get('limit')).toBe('5');
   });
 
   it('searchMemory builds query with agent_id in path', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ facts: [], total: 0 }) });
     const t = newTransport();
-    await t.searchMemory('agent-x', 'my query', { category: 'code', limit: 3 });
+    await t.searchMemory('agent-x', 'my query', { category: 'skill', limit: 3 });
     const [url] = fetchMock.mock.calls[0];
     const u = new URL(url);
     expect(u.pathname).toBe('/api/memory/agent-x/search');
     expect(u.searchParams.get('q')).toBe('my query');
-    expect(u.searchParams.get('category')).toBe('code');
+    expect(u.searchParams.get('category')).toBe('skill');
     expect(u.searchParams.get('limit')).toBe('3');
   });
 

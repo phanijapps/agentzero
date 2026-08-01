@@ -194,7 +194,7 @@ describe("IntentInfoButton", () => {
   });
 
   it("keeps a late response for the previous session out of the persistent panel", async () => {
-    let resolveFirst: (value: never) => void;
+    let resolveFirst!: (value: never) => void;
     const first = new Promise<never>((resolve) => {
       resolveFirst = resolve;
     });

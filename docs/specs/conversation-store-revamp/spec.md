@@ -1,6 +1,6 @@
 # Spec: Conversation Store Revamp
 
-- **Status:** Complete
+- **Status:** Archived
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`docs/architecture/security.md`](../../architecture/security.md) §Path Confinement, §Engram Dependency Gate

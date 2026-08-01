@@ -1,6 +1,6 @@
 # Spec: Ward Vault In Research
 
-- **Status:** Done
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [RFC-0007: Ward-Specific Vault Explorer in Research](../../rfc/0007-ward-specific-vault-in-research.md); [`vault-ward-browser`](../vault-ward-browser/spec.md)

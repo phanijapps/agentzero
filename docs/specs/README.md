@@ -4,6 +4,12 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [UI Test Type-Debt Cleanup](ui-test-type-debt/spec.md) | Shipped | Restores one TypeScript gate across UI production and test sources by repairing stale fixtures and removing the build exclusion. |
+| [P4 CI and E2E Debt Cleanup](p4-tech-debt/spec.md) | Shipped | Makes UI E2E ownership executable, upgrades deprecated action runtimes, and tracks removal of the temporary React Router advisory exception. |
+| [P3 CI Stabilization](p3-ci-stabilization/spec.md) | Shipped | Restores security, macOS and Windows Ward portability, and UI E2E gates without weakening their safety controls. |
+| [SQLite Reindex Conformance](sqlite-reindex-conformance/spec.md) | Shipped | Makes SQLite embedding reindexing skip already-matching vec tables while preserving repair of missing or mismatched targets. |
+| [SQLite Agent Isolation](sqlite-agent-isolation/spec.md) | Shipped | Makes the agent-scoped list-entities contract executable: requested-agent plus explicitly global rows, never another private agent. |
+| [P0 Supply-Chain Gates](p0-supply-chain-gates/spec.md) | Shipped | Updates vulnerable Rust dependencies and restores evidence-backed dependency license checks without advisory or unlicensed bypasses. |
 | [LLM Wiki Ward Foundation](llm-wiki-ward-foundation/spec.md) | Shipped | Gives every fresh archetype one Ward-named canonical page and append-only log, keeps one global catalog, replaces mandatory OKF with compact plain Markdown, and leaves optional Wiki namespaces lazy. |
 | [Ward Archetype Registry and Creation](ward-archetype-registry-and-creation/spec.md) | Draft | Adds the closed local registry, explicit generic/coding creation, bounded doctrine/starters, immutable snapshots, and durable provenance. |
 | [Intent Ward Archetype Selection](intent-ward-archetype-selection/spec.md) | Draft | Binds a closed create-only intent recommendation to ward creation with explicit override, deterministic generic fallback, and immutable reuse. |

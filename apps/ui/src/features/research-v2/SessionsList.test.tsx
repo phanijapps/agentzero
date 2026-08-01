@@ -31,9 +31,9 @@ describe("groupSessions", () => {
 
   it("sorts each bucket newest-first", () => {
     const batch: SessionSummary[] = [
-      { id: "a", title: "A", status: "complete", wardName: null, updatedAt: now - 10 * 60 * 1000 },
-      { id: "b", title: "B", status: "complete", wardName: null, updatedAt: now - 60 * 60 * 1000 },
-      { id: "c", title: "C", status: "complete", wardName: null, updatedAt: now - 5 * 60 * 1000 },
+      { id: "a", title: "A", status: "complete", wardName: null, updatedAt: startOfTodayMs + 30 * 60 * 1000 },
+      { id: "b", title: "B", status: "complete", wardName: null, updatedAt: startOfTodayMs + 20 * 60 * 1000 },
+      { id: "c", title: "C", status: "complete", wardName: null, updatedAt: startOfTodayMs + 40 * 60 * 1000 },
     ];
     expect(groupSessions(batch, now).Today.map((s) => s.id)).toEqual(["c", "a", "b"]);
   });

@@ -58,7 +58,7 @@ impl SqliteVecIndex {
         table: &'static str,
         id_column: &'static str,
     ) -> Result<Self, String> {
-        let dim = read_table_dim(&db, table)?;
+        let dim = read_table_dim(&db, table, id_column, embedding_column_name(table))?;
         Ok(Self {
             db,
             table,
@@ -82,7 +82,12 @@ impl SqliteVecIndex {
             return Ok(());
         }
         // Cached value is stale? Re-read and self-heal.
-        let fresh = read_table_dim(&self.db, self.table)?;
+        let fresh = read_table_dim(
+            &self.db,
+            self.table,
+            self.id_column,
+            embedding_column_name(self.table),
+        )?;
         if fresh != cached {
             self.dim.store(fresh, Ordering::Relaxed);
             tracing::info!(
@@ -102,8 +107,13 @@ impl SqliteVecIndex {
     }
 }
 
-/// Look up `table`'s DDL in `sqlite_master` and parse the `FLOAT[N]` width.
-fn read_table_dim(db: &Arc<KnowledgeDatabase>, table: &str) -> Result<usize, String> {
+/// Look up `table`'s DDL in `sqlite_master` and validate its vec0 column shape.
+pub(crate) fn read_table_dim(
+    db: &KnowledgeDatabase,
+    table: &str,
+    id_column: &str,
+    embedding_column: &str,
+) -> Result<usize, String> {
     let sql: String = db
         .with_connection(|conn| {
             conn.query_row(
@@ -113,8 +123,79 @@ fn read_table_dim(db: &Arc<KnowledgeDatabase>, table: &str) -> Result<usize, Str
             )
         })
         .map_err(|e| format!("table {table} not found in sqlite_master: {e}"))?;
-    extract_dim_from_ddl(&sql)
-        .ok_or_else(|| format!("could not parse FLOAT[N] dim from {table}'s DDL: {sql}"))
+    extract_vec0_table_dim(&sql, id_column, embedding_column)
+        .ok_or_else(|| format!("table {table} does not match the expected vec0 shape: {sql}"))
+}
+
+fn is_vec0_virtual_table_ddl(ddl: &str) -> bool {
+    let upper = ddl.to_ascii_uppercase();
+    if !upper.trim_start().starts_with("CREATE VIRTUAL TABLE") {
+        return false;
+    }
+
+    let tokens: Vec<_> = upper.split_ascii_whitespace().collect();
+    tokens.windows(2).any(|pair| {
+        pair[0] == "USING" && {
+            let module = pair[1];
+            module == "VEC0"
+                || module
+                    .strip_prefix("VEC0")
+                    .is_some_and(|rest| rest.starts_with('('))
+        }
+    })
+}
+
+fn extract_vec0_table_dim(ddl: &str, id_column: &str, embedding_column: &str) -> Option<usize> {
+    if !is_vec0_virtual_table_ddl(ddl) {
+        return None;
+    }
+
+    let upper = ddl.to_ascii_uppercase();
+    let using_start = upper.find("USING")?;
+    let module_start = upper[using_start..].find("VEC0")? + using_start;
+    let body_start = ddl[module_start..].find('(')? + module_start + 1;
+    let body_end = ddl.rfind(')')?;
+    if body_start > body_end {
+        return None;
+    }
+    let definitions: Vec<_> = ddl[body_start..body_end].split(',').collect();
+    if definitions.len() != 2 {
+        return None;
+    }
+
+    let id_definition = definitions.iter().find(|definition| {
+        definition
+            .split_ascii_whitespace()
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(id_column))
+    })?;
+    let id_tokens: Vec<_> = id_definition
+        .split_ascii_whitespace()
+        .map(str::to_ascii_uppercase)
+        .collect();
+    if id_tokens.get(1).map(String::as_str) != Some("TEXT")
+        || !id_tokens
+            .windows(2)
+            .any(|pair| pair[0] == "PRIMARY" && pair[1] == "KEY")
+    {
+        return None;
+    }
+
+    let embedding_definition = definitions.iter().find(|definition| {
+        definition
+            .split_ascii_whitespace()
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(embedding_column))
+    })?;
+    if !embedding_definition
+        .split_ascii_whitespace()
+        .nth(1)?
+        .to_ascii_uppercase()
+        .starts_with("FLOAT[")
+    {
+        return None;
+    }
+    extract_dim_from_ddl(embedding_definition)
 }
 
 /// Extract `N` from the first occurrence of `FLOAT[N]` in `ddl`.
@@ -196,7 +277,65 @@ fn embedding_column_name(table: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_dim_from_ddl;
+    use super::{extract_dim_from_ddl, extract_vec0_table_dim};
+
+    const VALID_DDL: &str = "CREATE VIRTUAL TABLE memory_facts_index USING vec0(
+        fact_id TEXT PRIMARY KEY,
+        embedding FLOAT[384]
+    )";
+
+    #[test]
+    fn validates_expected_vec0_column_shape() {
+        assert_eq!(
+            extract_vec0_table_dim(VALID_DDL, "fact_id", "embedding"),
+            Some(384)
+        );
+        assert_eq!(
+            extract_vec0_table_dim(VALID_DDL, "wrong_id", "embedding"),
+            None
+        );
+        assert_eq!(
+            extract_vec0_table_dim(VALID_DDL, "fact_id", "wrong_embedding"),
+            None
+        );
+        assert_eq!(
+            extract_vec0_table_dim(
+                "CREATE VIRTUAL TABLE x USING vec0(
+                    fact_id INTEGER PRIMARY KEY,
+                    embedding FLOAT[384]
+                )",
+                "fact_id",
+                "embedding"
+            ),
+            None
+        );
+        assert_eq!(
+            extract_vec0_table_dim(
+                "CREATE VIRTUAL TABLE x USING vec0(
+                    fact_id TEXT PRIMARY KEY,
+                    embedding TEXT DEFAULT 'FLOAT[384]'
+                )",
+                "fact_id",
+                "embedding"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_ordinary_table_with_matching_columns() {
+        assert_eq!(
+            extract_vec0_table_dim(
+                "CREATE TABLE memory_facts_index (
+                    fact_id TEXT PRIMARY KEY,
+                    embedding FLOAT[384]
+                )",
+                "fact_id",
+                "embedding"
+            ),
+            None
+        );
+    }
 
     #[test]
     fn parses_basic_float_dim() {

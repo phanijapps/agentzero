@@ -19,7 +19,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify GitHub Action runtimes
+        run: python3 scripts/check_github_action_runtimes.py
+
+      - name: Configure writable Cargo home
+        run: |
+          mkdir -p "$RUNNER_TEMP/cargo-home/bin"
+          printf 'CARGO_HOME=%s/cargo-home\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf '%s/cargo-home/bin\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       # ---------- Rust ----------
       - name: Setup Rust
@@ -47,11 +58,11 @@ jobs:
         run: cargo deny check
 
       - name: Rig dependency boundary
-        run: python scripts/rig_boundary_check.py
+        run: python3 scripts/rig_boundary_check.py
 
       # ---------- Node / React ----------
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -67,14 +78,13 @@ jobs:
         working-directory: apps/ui
 
       - name: NPM audit (high+)
-        run: npm audit --audit-level=high
-        working-directory: apps/ui
+        run: node scripts/npm-audit-high.mjs apps/ui
 
       # ---------- Secrets scanning ----------
       - name: Clean stale gitleaks tmp (self-hosted runner)
         run: rm -f /tmp/gitleaks.tmp
 
       - name: Run Gitleaks (secrets scan)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

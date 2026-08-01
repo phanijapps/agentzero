@@ -6,8 +6,8 @@ HTTP and WebSocket gateway for the AgentZero daemon.
 
 The gateway provides network interfaces for clients to interact with the agent runtime:
 
-- **HTTP API** (port 18791) - REST endpoints plus the primary `/ws` WebSocket upgrade route.
-- **Legacy WebSocket port** (18790) - Off by default; only bound when legacy standalone WebSocket support is explicitly enabled.
+- **HTTP API** (port 18791) - REST endpoints plus the `/ws` client-event and
+  `/bridge/ws` bridge-worker WebSocket upgrade routes.
 
 ## Architecture
 
@@ -15,8 +15,7 @@ The gateway provides network interfaces for clients to interact with the agent r
 ┌─────────────────────────────────────────┐
 │              Gateway                     │
 ├─────────────────────────────────────────┤
-│  HTTP :18791 REST + /ws                 │
-│  Legacy WS :18790 only when enabled     │
+│  HTTP :18791 REST + /ws + /bridge/ws    │
 ├─────────────────────────────────────────┤
 │           Event Bus (broadcast)         │
 └─────────────────────────────────────────┘
@@ -62,7 +61,10 @@ The gateway provides network interfaces for clients to interact with the agent r
 
 ## WebSocket API
 
-Connect to `ws://localhost:18791/ws?agent_id={agent_id}`. The standalone `18790` WebSocket listener is legacy and disabled unless explicitly enabled in gateway settings.
+Connect to `ws://localhost:18791/ws?agent_id={agent_id}`.
+
+Bridge workers use the distinct `ws://localhost:18791/bridge/ws` protocol on
+the same listener. It is not part of the client event-stream API below.
 
 ### Client Messages
 

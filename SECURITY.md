@@ -70,10 +70,10 @@ Please include:
 ```
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
 │   Client    │◄────────│  Gateway    │◄────────│  LLM APIs   │
-│ (Web/CLI)   │  HTTP   │  (Axum)     │  HTTPS   │ (External)  │
-└─────────────┘  :18791 └─────────────┘         └─────────────┘
+│ (Web/CLI)   │ HTTP+WS │  (Axum)     │  HTTPS   │ (External)  │
+└─────────────┘ :18791  └─────────────┘         └─────────────┘
                       │
-                      │ WebSocket :18790
+                      │ Data
                       │
                   ┌───┴────┐
                   │ SQLite │
@@ -156,11 +156,19 @@ Please include:
 
 | Component | Exposure | Controls |
 |-----------|----------|----------|
-| HTTP API (:18791) | Localhost only (default) | Network binding |
-| WebSocket (:18790) | Localhost only (default) | Network binding |
+| HTTP API + static UI (`:18791`) | LAN by default; configurable | Bind host, firewall, route-specific validation |
+| Client event WebSocket (`:18791/ws`) | Shares the HTTP listener | Configurable bind host, typed client protocol |
+| Bridge worker WebSocket (`:18791/bridge/ws`) | Shares the HTTP listener | Configurable bind host, typed Hello handshake with timeout |
 | Shell Tool | Command execution | Guardrails, sandboxing |
 | File Tools | File read/write | Path validation |
 | LLM Integration | External API calls | API key isolation |
+
+The effective gateway bind address comes from network settings: `advanced.bindHost`
+takes precedence; otherwise `network.exposeToLan=true` (the default) binds all
+interfaces, while `false` binds loopback only. Both WebSocket routes share that
+listener. The gateway does not currently provide transport TLS or built-in client
+authentication, so LAN deployments must use a trusted network, firewall, or an
+authenticating TLS reverse proxy.
 
 ---
 

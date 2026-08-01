@@ -61,9 +61,8 @@ pick_port() { "$PY" -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)
 LLM_PORT=$(pick_port)
 GATEWAY_HTTP_PORT=$(pick_port)
 # zerod serves the WebSocket upgrade on the unified HTTP port at /ws.
-# The legacy --ws-port flag is gated behind --legacy-ws-port-enabled and we
-# don't bind it here. Surface the unified URL as gateway_ws_url so the UI
-# connects to the correct endpoint.
+# Surface the unified URL as gateway_ws_url so the UI connects to the
+# correct endpoint.
 GATEWAY_WS_PORT="$GATEWAY_HTTP_PORT"
 UI_PORT=$(pick_port)
 

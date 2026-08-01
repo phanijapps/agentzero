@@ -5,7 +5,7 @@
 The WebSocket system has a two-layer event model:
 
 1. **GatewayEvent** (backend internal) — defined in `gateway/gateway-events/src/lib.rs:24`, published via `EventBus` (tokio broadcast channels)
-2. **ServerMessage** (wire protocol) — defined in `gateway/gateway-ws-protocol/src/messages.rs:111`, converted from GatewayEvent in `gateway/src/websocket/handler.rs:745` and sent to subscribed WebSocket clients
+2. **ServerMessage** (wire protocol) — defined in `gateway/gateway-ws-protocol/src/messages.rs`, converted from GatewayEvent by `gateway_event_to_server_message()` in `gateway/src/websocket/handler.rs`, and sent to subscribed WebSocket clients
 
 The UI has two primary modes consuming these events:
 - **Research Mode** (`/research` route) — `ResearchPage` component via `useResearchSession()` hook (`features/research-v2/useResearchSession.ts`)
@@ -16,8 +16,8 @@ The UI has two primary modes consuming these events:
 ```
 Execution Engine
   └─> GatewayEvent → EventBus.publish()
-       └─> Event Router (handler.rs:88)
-            └─> gateway_event_to_server_message() (handler.rs:745)
+       └─> Event Router (`WebSocketHandler::spawn_background_tasks`)
+            └─> `gateway_event_to_server_message()`
                  └─> SubscriptionManager.route_event_scoped()
                       └─> WebSocket client receives ServerMessage
                            └─> Transport layer (http.ts:733)
@@ -77,47 +77,47 @@ These are the messages actually sent to WebSocket clients. Most are converted fr
 
 | # | ServerMessage Variant | Source | File:Line | Trigger |
 |---|---|---|---|---|
-| 1 | `Connected` | Direct (connection) | `handler.rs:252` | New WebSocket connection established |
-| 2 | `InvokeAccepted` | Direct (invoke response) | `handler.rs:407` | After `runtime.invoke_with_hook_and_callback()` succeeds |
-| 3 | `Pong` | Direct (ping response) | `handler.rs:482` | In response to `ClientMessage::Ping` |
-| 4 | `Subscribed` | Direct (subscribe response) | `handler.rs:665,678` | After successful subscription |
-| 5 | `Unsubscribed` | Direct (unsubscribe response) | `handler.rs:736` | After unsubscription |
-| 6 | `SubscriptionError` | Direct (subscribe error) | `handler.rs:688,701,714` | Subscription failures |
-| 7 | `SessionPaused` | Direct (pause response) | `handler.rs:497` | After `runtime.pause()` succeeds |
-| 8 | `SessionResumed` | Direct (resume response) | `handler.rs:522` | After `runtime.resume()` succeeds |
-| 9 | `SessionCancelled` | Direct (cancel response) | `handler.rs:547` | After `runtime.cancel()` succeeds |
-| 10 | `SessionEnded` | Direct (end response) | `handler.rs:572` | After `runtime.end_session()` succeeds |
-| 11 | `AgentStarted` | From `GatewayEvent::AgentStarted` | `handler.rs:747` | Agent begins execution |
-| 12 | `AgentCompleted` | From `GatewayEvent::AgentCompleted` | `handler.rs:760` | Agent finishes execution |
-| 13 | `AgentStopped` | From `GatewayEvent::AgentStopped` | `handler.rs:775` | Agent stopped by user |
-| 14 | `Token` | From `GatewayEvent::Token` | `handler.rs:790` | Streaming text delta (agent_id dropped) |
-| 15 | `Thinking` | From `GatewayEvent::Thinking` | `handler.rs:803` | Thinking/reasoning content (agent_id dropped) |
-| 16 | `ToolCall` | From `GatewayEvent::ToolCall` | `handler.rs:816` | Tool invocation (tool_id→tool_call_id, tool_name→tool) |
-| 17 | `ToolResult` | From `GatewayEvent::ToolResult` | `handler.rs:833` | Tool result (tool_id→tool_call_id) |
-| 18 | `TurnComplete` | From `GatewayEvent::TurnComplete` | `handler.rs:850` | One LLM turn done (message→final_message) |
-| 19 | `TurnComplete` | From `GatewayEvent::Respond` | `handler.rs:908` | Respond mapped to TurnComplete with final_message |
-| 20 | `Error` | From `GatewayEvent::Error` | `handler.rs:863` | Adds code: "execution_error" |
-| 21 | `Error` | Direct (various) | `handler.rs:416,438,469,505,530,555,580` | Error responses to failed client actions |
-| 22 | `Iteration` | From `GatewayEvent::IterationUpdate` | `handler.rs:877` | Progress iteration (variant renamed) |
-| 23 | `ContinuationPrompt` | From `GatewayEvent::ContinuationPrompt` | `handler.rs:892` | Max iterations reached (agent_id dropped) |
-| 24 | `DelegationStarted` | From `GatewayEvent::DelegationStarted` | `handler.rs:923` | Subagent delegation started |
-| 25 | `DelegationCompleted` | From `GatewayEvent::DelegationCompleted` | `handler.rs:945` | Subagent delegation completed |
-| 26 | `Heartbeat` | From `GatewayEvent::Heartbeat` | `handler.rs:967` | Execution alive signal |
-| 27 | `MessageAdded` | From `GatewayEvent::MessageAdded` | `handler.rs:982` | New message in conversation |
-| 28 | `TokenUsage` | From `GatewayEvent::TokenUsage` | `handler.rs:999` | Cumulative token counts |
-| 29 | `WardChanged` | From `GatewayEvent::WardChanged` | `handler.rs:1016` | Agent switched ward |
-| 30 | `IterationsExtended` | From `GatewayEvent::IterationsExtended` | `handler.rs:1028` | Auto-extended iterations |
-| 31 | `PlanUpdate` | From `GatewayEvent::PlanUpdate` | `handler.rs:1046` | Plan updated via tool |
-| 32 | `IntentAnalysisStarted` | From `GatewayEvent::IntentAnalysisStarted` | `handler.rs:1062` | Intent analysis begins |
-| 33 | `IntentAnalysisComplete` | From `GatewayEvent::IntentAnalysisComplete` | `handler.rs:1072` | Intent analysis result |
-| 34 | `IntentAnalysisSkipped` | From `GatewayEvent::IntentAnalysisSkipped` | `handler.rs:1103` | Intent analysis skipped |
-| 35 | `SessionTitleChanged` | From `GatewayEvent::SessionTitleChanged` | `handler.rs:1094` | Session title changed |
+| 1 | `Connected` | Direct (connection) | `axum_handler.rs::handle_axum_connection()` | New WebSocket connection established |
+| 2 | `InvokeAccepted` | Direct (invoke response) | `handler.rs::handle_client_message()` | After `runtime.invoke_with_hook_and_callback()` succeeds |
+| 3 | `Pong` | Direct (ping response) | `handler.rs::handle_client_message()` | In response to `ClientMessage::Ping` |
+| 4 | `Subscribed` | Direct (subscribe response) | `handler.rs::handle_client_message()` | After successful subscription |
+| 5 | `Unsubscribed` | Direct (unsubscribe response) | `handler.rs::handle_client_message()` | After unsubscription |
+| 6 | `SubscriptionError` | Direct (subscribe error) | `handler.rs::handle_client_message()` | Subscription failures |
+| 7 | `SessionPaused` | Direct (pause response) | `handler.rs::handle_client_message()` | After `runtime.pause()` succeeds |
+| 8 | `SessionResumed` | Direct (resume response) | `handler.rs::handle_client_message()` | After `runtime.resume()` succeeds |
+| 9 | `SessionCancelled` | Direct (cancel response) | `handler.rs::handle_client_message()` | After `runtime.cancel()` succeeds |
+| 10 | `SessionEnded` | Direct (end response) | `handler.rs::handle_client_message()` | After `runtime.end_session()` succeeds |
+| 11 | `AgentStarted` | From `GatewayEvent::AgentStarted` | `handler.rs::gateway_event_to_server_message()` | Agent begins execution |
+| 12 | `AgentCompleted` | From `GatewayEvent::AgentCompleted` | `handler.rs::gateway_event_to_server_message()` | Agent finishes execution |
+| 13 | `AgentStopped` | From `GatewayEvent::AgentStopped` | `handler.rs::gateway_event_to_server_message()` | Agent stopped by user |
+| 14 | `Token` | From `GatewayEvent::Token` | `handler.rs::gateway_event_to_server_message()` | Streaming text delta (agent_id dropped) |
+| 15 | `Thinking` | From `GatewayEvent::Thinking` | `handler.rs::gateway_event_to_server_message()` | Thinking/reasoning content (agent_id dropped) |
+| 16 | `ToolCall` | From `GatewayEvent::ToolCall` | `handler.rs::gateway_event_to_server_message()` | Tool invocation (tool_id→tool_call_id, tool_name→tool) |
+| 17 | `ToolResult` | From `GatewayEvent::ToolResult` | `handler.rs::gateway_event_to_server_message()` | Tool result (tool_id→tool_call_id) |
+| 18 | `TurnComplete` | From `GatewayEvent::TurnComplete` | `handler.rs::gateway_event_to_server_message()` | One LLM turn done (message→final_message) |
+| 19 | `TurnComplete` | From `GatewayEvent::Respond` | `handler.rs::gateway_event_to_server_message()` | Respond mapped to TurnComplete with final_message |
+| 20 | `Error` | From `GatewayEvent::Error` | `handler.rs::gateway_event_to_server_message()` | Adds code: "execution_error" |
+| 21 | `Error` | Direct (various) | `handler.rs::handle_client_message()` | Error responses to failed client actions |
+| 22 | `Iteration` | From `GatewayEvent::IterationUpdate` | `handler.rs::gateway_event_to_server_message()` | Progress iteration (variant renamed) |
+| 23 | `ContinuationPrompt` | From `GatewayEvent::ContinuationPrompt` | `handler.rs::gateway_event_to_server_message()` | Max iterations reached (agent_id dropped) |
+| 24 | `DelegationStarted` | From `GatewayEvent::DelegationStarted` | `handler.rs::gateway_event_to_server_message()` | Subagent delegation started |
+| 25 | `DelegationCompleted` | From `GatewayEvent::DelegationCompleted` | `handler.rs::gateway_event_to_server_message()` | Subagent delegation completed |
+| 26 | `Heartbeat` | From `GatewayEvent::Heartbeat` | `handler.rs::gateway_event_to_server_message()` | Execution alive signal |
+| 27 | `MessageAdded` | From `GatewayEvent::MessageAdded` | `handler.rs::gateway_event_to_server_message()` | New message in conversation |
+| 28 | `TokenUsage` | From `GatewayEvent::TokenUsage` | `handler.rs::gateway_event_to_server_message()` | Cumulative token counts |
+| 29 | `WardChanged` | From `GatewayEvent::WardChanged` | `handler.rs::gateway_event_to_server_message()` | Agent switched ward |
+| 30 | `IterationsExtended` | From `GatewayEvent::IterationsExtended` | `handler.rs::gateway_event_to_server_message()` | Auto-extended iterations |
+| 31 | `PlanUpdate` | From `GatewayEvent::PlanUpdate` | `handler.rs::gateway_event_to_server_message()` | Plan updated via tool |
+| 32 | `IntentAnalysisStarted` | From `GatewayEvent::IntentAnalysisStarted` | `handler.rs::gateway_event_to_server_message()` | Intent analysis begins |
+| 33 | `IntentAnalysisComplete` | From `GatewayEvent::IntentAnalysisComplete` | `handler.rs::gateway_event_to_server_message()` | Intent analysis result |
+| 34 | `IntentAnalysisSkipped` | From `GatewayEvent::IntentAnalysisSkipped` | `handler.rs::gateway_event_to_server_message()` | Intent analysis skipped |
+| 35 | `SessionTitleChanged` | From `GatewayEvent::SessionTitleChanged` | `handler.rs::gateway_event_to_server_message()` | Session title changed |
 
 ### Not Sent to Client
 
 | GatewayEvent | Reason |
 |---|---|
-| `SessionContinuationReady` | Internal only — returns `None` in conversion (`handler.rs:979`) |
+| `SessionContinuationReady` | Internal only — returns `None` in `gateway_event_to_server_message()` |
 | `IterationUpdate` | Defined but never emitted (no construction site found) |
 | `ContinuationPrompt` | Defined but never emitted (no construction site found) |
 
@@ -223,7 +223,7 @@ These ServerMessage types are defined in the protocol but not currently consumed
 
 ### Event Routing Paths
 
-1. **Path A: EventBus → Event Router → ServerMessage** — All execution events flow through `EventBus.publish()` → event router task (handler.rs:88) → `gateway_event_to_server_message()` → `SubscriptionManager.route_event_scoped()` → WebSocket clients
+1. **Path A: EventBus → Event Router → ServerMessage** — All execution events flow through `EventBus.publish()` → `WebSocketHandler::spawn_background_tasks()` → `gateway_event_to_server_message()` → `SubscriptionManager.route_event_scoped()` → WebSocket clients
 2. **Path B: Direct ServerMessage** — Protocol responses (Pong, Connected, InvokeAccepted, Subscribed, SessionPaused, etc.) sent directly from `handle_client_message()` via `session.send()`
 3. **Path C: WebHook dual send** — `WebHook::respond()` both publishes `GatewayEvent::Respond` to EventBus AND directly sends `ServerMessage::TurnComplete` to the WebSocket session (parallel delivery for immediate response)
 

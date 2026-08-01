@@ -10,7 +10,7 @@
 export interface TransportConfig {
   /** HTTP base URL for the gateway (e.g., http://localhost:18791) */
   httpUrl: string;
-  /** WebSocket URL for the gateway (e.g., ws://localhost:18790) */
+  /** WebSocket URL for the gateway (e.g., ws://localhost:18791/ws) */
   wsUrl: string;
 }
 
@@ -165,13 +165,10 @@ export interface HealthResponse {
 
 export interface StatusResponse {
   status: string;
-  version?: string;
+  version: string;
   buildDate?: string;
   buildTimestamp?: string;
-  websocket_port: number;
-  http_port: number;
-  active_connections: number;
-  active_executions: number;
+  agentCount: number;
 }
 
 // ============================================================================

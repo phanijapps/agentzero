@@ -17,7 +17,7 @@ info:
 
     ## Base URLs
     - HTTP API: `http://localhost:18791`
-    - WebSocket: `ws://localhost:18790`
+    - WebSocket: `ws://localhost:18791/ws`
   version: 0.1.0
   contact:
     name: AgentZero
@@ -1557,7 +1557,7 @@ components:
           type: string
         buildTimestamp:
           type: string
-        agents:
+        agentCount:
           type: integer
 
     # ============================================================================

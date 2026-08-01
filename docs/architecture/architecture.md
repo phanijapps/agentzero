@@ -28,9 +28,6 @@
 │  │  │   `/ws` upgrade route    │   │             │                  │    │
 │  │  └──────────────┬───────────┘   └─────────────┘                  │    │
 │  │                 │                                                 │    │
-│  │                 │   (legacy standalone WS :18790, off by default; │    │
-│  │                 │    flip `legacy_ws_port_enabled` to bind it)    │    │
-│  │                  │                                               │    │
 │  │         ┌────────┴────────┐                                      │    │
 │  │         │    Event Bus    │ ◄─── Broadcast streaming events      │    │
 │  │         └────────┬────────┘                                      │    │
@@ -136,7 +133,7 @@ explicit cleanup release.
 | Build | Vite | Fast dev server, bundling |
 | UI | Tailwind CSS v4 + Radix UI | Styling, accessible primitives |
 | HTTP Server | Axum | Async HTTP framework |
-| WebSocket | tokio-tungstenite | Real-time streaming |
+| WebSocket | Axum WebSocket upgrade | Real-time streaming on `/ws` |
 | Async Runtime | tokio | Async I/O |
 | Database | SQLite (rusqlite + r2d2 pool) | Conversations, memory facts, embeddings (WAL mode) |
 | Embeddings | fastembed (local ONNX) | Default: all-MiniLM-L6-v2 (384d), zero cost |
@@ -1129,7 +1126,8 @@ User Message
 
 ### WebSocket Protocol (`ws://host:18791/ws`)
 
-Served on the HTTP port via the `/ws` upgrade route — no second firewall hole. A legacy standalone WebSocket bind on port 18790 still exists for external integrations that hardcoded `ws://host:18790`; it is **off by default** and lit by setting `legacy_ws_port_enabled: true` in `gateway/src/config.rs`. Slated for removal.
+Served on the HTTP port via the `/ws` upgrade route, so deployments need only
+one firewall and reverse-proxy entry.
 
 **Client Commands:**
 ```typescript

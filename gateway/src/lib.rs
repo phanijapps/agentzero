@@ -11,7 +11,7 @@
 //! ┌─────────────────────────────────────────┐
 //! │              Gateway                     │
 //! ├─────────────────────────────────────────┤
-//! │  WebSocket :18790  │  HTTP :18791       │
+//! │       HTTP + WebSocket :18791            │
 //! ├─────────────────────────────────────────┤
 //! │           Event Bus (broadcast)         │
 //! └─────────────────────────────────────────┘
@@ -62,9 +62,6 @@ pub use hooks::{Attachment, Hook, HookContext, HookRegistry, HookType, ResponseF
 pub use server::GatewayServer;
 pub use services::{AgentRegistry, AgentService, RuntimeService};
 pub use state::AppState;
-
-/// Default WebSocket port
-pub const DEFAULT_WS_PORT: u16 = 18790;
 
 /// Default HTTP port
 pub const DEFAULT_HTTP_PORT: u16 = 18791;

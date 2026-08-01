@@ -59,9 +59,6 @@ async-stream = { workspace = true }
 futures = { workspace = true }
 tokio-stream = { workspace = true }
 
-# WebSocket
-tokio-tungstenite = "0.24"
-
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -103,7 +100,7 @@ zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 assert_matches = "1.5"
 tower = { version = "0.5", features = ["util"] }
-axum-test = "16"
+axum-test = { version = "16", features = ["ws"] }
 
 [lib]
 name = "gateway"

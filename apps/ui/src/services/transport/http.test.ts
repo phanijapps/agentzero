@@ -278,11 +278,9 @@ describe('Health and Status API', () => {
     expect(response.ok).toBe(true);
 
     const status = await response.json();
-    expect(status).toHaveProperty('websocket_port');
-    expect(status).toHaveProperty('http_port');
-    expect(status).toHaveProperty('active_connections');
-    expect(status.websocket_port).toBe(18790);
-    expect(status.http_port).toBe(18791);
+    expect(status).toHaveProperty('status', 'ok');
+    expect(status).toHaveProperty('version', '0.1.0');
+    expect(status).toHaveProperty('agentCount', 2);
   });
 });
 

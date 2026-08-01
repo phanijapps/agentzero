@@ -6,12 +6,9 @@
 //! firewalled mobile clients and simple reverse-proxy setups don't need
 //! a second open port for WebSocket traffic.
 //!
-//! The legacy tungstenite server on the dedicated WS port is still
-//! available behind the `GatewayConfig::legacy_ws_port_enabled` flag for
-//! external integrations that connect to the old port. New deployments
-//! should connect to `ws://<host>:<http_port>/ws`.
+//! Clients connect to `ws://<host>:<http_port>/ws`.
 
-use super::handler::{forward_client_message, WebSocketHandler};
+use super::handler::{handle_client_message, WebSocketHandler};
 use super::session::WsSession;
 use axum::{
     extract::{
@@ -44,9 +41,9 @@ pub async fn axum_ws_upgrade_handler(
     })
 }
 
-/// Per-connection driver — mirrors [`super::handler::handle_connection`]
-/// but speaks axum's `WebSocket` type instead of the raw tungstenite
-/// stream. The session/subscription/routing logic is identical.
+/// Per-connection driver for Axum's `WebSocket` type. Session registration,
+/// subscription routing, and client-message dispatch use the shared gateway
+/// handler state.
 async fn handle_axum_connection(
     socket: WebSocket,
     handler: Arc<WebSocketHandler>,
@@ -97,7 +94,7 @@ async fn handle_axum_connection(
         match result {
             Ok(Message::Text(text)) => match serde_json::from_str::<ClientMessage>(&text) {
                 Ok(client_msg) => {
-                    if let Err(e) = forward_client_message(
+                    if let Err(e) = handle_client_message(
                         &session_id,
                         client_msg,
                         &sessions,

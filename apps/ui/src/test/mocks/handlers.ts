@@ -122,11 +122,9 @@ export const handlers = [
   // Status
   http.get(`${API_BASE}/api/status`, () => {
     return HttpResponse.json({
-      status: 'running',
-      websocket_port: 18790,
-      http_port: 18791,
-      active_connections: 2,
-      active_executions: 3,
+      status: 'ok',
+      version: '0.1.0',
+      agentCount: 2,
     });
   }),
 

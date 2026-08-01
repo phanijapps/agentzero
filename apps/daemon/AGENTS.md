@@ -12,8 +12,7 @@ zbotd
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--port` / `--http-port` | 18791 | HTTP port |
-| `--ws-port` | 18790 | WebSocket port |
+| `--http-port` | 18791 | HTTP and WebSocket port (`/ws`, `/bridge/ws`) |
 | `--data-dir` | `~/Documents/agentzero` | Data directory (vault) |
 | `--config` | — | Optional YAML config file |
 | `--static-dir` | — | Serve React dashboard from this path |

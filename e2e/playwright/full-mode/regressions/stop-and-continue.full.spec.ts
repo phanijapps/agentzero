@@ -23,9 +23,8 @@ test.describe("regression: stop mid-session, continue, root completes", () => {
   // the continuation turn must still reach completed.
 
   test("root execution reaches 'completed' after stop+continue", async ({ page }) => {
-    // The boot script passes gateway_ws pointing at zerod's --ws-port, but zerod
-    // runs in unified mode (HTTP+WS on the same port). Fix the WS URL to use the
-    // HTTP port with the /ws path, which is where zerod's WS upgrade actually lives.
+    // Build the explicit gateway_ws override from zerod's unified HTTP port and
+    // /ws upgrade path.
     const gatewayHttpBase = handle.gatewayUrl("/").replace(/\/$/, "");
     const correctWsUrl = gatewayHttpBase.replace(/^http:/, "ws:") + "/ws";
     const rawUrl = handle.uiUrl("/research");

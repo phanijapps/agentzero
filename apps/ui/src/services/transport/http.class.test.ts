@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpTransport } from './http';
 
 const HTTP = 'http://localhost:18791';
-const WS = 'ws://localhost:18790';
+const WS = 'ws://localhost:18791/ws';
 
 interface MockResponseInit {
   ok?: boolean;

@@ -118,10 +118,10 @@ fn same_origin_or_native(headers: &axum::http::HeaderMap) -> bool {
 /// Create the HTTP router with all endpoints.
 ///
 /// `ws_handler` is threaded in via an Axum [`Extension`] so the `/ws`
-/// WebSocket-upgrade route can reach the same session/subscription
-/// state the legacy 18790 listener uses. Running both on one port lets
-/// firewalled mobile clients and simple reverse proxies work without
-/// an extra hole for the WS protocol.
+/// WebSocket-upgrade route can reach the gateway's shared
+/// session/subscription state. Serving both protocols on one port lets
+/// firewalled mobile clients and simple reverse proxies work without an
+/// extra hole for WebSocket traffic.
 pub fn create_http_router(
     config: GatewayConfig,
     state: AppState,
@@ -531,7 +531,7 @@ pub fn create_http_router(
     // Unified WebSocket upgrade on the same port as HTTP. Clients connect
     // to `ws://host:<http_port>/ws`. The Extension layer makes the shared
     // session registry / subscription manager / runtime available to the
-    // upgrade handler — same state the legacy listener uses.
+    // upgrade handler.
     router = router.route("/ws", get(axum_ws_upgrade_handler));
 
     router

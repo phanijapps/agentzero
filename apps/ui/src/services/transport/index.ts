@@ -102,13 +102,6 @@ export { getProviderDefaultModel } from "./types";
 // ============================================================================
 
 const GATEWAY_HTTP_PORT = 18791;
-/**
- * Legacy standalone WebSocket port. No longer used in the default config
- * — the gateway now serves the WS upgrade on the HTTP port at `/ws`. Kept
- * in the codebase only to honor an explicit `?gateway_ws=` override for
- * installs that still run `--legacy-ws-port-enabled`.
- */
-const LEGACY_GATEWAY_WS_PORT = 18790;
 
 /**
  * Build default gateway URLs from the current page's origin.
@@ -126,10 +119,6 @@ const LEGACY_GATEWAY_WS_PORT = 18790;
  * SSR / no-window fallback keeps the historical localhost defaults so unit
  * tests (and any non-browser caller) keep their previous behavior.
  *
- * `LEGACY_GATEWAY_WS_PORT` is retained as a named constant for anyone
- * running the daemon with `--legacy-ws-port-enabled`; they can point the
- * UI at the old port via `?gateway_ws=ws://host:18790` for one release
- * cycle before it's removed.
  */
 function defaultConfig(): TransportConfig {
   if (typeof window === "undefined" || !window.location) {
@@ -148,26 +137,6 @@ function defaultConfig(): TransportConfig {
 }
 
 /**
- * Warn if a configured wsUrl still points at the legacy standalone WS
- * port. Users with mobile clients behind a restrictive firewall may have
- * been bitten by this; nudge them toward the unified endpoint.
- */
-function warnIfLegacyWsUrl(wsUrl: string | undefined): void {
-  if (
-    typeof window !== "undefined" &&
-    wsUrl &&
-    wsUrl.includes(`:${LEGACY_GATEWAY_WS_PORT}`)
-  ) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[transport] WS URL still points at the legacy port ${LEGACY_GATEWAY_WS_PORT}. ` +
-        `The gateway now serves WebSocket on the HTTP port at /ws. Remove the ` +
-        `override or upgrade your reverse-proxy config to use ws://host:${GATEWAY_HTTP_PORT}/ws.`,
-    );
-  }
-}
-
-/**
  * Get configuration from environment or use defaults.
  */
 function getConfig(): TransportConfig {
@@ -176,7 +145,6 @@ function getConfig(): TransportConfig {
   if (typeof window !== "undefined") {
     const windowConfig = (window as { __ZERO_CONFIG__?: TransportConfig }).__ZERO_CONFIG__;
     if (windowConfig) {
-      warnIfLegacyWsUrl(windowConfig.wsUrl);
       return windowConfig;
     }
   }
@@ -192,7 +160,6 @@ function getConfig(): TransportConfig {
         httpUrl: httpUrl || fallback.httpUrl,
         wsUrl: wsUrl || fallback.wsUrl,
       };
-      warnIfLegacyWsUrl(merged.wsUrl);
       return merged;
     }
   }

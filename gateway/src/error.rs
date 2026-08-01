@@ -7,14 +7,6 @@ use thiserror::Error;
 /// Gateway error type.
 #[derive(Error, Debug)]
 pub enum GatewayError {
-    /// Server startup error.
-    #[error("Failed to start server: {0}")]
-    ServerStartup(String),
-
-    /// WebSocket error.
-    #[error("WebSocket error: {0}")]
-    WebSocket(String),
-
     /// HTTP error.
     #[error("HTTP error: {0}")]
     Http(String),

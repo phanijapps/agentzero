@@ -831,9 +831,11 @@ dependencies = [
  "assert-json-diff",
  "auto-future",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "bytesize",
  "cookie",
+ "futures-util",
  "http 1.4.0",
  "http-body-util",
  "hyper 1.8.1",
@@ -847,8 +849,10 @@ dependencies = [
  "serde_urlencoded",
  "smallvec",
  "tokio",
+ "tokio-tungstenite",
  "tower 0.5.3",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2519,7 +2523,6 @@ dependencies = [
  "tokio-cron-scheduler",
  "tokio-stream",
  "tokio-test",
- "tokio-tungstenite",
  "tower 0.4.13",
  "tower 0.5.3",
  "tower-http 0.5.2",

@@ -2,22 +2,19 @@
 //!
 //! Handles WebSocket connections and message routing.
 
-use super::session::{SessionRegistry, WsSession};
+use super::session::SessionRegistry;
 use super::subscriptions::{
     EventMetadata, SessionScopeState, SubscribeError, SubscribeResult, SubscriptionManager,
 };
 use super::{ClientMessage, ServerMessage, SubscriptionErrorCode, SubscriptionScope};
-use crate::error::{GatewayError, Result};
+use crate::error::Result;
 use crate::events::{EventBus, GatewayEvent};
 use crate::hooks::HookContext;
 use crate::services::RuntimeService;
 use execution_state::{DelegationType, ExecutionFilter};
-use futures::{SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 /// WebSocket handler for managing connections.
@@ -65,19 +62,15 @@ impl WebSocketHandler {
         self.runtime.clone()
     }
 
-    /// Spawn the two background tasks that MUST run regardless of which WS
-    /// transport (legacy standalone or unified Axum route) is accepting
-    /// connections:
+    /// Spawn the two background tasks that support the `/ws` Axum route:
     ///
     ///   1. **Subscription cleanup** — evicts stale clients every 30s.
     ///   2. **Event router** — drains the `EventBus` and routes each event
     ///      through `SubscriptionManager` to every subscribed client.
     ///
-    /// Regression history: these tasks used to be spawned inside
-    /// [`Self::run`]. When the unified-port change defaulted legacy `run`
-    /// to off, the router stopped running — every invoke ran server-side
-    /// but no events reached the UI (silent failure). Extracting them
-    /// here so `Server::start` can spawn them unconditionally.
+    /// These tasks remain independent of the connection driver so
+    /// `Server::start` can spawn them before the HTTP listener accepts
+    /// WebSocket upgrades.
     pub fn spawn_background_tasks(&self, shutdown: &broadcast::Sender<()>) {
         let cleanup_subscriptions = self.subscriptions.clone();
         let mut cleanup_shutdown = shutdown.subscribe();
@@ -239,168 +232,14 @@ impl WebSocketHandler {
         }
     }
 
-    /// Run the legacy standalone WebSocket server.
-    ///
-    /// Only called when `GatewayConfig::legacy_ws_port_enabled` is set.
-    /// Background tasks (cleanup + event router) are NOT spawned here any
-    /// more — `Server::start` spawns them unconditionally so the unified
-    /// `/ws` route also routes events correctly.
-    pub async fn run(&self, addr: &str, mut shutdown: broadcast::Receiver<()>) -> Result<()> {
-        let listener = TcpListener::bind(addr)
-            .await
-            .map_err(|e| GatewayError::ServerStartup(e.to_string()))?;
-
-        info!("WebSocket server listening on {}", addr);
-
-        loop {
-            tokio::select! {
-                result = listener.accept() => {
-                    match result {
-                        Ok((stream, peer_addr)) => {
-                            debug!("New WebSocket connection from {}", peer_addr);
-                            let sessions = self.sessions.clone();
-                            let runtime = self.runtime.clone();
-                            let subscriptions = self.subscriptions.clone();
-
-                            tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, sessions, runtime, subscriptions).await {
-                                    warn!("Connection error: {}", e);
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            error!("Failed to accept connection: {}", e);
-                        }
-                    }
-                }
-                _ = shutdown.recv() => {
-                    info!("WebSocket server shutting down");
-                    break;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Broadcast a message to all sessions for an agent.
     pub async fn broadcast_to_agent(&self, agent_id: &str, msg: ServerMessage) {
         self.sessions.broadcast_to_agent(agent_id, msg).await;
     }
 }
 
-/// Handle a single WebSocket connection.
-async fn handle_connection(
-    stream: TcpStream,
-    sessions: Arc<SessionRegistry>,
-    runtime: Arc<RuntimeService>,
-    subscriptions: Arc<SubscriptionManager>,
-) -> Result<()> {
-    let ws_stream = accept_async(stream)
-        .await
-        .map_err(|e| GatewayError::WebSocket(e.to_string()))?;
-
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
-
-    // Create message channel for this session
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerMessage>();
-
-    // Create and register session
-    let session = WsSession::new(tx.clone());
-    let session_id = sessions.register(session).await;
-
-    // Register with subscription manager for subscription-based routing
-    subscriptions.connect(session_id.clone(), tx.clone()).await;
-
-    // Send connected message
-    let connected_msg = ServerMessage::Connected {
-        session_id: session_id.clone(),
-    };
-    let msg_text = serde_json::to_string(&connected_msg).map_err(GatewayError::Serialization)?;
-    ws_tx
-        .send(Message::Text(msg_text))
-        .await
-        .map_err(|e| GatewayError::WebSocket(e.to_string()))?;
-
-    // NOTE: Event routing is now handled by the central event router
-    // which routes events through SubscriptionManager to subscribed clients only.
-    // Clients must explicitly subscribe to conversations to receive events.
-
-    // Spawn task to forward messages from channel to WebSocket
-    let session_id_clone = session_id.clone();
-    tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            match serde_json::to_string(&msg) {
-                Ok(text) => {
-                    if ws_tx.send(Message::Text(text)).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to serialize message: {}", e);
-                }
-            }
-        }
-        debug!("Message forwarder for {} stopped", session_id_clone);
-    });
-
-    // Handle incoming messages
-    while let Some(result) = ws_rx.next().await {
-        match result {
-            Ok(msg) => {
-                if let Message::Text(text) = msg {
-                    match serde_json::from_str::<ClientMessage>(&text) {
-                        Ok(client_msg) => {
-                            if let Err(e) = handle_client_message(
-                                &session_id,
-                                client_msg,
-                                &sessions,
-                                &runtime,
-                                subscriptions.clone(),
-                            )
-                            .await
-                            {
-                                warn!("Error handling message: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Invalid message format: {}", e);
-                        }
-                    }
-                } else if let Message::Close(_) = msg {
-                    break;
-                }
-            }
-            Err(e) => {
-                error!("WebSocket error: {}", e);
-                break;
-            }
-        }
-    }
-
-    // Cleanup
-    subscriptions.disconnect(&session_id).await;
-    sessions.unregister(&session_id).await;
-    info!("Session {} disconnected", session_id);
-
-    Ok(())
-}
-
-/// Public alias for the Axum-path handler so it can dispatch a parsed
-/// [`ClientMessage`] through the shared dispatcher without reimplementing
-/// the per-variant routing.
-pub(super) async fn forward_client_message(
-    session_id: &str,
-    msg: ClientMessage,
-    sessions: &SessionRegistry,
-    runtime: &RuntimeService,
-    subscriptions: Arc<SubscriptionManager>,
-) -> Result<()> {
-    handle_client_message(session_id, msg, sessions, runtime, subscriptions).await
-}
-
 /// Handle a client message.
-async fn handle_client_message(
+pub(super) async fn handle_client_message(
     session_id: &str,
     msg: ClientMessage,
     sessions: &SessionRegistry,

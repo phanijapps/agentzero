@@ -1629,12 +1629,6 @@ impl ExecutorBuilder {
                 &mut tool_registry,
                 actor,
                 &[ToolCapability::FileRead],
-                Arc::new(ReadTool::new(fs_context.clone())),
-            );
-            register_if_allowed(
-                &mut tool_registry,
-                actor,
-                &[ToolCapability::FileRead],
                 Arc::new(GlobTool),
             );
         }
@@ -2498,6 +2492,123 @@ mod tests {
             .iter()
             .map(|tool| tool.name().to_string())
             .collect()
+    }
+
+    // STUB: AC1, AC2, AC3, AC4 — raw actor inventories remain stable and unique.
+    #[test]
+    fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories() {
+        for actor_kind in [
+            RuntimeActorKind::Root,
+            RuntimeActorKind::DelegatedExecutor,
+            RuntimeActorKind::DelegatedReviewer,
+            RuntimeActorKind::WardAgent,
+        ] {
+            for file_tools in [false, true] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+                let tool_settings = ToolSettings {
+                    file_tools,
+                    ..ToolSettings::default()
+                };
+                let frequencies = ExecutorBuilder::new(dir.path().to_path_buf(), tool_settings)
+                    .with_actor_kind(actor_kind)
+                    .build_tool_registry(fs_context)
+                    .get_all()
+                    .iter()
+                    .fold(
+                        std::collections::BTreeMap::<String, usize>::new(),
+                        |mut frequencies, tool| {
+                            *frequencies.entry(tool.name().to_string()).or_default() += 1;
+                            frequencies
+                        },
+                    );
+
+                let expected_names: &[&str] = match (actor_kind, file_tools) {
+                    (RuntimeActorKind::Root, false) => &[
+                        "delegate_to_agent",
+                        "memory",
+                        "memory_write",
+                        "multimodal_analyze",
+                        "present_surface",
+                        "read",
+                        "respond",
+                        "shell",
+                        "update_plan",
+                        "ward",
+                    ],
+                    (RuntimeActorKind::Root, true) => &[
+                        "delegate_to_agent",
+                        "glob",
+                        "memory",
+                        "memory_write",
+                        "multimodal_analyze",
+                        "present_surface",
+                        "read",
+                        "respond",
+                        "shell",
+                        "update_plan",
+                        "ward",
+                    ],
+                    (RuntimeActorKind::DelegatedExecutor, false) => &[
+                        "edit_file",
+                        "load_skill",
+                        "memory",
+                        "memory_write",
+                        "multimodal_analyze",
+                        "read",
+                        "respond",
+                        "shell",
+                        "ward",
+                        "write_file",
+                    ],
+                    (RuntimeActorKind::DelegatedExecutor, true) => &[
+                        "edit_file",
+                        "glob",
+                        "load_skill",
+                        "memory",
+                        "memory_write",
+                        "multimodal_analyze",
+                        "read",
+                        "respond",
+                        "shell",
+                        "ward",
+                        "write_file",
+                    ],
+                    (RuntimeActorKind::DelegatedReviewer, _) => &[
+                        "glob",
+                        "load_skill",
+                        "multimodal_analyze",
+                        "read",
+                        "respond",
+                    ],
+                    (RuntimeActorKind::WardAgent, _) => &[
+                        "delegate_to_agent",
+                        "edit_file",
+                        "glob",
+                        "load_skill",
+                        "memory",
+                        "memory_write",
+                        "multimodal_analyze",
+                        "present_surface",
+                        "read",
+                        "respond",
+                        "shell",
+                        "update_plan",
+                        "ward",
+                        "write_file",
+                    ],
+                };
+                let expected = expected_names
+                    .iter()
+                    .map(|name| ((*name).to_string(), 1_usize))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+
+                assert_eq!(
+                    frequencies, expected,
+                    "{actor_kind:?} with file_tools={file_tools} must preserve its characterized tool inventory with one registration per name"
+                );
+            }
+        }
     }
 
     // STUB: AC2, AC3 — valid create/update calls emit bounded surface markers

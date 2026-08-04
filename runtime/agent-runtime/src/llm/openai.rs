@@ -223,7 +223,7 @@ fn prepare_tools(tools: &Value) -> Result<(Value, ToolSchemaFootprint), LlmError
         canonical.push((name, tool));
     }
 
-    canonical.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    canonical.sort_unstable_by_key(|(name, _)| *name);
     let canonical_tools: Vec<&Value> = canonical.iter().map(|(_, tool)| *tool).collect();
     for tool in &canonical_tools {
         match measure_serialized(tool, MAX_SINGLE_TOOL_SCHEMA_BYTES) {

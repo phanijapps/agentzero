@@ -30,8 +30,10 @@
 //! ```
 
 mod types;
+mod work;
 
 pub use types::*;
+pub use work::*;
 
 use async_trait::async_trait;
 use execution_state::SessionStatus;

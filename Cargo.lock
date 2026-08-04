@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-primitives"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agent-runtime"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-primitives",
  "agent-surfaces",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "agent-surfaces"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "schemars",
  "serde",
@@ -226,7 +226,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api-logs"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "axum",
  "chrono",
@@ -1209,7 +1209,7 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "cli"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "daemon"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "discovery"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "gethostname",
  "glob-match",
@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "execution-state"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "assert_matches",
  "axum",
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "gateway"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-primitives",
  "agent-runtime",
@@ -2540,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-bridge"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-primitives",
  "async-trait",
@@ -2564,18 +2564,27 @@ dependencies = [
 
 [[package]]
 name = "gateway-bus"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "async-trait",
+ "chrono",
  "execution-state",
+ "gateway-services",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+ "zbot-runtime-sqlite",
 ]
 
 [[package]]
 name = "gateway-connectors"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-primitives",
  "chrono",
@@ -2592,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-cron"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "chrono",
  "gateway-services",
@@ -2608,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-events"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-surfaces",
  "chrono",
@@ -2621,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-execution"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-primitives",
  "agent-runtime",
@@ -2670,7 +2679,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-hooks"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "async-trait",
  "gateway-events",
@@ -2681,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-memory"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-runtime",
  "async-trait",
@@ -2706,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-services"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-primitives",
  "agent-runtime",
@@ -2740,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-templates"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "gateway-services",
  "rust-embed",
@@ -2750,7 +2759,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-ws-protocol"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -7427,7 +7436,7 @@ dependencies = [
 
 [[package]]
 name = "zbot-engram-adapter"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "agent-runtime",
  "async-trait",
@@ -7469,6 +7478,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "zbot-stores-domain",
  "zbot-stores-traits",
@@ -7500,7 +7510,7 @@ dependencies = [
 
 [[package]]
 name = "zbot-stores-domain"
-version = "2026.5.3"
+version = "2026.8.4"
 dependencies = [
  "chrono",
  "serde",

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "run_id": "9976defe-1a30-4fd5-b343-22508e34f6bc",
+  "feature": "durable-work-queue",
+  "mode": "code",
+  "state": "CODE-HUMAN-GATE",
+  "last_event": "reviewers-clean",
+  "last_event_context": null,
+  "transition_sequence": 32,
+  "last_transition_at": "2026-08-04T22:15:37Z"
+}

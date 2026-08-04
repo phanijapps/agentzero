@@ -36,6 +36,7 @@ fn create_durable_work_schema(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL,
             completed_at TEXT,
             CHECK (envelope_version = 1),
+            CHECK (length(CAST(payload_json AS BLOB)) <= 65536),
             CHECK (status IN ('pending', 'leased', 'completed', 'dead_letter')),
             CHECK (attempts >= 0),
             CHECK (max_attempts BETWEEN 1 AND 20)

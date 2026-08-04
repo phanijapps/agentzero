@@ -1352,6 +1352,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn duplicate_tool_names_are_rejected_by_exact_rule_code() {
+        assert_eq!(
+            invalid_tool_rule(json!([named_tool("read"), named_tool("read")])),
+            "tool_schema_rule=duplicate_name"
+        );
+    }
+
     // STUB: AC2 — the complete provider-compatible name boundary is accepted.
     #[test]
     fn tool_name_exact_boundary_is_accepted() {

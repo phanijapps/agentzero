@@ -1,7 +1,7 @@
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use execution_state::{
     SqliteWorkStore, StateDbProvider, WorkAuthorization, WorkDraft, WorkEnvelope, WorkError,
-    WorkFailureCode, WorkPolicy, WorkPolicyError, WorkStatus, WorkStore,
+    WorkFailureCode, WorkPolicy, WorkPolicyError, WorkStatus, WorkStore, MAX_PAYLOAD_BYTES,
 };
 use gateway_services::VaultPaths;
 use rusqlite::Connection;
@@ -845,4 +845,49 @@ fn ac_store_errors_are_normalized() {
     assert_eq!(status, "dead_letter");
     assert_eq!(failure_code, "integrity_violation");
     assert_eq!(attempts, 0);
+}
+
+#[test]
+fn oversized_stored_payload_is_constrained_and_quarantined_before_dispatch() {
+    let (_temp, store, db) = setup();
+    let work = envelope("node-a", None, 0, 5, at(0), "safe");
+    store.enqueue(&work).unwrap();
+    let oversized_payload = format!("{{\"value\":\"{}\"}}", "x".repeat(MAX_PAYLOAD_BYTES));
+
+    let constrained = db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE durable_work_items SET payload_json = ?2 WHERE id = ?1",
+            rusqlite::params![work.id(), oversized_payload],
+        )
+    });
+    assert!(
+        constrained.is_err(),
+        "oversized payload must fail the CHECK constraint"
+    );
+
+    db.with_connection(|conn| {
+        conn.pragma_update(None, "ignore_check_constraints", true)?;
+        conn.execute(
+            "UPDATE durable_work_items SET payload_json = ?2 WHERE id = ?1",
+            rusqlite::params![work.id(), oversized_payload],
+        )?;
+        conn.pragma_update(None, "ignore_check_constraints", false)?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(
+        store.claim_next("worker.local", "worker-a", at(1), Duration::from_secs(30)),
+        Err(WorkError::StoredDataInvalid)
+    );
+    let status: String = db
+        .with_connection(|conn| {
+            conn.query_row(
+                "SELECT status FROM durable_work_items WHERE id = ?1",
+                [work.id()],
+                |row| row.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(status, "dead_letter");
 }

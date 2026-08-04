@@ -1274,6 +1274,9 @@ impl StoredWorkRow {
         let attempts = u8::try_from(self.attempts).map_err(|_| WorkError::StoredDataInvalid)?;
         let max_attempts =
             u8::try_from(self.max_attempts).map_err(|_| WorkError::StoredDataInvalid)?;
+        if self.payload_json.len() > MAX_PAYLOAD_BYTES {
+            return Err(WorkError::StoredDataInvalid);
+        }
         let payload =
             serde_json::from_str(&self.payload_json).map_err(|_| WorkError::StoredDataInvalid)?;
         let created_at = parse_timestamp(&self.created_at)?;

@@ -20,7 +20,7 @@ Standalone HTTP/WebSocket server running the full agent platform.
 cargo run -p daemon -- --static-dir ./dist
 
 # Run on custom port
-cargo run -p daemon -- --port 8080
+cargo run -p daemon -- --http-port 8080
 
 # Run with data directory
 cargo run -p daemon -- --data-dir ~/.agentzero
@@ -28,8 +28,7 @@ cargo run -p daemon -- --data-dir ~/.agentzero
 
 **CLI Options:**
 - `--static-dir` — Path to React dashboard dist/ directory
-- `--port` / `--http-port` — HTTP port (default: 18791)
-- `--ws-port` — WebSocket port (default: 18790)
+- `--http-port` — HTTP and WebSocket port (default: 18791; paths `/ws` and `/bridge/ws`)
 - `--data-dir` — Data directory / vault (default: `~/Documents/zbot`)
 - `--log-dir` — Enable file logging
 - `--no-dashboard` — Disable static file serving

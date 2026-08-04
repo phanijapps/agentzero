@@ -8,8 +8,8 @@
 //! # Start with defaults
 //! zbotd
 //!
-//! # Start with custom ports
-//! zbotd --ws-port 19000 --http-port 19001
+//! # Start with a custom HTTP + WebSocket port
+//! zbotd --http-port 19001
 //!
 //! # Start with custom data directory
 //! zbotd --data-dir /path/to/zbot
@@ -68,23 +68,9 @@ use tracing_subscriber::{
 #[command(name = "zbotd")]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Legacy standalone WebSocket port.
-    ///
-    /// Off by default — the gateway now serves WebSocket traffic on the
-    /// HTTP port at `/ws`. This value is only used when
-    /// `--legacy-ws-port-enabled` is set.
-    #[arg(long, default_value_t = gateway::DEFAULT_WS_PORT)]
-    ws_port: u16,
-
     /// HTTP port. Also hosts the unified WebSocket upgrade at `/ws`.
     #[arg(long, default_value_t = gateway::DEFAULT_HTTP_PORT)]
     http_port: u16,
-
-    /// Bind the legacy standalone WebSocket port in addition to the
-    /// unified `/ws` endpoint. For external integrations that haven't
-    /// migrated from `ws://host:18790` yet. Slated for removal.
-    #[arg(long)]
-    legacy_ws_port_enabled: bool,
 
     /// Host address to bind to. Default binds to all interfaces so the
     /// daemon is reachable from other devices on the LAN. Override with
@@ -415,9 +401,7 @@ async fn main() -> Result<()> {
     } else {
         GatewayConfig {
             host: args.host.parse()?,
-            websocket_port: args.ws_port,
             http_port: args.http_port,
-            legacy_ws_port_enabled: args.legacy_ws_port_enabled,
             agent_surfaces_enabled: !args.no_agent_surfaces,
             ..Default::default()
         }

@@ -56,8 +56,7 @@ npm run dev            # React UI on port 3000 (from apps/ui/)
 
 | Port  | Protocol  | Purpose              |
 |-------|-----------|----------------------|
-| 18791 | HTTP      | REST API + static UI |
-| 18790 | WebSocket | Real-time streaming  |
+| 18791 | HTTP + WebSocket | REST API, static UI, `/ws` client events, and `/bridge/ws` workers |
 
 ## Data Directory
 

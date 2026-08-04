@@ -68,17 +68,17 @@ describe("transport defaultConfig (URL param overrides)", () => {
   });
 
   it("respects ?gateway_ws=... when set", async () => {
-    history.replaceState(null, "", "/research?gateway_ws=ws%3A%2F%2Flegacy%3A18790");
+    history.replaceState(null, "", "/research?gateway_ws=ws%3A%2F%2Fcustom%3A9998%2Fws");
     const { initializeTransport, getTransport } = await importTransport();
     await initializeTransport();
     const t = await getTransport();
     const cfg = (t as unknown as { config: { wsUrl: string } }).config;
-    expect(cfg.wsUrl).toBe("ws://legacy:18790");
+    expect(cfg.wsUrl).toBe("ws://custom:9998/ws");
   });
 
   it("falls back to same-origin for the side that wasn't overridden", async () => {
     // Override only the WS URL — HTTP should stay same-origin (empty).
-    history.replaceState(null, "", "/research?gateway_ws=ws%3A%2F%2Flegacy%3A18790");
+    history.replaceState(null, "", "/research?gateway_ws=ws%3A%2F%2Fcustom%3A9998%2Fws");
     const { initializeTransport, getTransport } = await importTransport();
     await initializeTransport();
     const t = await getTransport();

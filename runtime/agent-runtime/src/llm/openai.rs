@@ -3,10 +3,17 @@
 // OpenAI-compatible API implementation
 // ============================================================================
 
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    fmt::Write as _,
+    io::{self, Write},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
+use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio_stream::StreamExt;
 
 use crate::llm::client::{
@@ -24,6 +31,242 @@ use agent_primitives::types::{ContentSource, Part};
 pub struct OpenAiClient {
     config: Arc<LlmConfig>,
     http_client: reqwest::Client,
+}
+
+const MAX_MODEL_VISIBLE_TOOLS: usize = 128;
+const MAX_SINGLE_TOOL_SCHEMA_BYTES: usize = 64 * 1024;
+const MAX_TOOL_SCHEMA_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolSchemaFootprint {
+    tool_count: usize,
+    serialized_bytes: usize,
+    estimated_tokens: usize,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SerializedMeasure {
+    bytes: usize,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeasureError {
+    LimitExceeded,
+    Serialization,
+}
+
+struct BoundedHashWriter {
+    limit: usize,
+    observed: usize,
+    limit_exceeded: bool,
+    hasher: Sha256,
+}
+
+impl BoundedHashWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            observed: 0,
+            limit_exceeded: false,
+            hasher: Sha256::new(),
+        }
+    }
+
+    fn finish(self) -> SerializedMeasure {
+        let digest = self.hasher.finalize();
+        SerializedMeasure {
+            bytes: self.observed,
+            sha256: bytes_to_hex(&digest),
+        }
+    }
+}
+
+impl Write for BoundedHashWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self.limit_exceeded {
+            return Err(io::Error::other("serialized tool limit exceeded"));
+        }
+
+        let remaining = self.limit.saturating_sub(self.observed);
+        if bytes.len() > remaining {
+            self.hasher.update(&bytes[..remaining]);
+            self.observed = self.limit.saturating_add(1);
+            self.limit_exceeded = true;
+            return Err(io::Error::other("serialized tool limit exceeded"));
+        }
+
+        self.hasher.update(bytes);
+        self.observed += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn measure_serialized<T: Serialize>(
+    value: &T,
+    limit: usize,
+) -> Result<SerializedMeasure, MeasureError> {
+    let mut writer = BoundedHashWriter::new(limit);
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(writer.finish()),
+        Err(_) if writer.limit_exceeded => Err(MeasureError::LimitExceeded),
+        Err(_) => Err(MeasureError::Serialization),
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
+
+#[cfg(test)]
+fn sha256_hex(bytes: &[u8]) -> String {
+    bytes_to_hex(&Sha256::digest(bytes))
+}
+
+fn prepare_tools(tools: &Value) -> Result<(Value, ToolSchemaFootprint), LlmError> {
+    let tools = tools
+        .as_array()
+        .ok_or_else(|| LlmError::InvalidRequest("tool_schema_rule=inventory_type".to_string()))?;
+    if tools.len() > MAX_MODEL_VISIBLE_TOOLS {
+        return Err(LlmError::InvalidRequest(format!(
+            "tool_schema_rule=tool_count_limit observed={} limit={MAX_MODEL_VISIBLE_TOOLS}",
+            tools.len()
+        )));
+    }
+
+    let mut names = HashSet::with_capacity(tools.len());
+    let mut canonical = Vec::with_capacity(tools.len());
+    for tool in tools {
+        let object = tool
+            .as_object()
+            .ok_or_else(|| LlmError::InvalidRequest("tool_schema_rule=tool_object".to_string()))?;
+        if object.get("type").and_then(Value::as_str) != Some("function") {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=tool_type".to_string(),
+            ));
+        }
+        if object.keys().any(|key| key != "type" && key != "function") {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=tool_fields".to_string(),
+            ));
+        }
+        let function = object
+            .get("function")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                LlmError::InvalidRequest("tool_schema_rule=function_object".to_string())
+            })?;
+        if function.keys().any(|key| {
+            key != "name" && key != "description" && key != "parameters" && key != "strict"
+        }) {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=function_fields".to_string(),
+            ));
+        }
+        if function
+            .get("description")
+            .is_some_and(|value| !value.is_string())
+        {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=function_description".to_string(),
+            ));
+        }
+        if function
+            .get("parameters")
+            .is_some_and(|value| !value.is_object())
+        {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=function_parameters".to_string(),
+            ));
+        }
+        if function
+            .get("strict")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=function_strict".to_string(),
+            ));
+        }
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                LlmError::InvalidRequest("tool_schema_rule=function_name".to_string())
+            })?;
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=function_name".to_string(),
+            ));
+        }
+        if !names.insert(name) {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=duplicate_name".to_string(),
+            ));
+        }
+        canonical.push((name, tool));
+    }
+
+    canonical.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    let canonical_tools: Vec<&Value> = canonical.iter().map(|(_, tool)| *tool).collect();
+    for tool in &canonical_tools {
+        match measure_serialized(tool, MAX_SINGLE_TOOL_SCHEMA_BYTES) {
+            Ok(_) => {}
+            Err(MeasureError::LimitExceeded) => {
+                return Err(LlmError::InvalidRequest(format!(
+                    "tool_schema_rule=tool_bytes_limit observed_at_least={} limit={MAX_SINGLE_TOOL_SCHEMA_BYTES}",
+                    MAX_SINGLE_TOOL_SCHEMA_BYTES + 1
+                )));
+            }
+            Err(MeasureError::Serialization) => {
+                return Err(LlmError::InvalidRequest(
+                    "tool_schema_rule=serialization".to_string(),
+                ));
+            }
+        }
+    }
+
+    let aggregate = match measure_serialized(&canonical_tools, MAX_TOOL_SCHEMA_BYTES) {
+        Ok(measure) => measure,
+        Err(MeasureError::LimitExceeded) => {
+            return Err(LlmError::InvalidRequest(format!(
+                "tool_schema_rule=total_bytes_limit observed_at_least={} limit={MAX_TOOL_SCHEMA_BYTES}",
+                MAX_TOOL_SCHEMA_BYTES + 1
+            )));
+        }
+        Err(MeasureError::Serialization) => {
+            return Err(LlmError::InvalidRequest(
+                "tool_schema_rule=serialization".to_string(),
+            ));
+        }
+    };
+    let tool_count = canonical_tools.len();
+    let canonical = Value::Array(canonical_tools.into_iter().cloned().collect());
+    Ok((
+        canonical,
+        ToolSchemaFootprint {
+            tool_count,
+            serialized_bytes: aggregate.bytes,
+            estimated_tokens: aggregate.bytes.saturating_add(3) / 4,
+            sha256: aggregate.sha256,
+        },
+    ))
 }
 
 async fn bounded_error_text(mut response: reqwest::Response) -> String {
@@ -241,8 +484,8 @@ impl OpenAiClient {
     /// The body is deterministic today because:
     ///   - `json!` macro uses `serde_json::Map` (BTreeMap) → keys sorted
     ///   - no `Uuid::new_v4`, `chrono::now`, or `rand` calls in this fn
-    ///   - `messages` / `tools` are passed through unchanged (caller owns
-    ///     ordering; don't shuffle them)
+    ///   - `messages` are passed through unchanged
+    ///   - `tools` are validated and canonically ordered by function name
     ///
     /// Do not introduce per-call noise here without updating
     /// `request_body_is_byte_stable_across_identical_calls` to detect
@@ -257,7 +500,8 @@ impl OpenAiClient {
         messages: Vec<ChatMessage>,
         tools: Option<Value>,
         output_schema: Option<Value>,
-    ) -> Value {
+    ) -> Result<Value, LlmError> {
+        let prepared_tools = tools.as_ref().map(prepare_tools).transpose()?;
         let messages = Self::rehydrate_messages(messages);
         let mut body_obj = json!({
             "model": self.config.model,
@@ -268,9 +512,18 @@ impl OpenAiClient {
         });
 
         // Add tools if present
-        if let Some(tools_val) = &tools {
+        if let Some((tools_val, footprint)) = prepared_tools {
+            if footprint.tool_count > 0 {
+                tracing::debug!(
+                    tool_count = footprint.tool_count,
+                    serialized_bytes = footprint.serialized_bytes,
+                    estimated_tokens = footprint.estimated_tokens,
+                    sha256 = %footprint.sha256,
+                    "LLM tool schema footprint"
+                );
+            }
             if let Some(body_map) = body_obj.as_object_mut() {
-                body_map.insert("tools".to_string(), tools_val.clone());
+                body_map.insert("tools".to_string(), tools_val);
             }
         }
 
@@ -308,19 +561,6 @@ impl OpenAiClient {
                 estimated_tokens
             );
 
-            if let Some(tools_val) = &tools {
-                if let Some(tools_array) = tools_val.as_array() {
-                    let tools_json = serde_json::to_string(tools_val).unwrap_or_default();
-                    let tools_tokens = tools_json.len() / 4;
-                    tracing::debug!(
-                        "Tools: {} tools, ~{} chars (~{} tokens)",
-                        tools_array.len(),
-                        tools_json.len(),
-                        tools_tokens
-                    );
-                }
-            }
-
             if let Some(messages_val) = body_obj.get("messages") {
                 let messages_json = serde_json::to_string(messages_val).unwrap_or_default();
                 let messages_tokens = messages_json.len() / 4;
@@ -336,7 +576,7 @@ impl OpenAiClient {
             tracing::debug!("Thinking mode enabled");
         }
 
-        body_obj
+        Ok(body_obj)
     }
 
     /// Make a non-streaming request to the API
@@ -465,7 +705,7 @@ impl LlmClient for OpenAiClient {
     ) -> Result<ChatResponse, LlmError> {
         tracing::info!("Starting chat with {} messages", messages.len());
 
-        let body = self.build_request_body(messages, tools, None);
+        let body = self.build_request_body(messages, tools, None)?;
         let response = self.make_request(body).await?;
         let parsed = self.parse_response(response);
 
@@ -485,7 +725,7 @@ impl LlmClient for OpenAiClient {
             messages.len()
         );
 
-        let body = self.build_request_body(messages, tools, output_schema);
+        let body = self.build_request_body(messages, tools, output_schema)?;
         let response = self.make_request(body).await?;
         let parsed = self.parse_response(response);
 
@@ -510,7 +750,7 @@ impl LlmClient for OpenAiClient {
 
         let url = format!("{}/chat/completions", self.config.base_url);
 
-        let mut body_obj = self.build_request_body(messages, tools, None);
+        let mut body_obj = self.build_request_body(messages, tools, None)?;
         // Enable streaming with usage reporting
         if let Some(obj) = body_obj.as_object_mut() {
             obj.insert("stream".to_string(), json!(true));
@@ -588,7 +828,8 @@ impl LlmClient for OpenAiClient {
                     // If we haven't emitted anything yet, retry as non-streaming
                     if full_content.is_empty() && tool_accumulators.is_empty() {
                         tracing::info!("No content emitted yet, retrying as non-streaming request");
-                        let body = self.build_request_body(fallback_messages, fallback_tools, None);
+                        let body =
+                            self.build_request_body(fallback_messages, fallback_tools, None)?;
                         let response = self.make_request(body).await?;
                         let parsed = self.parse_response(response);
                         // Emit the full response as a single token
@@ -868,6 +1109,25 @@ impl LlmClient for OpenAiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rig::{
+        completion::{CompletionModel as _, CompletionRequest, Message, ToolDefinition},
+        one_or_many::OneOrMany,
+    };
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct SharedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedLog {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn test_openai_client_creation() {
@@ -962,11 +1222,427 @@ mod tests {
         ])
     }
 
+    fn named_tool(name: &str) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "",
+                "parameters": {"type": "object"}
+            }
+        })
+    }
+
+    fn tool_with_serialized_size(name: &str, target: usize) -> Value {
+        let mut tool = named_tool(name);
+        let baseline = serde_json::to_vec(&tool).expect("serialize baseline").len();
+        assert!(target >= baseline, "target must fit the valid envelope");
+        tool.pointer_mut("/function/description")
+            .expect("description")
+            .clone_from(&json!("x".repeat(target - baseline)));
+        assert_eq!(
+            serde_json::to_vec(&tool)
+                .expect("serialize sized tool")
+                .len(),
+            target
+        );
+        tool
+    }
+
+    fn tool_with_utf8_serialized_size(name: &str, target: usize) -> Value {
+        let mut tool = named_tool(name);
+        let baseline = serde_json::to_vec(&tool).expect("serialize baseline").len();
+        assert!(target >= baseline, "target must fit the valid envelope");
+        let remaining = target - baseline;
+        let ascii_prefix = if remaining.is_multiple_of(2) { "" } else { "x" };
+        let description = format!(
+            "{ascii_prefix}{}",
+            "é".repeat((remaining - ascii_prefix.len()) / 2)
+        );
+        tool.pointer_mut("/function/description")
+            .expect("description")
+            .clone_from(&json!(description));
+        assert_eq!(
+            serde_json::to_vec(&tool)
+                .expect("serialize UTF-8 sized tool")
+                .len(),
+            target
+        );
+        tool
+    }
+
+    fn invalid_tool_rule(tools: Value) -> String {
+        match prepare_tools(&tools) {
+            Err(LlmError::InvalidRequest(message)) => message,
+            Err(other) => panic!("expected InvalidRequest, got {other:?}"),
+            Ok(_) => panic!("expected invalid tool inventory to be rejected"),
+        }
+    }
+
+    // STUB: AC1 — equivalent inventories have one canonical byte representation.
+    #[test]
+    fn tool_inventories_are_canonicalized_by_function_name() {
+        let forward = json!([named_tool("alpha"), named_tool("zeta")]);
+        let reverse = json!([named_tool("zeta"), named_tool("alpha")]);
+
+        let (forward, forward_footprint) = prepare_tools(&forward).expect("forward tools");
+        let (reverse, reverse_footprint) = prepare_tools(&reverse).expect("reverse tools");
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward_footprint, reverse_footprint);
+        assert_eq!(
+            forward.pointer("/0/function/name").and_then(Value::as_str),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn request_body_canonicalizes_equivalent_tool_inventories() {
+        let client = test_client();
+        let forward = json!([named_tool("alpha"), named_tool("zeta")]);
+        let reverse = json!([named_tool("zeta"), named_tool("alpha")]);
+
+        let forward = client
+            .build_request_body(fixture_messages(), Some(forward), None)
+            .expect("forward request");
+        let reverse = client
+            .build_request_body(fixture_messages(), Some(reverse), None)
+            .expect("reverse request");
+
+        assert_eq!(
+            serde_json::to_vec(&forward).expect("serialize forward request"),
+            serde_json::to_vec(&reverse).expect("serialize reverse request")
+        );
+        assert_eq!(
+            forward
+                .pointer("/tools/0/function/name")
+                .and_then(Value::as_str),
+            Some("alpha")
+        );
+        assert_eq!(
+            forward
+                .pointer("/tools/1/function/name")
+                .and_then(Value::as_str),
+            Some("zeta")
+        );
+    }
+
+    // STUB: AC2/AC5 — malformed authority envelopes fail with redacted rule codes.
+    #[test]
+    fn malformed_tool_envelopes_are_rejected_without_echoing_input() {
+        let secret = "do-not-log-this-secret";
+        let invalid_cases = [
+            json!({"not": "an array"}),
+            json!([{"type": "web_search", "function": {"name": "search"}}]),
+            json!([{"type": "function", "function": secret}]),
+            json!([{"type": "function", "function": {}}]),
+            json!([{"type": "function", "function": {"name": 42}}]),
+            json!([{"type": "function", "function": {"name": ""}}]),
+            json!([{"type": "function", "function": {"name": "bad.name"}}]),
+            json!([{"type": "function", "function": {"name": "x".repeat(65)}}]),
+            json!([{"type": "function", "function": {"name": "safe"}, "provider_behavior": true}]),
+            json!([{"type": "function", "function": {"name": "safe", "provider_behavior": true}}]),
+            json!([{"type": "function", "function": {"name": "safe", "description": 42}}]),
+            json!([{"type": "function", "function": {"name": "safe", "parameters": "object"}}]),
+            json!([{"type": "function", "function": {"name": "safe", "strict": "true"}}]),
+            json!([named_tool(secret), named_tool(secret)]),
+        ];
+
+        for tools in invalid_cases {
+            let message = invalid_tool_rule(tools);
+            assert!(message.starts_with("tool_schema_rule="));
+            assert!(!message.contains(secret));
+            assert!(!message.contains("bad.name"));
+        }
+    }
+
+    // STUB: AC2 — the complete provider-compatible name boundary is accepted.
+    #[test]
+    fn tool_name_exact_boundary_is_accepted() {
+        let name = "a".repeat(64);
+        let mut tool = named_tool(&name);
+        tool.pointer_mut("/function")
+            .and_then(Value::as_object_mut)
+            .expect("function")
+            .insert("strict".to_string(), json!(true));
+        let (tools, _) = prepare_tools(&json!([tool])).expect("64-byte name with strict flag");
+        assert_eq!(
+            tools.pointer("/0/function/name").and_then(Value::as_str),
+            Some(name.as_str())
+        );
+    }
+
+    // STUB: AC3 — count, item, and aggregate byte boundaries are fail-closed.
+    #[test]
+    fn tool_inventory_limits_accept_exact_boundaries_and_reject_above() {
+        let exact_count = Value::Array(
+            (0..MAX_MODEL_VISIBLE_TOOLS)
+                .map(|index| named_tool(&format!("tool_{index}")))
+                .collect(),
+        );
+        prepare_tools(&exact_count).expect("exact tool-count boundary");
+        let above_count = Value::Array(
+            (0..=MAX_MODEL_VISIBLE_TOOLS)
+                .map(|index| named_tool(&format!("tool_{index}")))
+                .collect(),
+        );
+        assert!(invalid_tool_rule(above_count).contains("tool_count_limit"));
+
+        let exact_item = json!([tool_with_serialized_size(
+            "exact_item",
+            MAX_SINGLE_TOOL_SCHEMA_BYTES
+        )]);
+        prepare_tools(&exact_item).expect("exact per-tool byte boundary");
+        let above_item = json!([tool_with_serialized_size(
+            "above_item",
+            MAX_SINGLE_TOOL_SCHEMA_BYTES + 1
+        )]);
+        assert!(invalid_tool_rule(above_item).contains("tool_bytes_limit"));
+
+        let exact_total = json!([
+            tool_with_serialized_size("a", MAX_SINGLE_TOOL_SCHEMA_BYTES),
+            tool_with_serialized_size("b", MAX_SINGLE_TOOL_SCHEMA_BYTES),
+            tool_with_serialized_size("c", MAX_SINGLE_TOOL_SCHEMA_BYTES),
+            tool_with_serialized_size("d", MAX_SINGLE_TOOL_SCHEMA_BYTES - 5)
+        ]);
+        assert_eq!(
+            serde_json::to_vec(&exact_total)
+                .expect("serialize exact total")
+                .len(),
+            MAX_TOOL_SCHEMA_BYTES
+        );
+        prepare_tools(&exact_total).expect("exact aggregate byte boundary");
+
+        let above_total = json!([
+            tool_with_serialized_size("a", MAX_SINGLE_TOOL_SCHEMA_BYTES),
+            tool_with_serialized_size("b", MAX_SINGLE_TOOL_SCHEMA_BYTES),
+            tool_with_serialized_size("c", MAX_SINGLE_TOOL_SCHEMA_BYTES),
+            tool_with_serialized_size("d", MAX_SINGLE_TOOL_SCHEMA_BYTES - 4)
+        ]);
+        assert_eq!(
+            serde_json::to_vec(&above_total)
+                .expect("serialize above total")
+                .len(),
+            MAX_TOOL_SCHEMA_BYTES + 1
+        );
+        assert!(invalid_tool_rule(above_total).contains("total_bytes_limit"));
+    }
+
+    #[test]
+    fn tool_inventory_limits_count_serialized_utf8_bytes() {
+        let unicode_tool = json!([{
+            "type": "function",
+            "function": {
+                "name": "unicode",
+                "description": "ééé",
+                "parameters": {"type": "object"}
+            }
+        }]);
+        let (canonical, footprint) = prepare_tools(&unicode_tool).expect("unicode tool");
+        let serialized = serde_json::to_vec(&canonical).expect("serialize unicode tool array");
+        assert_eq!(footprint.serialized_bytes, serialized.len());
+        assert!(
+            serialized.len()
+                > String::from_utf8(serialized.clone())
+                    .unwrap()
+                    .chars()
+                    .count()
+        );
+
+        let exact = json!([tool_with_utf8_serialized_size(
+            "unicode_exact",
+            MAX_SINGLE_TOOL_SCHEMA_BYTES
+        )]);
+        prepare_tools(&exact).expect("exact UTF-8 byte boundary");
+
+        let above = json!([tool_with_utf8_serialized_size(
+            "unicode_above",
+            MAX_SINGLE_TOOL_SCHEMA_BYTES + 1
+        )]);
+        assert!(invalid_tool_rule(above).contains("tool_bytes_limit"));
+    }
+
+    // STUB: AC4 — aggregate metadata is exact and contains only a digest.
+    #[test]
+    fn tool_footprint_is_deterministic_and_exact() {
+        let input = json!([named_tool("zeta"), named_tool("alpha")]);
+        let (canonical, footprint) = prepare_tools(&input).expect("tools");
+        let bytes = serde_json::to_vec(&canonical).expect("serialize canonical tools");
+
+        assert_eq!(footprint.tool_count, 2);
+        assert_eq!(footprint.serialized_bytes, bytes.len());
+        assert_eq!(
+            footprint.estimated_tokens,
+            bytes.len().saturating_add(3) / 4
+        );
+        assert_eq!(footprint.sha256, sha256_hex(&bytes));
+        assert_eq!(footprint.sha256.len(), 64);
+        assert!(footprint
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert!(!footprint.sha256.contains("alpha"));
+    }
+
+    // STUB: AC3 — bounded measurement stops as soon as the limit is crossed.
+    #[test]
+    fn bounded_hash_writer_stops_at_limit_plus_one() {
+        let mut writer = BoundedHashWriter::new(4);
+        assert_eq!(writer.write(b"abcd").expect("exact boundary"), 4);
+
+        let error = writer.write(b"ef").expect_err("fifth byte must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(writer.observed, 5);
+        assert!(writer.limit_exceeded);
+    }
+
+    // STUB: AC4/AC5 — one aggregate-only diagnostic is emitted per inventory.
+    #[test]
+    #[ignore = "manual tracing capture must run in an isolated test process"]
+    fn tool_footprint_log_is_single_and_redacted() {
+        let client = test_client();
+        let secret = "schema-secret-must-not-appear";
+        let tools = json!([{
+            "type": "function",
+            "function": {
+                "name": "safe_tool",
+                "description": secret,
+                "parameters": {"type": "object", "x-secret": secret}
+            }
+        }]);
+        let (_, footprint) = prepare_tools(&tools).expect("footprint");
+        let captured = SharedLog::default();
+        let sink = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || sink.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            client
+                .build_request_body(fixture_messages(), Some(tools), None)
+                .expect("request body");
+        });
+
+        let output = String::from_utf8(captured.0.lock().expect("log buffer").clone())
+            .expect("UTF-8 log output");
+        assert_eq!(output.matches("LLM tool schema footprint").count(), 1);
+        assert!(output.contains("tool_count=1"));
+        assert!(output.contains(&format!("serialized_bytes={}", footprint.serialized_bytes)));
+        assert!(output.contains(&format!("estimated_tokens={}", footprint.estimated_tokens)));
+        assert!(output.contains(&format!("sha256={}", footprint.sha256)));
+        assert!(!output.contains(secret));
+        assert!(!output.contains("safe_tool"));
+    }
+
+    // STUB: AC2 — validation propagates through the client before network I/O.
+    #[tokio::test]
+    async fn chat_rejects_invalid_tools_before_network_io() {
+        let client = test_client();
+
+        let error = client
+            .chat(
+                fixture_messages(),
+                Some(json!([{"type": "web_search", "name": "unsafe"}])),
+            )
+            .await
+            .expect_err("provider-native tools must fail locally");
+
+        match error {
+            LlmError::InvalidRequest(message) => {
+                assert_eq!(message, "tool_schema_rule=tool_type");
+            }
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn structured_and_streaming_chat_reject_invalid_tools_before_network_io() {
+        let client = test_client();
+        let invalid_tools = || Some(json!([{"type": "web_search", "name": "unsafe"}]));
+
+        let structured = client
+            .chat_with_schema(
+                fixture_messages(),
+                invalid_tools(),
+                Some(json!({"type": "object"})),
+            )
+            .await
+            .expect_err("structured chat must reject before network I/O");
+        assert!(matches!(structured, LlmError::InvalidRequest(_)));
+
+        let streaming = client
+            .chat_stream(fixture_messages(), invalid_tools(), Box::new(|_| {}))
+            .await
+            .expect_err("streaming chat must reject before network I/O");
+        assert!(matches!(streaming, LlmError::InvalidRequest(_)));
+
+        // The fallback path reuses an immutable clone of the inventory already
+        // validated above, so it cannot acquire a newly invalid schema between
+        // the streaming and fallback requests.
+    }
+
+    fn invalid_rig_request() -> CompletionRequest {
+        CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: OneOrMany::one(Message::user("hello".to_string())),
+            documents: Vec::new(),
+            tools: vec![ToolDefinition {
+                name: "x".repeat(65),
+                description: "invalid provider tool name".to_string(),
+                parameters: json!({"type": "object"}),
+            }],
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: None,
+            output_schema: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rig_completion_and_stream_reject_invalid_tools_before_network_io() {
+        let model = crate::rig_adapter::model::LlmCompletionModel::new(
+            Arc::new(test_client()) as Arc<dyn LlmClient>,
+            "gpt-4-turbo",
+        );
+
+        let completion = model
+            .completion(invalid_rig_request())
+            .await
+            .expect_err("Rig completion must surface local validation");
+        assert!(completion
+            .to_string()
+            .contains("tool_schema_rule=function_name"));
+
+        let mut stream = model
+            .stream(invalid_rig_request())
+            .await
+            .expect("Rig stream should initialize");
+        let stream_error = stream
+            .next()
+            .await
+            .expect("Rig stream must surface an error")
+            .expect_err("Rig stream must reject the invalid tool");
+        assert!(stream_error
+            .to_string()
+            .contains("tool_schema_rule=function_name"));
+    }
+
     #[test]
     fn request_body_is_byte_stable_across_identical_calls() {
         let client = test_client();
-        let a = client.build_request_body(fixture_messages(), Some(fixture_tools()), None);
-        let b = client.build_request_body(fixture_messages(), Some(fixture_tools()), None);
+        let a = client
+            .build_request_body(fixture_messages(), Some(fixture_tools()), None)
+            .expect("request a");
+        let b = client
+            .build_request_body(fixture_messages(), Some(fixture_tools()), None)
+            .expect("request b");
 
         let a_bytes = serde_json::to_vec(&a).expect("serialize a");
         let b_bytes = serde_json::to_vec(&b).expect("serialize b");
@@ -982,8 +1658,12 @@ mod tests {
     fn request_body_is_byte_stable_without_tools() {
         // Absence of `tools` must not introduce drift either.
         let client = test_client();
-        let a = client.build_request_body(fixture_messages(), None, None);
-        let b = client.build_request_body(fixture_messages(), None, None);
+        let a = client
+            .build_request_body(fixture_messages(), None, None)
+            .expect("request a");
+        let b = client
+            .build_request_body(fixture_messages(), None, None)
+            .expect("request b");
 
         let a_bytes = serde_json::to_vec(&a).expect("serialize a");
         let b_bytes = serde_json::to_vec(&b).expect("serialize b");
@@ -1001,7 +1681,9 @@ mod tests {
             "required": ["intent"]
         });
 
-        let body = client.build_request_body(fixture_messages(), None, Some(schema.clone()));
+        let body = client
+            .build_request_body(fixture_messages(), None, Some(schema.clone()))
+            .expect("structured request");
 
         assert_eq!(
             body.pointer("/response_format/type")

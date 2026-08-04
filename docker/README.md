@@ -36,7 +36,7 @@ Edit `docker/.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VAULT_PATH` | `~/zbot` | Host directory for all z-Bot data |
-| `HTTP_PORT` | `18791` | Web UI + HTTP API + `/ws` WebSocket upgrade |
+| `HTTP_PORT` | `18791` | Web UI + HTTP API + `/ws` client events + `/bridge/ws` workers |
 | `NGROK_AUTHTOKEN` | empty | Optional ngrok auth token for public tunnel exposure |
 | `NGROK_DOMAIN` | empty | Optional reserved ngrok domain, for example `example.ngrok.app` |
 | `NGROK_WEB_PORT` | `4040` | Host port for the local ngrok inspector UI |
@@ -54,6 +54,11 @@ docker compose --profile ngrok up -d --build
 ```
 
 The ngrok container tunnels the internal app URL `http://zbot:18791`.
+
+That tunnel publishes the entire listener, including both `/ws` and
+`/bridge/ws`. The bridge worker Hello handshake identifies capabilities but is
+not client authentication. Only enable the public tunnel behind an
+authenticating TLS reverse proxy, or on a network whose clients you trust.
 
 After startup:
 

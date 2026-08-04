@@ -87,15 +87,14 @@ Scope tags:
 
 ### Abstraction-shape debt — conversations side (NOT critical for migration)
 
-#### TD-020 🟡 [C] `DbProvider` / `StateDbProvider` traits are SQLite-shaped
+#### TD-020 ✅ [C] SQLite-shaped `DbProvider` / `StateDbProvider` traits accepted by design
 - **Locations:**
   - `services/api-logs/src/repository.rs:17-21` — `DbProvider`
   - `services/execution-state/src/repository.rs:14-17` — `StateDbProvider`
-- **What:** Both define `fn with_connection<F, R>(&self, f: F) -> Result<R, String> where F: FnOnce(&Connection) -> Result<R, rusqlite::Error>`. The closure parameter is a raw rusqlite `&Connection`; the inner error type is `rusqlite::Error`. The trait *is* SQLite.
-- **Why debt:** Even though conversations stays SQLite, this shape blocks any cross-cutting work (observability decorators, swapping pool implementations, in-memory test doubles, etc).
-- **Fix:** Reshape to method-per-operation traits — `LogStore::append`, `LogStore::query_by_session`, `ExecutionStateStore::insert_message`, etc. Internal pool can stay rusqlite; the contract stops leaking.
-- **Status:** pending (does not block SurrealDB switch)
-- **Phase 6 deferral note:** Wide-reach trait reshape — `DbProvider` / `StateDbProvider` are referenced from many service crates. Reshape requires per-method-per-trait migration. Low priority since conversations stays SQLite forever; trait shape staying SQLite-flavored is acceptable. Not bundled into the TD-021 / TD-022 hygiene PR because the work touches a different blast radius.
+- **What:** Both define `fn with_connection<F, R>(&self, f: F) -> Result<R, String> where F: FnOnce(&Connection) -> Result<R, rusqlite::Error>`. The closure parameter is a raw rusqlite `&Connection`; the inner error type is `rusqlite::Error`. The traits deliberately expose SQLite.
+- **Decision:** Accept the coupling. Conversations, execution state, and logs are intentionally SQLite-backed in the target architecture, so replacing this boundary with method-per-operation traits would spread a wide generic/type migration across services without enabling a planned backend change or fixing incorrect behavior.
+- **Revisit only if:** a concrete requirement appears for a non-SQLite conversations backend, store-level observability decorators, a different pool implementation, or database-free service test doubles. At that point, introduce operation-shaped `LogStore` / `ExecutionStateStore` traits from demonstrated consumer needs rather than speculatively.
+- **Status:** done — accepted by design on 2026-07-31; no code change required.
 
 #### TD-021 ✅ [C] `ConversationStore` trait extracted (Phase 6 hygiene)
 - **Location:** `gateway/gateway-database/src/repository.rs` — `ConversationRepository` now implements `zbot_stores_traits::ConversationStore`.
@@ -236,11 +235,10 @@ Each phase produces value standalone — none of them require finishing the next
 - `PersistenceFactory::new(config) -> AppStores` reads config and constructs the chosen knowledge-store impl.
 - After this lands, adding SurrealDB is a new crate plus a config switch. _(Historical: the SurrealDB sidecar crate was added and then reverted in `d823b7bd`; the factory pattern stayed for cleanliness.)_
 
-### Phase 6 (optional, deferred) — Conversations-side hygiene
-**Closed:** TD-021, TD-022
-**Still deferred:** TD-020
+### Phase 6 (optional, complete) — Conversations-side hygiene
+**Closed:** TD-020, TD-021, TD-022
 - ✅ Extracted `ConversationStore` and `OutboxStore` traits as hygiene scaffold (narrow surface; consumer migration to `Arc<dyn ...>` deferred to a future workstream alongside TD-023's retirement halves).
-- ⏸ `DbProvider` / `StateDbProvider` reshape (TD-020) deferred — wide blast radius across service crates and not on the SurrealDB critical path.
+- ✅ `DbProvider` / `StateDbProvider` reshape (TD-020) declined by design — the target architecture keeps these stores on SQLite, and no concrete requirement justifies the wide migration.
 - Strictly hygiene, not on the SurrealDB critical path. Can land after the swap.
 
 ---

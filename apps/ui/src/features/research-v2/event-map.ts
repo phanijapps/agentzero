@@ -163,7 +163,7 @@ function mapRespond(e: Record<string, unknown>): ResearchAction | null {
 /**
  * Gateway's WS handler translates `GatewayEvent::Respond` into
  * `ServerMessage::TurnComplete { final_message }` (see
- * gateway/src/websocket/handler.rs:909). So the frontend never receives
+ * gateway/src/websocket/handler.rs `gateway_event_to_server_message`). So the frontend never receives
  * a standalone `respond` event — the final answer rides on
  * `turn_complete.final_message`. Emit RESPOND when present so the turn
  * renders its answer without a page reload.

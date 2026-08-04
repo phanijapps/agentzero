@@ -4,6 +4,8 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Prompt Cache and Tool Footprint](prompt-cache-tool-footprint/spec.md) | Shipped | Preserves existing prompt-cache behavior while canonicalizing, measuring, and fail-closed bounding model-visible tool inventories before provider requests. |
+| [Legacy WebSocket Port Retirement](legacy-websocket-port-retirement/spec.md) | Shipped | Removes the deprecated standalone listener and makes `/ws` on the HTTP port the sole client event-stream WebSocket endpoint. |
 | [UI Test Type-Debt Cleanup](ui-test-type-debt/spec.md) | Shipped | Restores one TypeScript gate across UI production and test sources by repairing stale fixtures and removing the build exclusion. |
 | [P4 CI and E2E Debt Cleanup](p4-tech-debt/spec.md) | Shipped | Makes UI E2E ownership executable, upgrades deprecated action runtimes, and tracks removal of the temporary React Router advisory exception. |
 | [P3 CI Stabilization](p3-ci-stabilization/spec.md) | Shipped | Restores security, macOS and Windows Ward portability, and UI E2E gates without weakening their safety controls. |

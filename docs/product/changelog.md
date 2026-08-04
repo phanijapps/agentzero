@@ -47,7 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- (nothing yet)
+- The deprecated standalone WebSocket listener on port `18790`, together with
+  the `--ws-port` and `--legacy-ws-port-enabled` daemon flags, has been
+  removed. External integrations must migrate from `ws://<host>:18790` to
+  `ws://<host>:18791/ws` (or the configured HTTP port plus `/ws`) before
+  upgrading.
 
 ### Fixed
 

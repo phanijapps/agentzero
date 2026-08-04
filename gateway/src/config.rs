@@ -12,10 +12,6 @@ pub struct GatewayConfig {
     #[serde(default = "default_host")]
     pub host: IpAddr,
 
-    /// WebSocket port.
-    #[serde(default = "default_ws_port")]
-    pub websocket_port: u16,
-
     /// HTTP port.
     #[serde(default = "default_http_port")]
     pub http_port: u16,
@@ -36,15 +32,6 @@ pub struct GatewayConfig {
     #[serde(default = "default_serve_dashboard")]
     pub serve_dashboard: bool,
 
-    /// Bind the legacy standalone WebSocket port (`websocket_port`).
-    ///
-    /// Off by default — the gateway now serves WebSocket traffic on the
-    /// HTTP port at `/ws`, so mobile clients and reverse-proxy setups
-    /// don't need a second firewall hole. Flip this on only if you have
-    /// external integrations that hardcoded `ws://host:18790` and haven't
-    /// migrated yet. Slated for removal in a future release.
-    #[serde(default)]
-    pub legacy_ws_port_enabled: bool,
     /// Enable capability-gated agent work-surface events. Enabled by default;
     /// the daemon's `--no-agent-surfaces` flag provides an immediate rollback.
     #[serde(default = "default_agent_surfaces_enabled")]
@@ -63,10 +50,6 @@ fn default_host() -> IpAddr {
     "127.0.0.1".parse().unwrap()
 }
 
-fn default_ws_port() -> u16 {
-    crate::DEFAULT_WS_PORT
-}
-
 fn default_http_port() -> u16 {
     crate::DEFAULT_HTTP_PORT
 }
@@ -75,7 +58,6 @@ impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
             host: default_host(),
-            websocket_port: default_ws_port(),
             http_port: default_http_port(),
             cors_enabled: true,
             cors_origins: vec![
@@ -84,27 +66,12 @@ impl Default for GatewayConfig {
             ],
             static_dir: None,
             serve_dashboard: true,
-            legacy_ws_port_enabled: false,
             agent_surfaces_enabled: true,
         }
     }
 }
 
 impl GatewayConfig {
-    /// Create a new config with custom ports.
-    pub fn with_ports(ws_port: u16, http_port: u16) -> Self {
-        Self {
-            websocket_port: ws_port,
-            http_port,
-            ..Default::default()
-        }
-    }
-
-    /// Get the WebSocket bind address.
-    pub fn ws_addr(&self) -> String {
-        format!("{}:{}", self.host, self.websocket_port)
-    }
-
     /// Get the HTTP bind address.
     pub fn http_addr(&self) -> String {
         format!("{}:{}", self.host, self.http_port)
@@ -203,7 +170,6 @@ mod gateway_config_tests {
         let cfg = GatewayConfig::default();
         assert!(cfg.serve_dashboard);
         assert!(cfg.cors_enabled);
-        assert!(!cfg.legacy_ws_port_enabled);
         assert!(cfg.agent_surfaces_enabled);
         assert!(cfg
             .cors_origins
@@ -216,24 +182,16 @@ mod gateway_config_tests {
     }
 
     #[test]
-    fn with_ports_overrides_only_ports() {
-        let cfg = GatewayConfig::with_ports(9001, 9002);
-        assert_eq!(cfg.websocket_port, 9001);
-        assert_eq!(cfg.http_port, 9002);
-        assert!(cfg.serve_dashboard);
-        assert!(cfg.cors_enabled);
-    }
-
-    #[test]
-    fn ws_addr_and_http_addr_format() {
-        let cfg = GatewayConfig::with_ports(11111, 22222);
-        assert_eq!(cfg.ws_addr(), format!("{}:11111", cfg.host));
+    fn http_addr_format() {
+        let cfg = GatewayConfig {
+            http_port: 22222,
+            ..Default::default()
+        };
         assert_eq!(cfg.http_addr(), format!("{}:22222", cfg.host));
     }
 
     #[test]
     fn default_helpers_match_consts() {
-        assert_eq!(default_ws_port(), crate::DEFAULT_WS_PORT);
         assert_eq!(default_http_port(), crate::DEFAULT_HTTP_PORT);
         assert!(default_serve_dashboard());
     }
@@ -245,10 +203,12 @@ mod gateway_config_tests {
 
     #[test]
     fn json_round_trip_preserves_fields() {
-        let cfg = GatewayConfig::with_ports(40001, 40002);
+        let cfg = GatewayConfig {
+            http_port: 40002,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: GatewayConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.websocket_port, cfg.websocket_port);
         assert_eq!(parsed.http_port, cfg.http_port);
         assert_eq!(parsed.serve_dashboard, cfg.serve_dashboard);
     }
@@ -257,13 +217,11 @@ mod gateway_config_tests {
     fn json_with_missing_fields_uses_serde_defaults() {
         let cfg: GatewayConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(cfg.host, default_host());
-        assert_eq!(cfg.websocket_port, default_ws_port());
         assert_eq!(cfg.http_port, default_http_port());
         assert!(cfg.serve_dashboard);
         assert!(!cfg.cors_enabled);
         assert!(cfg.cors_origins.is_empty());
         assert!(cfg.static_dir.is_none());
-        assert!(!cfg.legacy_ws_port_enabled);
         assert!(cfg.agent_surfaces_enabled);
     }
 }

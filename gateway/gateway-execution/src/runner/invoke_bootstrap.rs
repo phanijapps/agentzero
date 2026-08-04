@@ -293,6 +293,7 @@ fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
 }
 
 const MAX_INTENT_MCP_DESCRIPTION_CHARS: usize = 512;
+const MAX_INTENT_CAPABILITY_NAME_CHARS: usize = 128;
 const MAX_INTENT_CAPABILITY_ASSIGNMENTS: usize = 12;
 const MAX_CAPABILITIES_PER_ASSIGNMENT: usize = 25;
 
@@ -300,6 +301,20 @@ fn safe_capability_description(value: &str) -> String {
     value
         .chars()
         .take(MAX_INTENT_MCP_DESCRIPTION_CHARS)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+fn safe_capability_name(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_INTENT_CAPABILITY_NAME_CHARS)
         .map(|character| {
             if character.is_control() {
                 ' '
@@ -330,9 +345,10 @@ fn safe_intent_mcp_catalog(mcp_service: &McpService) -> Vec<serde_json::Value> {
         })
         .map(|summary| {
             let description = safe_capability_description(&summary.description);
+            let name = safe_capability_name(&summary.name);
             serde_json::json!({
                 "id": summary.id,
-                "name": summary.name,
+                "name": name,
                 "description": description,
             })
         })
@@ -444,9 +460,10 @@ async fn build_planner_capability_catalog(
         .into_iter()
         .map(|skill| {
             let description = safe_capability_description(&skill.description);
+            let name = safe_capability_name(&skill.display_name);
             serde_json::json!({
                 "id": skill.name,
-                "name": skill.display_name,
+                "name": name,
                 "description": description,
             })
         })
@@ -470,9 +487,10 @@ async fn build_planner_capability_catalog(
         })
         .map(|summary| {
             let description = safe_capability_description(&summary.description);
+            let name = safe_capability_name(&summary.name);
             serde_json::json!({
                 "id": summary.id,
-                "name": summary.name,
+                "name": name,
                 "description": description,
             })
         })
@@ -1211,10 +1229,10 @@ impl InvokeBootstrap {
                 if let Some(assignment) = out.recommended_capabilities.iter().find(|assignment| {
                     assignment.agent_id == "root" || assignment.agent_id == agent_for_build.id
                 }) {
-                    match self
-                        .mcp_service
-                        .resolve_dynamic_runtime_ids(&assignment.mcps)
-                    {
+                    match self.mcp_service.resolve_dynamic_runtime_ids_with_catalog(
+                        &assignment.mcps,
+                        &assignment.mcps,
+                    ) {
                         Ok(resolution) => {
                             agent_for_build.mcps = resolution.effective_ids.clone();
                             let rejection_codes = resolution
@@ -1232,6 +1250,8 @@ impl InvokeBootstrap {
                             )
                             .with_metadata(serde_json::json!({
                                 "origin": "intent",
+                                "requested_skills": assignment.skills,
+                                "requested_mcps": resolution.canonical_requested_ids,
                                 "effective_skills": assignment.skills,
                                 "effective_mcps": resolution.effective_ids,
                                 "unresolved_count": resolution.rejections.len(),
@@ -1253,6 +1273,8 @@ impl InvokeBootstrap {
                             )
                             .with_metadata(serde_json::json!({
                                 "origin": "intent_resolution_unavailable",
+                                "requested_skills": assignment.skills,
+                                "requested_mcps": assignment.mcps,
                                 "effective_skills": assignment.skills,
                                 "effective_mcps": [],
                                 "unresolved_count": assignment.mcps.len(),

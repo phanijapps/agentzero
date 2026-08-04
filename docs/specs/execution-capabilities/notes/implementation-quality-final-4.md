@@ -1,0 +1,3 @@
+## Blockers
+
+**1. Lifecycle regression test still does not deterministically observe continuation release.** `gateway/gateway-execution/src/delegation/spawn.rs:2155`. `tokio::join!` polls the spawn and receiver futures inside the same task, so a publish-before-crash regression can still send `SessionContinuationReady`, repair the child session before the receiver future is next polled, and pass this final-state assertion. Fix: make the test assertion run at a deterministic parent-release point, such as a test message-store callback or injected continuation/event hook that reads the linked child session synchronously before `handle_execution_failure` can continue.

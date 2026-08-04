@@ -6,7 +6,7 @@ use crate::paths::SharedVaultPaths;
 use agent_runtime::McpServerConfig;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -73,6 +73,7 @@ pub struct McpServerSummary {
 #[serde(rename_all = "snake_case")]
 pub enum McpCapabilityRejection {
     UnknownId,
+    Deleted,
     Disabled,
     OAuthUnavailable,
 }
@@ -82,6 +83,7 @@ impl McpCapabilityRejection {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UnknownId => "unknown_id",
+            Self::Deleted => "deleted",
             Self::Disabled => "disabled",
             Self::OAuthUnavailable => "oauth_unavailable",
         }
@@ -94,6 +96,9 @@ impl McpCapabilityRejection {
 /// countable categories rather than echoes of the raw requested values.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpCapabilityResolution {
+    /// Canonical IDs validated either against current configuration or the
+    /// host-owned catalog snapshot used to create the assignment.
+    pub canonical_requested_ids: Vec<String>,
     pub effective_ids: Vec<String>,
     pub rejections: Vec<McpCapabilityRejection>,
 }
@@ -258,10 +263,35 @@ impl McpService {
             return vec![];
         };
 
-        let matched = configs
-            .into_iter()
-            .filter(|c| c.enabled() && ids.iter().any(|id| mcp_ref_matches(c, id)))
-            .collect::<Vec<_>>();
+        let mut matched = Vec::new();
+        for requested_id in ids {
+            // Exact canonical identity always wins. Only use a display-name
+            // alias when no record owns the requested canonical ID; this
+            // preserves legacy static aliases without allowing an aliasing
+            // server to join an exact dynamic assignment.
+            if let Some(exact) = configs.iter().find(|config| config.id() == *requested_id) {
+                if exact.enabled()
+                    && !matched
+                        .iter()
+                        .any(|config: &McpServerConfig| config.id() == exact.id())
+                {
+                    matched.push(exact.clone());
+                }
+                continue;
+            }
+
+            for alias in configs
+                .iter()
+                .filter(|config| config.enabled() && config.name() == requested_id)
+            {
+                if !matched
+                    .iter()
+                    .any(|config: &McpServerConfig| config.id() == alias.id())
+                {
+                    matched.push(alias.clone());
+                }
+            }
+        }
 
         for requested_id in ids {
             if !matched.iter().any(|c| mcp_ref_matches(c, requested_id)) {
@@ -306,14 +336,40 @@ impl McpService {
         &self,
         requested_ids: &[String],
     ) -> Result<McpCapabilityResolution, String> {
+        self.resolve_dynamic_runtime_ids_with_catalog(requested_ids, &[])
+    }
+
+    /// Resolve dynamic IDs while retaining provenance from the safe catalog
+    /// snapshot that produced the assignment. A missing ID present in that
+    /// snapshot is `deleted`; a value absent from both sources is untrusted and
+    /// remains `unknown_id`.
+    pub fn resolve_dynamic_runtime_ids_with_catalog(
+        &self,
+        requested_ids: &[String],
+        known_catalog_ids: &[String],
+    ) -> Result<McpCapabilityResolution, String> {
         let configs = self.list()?;
         let mut result = McpCapabilityResolution::default();
+        let known_catalog_ids = known_catalog_ids.iter().collect::<HashSet<_>>();
+        let mut seen_requested = HashSet::new();
 
         for requested_id in requested_ids {
+            if !seen_requested.insert(requested_id) {
+                continue;
+            }
             let Some(config) = configs.iter().find(|config| config.id() == *requested_id) else {
-                result.rejections.push(McpCapabilityRejection::UnknownId);
+                if known_catalog_ids.contains(requested_id) {
+                    result
+                        .canonical_requested_ids
+                        .push(requested_id.to_string());
+                    result.rejections.push(McpCapabilityRejection::Deleted);
+                } else {
+                    result.rejections.push(McpCapabilityRejection::UnknownId);
+                }
                 continue;
             };
+            let canonical_id = config.id();
+            result.canonical_requested_ids.push(canonical_id.clone());
             if !config.enabled() {
                 result.rejections.push(McpCapabilityRejection::Disabled);
                 continue;
@@ -328,7 +384,6 @@ impl McpService {
                 continue;
             }
 
-            let canonical_id = config.id();
             if !result.effective_ids.contains(&canonical_id) {
                 result.effective_ids.push(canonical_id);
             }
@@ -840,11 +895,37 @@ mod tests {
 
         assert_eq!(resolution.effective_ids, vec!["ready"]);
         assert_eq!(
+            resolution.canonical_requested_ids,
+            vec!["ready", "disabled", "oauth"]
+        );
+        assert_eq!(
             resolution.rejections,
             vec![
                 McpCapabilityRejection::UnknownId,
                 McpCapabilityRejection::Disabled,
                 McpCapabilityRejection::OAuthUnavailable,
+                McpCapabilityRejection::UnknownId,
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_runtime_resolution_distinguishes_deleted_from_unknown_ids() {
+        let (_dir, service) = service();
+
+        let resolution = service
+            .resolve_dynamic_runtime_ids_with_catalog(
+                &["deleted-mcp".to_string(), "never-known".to_string()],
+                &["deleted-mcp".to_string()],
+            )
+            .unwrap();
+
+        assert_eq!(resolution.canonical_requested_ids, vec!["deleted-mcp"]);
+        assert!(resolution.effective_ids.is_empty());
+        assert_eq!(
+            resolution.rejections,
+            vec![
+                McpCapabilityRejection::Deleted,
                 McpCapabilityRejection::UnknownId,
             ]
         );
@@ -889,6 +970,22 @@ mod tests {
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id(), "brave-search");
+    }
+
+    #[test]
+    fn get_multiple_exact_id_wins_over_colliding_display_name() {
+        let (_dir, service) = service();
+        service
+            .save(&[
+                stdio(Some("trusted"), "Trusted", true),
+                stdio(Some("alias"), "trusted", true),
+            ])
+            .unwrap();
+
+        let found = service.get_multiple(&["trusted".to_string()]);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id(), "trusted");
     }
 
     #[test]

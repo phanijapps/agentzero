@@ -1,0 +1,3 @@
+## Blockers
+
+**1. Lifecycle regression test does not observe continuation ordering.** `gateway/gateway-execution/src/delegation/spawn.rs:2124`. The loader-failure half of `spawn_failures_complete_parent_and_child_lifecycle` waits for `spawn_delegated_agent` to return and then checks only final parent/child state, so it would still pass if `handle_early_spawn_failure` released `SessionContinuationReady` before crashing the child session, which is the ordering this regression is meant to prevent. Fix: subscribe to the `EventBus` before the loader-failure spawn, wait for the `SessionContinuationReady` event during that call, and assert the linked child session is already `SessionStatus::Crashed` when that event is observed.

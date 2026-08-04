@@ -205,13 +205,13 @@ impl Tool for DelegateTool {
                 skills: skills.clone(),
                 mcps,
             });
-        let planning_capability_catalog = (target_agent_id == "planner-agent"
-            || target_agent_id.starts_with("ward:"))
-        .then(|| {
-            ctx.get_state(super::PLANNER_CAPABILITY_CATALOG_STATE)
-                .or_else(|| ctx.get_state(super::PLANNING_CAPABILITY_CATALOG_STATE))
-        })
-        .flatten();
+        // Keep the host-owned snapshot on the action for final-resolution
+        // provenance even when the child is an ordinary step executor. The
+        // gateway decides separately whether a child is a real planning
+        // transition allowed to receive lookup state.
+        let planning_capability_catalog = ctx
+            .get_state(super::PLANNER_CAPABILITY_CATALOG_STATE)
+            .or_else(|| ctx.get_state(super::PLANNING_CAPABILITY_CATALOG_STATE));
 
         let parallel = args
             .get("parallel")
@@ -705,6 +705,34 @@ mod tests {
         )
         .await
         .expect("planner delegation succeeds");
+
+        let action = ctx.actions().delegate.expect("delegate action set");
+        assert_eq!(
+            action.planning_capability_catalog,
+            Some(json!({"skills": [], "mcps": [{"id": "blender"}]}))
+        );
+    }
+
+    #[tokio::test]
+    async fn step_delegate_carries_host_catalog_only_as_resolution_provenance() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("planner-agent");
+        ctx.set_state(
+            crate::tools::PLANNER_CAPABILITY_CATALOG_STATE.to_string(),
+            json!({"skills": [], "mcps": [{"id": "blender"}]}),
+        );
+
+        tool.execute(
+            ctx.clone(),
+            json!({
+                "agent_id": "builder-agent",
+                "task": "build the scene",
+                "mode": "step_executor",
+                "mcps": ["blender"]
+            }),
+        )
+        .await
+        .expect("step delegation succeeds");
 
         let action = ctx.actions().delegate.expect("delegate action set");
         assert_eq!(

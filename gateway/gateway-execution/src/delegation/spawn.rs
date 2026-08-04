@@ -77,16 +77,9 @@ pub async fn spawn_delegated_agent(
     steering_registry: Arc<agent_runtime::SteeringRegistry>,
     agent_result_bus: Arc<AgentResultBus>,
 ) -> Result<String, String> {
-    // Create a child session for subagent isolation
-    let child_session =
-        execution_state::Session::new_child(&request.child_agent_id, &request.session_id);
-    let child_session_id = child_session.id.clone();
-
-    if let Err(e) = state_service.create_session_from(&child_session) {
-        tracing::warn!("Failed to create child session: {}", e);
-    }
-
-    // Generate child conversation ID (legacy, for event routing)
+    // Generate the child conversation identity before validation so even an
+    // assignment rejected prior to child-session creation can use the common
+    // failure callback and delegation-completion path.
     let child_conversation_id = format!(
         "{}-sub-{}",
         request.session_id,
@@ -96,6 +89,61 @@ pub async fn spawn_delegated_agent(
             .next()
             .unwrap_or("0")
     );
+
+    // Reject a mismatched or nonexistent dynamic target before creating the
+    // child session or invoking AgentLoader. This prevents the loader's
+    // compatibility auto-create path from turning an untrusted model target
+    // into a capability-bearing specialist.
+    let has_dynamic_assignment = request.capability_assignment.is_some();
+    if !validate_dynamic_assignment_target(
+        &agent_service,
+        paths.vault_dir(),
+        &request.child_agent_id,
+        request.capability_assignment.as_ref(),
+    )
+    .await
+    {
+        log_capability_resolution(
+            &log_service,
+            CapabilityResolutionLog {
+                execution_id: &request.child_execution_id,
+                session_id: &request.session_id,
+                agent_id: &request.child_agent_id,
+                origin: "rejected_target",
+                requested_skills: &[],
+                requested_mcps: &[],
+                effective_skills: &[],
+                effective_mcps: &[],
+                unresolved_skill_count: 1,
+                unresolved_count: 1,
+                rejection_codes: &[],
+            },
+        );
+        let error = "Dynamic capability assignment target rejected";
+        handle_early_spawn_failure(EarlySpawnFailure {
+            request,
+            child_conversation_id: &child_conversation_id,
+            child_session_id: None,
+            error,
+            messages: messages.as_ref(),
+            state_service: &state_service,
+            log_service: &log_service,
+            event_bus: &event_bus,
+            delegation_registry: &delegation_registry,
+            agent_result_bus: &agent_result_bus,
+        })
+        .await;
+        return Err(error.to_string());
+    }
+
+    // Create a child session for subagent isolation
+    let child_session =
+        execution_state::Session::new_child(&request.child_agent_id, &request.session_id);
+    let child_session_id = child_session.id.clone();
+
+    if let Err(e) = state_service.create_session_from(&child_session) {
+        tracing::warn!("Failed to create child session: {}", e);
+    }
 
     // Use the pre-created execution_id from the request
     // The execution was created synchronously by handle_delegation() to prevent
@@ -164,38 +212,7 @@ pub async fn spawn_delegated_agent(
     // an already-created ward. This check occurs before `AgentLoader` can
     // auto-create a specialist, so an arbitrary delegate target can never
     // obtain an MCP merely by naming one in a tool call.
-    let has_dynamic_assignment = request.capability_assignment.is_some();
-    let dynamic_assignment = match request.capability_assignment.as_ref() {
-        Some(assignment)
-            if assignment.agent_id == request.child_agent_id
-                && dynamic_target_exists(
-                    &agent_service,
-                    paths.vault_dir(),
-                    &request.child_agent_id,
-                )
-                .await =>
-        {
-            Some(assignment)
-        }
-        Some(_) => {
-            log_capability_resolution(
-                &log_service,
-                CapabilityResolutionLog {
-                    execution_id: &execution_id,
-                    session_id: &session_id,
-                    agent_id: &request.child_agent_id,
-                    origin: "rejected_target",
-                    effective_skills: &[],
-                    effective_mcps: &[],
-                    unresolved_skill_count: 1,
-                    unresolved_count: 1,
-                    rejection_codes: &[],
-                },
-            );
-            None
-        }
-        None => None,
-    };
+    let dynamic_assignment = request.capability_assignment.as_ref();
 
     // Load agent and provider using AgentLoader
     let agent_loader = AgentLoader::new(&agent_service, &provider_service, paths.clone());
@@ -205,9 +222,19 @@ pub async fn spawn_delegated_agent(
     {
         Ok(result) => result,
         Err(e) => {
-            // Mark the pre-created execution as crashed so session can complete
-            crash_spawn_failure(&state_service, &execution_id, &e);
-            delegation_registry.remove(&execution_id);
+            handle_early_spawn_failure(EarlySpawnFailure {
+                request,
+                child_conversation_id: &child_conversation_id,
+                child_session_id: Some(&child_session_id),
+                error: &e,
+                messages: messages.as_ref(),
+                state_service: &state_service,
+                log_service: &log_service,
+                event_bus: &event_bus,
+                delegation_registry: &delegation_registry,
+                agent_result_bus: &agent_result_bus,
+            })
+            .await;
             return Err(e);
         }
     };
@@ -285,6 +312,10 @@ pub async fn spawn_delegated_agent(
                     session_id: &session_id,
                     agent_id: &request.child_agent_id,
                     origin: "planner_runtime_prohibited",
+                    requested_skills: dynamic_skill_resolution
+                        .as_ref()
+                        .map_or(&[], |resolution| resolution.effective.as_slice()),
+                    requested_mcps: &[],
                     effective_skills: dynamic_skill_resolution
                         .as_ref()
                         .map_or(&[], |resolution| resolution.effective.as_slice()),
@@ -300,7 +331,16 @@ pub async fn spawn_delegated_agent(
             );
         }
     } else if let Some(assignment) = dynamic_assignment {
-        match mcp_service.resolve_dynamic_runtime_ids(&assignment.mcps) {
+        let known_mcp_ids = catalog_mcp_ids(request.planning_capability_catalog.as_ref());
+        let known_mcp_id_set = known_mcp_ids.iter().collect::<HashSet<_>>();
+        let known_requested_mcps = assignment
+            .mcps
+            .iter()
+            .filter(|id| known_mcp_id_set.contains(id))
+            .cloned()
+            .collect::<Vec<_>>();
+        match mcp_service.resolve_dynamic_runtime_ids_with_catalog(&assignment.mcps, &known_mcp_ids)
+        {
             Ok(resolution) => {
                 agent.mcps = resolution.effective_ids.clone();
                 let rejection_codes = resolution
@@ -315,6 +355,10 @@ pub async fn spawn_delegated_agent(
                         session_id: &session_id,
                         agent_id: &request.child_agent_id,
                         origin: capability_assignment_origin(delegation_mode),
+                        requested_skills: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(&[], |resolution| resolution.effective.as_slice()),
+                        requested_mcps: &resolution.canonical_requested_ids,
                         effective_skills: dynamic_skill_resolution
                             .as_ref()
                             .map_or(&[], |resolution| resolution.effective.as_slice()),
@@ -340,6 +384,10 @@ pub async fn spawn_delegated_agent(
                         session_id: &session_id,
                         agent_id: &request.child_agent_id,
                         origin: "dynamic_resolution_unavailable",
+                        requested_skills: dynamic_skill_resolution
+                            .as_ref()
+                            .map_or(&[], |resolution| resolution.effective.as_slice()),
+                        requested_mcps: &known_requested_mcps,
                         effective_skills: dynamic_skill_resolution
                             .as_ref()
                             .map_or(&[], |resolution| resolution.effective.as_slice()),
@@ -363,6 +411,8 @@ pub async fn spawn_delegated_agent(
                 session_id: &session_id,
                 agent_id: &request.child_agent_id,
                 origin: "legacy_fallback",
+                requested_skills: &[],
+                requested_mcps: &[],
                 effective_skills: &[],
                 effective_mcps: &agent.mcps,
                 unresolved_skill_count: 0,
@@ -474,7 +524,7 @@ pub async fn spawn_delegated_agent(
             request.child_agent_id.clone(),
         ));
 
-    if request.child_agent_id == "planner-agent" || request.child_agent_id.starts_with("ward:") {
+    if should_register_planner_catalog(&request.child_agent_id, delegation_mode) {
         if let Some(catalog) = request.planning_capability_catalog.as_ref() {
             builder = builder.with_initial_state(
                 agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE,
@@ -529,9 +579,19 @@ pub async fn spawn_delegated_agent(
     {
         Ok(e) => e,
         Err(e) => {
-            // Mark the pre-created execution as crashed so session can complete
-            crash_spawn_failure(&state_service, &execution_id, &e);
-            delegation_registry.remove(&execution_id);
+            handle_early_spawn_failure(EarlySpawnFailure {
+                request,
+                child_conversation_id: &child_conversation_id,
+                child_session_id: Some(&child_session_id),
+                error: &e,
+                messages: messages.as_ref(),
+                state_service: &state_service,
+                log_service: &log_service,
+                event_bus: &event_bus,
+                delegation_registry: &delegation_registry,
+                agent_result_bus: &agent_result_bus,
+            })
+            .await;
             return Err(e);
         }
     };
@@ -724,6 +784,21 @@ async fn dynamic_target_exists(
     agent_service.get(agent_id).await.is_ok()
 }
 
+async fn validate_dynamic_assignment_target(
+    agent_service: &AgentService,
+    vault_dir: &Path,
+    child_agent_id: &str,
+    assignment: Option<&agent_primitives::event::AgentCapabilityAssignment>,
+) -> bool {
+    match assignment {
+        None => true,
+        Some(assignment) => {
+            assignment.agent_id == child_agent_id
+                && dynamic_target_exists(agent_service, vault_dir, child_agent_id).await
+        }
+    }
+}
+
 /// A step-executor delegation is the root's execution of a planner-written
 /// step briefing. Keep the provenance host-derived from the validated posture
 /// rather than a model-supplied metadata field.
@@ -735,6 +810,22 @@ fn capability_assignment_origin(mode: DelegationMode) -> &'static str {
     }
 }
 
+fn should_register_planner_catalog(child_agent_id: &str, mode: DelegationMode) -> bool {
+    child_agent_id == "planner-agent"
+        || (child_agent_id.starts_with("ward:") && mode == DelegationMode::WardBackedBuild)
+}
+
+fn catalog_mcp_ids(catalog: Option<&serde_json::Value>) -> Vec<String> {
+    catalog
+        .and_then(|catalog| catalog.get("mcps"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Persist only canonical accepted IDs and aggregate closed rejection codes.
 /// Raw assignments, config errors, URLs, and secret-bearing MCP config are
 /// deliberately excluded from this execution-log record.
@@ -743,6 +834,8 @@ struct CapabilityResolutionLog<'a> {
     session_id: &'a str,
     agent_id: &'a str,
     origin: &'a str,
+    requested_skills: &'a [String],
+    requested_mcps: &'a [String],
     effective_skills: &'a [String],
     effective_mcps: &'a [String],
     unresolved_skill_count: usize,
@@ -754,6 +847,7 @@ fn log_capability_resolution(
     log_service: &LogService<DatabaseManager>,
     resolution: CapabilityResolutionLog<'_>,
 ) {
+    let metadata = capability_resolution_metadata(&resolution);
     let entry = ExecutionLog::new(
         resolution.execution_id,
         resolution.session_id,
@@ -762,20 +856,26 @@ fn log_capability_resolution(
         LogCategory::Intent,
         "Resolved execution capabilities",
     )
-    .with_metadata(serde_json::json!({
-        "origin": resolution.origin,
-        "effective_skills": resolution.effective_skills,
-        "effective_mcps": resolution.effective_mcps,
-        "unresolved_skill_count": resolution.unresolved_skill_count,
-        "unresolved_count": resolution.unresolved_count,
-        "rejection_codes": resolution.rejection_codes,
-    }));
+    .with_metadata(metadata);
     if log_service.log(entry).is_err() {
         tracing::debug!(
             agent_id = resolution.agent_id,
             "Failed to persist capability resolution audit event"
         );
     }
+}
+
+fn capability_resolution_metadata(resolution: &CapabilityResolutionLog<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "origin": resolution.origin,
+        "requested_skills": resolution.requested_skills,
+        "requested_mcps": resolution.requested_mcps,
+        "effective_skills": resolution.effective_skills,
+        "effective_mcps": resolution.effective_mcps,
+        "unresolved_skill_count": resolution.unresolved_skill_count,
+        "unresolved_count": resolution.unresolved_count,
+        "rejection_codes": resolution.rejection_codes,
+    })
 }
 
 /// Return the `<reuse_check>` imperative for coding-capable agents.
@@ -1361,30 +1461,59 @@ async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
     delegation_registry.remove(execution_id);
 }
 
-/// Mark a pre-created execution as crashed when spawn fails.
-///
-/// This is called when the spawn process fails early (e.g., agent not found,
-/// executor build error). The execution was created with status QUEUED in
-/// `handle_delegation()`, so we need to mark it CRASHED to allow the session
-/// to complete properly.
-fn crash_spawn_failure(
-    state_service: &StateService<DatabaseManager>,
-    execution_id: &str,
-    error: &str,
-) {
-    if let Err(e) = state_service.crash_execution(execution_id, error) {
-        tracing::warn!(
-            execution_id = %execution_id,
-            error = %e,
-            "Failed to mark spawn failure as crashed"
-        );
-    } else {
-        tracing::info!(
-            execution_id = %execution_id,
-            error = %error,
-            "Marked failed spawn as crashed"
-        );
+/// Inputs for an early spawn failure. The child executor may not exist yet,
+/// but the synchronous delegation handler already incremented the parent's
+/// pending count and exposed the child execution id.
+struct EarlySpawnFailure<'a> {
+    request: &'a DelegationRequest,
+    child_conversation_id: &'a str,
+    child_session_id: Option<&'a str>,
+    error: &'a str,
+    messages: &'a dyn zbot_conversation::MessageStore,
+    state_service: &'a StateService<DatabaseManager>,
+    log_service: &'a LogService<DatabaseManager>,
+    event_bus: &'a EventBus,
+    delegation_registry: &'a DelegationRegistry,
+    agent_result_bus: &'a AgentResultBus,
+}
+
+/// Route pre-executor failures through the same observable completion path as
+/// failures after execution starts. This keeps parent callbacks, `wait_agent`,
+/// pending-delegation bookkeeping, and continuation wakeups consistent.
+async fn handle_early_spawn_failure(ctx: EarlySpawnFailure<'_>) {
+    // Finish child-session state before decrementing the parent pending count;
+    // the latter can publish `SessionContinuationReady`, whose consumer must
+    // never observe a failed child still marked running.
+    if let Some(child_session_id) = ctx.child_session_id {
+        if let Err(error) = ctx.state_service.crash_session(child_session_id) {
+            tracing::warn!(
+                child_session_id = %child_session_id,
+                error = %error,
+                "Failed to mark child session crashed after spawn failure"
+            );
+        }
     }
+
+    ctx.agent_result_bus.reject(
+        &ctx.request.child_execution_id,
+        AgentWaitError::Crashed {
+            error: ctx.error.to_string(),
+        },
+    );
+    handle_execution_failure(HandleExecutionFailure {
+        messages: ctx.messages,
+        state_service: ctx.state_service,
+        log_service: ctx.log_service,
+        event_bus: ctx.event_bus,
+        delegation_registry: ctx.delegation_registry,
+        execution_id: &ctx.request.child_execution_id,
+        session_id: &ctx.request.session_id,
+        agent_id: &ctx.request.child_agent_id,
+        conv_id: ctx.child_conversation_id,
+        parent_execution_id: &ctx.request.parent_execution_id,
+        error: ctx.error,
+    })
+    .await;
 }
 
 /// Inputs for `handle_execution_failure`. Same-type String ids travel together;
@@ -1645,6 +1774,31 @@ fn walkdir_simple(dir: &Path) -> std::io::Result<Vec<String>> {
 mod tests {
     use super::*;
 
+    struct AppendObserverMessageStore {
+        inner: Arc<dyn zbot_conversation::MessageStore>,
+        on_append: Arc<dyn Fn(&zbot_conversation::Message) + Send + Sync>,
+    }
+
+    impl zbot_conversation::MessageStore for AppendObserverMessageStore {
+        fn append(&self, message: &zbot_conversation::Message) -> anyhow::Result<()> {
+            (self.on_append)(message);
+            self.inner.append(message)
+        }
+
+        fn replay(
+            &self,
+            session_id: &str,
+            after_seq: Option<i64>,
+            limit: usize,
+        ) -> anyhow::Result<Vec<zbot_conversation::Message>> {
+            self.inner.replay(session_id, after_seq, limit)
+        }
+
+        fn tool_sequence_for_session(&self, session_id: &str) -> anyhow::Result<Vec<String>> {
+            self.inner.tool_sequence_for_session(session_id)
+        }
+    }
+
     #[test]
     fn effective_ward_id_uses_ward_prefix_over_parent() {
         assert_eq!(
@@ -1728,5 +1882,466 @@ mod tests {
             capability_assignment_origin(DelegationMode::WardBackedBuild),
             "dynamic"
         );
+    }
+
+    #[test]
+    fn planner_catalog_registration_requires_a_planning_transition() {
+        assert!(should_register_planner_catalog(
+            "planner-agent",
+            DelegationMode::WardBackedBuild
+        ));
+        assert!(should_register_planner_catalog(
+            "ward:graphics",
+            DelegationMode::WardBackedBuild
+        ));
+        assert!(!should_register_planner_catalog(
+            "ward:graphics",
+            DelegationMode::StepExecutor
+        ));
+        assert!(!should_register_planner_catalog(
+            "builder-agent",
+            DelegationMode::StepExecutor
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_dynamic_target_is_rejected_without_creating_a_specialist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).expect("agents dir");
+        let service = AgentService::new(agents_dir.clone());
+        let assignment = agent_primitives::event::AgentCapabilityAssignment {
+            agent_id: "ghost-agent".to_string(),
+            skills: vec![],
+            mcps: vec!["blender-mcp".to_string()],
+        };
+
+        let accepted = validate_dynamic_assignment_target(
+            &service,
+            dir.path(),
+            "different-agent",
+            Some(&assignment),
+        )
+        .await;
+
+        assert!(!accepted);
+        assert!(!agents_dir.join("ghost-agent").exists());
+        assert!(!agents_dir.join("different-agent").exists());
+    }
+
+    #[tokio::test]
+    async fn spawn_failures_complete_parent_and_child_lifecycle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let db = Arc::new(DatabaseManager::new(paths.clone()).expect("state db"));
+        let state_service = Arc::new(StateService::new(db.clone()));
+        let log_service = Arc::new(LogService::new(db));
+        let (session, root_execution) = state_service.create_session("root").expect("root session");
+        let child_execution_id = "exec-invalid-dynamic-target";
+        state_service
+            .create_delegated_execution_with_id(
+                child_execution_id,
+                &session.id,
+                "different-agent",
+                &root_execution.id,
+                execution_state::DelegationType::Sequential,
+                "build a scene",
+            )
+            .expect("pre-created child execution");
+        state_service
+            .register_delegation(&session.id)
+            .expect("pending delegation");
+        state_service
+            .request_continuation(&session.id)
+            .expect("continuation request");
+
+        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db())
+            .expect("conversation pool");
+        let messages: Arc<dyn zbot_conversation::MessageStore> =
+            Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone()));
+        let session_meta: Arc<dyn zbot_conversation::SessionMetaStore> =
+            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone()));
+        let checkpoints: Arc<dyn zbot_conversation::CheckpointStore> =
+            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool));
+        let (delegation_tx, _delegation_rx) = mpsc::unbounded_channel();
+        let assignment = agent_primitives::event::AgentCapabilityAssignment {
+            agent_id: "ghost-agent".to_string(),
+            skills: vec![],
+            mcps: vec!["blender-mcp".to_string()],
+        };
+        let request = DelegationRequest {
+            parent_agent_id: "root".to_string(),
+            session_id: session.id.clone(),
+            parent_execution_id: root_execution.id.clone(),
+            parent_conversation_id: "root-conversation".to_string(),
+            child_agent_id: "different-agent".to_string(),
+            child_execution_id: child_execution_id.to_string(),
+            task: "build a scene".to_string(),
+            mode: Some(DelegationMode::StepExecutor),
+            context: None,
+            max_iterations: None,
+            output_schema: None,
+            skills: vec![],
+            capability_assignment: Some(assignment),
+            planning_capability_catalog: Some(serde_json::json!({
+                "skills": [],
+                "mcps": [{"id": "blender-mcp"}]
+            })),
+            complexity: None,
+            parallel: false,
+        };
+
+        let event_bus = Arc::new(EventBus::new());
+        let agent_service = Arc::new(AgentService::new(paths.agents_dir()));
+        let provider_service = Arc::new(ProviderService::new(paths.clone()));
+        let mcp_service = Arc::new(McpService::new(paths.clone()));
+        let skill_service = Arc::new(SkillService::new(paths.skills_dir()));
+        let handles = Arc::new(RwLock::new(HashMap::new()));
+        let delegation_registry = Arc::new(DelegationRegistry::new());
+        let rate_limiters = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        let steering_registry = Arc::new(agent_runtime::SteeringRegistry::new());
+        let agent_result_bus = Arc::new(AgentResultBus::new());
+
+        let result = spawn_delegated_agent(
+            &request,
+            event_bus.clone(),
+            agent_service.clone(),
+            provider_service.clone(),
+            mcp_service.clone(),
+            skill_service.clone(),
+            paths.clone(),
+            messages.clone(),
+            session_meta.clone(),
+            checkpoints.clone(),
+            handles.clone(),
+            delegation_registry.clone(),
+            delegation_tx.clone(),
+            log_service.clone(),
+            state_service.clone(),
+            None,
+            None,
+            None,
+            None,
+            rate_limiters.clone(),
+            None,
+            None,
+            None,
+            steering_registry.clone(),
+            agent_result_bus.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Dynamic capability assignment target rejected"
+        );
+        let session_after = state_service
+            .get_session(&session.id)
+            .expect("read parent session")
+            .expect("parent session remains");
+        assert_eq!(session_after.pending_delegations, 0);
+        assert!(session_after.continuation_needed);
+        let child_after = state_service
+            .get_execution(child_execution_id)
+            .expect("read child execution")
+            .expect("child execution remains auditable");
+        assert_eq!(
+            child_after.status,
+            execution_state::ExecutionStatus::Crashed
+        );
+        let callback = messages
+            .replay(&session.id, None, 10)
+            .expect("parent callback replay");
+        assert_eq!(callback.len(), 1);
+        assert!(callback[0]
+            .content
+            .contains("Dynamic capability assignment target rejected"));
+        assert!(!paths.agents_dir().join("ghost-agent").exists());
+        assert!(!paths.agents_dir().join("different-agent").exists());
+
+        // A target can pass assignment validation and still fail later while
+        // loading its provider. That post-session failure must crash the child
+        // session before the parent continuation is released.
+        let broken_agent_dir = paths.agents_dir().join("broken-agent");
+        std::fs::create_dir_all(&broken_agent_dir).expect("broken agent dir");
+        std::fs::write(
+            broken_agent_dir.join("config.yaml"),
+            "name: broken-agent\n\
+             displayName: Broken Agent\n\
+             description: Missing provider fixture\n\
+             providerId: missing-provider\n\
+             model: missing-model\n\
+             temperature: 0.1\n\
+             maxTokens: 8192\n\
+             thinkingEnabled: false\n\
+             voiceRecordingEnabled: false\n\
+             skills: []\n\
+             mcps: []\n",
+        )
+        .expect("broken agent config");
+        std::fs::write(broken_agent_dir.join("AGENTS.md"), "test fixture\n")
+            .expect("broken agent instructions");
+        let broken_execution_id = "exec-broken-agent-loader";
+        state_service
+            .create_delegated_execution_with_id(
+                broken_execution_id,
+                &session.id,
+                "broken-agent",
+                &root_execution.id,
+                execution_state::DelegationType::Sequential,
+                "load missing provider",
+            )
+            .expect("pre-created loader-failure execution");
+        state_service
+            .register_delegation(&session.id)
+            .expect("second pending delegation");
+        let broken_request = DelegationRequest {
+            child_agent_id: "broken-agent".to_string(),
+            child_execution_id: broken_execution_id.to_string(),
+            task: "load missing provider".to_string(),
+            capability_assignment: Some(agent_primitives::event::AgentCapabilityAssignment {
+                agent_id: "broken-agent".to_string(),
+                skills: vec![],
+                mcps: vec![],
+            }),
+            planning_capability_catalog: Some(serde_json::json!({
+                "skills": [],
+                "mcps": []
+            })),
+            ..request.clone()
+        };
+
+        let callback_observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_observed_for_append = callback_observed.clone();
+        let state_for_append = state_service.clone();
+        let ordering_messages: Arc<dyn zbot_conversation::MessageStore> =
+            Arc::new(AppendObserverMessageStore {
+                inner: messages.clone(),
+                on_append: Arc::new(move |message| {
+                    assert_eq!(message.role, "system");
+                    let broken_execution = state_for_append
+                        .get_execution(broken_execution_id)
+                        .expect("read broken execution at parent callback")
+                        .expect("broken execution exists at parent callback");
+                    let child_session_id = broken_execution
+                        .child_session_id
+                        .expect("loader failure created a child session");
+                    let child_session = state_for_append
+                        .get_session(&child_session_id)
+                        .expect("read failed child at parent callback")
+                        .expect("failed child exists at parent callback");
+                    assert_eq!(
+                        child_session.status,
+                        execution_state::SessionStatus::Crashed,
+                        "parent callback exposed a failed child before its session crashed"
+                    );
+                    callback_observed_for_append.store(true, std::sync::atomic::Ordering::SeqCst);
+                }),
+            });
+
+        let error = spawn_delegated_agent(
+            &broken_request,
+            event_bus,
+            agent_service,
+            provider_service,
+            mcp_service,
+            skill_service,
+            paths.clone(),
+            ordering_messages,
+            session_meta,
+            checkpoints,
+            handles,
+            delegation_registry,
+            delegation_tx,
+            log_service,
+            state_service.clone(),
+            None,
+            None,
+            None,
+            None,
+            rate_limiters,
+            None,
+            None,
+            None,
+            steering_registry,
+            agent_result_bus,
+        )
+        .await
+        .expect_err("missing provider must fail spawn");
+        assert!(
+            error.to_ascii_lowercase().contains("provider"),
+            "unexpected loader failure: {error}"
+        );
+        assert!(
+            callback_observed.load(std::sync::atomic::Ordering::SeqCst),
+            "loader failure must synchronously persist a parent callback"
+        );
+
+        let parent_after_loader_failure = state_service
+            .get_session(&session.id)
+            .expect("read parent after loader failure")
+            .expect("parent remains after loader failure");
+        assert_eq!(parent_after_loader_failure.pending_delegations, 0);
+        let broken_execution = state_service
+            .get_execution(broken_execution_id)
+            .expect("read broken execution")
+            .expect("broken execution remains auditable");
+        assert_eq!(
+            broken_execution.status,
+            execution_state::ExecutionStatus::Crashed
+        );
+        let child_session_id = broken_execution
+            .child_session_id
+            .expect("loader failure created a child session");
+        let child_session = state_service
+            .get_session(&child_session_id)
+            .expect("read failed child session")
+            .expect("failed child session remains auditable");
+        assert_eq!(
+            child_session.status,
+            execution_state::SessionStatus::Crashed
+        );
+        let callbacks = messages
+            .replay(&session.id, None, 10)
+            .expect("both parent callbacks replay");
+        assert_eq!(callbacks.len(), 2);
+    }
+
+    #[test]
+    fn capability_log_metadata_separates_requested_from_effective_ids() {
+        let requested_skills = vec!["modeling".to_string()];
+        let requested_mcps = vec!["blender-mcp".to_string()];
+        let effective_mcps = Vec::new();
+        let metadata = capability_resolution_metadata(&CapabilityResolutionLog {
+            execution_id: "exec-1",
+            session_id: "session-1",
+            agent_id: "builder-agent",
+            origin: "planner",
+            requested_skills: &requested_skills,
+            requested_mcps: &requested_mcps,
+            effective_skills: &requested_skills,
+            effective_mcps: &effective_mcps,
+            unresolved_skill_count: 0,
+            unresolved_count: 1,
+            rejection_codes: &["deleted"],
+        });
+
+        assert_eq!(
+            metadata["requested_mcps"],
+            serde_json::json!(["blender-mcp"])
+        );
+        assert_eq!(metadata["effective_mcps"], serde_json::json!([]));
+        assert_eq!(metadata["rejection_codes"], serde_json::json!(["deleted"]));
+    }
+
+    #[test]
+    fn persisted_capability_log_uses_canonical_ids_and_closed_rejection_codes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths.clone());
+        mcp_service
+            .save(&[
+                agent_runtime::McpServerConfig::Stdio {
+                    id: Some("ready".to_string()),
+                    name: "Ready".to_string(),
+                    description: "ready server".to_string(),
+                    command: "sensitive-ready-command".to_string(),
+                    args: vec![],
+                    env: None,
+                    enabled: true,
+                    validated: None,
+                },
+                agent_runtime::McpServerConfig::Stdio {
+                    id: Some("disabled".to_string()),
+                    name: "Disabled".to_string(),
+                    description: "disabled server".to_string(),
+                    command: "sensitive-disabled-command".to_string(),
+                    args: vec![],
+                    env: None,
+                    enabled: false,
+                    validated: None,
+                },
+                agent_runtime::McpServerConfig::StreamableHttp {
+                    id: Some("oauth".to_string()),
+                    name: "OAuth".to_string(),
+                    description: "oauth server".to_string(),
+                    url: "https://secret.internal.example/mcp".to_string(),
+                    headers: None,
+                    auth: Some(agent_runtime::McpAuthConfig {
+                        auth_type: agent_runtime::McpAuthType::OAuth2,
+                        client_id: None,
+                        scopes: vec![],
+                    }),
+                    enabled: true,
+                    validated: None,
+                },
+            ])
+            .expect("save MCP catalog");
+        let resolution = mcp_service
+            .resolve_dynamic_runtime_ids_with_catalog(
+                &[
+                    "ready".to_string(),
+                    "disabled".to_string(),
+                    "oauth".to_string(),
+                    "deleted".to_string(),
+                    "raw-secret-unknown".to_string(),
+                ],
+                &[
+                    "ready".to_string(),
+                    "disabled".to_string(),
+                    "oauth".to_string(),
+                    "deleted".to_string(),
+                ],
+            )
+            .expect("resolve dynamic MCPs");
+        let rejection_codes = resolution
+            .rejections
+            .iter()
+            .map(|reason| reason.as_str())
+            .collect::<Vec<_>>();
+
+        let db = Arc::new(DatabaseManager::new(paths).expect("logs db"));
+        let log_service = LogService::new(db);
+        log_capability_resolution(
+            &log_service,
+            CapabilityResolutionLog {
+                execution_id: "exec-capability-audit",
+                session_id: "session-capability-audit",
+                agent_id: "builder-agent",
+                origin: "planner",
+                requested_skills: &[],
+                requested_mcps: &resolution.canonical_requested_ids,
+                effective_skills: &[],
+                effective_mcps: &resolution.effective_ids,
+                unresolved_skill_count: 0,
+                unresolved_count: resolution.rejections.len(),
+                rejection_codes: &rejection_codes,
+            },
+        );
+
+        let detail = log_service
+            .get_session_detail("exec-capability-audit")
+            .expect("query capability audit")
+            .expect("capability audit exists");
+        assert_eq!(detail.logs.len(), 1);
+        let metadata = detail.logs[0]
+            .metadata
+            .as_ref()
+            .expect("capability metadata");
+        assert_eq!(
+            metadata["requested_mcps"],
+            serde_json::json!(["ready", "disabled", "oauth", "deleted"])
+        );
+        assert_eq!(metadata["effective_mcps"], serde_json::json!(["ready"]));
+        assert_eq!(
+            metadata["rejection_codes"],
+            serde_json::json!(["disabled", "oauth_unavailable", "deleted", "unknown_id"])
+        );
+        let persisted = serde_json::to_string(metadata).expect("metadata JSON");
+        assert!(!persisted.contains("raw-secret-unknown"));
+        assert!(!persisted.contains("secret.internal.example"));
+        assert!(!persisted.contains("sensitive-disabled-command"));
     }
 }

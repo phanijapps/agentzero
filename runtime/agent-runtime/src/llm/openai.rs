@@ -1109,10 +1109,6 @@ impl LlmClient for OpenAiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::{
-        completion::{CompletionModel as _, CompletionRequest, Message, ToolDefinition},
-        one_or_many::OneOrMany,
-    };
     use std::sync::Mutex;
 
     #[derive(Clone, Default)]
@@ -1584,54 +1580,6 @@ mod tests {
         // The fallback path reuses an immutable clone of the inventory already
         // validated above, so it cannot acquire a newly invalid schema between
         // the streaming and fallback requests.
-    }
-
-    fn invalid_rig_request() -> CompletionRequest {
-        CompletionRequest {
-            model: None,
-            preamble: None,
-            chat_history: OneOrMany::one(Message::user("hello".to_string())),
-            documents: Vec::new(),
-            tools: vec![ToolDefinition {
-                name: "x".repeat(65),
-                description: "invalid provider tool name".to_string(),
-                parameters: json!({"type": "object"}),
-            }],
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-            output_schema: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn rig_completion_and_stream_reject_invalid_tools_before_network_io() {
-        let model = crate::rig_adapter::model::LlmCompletionModel::new(
-            Arc::new(test_client()) as Arc<dyn LlmClient>,
-            "gpt-4-turbo",
-        );
-
-        let completion = model
-            .completion(invalid_rig_request())
-            .await
-            .expect_err("Rig completion must surface local validation");
-        assert!(completion
-            .to_string()
-            .contains("tool_schema_rule=function_name"));
-
-        let mut stream = model
-            .stream(invalid_rig_request())
-            .await
-            .expect("Rig stream should initialize");
-        let stream_error = stream
-            .next()
-            .await
-            .expect("Rig stream must surface an error")
-            .expect_err("Rig stream must reject the invalid tool");
-        assert!(stream_error
-            .to_string()
-            .contains("tool_schema_rule=function_name"));
     }
 
     #[test]

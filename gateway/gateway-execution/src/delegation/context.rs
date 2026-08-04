@@ -163,7 +163,9 @@ pub struct DelegationRequest {
     /// validates and resolves these IDs before building its executor.
     pub capability_assignment: Option<agent_primitives::event::AgentCapabilityAssignment>,
 
-    /// Host-owned safe catalog made available only to a planner or ward-agent.
+    /// Host-owned safe catalog snapshot carried for resolution provenance.
+    /// The gateway registers lookup access only for a planner or ward-backed
+    /// planning executor; ordinary step executors retain no catalog tool.
     pub planning_capability_catalog: Option<Value>,
 
     /// Task complexity level ("S", "M", "L", "XL") for budget enforcement.

@@ -1104,6 +1104,34 @@ mod tests {
     }
 
     #[test]
+    fn extract_plan_preserves_capability_briefing_fields_verbatim() {
+        let briefing = "## Goal\nBuild scene\n## Agent\nbuilder-agent\n## Skills\nnone\n## MCPs\nblender-mcp\n## Status\npending";
+        let tool_calls = serde_json::json!([{
+            "tool_id": "t1",
+            "tool_name": "update_plan",
+            "args": {"steps": [{"text": briefing, "status": "pending"}]}
+        }])
+        .to_string();
+        let msgs = vec![Message {
+            id: "msg-plan".into(),
+            execution_id: None,
+            session_id: "s".into(),
+            role: "assistant".into(),
+            content: "[tool calls]".into(),
+            created_at: "".into(),
+            token_count: 0,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+            seq: 1,
+        }];
+
+        let plan = extract_plan_from_messages(&msgs);
+
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].text, briefing);
+    }
+
+    #[test]
     fn extract_recalled_facts_handles_json_array_tool_result() {
         let tool_calls = r#"[{"tool_id":"t1","tool_name":"memory_recall","args":{}}]"#;
         let msgs = vec![

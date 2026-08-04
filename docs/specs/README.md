@@ -37,7 +37,7 @@ Active feature specs for AgentZero.
 | [Quick Chat Terminal Response Deduplication](quick-chat-terminal-response-dedup/spec.md) | Shipped | Prevents a root terminal fallback from rendering a second Quick Chat answer. |
 | [Quick Chat Recall Ranking](quick-chat-recall-ranking/spec.md) | Shipped | Preserves hybrid recall ranking and supplies query-scoped profile facts from durable memory. |
 | [Graph Planning Gate](graph-planning-gate/spec.md) | Implementing | Enforces cold graph work as ward setup → planner-agent → plan-step execution. |
-| [Execution Capabilities](execution-capabilities/spec.md) | Implementing | Makes skills and MCPs dynamically assigned to root and subagent executions by intent and planning, while retaining static agent mappings as a compatibility fallback. |
+| [Execution Capabilities](execution-capabilities/spec.md) | Shipped | Makes skills and MCPs dynamically assigned to root and subagent executions by intent and planning, while retaining static agent mappings as a compatibility fallback. |
 | [MCP ID Normalization](mcp-id-normalization/spec.md) | Shipped | Derives stable IDs for API-managed MCPs and gives the active Blender MCP its canonical `blender-mcp` ID. |
 | [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Implementing | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |
 | [Research Context Inspector](research-context-inspector/spec.md) | Implementing | Moves existing intent analysis and delegated-agent context into Research's real right inspector without adding dashboard metrics. |

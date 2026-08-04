@@ -550,6 +550,49 @@ mod tests {
         }
     }
 
+    fn invalid_tool_request() -> CompletionRequest {
+        let mut request = rig_request("hello");
+        request.tools = vec![ToolDefinition {
+            name: "x".repeat(65),
+            description: "invalid provider tool name".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        request
+    }
+
+    #[tokio::test]
+    async fn completion_and_stream_reject_invalid_tools_before_network_io() {
+        let config = crate::llm::LlmConfig::new(
+            "https://api.example.invalid".to_string(),
+            "test-key".to_string(),
+            "gpt-4-turbo".to_string(),
+            "openai".to_string(),
+        );
+        let client = crate::llm::OpenAiClient::new(config).expect("test OpenAI client");
+        let model = LlmCompletionModel::new(Arc::new(client) as Arc<dyn LlmClient>, "gpt-4-turbo");
+
+        let completion = model
+            .completion(invalid_tool_request())
+            .await
+            .expect_err("Rig completion must surface local validation");
+        assert!(completion
+            .to_string()
+            .contains("tool_schema_rule=function_name"));
+
+        let mut stream = model
+            .stream(invalid_tool_request())
+            .await
+            .expect("Rig stream should initialize");
+        let stream_error = stream
+            .next()
+            .await
+            .expect("Rig stream must surface an error")
+            .expect_err("Rig stream must reject the invalid tool");
+        assert!(stream_error
+            .to_string()
+            .contains("tool_schema_rule=function_name"));
+    }
+
     #[test]
     fn convert_messages_bridges_tool_calls_and_results() {
         // Regression: a history with an assistant tool call + its tool result

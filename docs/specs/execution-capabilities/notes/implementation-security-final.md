@@ -1,0 +1,9 @@
+## Concerns
+
+**1. Step executors still receive same-session agent-control tools.** `gateway/gateway-execution/src/invoke/executor.rs:337`, `gateway/gateway-execution/src/invoke/executor.rs:1540`, `gateway/gateway-execution/src/invoke/executor.rs:1573`. A prompt-injected `ward:<name>` step executor cannot call `delegate_to_agent`, but because `WardAgent` still allows every capability it can still list, steer, hand off to, wait on, or kill same-session sibling agents, which can let it influence or observe agents that were assigned different MCP privileges. Fix: when `is_step_executor()` is true, suppress the entire `AgentControl` registration block or make actor policy mode-aware, then add a test that `list_session_agents`, `handoff_to_agent`, `steer_agent`, `wait_agent`, and `kill_agent` are absent for ward step executors.
+
+**2. Invalid dynamic target rejection can leave the parent session permanently pending.** `gateway/gateway-execution/src/invoke/delegation_handler.rs:114`, `gateway/gateway-execution/src/invoke/delegation_handler.rs:137`, `gateway/gateway-execution/src/delegation/spawn.rs:84`. A malicious or confused model can request a dynamic assignment for a nonexistent/mismatched target; the handler increments `pending_delegations` before spawn, then the new early rejection crashes the pre-created child execution and returns without calling the existing failure path that completes the delegation and resumes the parent. Fix: validate dynamic assignment targets before `register_delegation`, or have the early rejection path call the same failure/`complete_delegation` continuation flow with a non-secret target-rejection code.
+
+## Not Checked
+
+Known-CVE, license, and secret scans were not rerun in this source review; this repo wires those to `.github/workflows/security.yaml` via `cargo audit`, `cargo-deny`, `npm audit`, and Gitleaks.

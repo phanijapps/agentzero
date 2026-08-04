@@ -1010,6 +1010,14 @@ impl ExecutorBuilder {
         })
     }
 
+    fn is_step_executor(&self) -> bool {
+        self.extra_initial_state.as_ref().is_some_and(|entries| {
+            entries.iter().any(|(key, value)| {
+                key == "app:delegation_mode" && value.as_str() == Some("step_executor")
+            })
+        })
+    }
+
     /// Build a descriptive context capability catalog from the same registry
     /// construction path used for execution.
     pub fn build_context_capability_catalog(
@@ -1529,13 +1537,15 @@ impl ExecutorBuilder {
             &[ToolCapability::Respond],
             Arc::new(RespondTool::new()),
         );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::AgentDelegate],
-            Arc::new(DelegateTool::new()),
-        );
-        if self.has_planner_capability_catalog() {
+        if !self.is_step_executor() {
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::AgentDelegate],
+                Arc::new(DelegateTool::new()),
+            );
+        }
+        if self.has_planner_capability_catalog() && !self.is_step_executor() {
             tool_registry.register(Arc::new(agent_runtime::tools::CapabilityCatalogTool::new()));
         }
         register_if_allowed(
@@ -1560,7 +1570,7 @@ impl ExecutorBuilder {
             }
         }
 
-        if actor_allows(actor, ToolCapability::AgentControl) {
+        if actor_allows(actor, ToolCapability::AgentControl) && !self.is_step_executor() {
             if let Some(ref svc) = self.state_service {
                 tool_registry.register(Arc::new(crate::tools::ListSessionAgentsTool::new(
                     svc.clone(),
@@ -2873,16 +2883,37 @@ mod tests {
     }
 
     fn registry_names_with_agent_control_deps(actor_kind: RuntimeActorKind) -> BTreeSet<String> {
+        registry_names_with_agent_control_deps_and_mode(actor_kind, None)
+    }
+
+    fn registry_names_with_agent_control_deps_and_mode(
+        actor_kind: RuntimeActorKind,
+        delegation_mode: Option<&str>,
+    ) -> BTreeSet<String> {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("ensure vault dirs");
         let db = Arc::new(DatabaseManager::new(paths.clone()).expect("db init"));
         let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(
+            zbot_conversation::open_conversation_pool(&paths.conversations_db())
+                .expect("conversation pool"),
+        ));
 
-        ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+        let mut builder = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
             .with_actor_kind(actor_kind)
             .with_state_service(Arc::new(StateService::new(db)))
             .with_steering_registry(Arc::new(agent_runtime::SteeringRegistry::new()))
+            .with_agent_result_bus(Arc::new(AgentResultBus::new()))
+            .with_message_store(messages);
+        if let Some(mode) = delegation_mode {
+            builder = builder.with_initial_state(
+                "app:delegation_mode",
+                serde_json::Value::String(mode.to_string()),
+            );
+        }
+
+        builder
             .build_tool_registry(fs_context)
             .get_all()
             .iter()
@@ -3343,13 +3374,25 @@ mod tests {
         let root_names = registry_names_with_agent_control_deps(RuntimeActorKind::Root);
         assert_has(
             &root_names,
-            &["list_session_agents", "handoff_to_agent", "steer_agent"],
+            &[
+                "list_session_agents",
+                "handoff_to_agent",
+                "steer_agent",
+                "wait_agent",
+                "kill_agent",
+            ],
         );
 
         let ward_names = registry_names_with_agent_control_deps(RuntimeActorKind::WardAgent);
         assert_has(
             &ward_names,
-            &["list_session_agents", "handoff_to_agent", "steer_agent"],
+            &[
+                "list_session_agents",
+                "handoff_to_agent",
+                "steer_agent",
+                "wait_agent",
+                "kill_agent",
+            ],
         );
     }
 
@@ -3432,5 +3475,70 @@ mod tests {
             planner.contains("lookup_capabilities"),
             "a host-attached planner catalog enables lookup"
         );
+    }
+
+    #[test]
+    fn step_executor_cannot_lookup_capabilities_or_delegate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let names = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::WardAgent)
+            .with_initial_state(
+                "app:delegation_mode",
+                serde_json::Value::String("step_executor".to_string()),
+            )
+            .with_initial_state(
+                agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE,
+                serde_json::json!({"skills": [], "mcps": []}),
+            )
+            .build_tool_registry(fs_context)
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+
+        assert!(!names.contains("lookup_capabilities"));
+        assert!(!names.contains("delegate_to_agent"));
+
+        let names = registry_names_with_agent_control_deps_and_mode(
+            RuntimeActorKind::WardAgent,
+            Some("step_executor"),
+        );
+        assert_missing(
+            &names,
+            &[
+                "delegate_to_agent",
+                "lookup_capabilities",
+                "list_session_agents",
+                "handoff_to_agent",
+                "steer_agent",
+                "wait_agent",
+                "kill_agent",
+            ],
+        );
+    }
+
+    #[test]
+    fn ward_backed_planner_retains_lookup_and_delegation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let names = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::WardAgent)
+            .with_initial_state(
+                "app:delegation_mode",
+                serde_json::Value::String("ward_backed_build".to_string()),
+            )
+            .with_initial_state(
+                agent_runtime::tools::PLANNER_CAPABILITY_CATALOG_STATE,
+                serde_json::json!({"skills": [], "mcps": []}),
+            )
+            .build_tool_registry(fs_context)
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<BTreeSet<_>>();
+
+        assert!(names.contains("lookup_capabilities"));
+        assert!(names.contains("delegate_to_agent"));
     }
 }

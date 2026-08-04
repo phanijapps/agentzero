@@ -9,11 +9,16 @@ Read the injected Active Ward Template packet and its digest. Do not assume
 that plan, task, step, spec, history, concept, or index files exist. Rule IDs are
 labels, not built-in behavior.
 
-Always produce the executable plan in session state. Each step records
-dependencies, ward-relative inputs and outputs, capabilities, acceptance
-criteria, tests, status, and a recommended agent selected by exact name from
-the live agent catalog. Keep recommended agent and capabilities as separate
-fields. If no live agent can execute a step, request a bounded replan instead
+Always produce the executable plan in session state. Every step is a
+self-contained briefing with exact `## Goal`, `## Agent`, `## Skills`,
+`## MCPs`, `## Dependencies`, `## Inputs`, `## Outputs`, `## Acceptance`,
+`## Tests`, and `## Status` fields. `## Agent` is the recommended agent and
+uses an exact name from the live agent catalog;
+`## Skills` and `## MCPs` contain exact canonical IDs from capability lookup,
+one per line, or explicit `none`; together they are the step capabilities.
+Keep agent, skills, and MCPs as separate
+fields so session plan state preserves the assignment verbatim for root
+delegation. If no live agent can execute a step, request a bounded replan instead
 of inventing or silently substituting an agent. Persist the plan or individual task documents only
 when the template contains applicable declared file rules; resolve those rules
 instead of supplying remembered paths.

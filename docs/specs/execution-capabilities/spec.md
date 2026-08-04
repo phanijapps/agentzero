@@ -1,6 +1,6 @@
 # Spec: Execution Capabilities
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none
@@ -44,9 +44,18 @@ compatibility behavior by this feature.
 - Validate every selected MCP against current enabled and OAuth-ready runtime
   configuration immediately before it is mounted; drop unavailable entries
   safely and record a non-secret diagnostic.
+- Preserve exact canonical-ID precedence through startup. A dynamic ID must
+  never also select a different server whose display name happens to equal
+  that ID; display-name aliases remain legacy-static compatibility only.
 - Add assigned MCPs to the delegated executor before its first model request,
   so their tools participate in normal tool discovery. Keep the planner's
   catalog descriptive only: planning must not start MCP servers.
+- Transfer and register the complete planner catalog only for a host-owned
+  planning transition. A `step_executor` receives neither capability lookup
+  nor agent delegation, including when its execution target is `ward:<name>`.
+- Require planner step briefings to preserve exact `## Skills` and `## MCPs`
+  canonical-ID fields (or explicit `none`) through session plan state so root
+  can delegate the selected assignment without reconstructing it from prose.
 - Record proposed and resolved assignments using validated canonical IDs only.
   For unresolved model requests, log a count and a closed reason code
   (`unknown_id`, `disabled`, `oauth_unavailable`, `deleted`, or
@@ -103,47 +112,53 @@ compatibility behavior by this feature.
 
 ## Acceptance Criteria
 
-- [ ] Given a simple Research or Quick Chat request that needs a configured
+- [x] **AC-root-simple:** Given a simple Research or Quick Chat request that needs a configured
   MCP, when capability selection maps it to `root`, root starts only that
   validated MCP before answering and no planner or child agent is created.
-- [ ] Given a graph request, intent output contains an agent capability map as
+- [x] **AC-graph-catalog:** Given a graph request, intent output contains an agent capability map as
   guidance and both cold and graduated-existing-ward graph routes forward that
   guidance to their planning executor. That executor receives a safe catalog
   overview and can page or search every current skill and MCP through a
   planner-only lookup tool without starting an MCP server.
-- [ ] Given a planner step assigning `builder-agent` the Blender MCP, when the
+- [x] **AC-delegated-discovery:** Given a planner step assigning `builder-agent` the Blender MCP, when the
   child starts, Blender MCP tools are present in that child's discoverable tool
   surface before the first LLM request; no unrelated configured MCP is present.
-- [ ] Given a planner step assigning a capability that intent did not
+  The planner's exact `## Skills` and `## MCPs` briefing fields survive session
+  plan storage and become the delegation assignment.
+- [x] **AC-planner-nonceiling:** Given a planner step assigning a capability that intent did not
   recommend or semantic retrieval did not return, when that capability is
   currently available and its target agent is valid, the assignment is accepted
   and executed; intent does not restrict planner choice.
-- [ ] Given the complete capability catalog exceeds planner prompt budget, when
+- [x] **AC-catalog-complete:** Given the complete capability catalog exceeds planner prompt budget, when
   planner looks up a valid canonical ID or searches its safe metadata, it can
   discover and assign that capability without MCP startup or arbitrary catalog
   truncation.
-- [ ] Given an invalid capability-assignment target, the mapping is rejected
+- [x] **AC-target-validation:** Given an invalid capability-assignment target, the mapping is rejected
   before executor construction and cannot attach an MCP to an auto-created
   specialist. `root` and an existing safe `ward:<name>` are allowed virtual
   targets.
-- [ ] Given no dynamic assignment, existing agents retain their current static
+- [x] **AC-step-least-privilege:** Given a `ward:<name>` step executor, it receives only its assigned MCP
+  tools and cannot look up the complete planner catalog or delegate a
+  grandchild. A ward-backed planning executor retains those planning powers.
+- [x] **AC-fallback-semantics:** Given no dynamic assignment, existing agents retain their current static
   MCP behavior without a config migration. Given an explicit empty or partial
   dynamic assignment, static MCPs are not applied; assigned skills are injected
-  only as `load_skill` recommendations and are not eagerly loaded.
-- [ ] Given a selected MCP becomes disabled or OAuth-disconnected before child
+  only as `load_skill` recommendations and are not eagerly loaded. An exact
+  dynamic MCP ID wins over another server's colliding display-name alias.
+- [x] **AC-runtime-revalidation:** Given a selected MCP becomes disabled or OAuth-disconnected before child
   startup, it is not mounted, execution continues with a safe diagnostic, and
   no credentials or connection details appear in prompt state or logs.
-- [ ] Given a runtime-ready MCP fails process or transport startup, none of its
+- [x] **AC-startup-failure:** Given a runtime-ready MCP fails process or transport startup, none of its
   tools are registered, the child continues without automatic retry, and logs
   only canonical safe assignment data plus `startup_failed`.
-- [ ] Capability lookup returns only whitelisted, bounded metadata: at most 25
+- [x] **AC-lookup-bounds:** Capability lookup returns only whitelisted, bounded metadata: at most 25
   results per page, a query of at most 256 characters, and descriptions capped
   at 512 characters. Paging remains bounded by the existing planner turn/tool
   budget and exhaustion produces no unbounded lookup loop.
-- [ ] Execution logs expose intent guidance, the planner's requested mapping,
+- [x] **AC-audit-logging:** Execution logs expose intent guidance, the planner's requested mapping,
   and the effective child assignment with an origin (`intent`, `planner`, or
   `legacy_fallback`); no UI or public protocol change is required.
-- [ ] Focused Rust tests, formatting, relevant workspace checks, and the
+- [x] **AC-verification:** Focused Rust tests, formatting, relevant workspace checks, and the
   required gateway full-mode E2E pass without altering unrelated Observatory
   worktree changes.
 

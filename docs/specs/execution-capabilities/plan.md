@@ -48,6 +48,59 @@ unavailable-MCP startup case; and legacy fallback/explicit-empty distinction.
 inspect execution logs for intent guidance, planner assignment, effective child
 mapping, and an actual Blender MCP tool call.
 
+**Existing implementation baseline (2026-08-04):** commit `cb07ebdc` already
+materialized the T1-T5 implementation and focused construction tests on the
+current `develop` history. This fresh work-loop run therefore treats those
+tests as the pre-existing TDD baseline and audits them against every criterion
+before adding any missing red test. It will not rewrite already-green tests
+merely to recreate historical red/green order.
+
+## Execution assumptions
+
+- **Expected touches:** the existing capability-assignment transport, bounded
+  catalog, intent/planner routing, delegation startup, and focused tests only
+  where the audit finds a concrete spec gap; otherwise this branch changes the
+  execution-capabilities spec evidence and workflow records only.
+- **Done is demonstrated by:** capability-focused tests in
+  `agent-primitives`, `agent-runtime`, `gateway-services`, and
+  `gateway-execution`; formatting, clippy/type checks, the gateway-execution
+  suite, its required Mode Full E2E, and a real configured Blender MCP smoke
+  when that local server is available.
+- **Not changing:** agent configuration files, the static MCP fallback,
+  persistence schemas, public REST/WebSocket/UI contracts, Rig MCP lifecycle,
+  or unrelated Observatory work.
+
+**Declined temptations:**
+
+- Add a new capability service/module — declined because the current runtime
+  already has the zbot-owned transport, resolver, lookup tool, and executor
+  registration seams required by the spec.
+- Mount MCPs on the planner to simplify discovery — declined because it widens
+  agency and violates the descriptive-only planner boundary.
+- Fold durable work queues or static-config removal into this branch — declined
+  because both require separate product and migration decisions.
+
+**Domain grounding:** current code and history confirm that `cb07ebdc` added
+`AgentCapabilityAssignment`, `CapabilityCatalogTool`, intent sanitization,
+dynamic MCP resolution, delegation propagation, and focused tests. The audit
+will use those concrete seams rather than the July plan's paths as authority.
+
+**Pre-execution hardening findings (2026-08-04):** implementation may begin
+only after construction tests cover these review-discovered gaps:
+
+- exact canonical-ID startup must prefer the exact record over every
+  display-name alias collision while preserving legacy name lookup when no
+  exact ID exists;
+- catalog provenance must travel host-side for deleted-versus-unknown
+  diagnostics, but complete lookup state is registered only for a real
+  planner or ward-backed planning transition, never a `step_executor`;
+- `step_executor` mode must omit agent delegation so assigned work cannot
+  widen its MCP privilege through a grandchild;
+- plan-composer must emit exact `## Skills` and `## MCPs` step fields, and
+  sanitized resolution logs must distinguish validated requested IDs from the
+  effective assignment;
+- all claimed criteria need exact test/evidence anchors before shipment.
+
 ## Design (LLD)
 
 ### Design decisions
@@ -59,7 +112,7 @@ behavior, while `Some { skills: [], mcps: [] }` deliberately chooses none. A
 present assignment owns both dimensions; a partial list does not merge static
 MCPs. Assigned skills are injected through the existing recommendation and
 `load_skill` path, not eagerly loaded. This avoids a sentinel flag and
-preserves existing configs unchanged. Traces to AC4–AC6.
+preserves existing configs unchanged. Traces to **AC-fallback-semantics**.
 
 Intent adds `recommended_capabilities: Vec<AgentCapabilityAssignment>` instead
 of trying to infer ownership from agent config. It validates assignment targets
@@ -67,7 +120,8 @@ against configured agents plus `root` and valid existing ward targets. Graph
 planning receives those validated recommendations as guidance plus a safe
 overview and lookup access to the complete live catalog; planner assignments
 win for the children it creates. Root simple/chat applies only its own
-assignment. Traces to AC1–AC6.
+assignment. Traces to **AC-root-simple**, **AC-graph-catalog**,
+**AC-planner-nonceiling**, and **AC-target-validation**.
 
 ### Data & schema
 
@@ -77,7 +131,7 @@ and `DelegationRequest` gain an optional assignment or equivalent `mcps` field
 that preserves whether the model actually supplied a mapping. Crash-resume
 constructors use `None`, retaining legacy MCP behavior. No database migration
 is needed because execution logs already hold structured metadata. Traces to
-AC2, AC6, and AC8.
+**AC-graph-catalog**, **AC-fallback-semantics**, and **AC-audit-logging**.
 
 ### State & control flow
 
@@ -97,7 +151,7 @@ Bootstrap marks only cold `planner-agent` and warm `ward:<name>` planning
 executions with the host-owned lookup state and catalog. `ExecutorBuilder`
 registers `CapabilityCatalogTool` from that state; root simple/chat and ordinary
 child workers neither receive the lookup tool nor its complete catalog. Traces
-to AC2 and AC5.
+to **AC-graph-catalog** and **AC-catalog-complete**.
 
 At child spawn, validate the target, canonicalize and deduplicate skills,
 resolve MCP IDs with `get_multiple_for_runtime`, and record unavailable values.
@@ -105,7 +159,9 @@ For a present assignment, replace `agent.mcps` with its effective dynamic list
 and append its skill recommendations before `ExecutorBuilder::build`; for no
 assignment, leave existing agent fields untouched. The MCP manager starts
 selected servers before the executor is exposed to the model, so normal
-registry construction discovers their tools. Traces to AC1–AC7.
+registry construction discovers their tools. Traces to **AC-root-simple**,
+**AC-delegated-discovery**, **AC-target-validation**, and
+**AC-fallback-semantics**.
 
 ### Failure, edge cases & resilience
 
@@ -120,7 +176,9 @@ maximum 25-result page, 256-character query, and 512-character description;
 the existing planner tool/turn budget bounds total calls. An explicit empty or
 partial map suppresses static MCP fallback. The dynamic path is additive and
 reversible: removing the assignment returns execution to current static
-configuration. Traces to AC6–AC8.
+configuration. Traces to **AC-target-validation**,
+**AC-fallback-semantics**, **AC-runtime-revalidation**,
+**AC-startup-failure**, and **AC-audit-logging**.
 
 ### Dependencies & integration
 
@@ -128,7 +186,7 @@ configuration. Traces to AC6–AC8.
 `agent-primitives` and `agent-runtime` carry action/event types;
 `gateway-execution` owns intent, planner guidance, delegation, executor build,
 and log records. Changes flow bottom-to-top: primitives/runtime, services,
-gateway execution, then documentation. Traces to AC1–AC7.
+gateway execution, then documentation. Traces to all acceptance criteria.
 
 ## Tasks
 
@@ -145,11 +203,12 @@ delegation tests
 
 - TDD: an assignment round-trips through `DelegateAction`, `StreamEvent`, and
   `DelegationRequest`, including `Some(empty)`, partial, and `None` maps.
-  Covers AC6.
+  Covers **AC-fallback-semantics**.
 - TDD: legacy/crash-resume construction remains `None` and retains current
-  static MCP behavior. Covers AC6.
+  static MCP behavior. Covers **AC-fallback-semantics**.
 - TDD: a present empty or partial assignment suppresses static MCP fallback
-  and passes only dynamic skills as `load_skill` recommendations. Covers AC6.
+  and passes only dynamic skills as `load_skill` recommendations. Covers
+  **AC-fallback-semantics**.
 
 **Approach:**
 
@@ -172,13 +231,22 @@ focused service and intent tests
 **Tests:**
 
 - TDD: catalog includes enabled, runtime-ready MCPs and skills with only safe
-  metadata; disabled and disconnected entries are excluded. Covers AC8.
+  metadata; disabled and disconnected entries are excluded. Covers
+  **AC-runtime-revalidation**.
+- TDD: exact canonical-ID startup selects one exact record even when another
+  record has a colliding display name; legacy display-name lookup still works
+  only when there is no exact-ID record. Covers **AC-fallback-semantics**.
+- TDD: a previously cataloged ID missing at final resolution reports `deleted`,
+  while a never-cataloged ID reports `unknown_id`, without logging either raw
+  unresolved value. Covers **AC-runtime-revalidation** and
+  **AC-audit-logging**.
 - TDD: typed intent output returns per-agent recommendations; invalid IDs and
   unknown agent targets are removed against the live catalog, while `root` and
-  a valid `ward:<name>` remain legal. Covers AC1–AC5.
+  a valid `ward:<name>` remain legal. Covers **AC-root-simple**,
+  **AC-graph-catalog**, and **AC-target-validation**.
 - TDD: the Quick Chat selector can map a non-trivial request to root while
   retaining chat-mode prohibition of wards, planning, and delegation. Covers
-  AC1.
+  **AC-root-simple**.
 
 **Approach:**
 
@@ -202,20 +270,28 @@ without starting an MCP process or leaking configuration.
 
 - TDD: cold and warm planning contexts contain intent guidance, a safe catalog
   overview, and the planner-only lookup tool but no executable MCP tool.
-  Covers AC2.
+  Covers **AC-graph-catalog**.
 - TDD: `delegate_to_agent` accepts an `mcps` list and preserves a planner
   choice absent from both intent guidance and semantic retrieval. Covers
-  AC3–AC4.
+  **AC-delegated-discovery** and **AC-planner-nonceiling**.
 - TDD: a catalog larger than the prompt overview pages or searches a capability
   by canonical ID, then delegates it without MCP startup. Lookup rejects
   overlong queries, caps pages at 25 sanitized entries with 512-character
   descriptions, and planner tool-budget exhaustion prevents an unbounded loop.
-  Covers AC5 and AC10.
+  Covers **AC-catalog-complete** and **AC-lookup-bounds**.
 - TDD: cold `planner-agent` and warm `ward:<name>` planning executors receive
   `lookup_capabilities`, while root and ordinary step-executor children do not.
-  Covers AC2 and AC5.
+  Covers **AC-graph-catalog** and **AC-catalog-complete**.
+- TDD: a `ward:<name>` child in `step_executor` mode receives neither
+  `lookup_capabilities` nor `delegate_to_agent`; the same ward target in
+  ward-backed planning mode retains both. Covers **AC-step-least-privilege**.
 - TDD: cold-graph ward transition and warm ward delegation both forward
-  capability guidance to their planning executor. Covers AC2.
+  capability guidance to their planning executor. Covers
+  **AC-graph-catalog**.
+- TDD: plan-composer's persisted step briefing contract contains exact
+  `## Skills` and `## MCPs` fields, and session plan extraction preserves the
+  briefing verbatim for root delegation. Covers **AC-delegated-discovery**,
+  **AC-planner-nonceiling**, and **AC-catalog-complete**.
 
 **Approach:**
 
@@ -247,16 +323,23 @@ tests
 
 - TDD: a present dynamic MCP assignment replaces static agent MCPs before manager
   construction and only the mapped server's tools are registered before the
-  first model request. Covers AC3.
+  first model request. Covers **AC-delegated-discovery**.
 - TDD: a disabled/OAuth-disconnected server is omitted without aborting the
-  child; safe diagnostic metadata is emitted. Covers AC8.
+  child; safe diagnostic metadata is emitted. Covers
+  **AC-runtime-revalidation**.
 - TDD: an MCP that is runtime-ready but fails process or transport startup
   registers no tools, retries nowhere, logs only `startup_failed`, and lets the
-  child continue. Covers AC9.
+  child continue. Covers **AC-startup-failure**.
 - TDD: `None` retains configured static MCPs, while `Some(empty)` and partial
-  assignments start only the explicit dynamic MCP list. Covers AC6.
+  assignments start only the explicit dynamic MCP list. Covers
+  **AC-fallback-semantics**.
 - TDD: dynamic skills are represented in child instructions as `load_skill`
-  recommendations and are not pre-loaded into executor state. Covers AC6.
+  recommendations and are not pre-loaded into executor state. Covers
+  **AC-fallback-semantics**.
+- TDD: a delegated request whose dynamic assignment target is missing or does
+  not match the requested child is rejected before executor construction;
+  neither dynamic nor static MCPs are mounted and no specialist is
+  auto-created. Covers **AC-target-validation**.
 
 **Approach:**
 
@@ -280,10 +363,11 @@ at discovery time, with existing static MCPs working only as fallback.
 
 - TDD: intent, planner request, and effective child assignment logs include
   validated canonical IDs, origin, and closed reason codes but exclude raw
-  unknown IDs, startup errors, auth, URLs, commands, and headers. Covers AC9
-  and AC11.
+  unknown IDs, startup errors, auth, URLs, commands, and headers. Covers
+  **AC-startup-failure** and **AC-audit-logging**.
 - Goal-based: existing session-state and execution-log consumers tolerate the
-  added metadata without a WebSocket/UI payload change. Covers AC7.
+  added metadata without a WebSocket/UI payload change. Covers
+  **AC-audit-logging**.
 
 **Approach:**
 
@@ -306,11 +390,13 @@ an MCP, with no secret-bearing configuration recorded.
 
 - Goal-based: run focused primitive, runtime, services, and gateway-execution
   tests; `cargo fmt --all -- --check`; `cargo check -p gateway-execution`;
-  and `git diff --check`. Covers AC8.
+  and `git diff --check`. Covers **AC-verification**.
 - Goal-based E2E: run the gateway full-mode test required by
-  `gateway-execution/AGENTS.md` after delegation/spawn changes. Covers AC8.
+  `gateway-execution/AGENTS.md` after delegation/spawn changes. Covers
+  **AC-verification**.
 - Manual QA: reproduce Blender graph work and verify MCP tool discovery/call
-  plus complete non-secret execution logs. Covers AC3 and AC7.
+  plus complete non-secret execution logs. Covers
+  **AC-delegated-discovery** and **AC-audit-logging**.
 
 **Approach:**
 

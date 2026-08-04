@@ -31,6 +31,8 @@ ignore = [
     "RUSTSEC-2025-0119",
     # Existing transitive fastembed/tokenizers macro dependency.
     "RUSTSEC-2024-0436",
+    # Inactive rust_decimal optional feature; rkyv is not compiled by any target.
+    "RUSTSEC-2026-0235",
 ]
 
 # ---------------------------------------------------------------------------

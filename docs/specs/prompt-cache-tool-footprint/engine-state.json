@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "run_id": "9a5ba407-2afc-4c53-ae27-ba2763f28fc8",
+  "feature": "prompt-cache-tool-footprint",
+  "mode": "code",
+  "state": "CODE-HUMAN-GATE",
+  "last_event": "reviewers-clean",
+  "last_event_context": null,
+  "transition_sequence": 16,
+  "last_transition_at": "2026-08-04T00:26:51Z"
+}

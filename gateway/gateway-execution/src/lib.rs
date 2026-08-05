@@ -37,6 +37,7 @@ pub mod ingest;
 pub mod invoke;
 pub mod lifecycle;
 pub mod middleware;
+pub mod peer_messaging;
 pub mod recall;
 pub mod resource_provider;
 pub mod runner;

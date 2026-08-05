@@ -97,6 +97,7 @@ pub struct ExecutionRunner {
     handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     /// Memory recall for automatic fact retrieval at session start
     memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+    peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
     /// Semaphore to limit concurrent delegation spawns (prevents resource exhaustion)
     delegation_semaphore: Arc<Semaphore>,
     /// Embedding client for generating vector embeddings (semantic search in memory)
@@ -178,6 +179,7 @@ pub struct ExecutionRunnerConfig {
     pub distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     pub handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+    pub peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
     pub bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
     pub bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
     pub embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
@@ -219,6 +221,8 @@ pub(super) struct ContinuationArgs<'a> {
     pub(super) distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     pub(super) handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+    pub(super) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub(super) steering_registry: Arc<agent_runtime::SteeringRegistry>,
     pub(super) model_registry: Option<Arc<gateway_services::models::ModelRegistry>>,
     pub(super) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     pub(super) kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
@@ -510,6 +514,7 @@ impl ExecutionRunner {
             distiller,
             handoff_writer,
             memory_recall,
+            peer_messages,
             bridge_registry,
             bridge_outbox,
             embedding_client,
@@ -555,6 +560,7 @@ impl ExecutionRunner {
             paths: paths.clone(),
             memory_store: memory_store.clone(),
             memory_recall: memory_recall.clone(),
+            peer_messages: peer_messages.clone(),
             model_registry: model_registry.clone(),
             rate_limiters: rate_limiters.clone(),
             connector_registry: connector_registry.clone(),
@@ -594,6 +600,7 @@ impl ExecutionRunner {
             distiller,
             handoff_writer,
             memory_recall,
+            peer_messages,
             delegation_semaphore,
             embedding_client,
             model_registry,
@@ -638,6 +645,17 @@ impl ExecutionRunner {
     /// what the continuation path does at fire time.
     pub fn set_model_registry(&self, registry: Arc<gateway_services::models::ModelRegistry>) {
         self.model_registry.store(Some(registry));
+    }
+
+    /// Build the peer handler with the same store, state, and live steering registry.
+    pub fn peer_message_handler(&self) -> Option<Arc<dyn gateway_bus::WorkHandler>> {
+        let service = self.peer_messages.as_ref()?;
+        Some(Arc::new(crate::peer_messaging::PeerMessageHandler::new(
+            service.store(),
+            self.state_service.clone(),
+            self.steering_registry.clone(),
+            crate::peer_messaging::PEER_MESSAGE_TARGET,
+        )))
     }
 
     /// Set the KG episode store used by post-distillation ward indexing.
@@ -779,6 +797,8 @@ impl ExecutionRunner {
             distiller: self.distiller.clone(),
             handoff_writer: self.handoff_writer.clone(),
             memory_recall: self.memory_recall.clone(),
+            peer_messages: self.peer_messages.clone(),
+            steering_registry: self.steering_registry.clone(),
             model_registry: self.model_registry.clone(),
             kg_store: self.kg_store.clone(),
             kg_episode_store: self.kg_episode_store.clone(),
@@ -815,6 +835,7 @@ impl ExecutionRunner {
             memory_store: self.memory_store.clone(),
             distiller: self.distiller.clone(),
             memory_recall: self.memory_recall.clone(),
+            peer_messages: self.peer_messages.clone(),
             rate_limiters: self.rate_limiters.clone(),
             kg_store: self.kg_store.clone(),
             ingestion_adapter: self.ingestion_adapter.clone(),
@@ -1006,8 +1027,11 @@ impl ExecutionRunner {
             history: setup.history,
             recommended_skills: setup.recommended_skills,
         };
+        let peer_registry = self.steering_registry.clone();
+        let peer_execution_id = ctx.execution_id.clone();
         tokio::spawn(async move {
             let _ = stream.run(ctx, setup.executor).await;
+            peer_registry.remove(&peer_execution_id);
         });
         Ok((setup.handle, setup.session_id))
     }
@@ -1088,17 +1112,35 @@ impl ExecutionRunner {
     /// subagent using its child session's message history, avoiding root re-evaluation.
     /// For paused sessions or root-only crashes: falls through to current behavior.
     pub async fn resume(&self, session_id: &str) -> Result<(), String> {
-        // Check for crashed subagent first
-        if let Ok(Some(crashed_exec)) = self.state_service.get_last_crashed_subagent(session_id) {
-            if crashed_exec.child_session_id.is_some() {
+        // Rebuild a persisted delegated execution before falling back to live
+        // handles. After either a crash or graceful daemon shutdown there are
+        // no in-memory handles to wake, and durable peer work still targets the
+        // original execution ID.
+        let resumable_subagent = match self.state_service.get_last_crashed_subagent(session_id)? {
+            some @ Some(_) => some,
+            None => self
+                .state_service
+                .list_executions(&execution_state::ExecutionFilter {
+                    session_id: Some(session_id.to_owned()),
+                    status: Some(execution_state::ExecutionStatus::Paused),
+                    ..Default::default()
+                })?
+                .into_iter()
+                .find(|execution| {
+                    execution.parent_execution_id.is_some() && execution.child_session_id.is_some()
+                }),
+        };
+        if let Some(resumable_exec) = resumable_subagent {
+            if resumable_exec.child_session_id.is_some() {
                 tracing::info!(
                     session_id = %session_id,
-                    crashed_agent = %crashed_exec.agent_id,
-                    child_session = ?crashed_exec.child_session_id,
-                    "Smart resume: re-spawning crashed subagent instead of root"
+                    resumed_agent = %resumable_exec.agent_id,
+                    prior_status = %resumable_exec.status.as_str(),
+                    child_session = ?resumable_exec.child_session_id,
+                    "Smart resume: re-spawning persisted subagent instead of root"
                 );
                 return self
-                    .resume_crashed_subagent(session_id, &crashed_exec)
+                    .resume_persisted_subagent(session_id, &resumable_exec)
                     .await;
             }
         }
@@ -1114,8 +1156,8 @@ impl ExecutionRunner {
         Ok(())
     }
 
-    /// Re-spawn a crashed subagent without re-running the root agent.
-    async fn resume_crashed_subagent(
+    /// Re-spawn a crashed or gracefully paused subagent without re-running root.
+    async fn resume_persisted_subagent(
         &self,
         session_id: &str,
         crashed_exec: &execution_state::AgentExecution,
@@ -1125,20 +1167,45 @@ impl ExecutionRunner {
             .as_ref()
             .ok_or("No child_session_id on crashed execution")?;
 
-        // 1. Reactivate root session and execution
-        self.state_service.reactivate_session(session_id)?;
+        // 1. Reactivate root session and execution.
+        if self
+            .state_service
+            .get_session(session_id)?
+            .is_some_and(|session| session.status == execution_state::SessionStatus::Paused)
+        {
+            self.state_service.resume_session(session_id)?;
+        } else {
+            self.state_service.reactivate_session(session_id)?;
+        }
         if let Ok(Some(root_exec)) = self.state_service.get_root_execution(session_id) {
             self.state_service.reactivate_execution(&root_exec.id)?;
         }
 
-        // 2. Cancel the old crashed execution
-        self.state_service.cancel_execution(&crashed_exec.id)?;
+        // 2. Preserve and reactivate the crashed execution identity. Durable
+        // peer work is addressed to an execution ID; replacing that ID during
+        // smart resume would orphan already-accepted messages.
+        self.state_service.reactivate_execution(&crashed_exec.id)?;
 
-        // 3. Reactivate the child session
-        self.state_service.reactivate_session(child_session_id)?;
+        // 3. Reactivate the child session.
+        if self
+            .state_service
+            .get_session(child_session_id)?
+            .is_some_and(|session| session.status == execution_state::SessionStatus::Paused)
+        {
+            self.state_service.resume_session(child_session_id)?;
+        } else {
+            self.state_service.reactivate_session(child_session_id)?;
+        }
 
-        // 4. Ensure pending_delegations is at least 1
-        self.state_service.register_delegation(session_id)?;
+        // 4. Ensure pending_delegations is at least 1 without double-counting
+        // a gracefully paused delegation whose bookkeeping stayed durable.
+        let parent_session = self
+            .state_service
+            .get_session(session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        if !parent_session.has_pending_delegations() {
+            self.state_service.register_delegation(session_id)?;
+        }
 
         // 5. Request continuation so root agent processes the callback when subagent finishes
         self.state_service.request_continuation(session_id)?;
@@ -1161,18 +1228,6 @@ impl ExecutionRunner {
             .map(|e| e.agent_id)
             .unwrap_or_else(|| "root".to_string());
 
-        // Create new child execution
-        let new_exec = execution_state::AgentExecution::new_delegated(
-            session_id,
-            &crashed_exec.agent_id,
-            parent_execution_id,
-            crashed_exec.delegation_type,
-            task,
-        );
-        self.state_service.create_execution(&new_exec)?;
-        self.state_service
-            .set_child_session_id(&new_exec.id, child_session_id)?;
-
         let request = DelegationRequest {
             parent_agent_id: root_agent_id,
             session_id: session_id.to_string(),
@@ -1183,7 +1238,7 @@ impl ExecutionRunner {
             // the legacy emit at runner/core.rs spawn_delegation.
             parent_conversation_id: session_id.to_string(),
             child_agent_id: crashed_exec.agent_id.clone(),
-            child_execution_id: new_exec.id.clone(),
+            child_execution_id: crashed_exec.id.clone(),
             task: task.clone(),
             mode: None,
             context: None,
@@ -1217,6 +1272,7 @@ impl ExecutionRunner {
             self.memory_store.clone(),
             self.distiller.clone(),
             self.memory_recall.clone(),
+            self.peer_messages.clone(),
             self.rate_limiters.clone(),
             self.kg_store.clone(),
             self.ingestion_adapter.clone(),
@@ -1399,6 +1455,8 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         distiller,
         handoff_writer,
         memory_recall,
+        peer_messages,
+        steering_registry,
         model_registry,
         kg_store,
         kg_episode_store,
@@ -1545,6 +1603,14 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     if let Some(recall) = memory_recall.clone() {
         builder = builder.with_memory_recall(recall);
     }
+    let peer_messaging_enabled = peer_messages.is_some();
+    if let Some(peer_messages) = peer_messages {
+        builder = builder.with_peer_messages(peer_messages);
+    }
+    builder = builder.with_initial_state(
+        "execution_id",
+        serde_json::Value::String(execution_id.clone()),
+    );
 
     let mut executor = builder
         .build(
@@ -1569,6 +1635,10 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         session_ward_id.as_deref(),
         initial_recall_keys,
     );
+    if peer_messaging_enabled {
+        let steering_handle = executor.enable_steering();
+        steering_registry.register_peer_only(&execution_id, steering_handle);
+    }
     let executor: BoxedAgentEngine = select_engine(executor);
 
     // Build a focused continuation message with the plan injected if one exists.
@@ -1908,6 +1978,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
             })
             .await;
         }
+        steering_registry.remove(&execution_id);
     });
 
     Ok(())
@@ -2293,8 +2364,11 @@ mod continuation_message_tests {
 #[cfg(test)]
 mod setup_failure_cleanup_tests {
     use super::*;
-    use execution_state::{ExecutionStatus, SessionStatus};
-    use gateway_services::VaultPaths;
+    use execution_state::{
+        DelegationType, ExecutionStatus, Session, SessionStatus, SqliteWorkStore, WorkStore,
+    };
+    use gateway_bus::LocalWorkTransport;
+    use gateway_services::{agents::Agent, providers::Provider, VaultPaths};
     use std::sync::{Arc, Mutex};
 
     #[tokio::test]
@@ -2330,6 +2404,7 @@ mod setup_failure_cleanup_tests {
             distiller: None,
             handoff_writer: None,
             memory_recall: None,
+            peer_messages: None,
             bridge_registry: None,
             bridge_outbox: None,
             embedding_client: None,
@@ -2384,6 +2459,546 @@ mod setup_failure_cleanup_tests {
         assert!(
             emitted_safe_error,
             "setup cleanup must publish a safe error"
+        );
+    }
+
+    #[tokio::test]
+    async fn smart_resume_preserves_execution_id_addressed_by_durable_peer_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths: SharedVaultPaths = Arc::new(VaultPaths::new(temp.path().to_path_buf()));
+        paths.ensure_dirs_exist().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (_connection, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
+        let state_service = Arc::new(StateService::new(db.clone()));
+        let provider_service = Arc::new(ProviderService::new(paths.clone()));
+        provider_service
+            .create(Provider {
+                id: Some("provider-resume-test".to_owned()),
+                name: "Resume Test".to_owned(),
+                description: "local test provider".to_owned(),
+                api_key: "test-key".to_owned(),
+                base_url: provider_url,
+                models: vec!["test-model".to_owned()],
+                embedding_models: None,
+                embedding_dimensions: None,
+                verified: Some(true),
+                is_default: true,
+                created_at: None,
+                max_concurrent_requests: None,
+                context_window: Some(8_192),
+                default_model: Some("test-model".to_owned()),
+                rate_limits: None,
+                model_configs: None,
+            })
+            .unwrap();
+        let agent_service = Arc::new(AgentService::new(paths.agents_dir()));
+        agent_service
+            .create(Agent {
+                id: "resume-test-agent".to_owned(),
+                name: "resume-test-agent".to_owned(),
+                display_name: "Resume Test Agent".to_owned(),
+                description: "test resumed delegation".to_owned(),
+                agent_type: Some("specialist".to_owned()),
+                provider_id: "provider-resume-test".to_owned(),
+                model: "test-model".to_owned(),
+                temperature: 0.0,
+                max_input_tokens: 8_192,
+                max_input_tokens_explicit: true,
+                max_tokens: 256,
+                thinking_enabled: false,
+                voice_recording_enabled: false,
+                system_instruction: None,
+                instructions: "wait for work".to_owned(),
+                mcps: vec![],
+                skills: vec![],
+                middleware: None,
+                created_at: None,
+            })
+            .await
+            .unwrap();
+        let store: Arc<dyn WorkStore> = Arc::new(SqliteWorkStore::new(db.clone()));
+        let transport = Arc::new(LocalWorkTransport::new());
+        let peer_messages = Arc::new(crate::peer_messaging::DurablePeerMessageService::new(
+            store.clone(),
+            transport,
+            state_service.clone(),
+            crate::peer_messaging::PEER_MESSAGE_TARGET,
+        ));
+
+        let (session, root) = state_service.create_session("root").unwrap();
+        state_service.start_execution(&root.id).unwrap();
+        let child = state_service
+            .create_delegated_execution(
+                &session.id,
+                "resume-test-agent",
+                &root.id,
+                DelegationType::Sequential,
+                "continue durable work",
+            )
+            .unwrap();
+        state_service.start_execution(&child.id).unwrap();
+        let child_session = Session::new_child(&child.agent_id, &session.id);
+        state_service.create_session_from(&child_session).unwrap();
+        state_service
+            .set_child_session_id(&child.id, &child_session.id)
+            .unwrap();
+
+        let receipt = peer_messages
+            .enqueue_message(
+                crate::peer_messaging::PeerMessageContext {
+                    node_id: crate::peer_messaging::PEER_MESSAGE_TARGET.to_owned(),
+                    agent_id: root.agent_id.clone(),
+                    session_id: session.id.clone(),
+                    execution_id: root.id.clone(),
+                },
+                &child.id,
+                "survive smart resume",
+            )
+            .await
+            .unwrap();
+        state_service.crash_session(&session.id).unwrap();
+        state_service.crash_session(&child_session.id).unwrap();
+
+        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
+        let messages: Arc<dyn zbot_conversation::MessageStore> =
+            Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone()));
+        let session_meta: Arc<dyn zbot_conversation::SessionMetaStore> =
+            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone()));
+        let checkpoints: Arc<dyn zbot_conversation::CheckpointStore> =
+            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool));
+        let runner = ExecutionRunner::with_config(ExecutionRunnerConfig {
+            event_bus: Arc::new(EventBus::new()),
+            agent_service,
+            provider_service,
+            paths: paths.clone(),
+            mcp_service: Arc::new(McpService::new(paths.clone())),
+            skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
+            log_service: Arc::new(LogService::new(db)),
+            state_service: state_service.clone(),
+            ward_usage: Arc::new(gateway_services::WardUsage::new(paths.wards_dir())),
+            messages,
+            session_meta,
+            checkpoints,
+            connector_registry: None,
+            memory_store: None,
+            distiller: None,
+            handoff_writer: None,
+            memory_recall: None,
+            peer_messages: Some(peer_messages),
+            bridge_registry: None,
+            bridge_outbox: None,
+            embedding_client: None,
+            procedure_store: None,
+            procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig::default(),
+            max_parallel_agents: 1,
+        });
+
+        runner.resume(&session.id).await.unwrap();
+
+        let executions = state_service
+            .get_session_with_executions(&session.id)
+            .unwrap()
+            .unwrap();
+        let delegated: Vec<_> = executions
+            .executions
+            .iter()
+            .filter(|execution| execution.parent_execution_id.is_some())
+            .collect();
+        assert_eq!(
+            delegated.len(),
+            1,
+            "resume must not mint a replacement target"
+        );
+        assert_eq!(delegated[0].id, child.id);
+        assert_eq!(delegated[0].status, ExecutionStatus::Running);
+        let pending = store.get(&receipt.message_id).unwrap().unwrap();
+        assert_eq!(
+            pending.envelope().payload()["target_execution_id"],
+            child.id
+        );
+    }
+}
+
+#[cfg(test)]
+mod peer_root_lifecycle_tests {
+    use super::*;
+    use agent_runtime::SteerResult;
+    use execution_state::{DelegationType, Session, SqliteWorkStore, WorkStore};
+    use gateway_bus::LocalWorkTransport;
+    use gateway_services::{agents::Agent, providers::Provider, VaultPaths};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+    use tokio::time::{timeout, Duration};
+
+    struct Harness {
+        _temp: tempfile::TempDir,
+        runner: ExecutionRunner,
+        state: Arc<StateService<DatabaseManager>>,
+        steering: Arc<agent_runtime::SteeringRegistry>,
+        paths: SharedVaultPaths,
+    }
+
+    async fn read_request(stream: &mut TcpStream) {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let mut expected = None;
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "client closed before sending the request");
+            bytes.extend_from_slice(&buffer[..read]);
+            if expected.is_none() {
+                if let Some(header_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]).to_lowercase();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or_default();
+                    expected = Some(header_end + 4 + content_length);
+                }
+            }
+            if expected.is_some_and(|length| bytes.len() >= length) {
+                return;
+            }
+        }
+    }
+
+    async fn write_sse(stream: &mut TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+    }
+
+    async fn spawn_two_turn_llm() -> (String, oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            read_request(&mut first).await;
+            let _ = seen_tx.send(());
+            let _ = release_rx.await;
+            let tool = concat!(
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-test\",\"function\":{\"name\":\"missing_test_tool\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write_sse(&mut first, tool).await;
+
+            let (mut second, _) = listener.accept().await.unwrap();
+            read_request(&mut second).await;
+            let done = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write_sse(&mut second, done).await;
+        });
+        (format!("http://{address}/v1"), seen_rx, release_tx)
+    }
+
+    async fn build_harness(base_url: String) -> Harness {
+        let temp = tempfile::tempdir().unwrap();
+        let paths: SharedVaultPaths = Arc::new(VaultPaths::new(temp.path().to_path_buf()));
+        paths.ensure_dirs_exist().unwrap();
+        let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
+        let state = Arc::new(StateService::new(db.clone()));
+        let provider_service = Arc::new(ProviderService::new(paths.clone()));
+        provider_service
+            .create(Provider {
+                id: Some("provider-peer-test".to_owned()),
+                name: "Peer Test".to_owned(),
+                description: "local test provider".to_owned(),
+                api_key: "test-key".to_owned(),
+                base_url,
+                models: vec!["test-model".to_owned()],
+                embedding_models: None,
+                embedding_dimensions: None,
+                verified: Some(true),
+                is_default: true,
+                created_at: None,
+                max_concurrent_requests: None,
+                context_window: Some(8_192),
+                default_model: Some("test-model".to_owned()),
+                rate_limits: None,
+                model_configs: None,
+            })
+            .unwrap();
+        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
+        let messages: Arc<dyn zbot_conversation::MessageStore> =
+            Arc::new(zbot_conversation::SqliteMessageStore::new(pool.clone()));
+        let session_meta: Arc<dyn zbot_conversation::SessionMetaStore> =
+            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone()));
+        let checkpoints: Arc<dyn zbot_conversation::CheckpointStore> =
+            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool));
+        let work_store: Arc<dyn WorkStore> = Arc::new(SqliteWorkStore::new(db.clone()));
+        let peer_messages = Arc::new(crate::peer_messaging::DurablePeerMessageService::new(
+            work_store,
+            Arc::new(LocalWorkTransport::new()),
+            state.clone(),
+            crate::peer_messaging::PEER_MESSAGE_TARGET,
+        ));
+        let agent_service = Arc::new(AgentService::new(paths.agents_dir()));
+        agent_service
+            .create(Agent {
+                id: "resume-test-agent".to_owned(),
+                name: "resume-test-agent".to_owned(),
+                display_name: "Resume Test Agent".to_owned(),
+                description: "test resumed delegation".to_owned(),
+                agent_type: Some("specialist".to_owned()),
+                provider_id: "provider-peer-test".to_owned(),
+                model: "test-model".to_owned(),
+                temperature: 0.0,
+                max_input_tokens: 8_192,
+                max_input_tokens_explicit: true,
+                max_tokens: 256,
+                thinking_enabled: false,
+                voice_recording_enabled: false,
+                system_instruction: None,
+                instructions: "wait for work".to_owned(),
+                mcps: vec![],
+                skills: vec![],
+                middleware: None,
+                created_at: None,
+            })
+            .await
+            .unwrap();
+        let runner = ExecutionRunner::with_config(ExecutionRunnerConfig {
+            event_bus: Arc::new(EventBus::new()),
+            agent_service,
+            provider_service,
+            paths: paths.clone(),
+            mcp_service: Arc::new(McpService::new(paths.clone())),
+            skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
+            log_service: Arc::new(LogService::new(db)),
+            state_service: state.clone(),
+            ward_usage: Arc::new(gateway_services::WardUsage::new(paths.wards_dir())),
+            messages,
+            session_meta,
+            checkpoints,
+            connector_registry: None,
+            memory_store: None,
+            distiller: None,
+            handoff_writer: None,
+            memory_recall: None,
+            peer_messages: Some(peer_messages),
+            bridge_registry: None,
+            bridge_outbox: None,
+            embedding_client: None,
+            procedure_store: None,
+            procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig::default(),
+            max_parallel_agents: 1,
+        });
+        Harness {
+            steering: runner.steering_registry.clone(),
+            _temp: temp,
+            runner,
+            state,
+            paths,
+        }
+    }
+
+    async fn deliver_during_first_turn(
+        steering: Arc<agent_runtime::SteeringRegistry>,
+        execution_id: String,
+        first_seen: oneshot::Receiver<()>,
+        release_first: oneshot::Sender<()>,
+    ) {
+        timeout(Duration::from_secs(5), first_seen)
+            .await
+            .expect("first LLM request")
+            .unwrap();
+        assert!(steering.has_peer_handle(&execution_id));
+        assert_eq!(
+            steering.steer(&execution_id, "parent path must not target root"),
+            SteerResult::AgentNotRunning
+        );
+        let peer = tokio::spawn({
+            let steering = steering.clone();
+            let execution_id = execution_id.clone();
+            async move { steering.steer_peer(&execution_id, "peer reply").await }
+        });
+        tokio::task::yield_now().await;
+        release_first.send(()).unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(5), peer)
+                .await
+                .expect("peer delivery")
+                .unwrap(),
+            SteerResult::Delivered
+        );
+        timeout(Duration::from_secs(5), async {
+            while steering.has_peer_handle(&execution_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("peer handle cleanup");
+    }
+
+    #[tokio::test]
+    async fn initial_invoke_registers_root_for_peer_only_delivery_and_cleans_up() {
+        let (base_url, first_seen, release_first) = spawn_two_turn_llm().await;
+        let harness = build_harness(base_url).await;
+        let (_, session_id) = harness
+            .runner
+            .invoke_with_callback(
+                ExecutionConfig::new(
+                    "root".to_owned(),
+                    "peer-root-initial".to_owned(),
+                    harness.paths.vault_dir().clone(),
+                )
+                .with_mode("chat".to_owned()),
+                "hi".to_owned(),
+                None,
+            )
+            .await
+            .unwrap();
+        let execution_id = harness
+            .state
+            .get_root_execution(&session_id)
+            .unwrap()
+            .unwrap()
+            .id;
+        deliver_during_first_turn(harness.steering, execution_id, first_seen, release_first).await;
+    }
+
+    #[tokio::test]
+    async fn continuation_registers_root_for_peer_only_delivery_and_cleans_up() {
+        let (base_url, first_seen, release_first) = spawn_two_turn_llm().await;
+        let harness = build_harness(base_url).await;
+        let (session, root) = harness.state.create_session("root").unwrap();
+        harness.state.start_execution(&root.id).unwrap();
+        harness.state.complete_execution(&root.id).unwrap();
+        harness.state.complete_session(&session.id).unwrap();
+
+        invoke_continuation(ContinuationArgs {
+            session_id: &session.id,
+            root_agent_id: "root",
+            event_bus: harness.runner.event_bus.clone(),
+            agent_service: harness.runner.agent_service.clone(),
+            provider_service: harness.runner.provider_service.clone(),
+            mcp_service: harness.runner.mcp_service.clone(),
+            skill_service: harness.runner.skill_service.clone(),
+            paths: harness.runner.paths.clone(),
+            messages: harness.runner.messages.clone(),
+            checkpoints: harness.runner.checkpoints.clone(),
+            handles: harness.runner.handles.clone(),
+            delegation_registry: harness.runner.delegation_registry.clone(),
+            delegation_tx: harness.runner.delegation_tx.clone(),
+            log_service: harness.runner.log_service.clone(),
+            state_service: harness.runner.state_service.clone(),
+            memory_store: None,
+            embedding_client: None,
+            distiller: None,
+            handoff_writer: None,
+            memory_recall: None,
+            peer_messages: harness.runner.peer_messages.clone(),
+            steering_registry: harness.steering.clone(),
+            model_registry: None,
+            kg_store: None,
+            kg_episode_store: None,
+            ingestion_adapter: None,
+            goal_adapter: None,
+            procedure_store: None,
+            ward_usage: harness.runner.ward_usage.clone(),
+        })
+        .await
+        .unwrap();
+
+        deliver_during_first_turn(harness.steering, root.id, first_seen, release_first).await;
+    }
+
+    #[tokio::test]
+    async fn graceful_restart_resume_rebuilds_paused_peer_target_with_same_id() {
+        let (base_url, _first_seen, _release_first) = spawn_two_turn_llm().await;
+        let harness = build_harness(base_url).await;
+        let (session, root) = harness.state.create_session("root").unwrap();
+        harness.state.start_execution(&root.id).unwrap();
+        let child = harness
+            .state
+            .create_delegated_execution(
+                &session.id,
+                "resume-test-agent",
+                &root.id,
+                DelegationType::Sequential,
+                "resume after graceful restart",
+            )
+            .unwrap();
+        harness.state.start_execution(&child.id).unwrap();
+        let child_session = Session::new_child(&child.agent_id, &session.id);
+        harness.state.create_session_from(&child_session).unwrap();
+        harness
+            .state
+            .set_child_session_id(&child.id, &child_session.id)
+            .unwrap();
+        let peer_messages = harness.runner.peer_messages.as_ref().unwrap();
+        let receipt = peer_messages
+            .enqueue_message(
+                crate::peer_messaging::PeerMessageContext {
+                    node_id: crate::peer_messaging::PEER_MESSAGE_TARGET.to_owned(),
+                    agent_id: root.agent_id.clone(),
+                    session_id: session.id.clone(),
+                    execution_id: root.id.clone(),
+                },
+                &child.id,
+                "survive graceful restart",
+            )
+            .await
+            .unwrap();
+        harness.state.register_delegation(&session.id).unwrap();
+        harness.state.request_continuation(&session.id).unwrap();
+
+        harness.state.mark_running_as_paused().unwrap();
+        assert_eq!(
+            harness
+                .state
+                .get_execution(&child.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            execution_state::ExecutionStatus::Paused
+        );
+        harness.runner.resume(&session.id).await.unwrap();
+
+        let resumed = harness
+            .state
+            .get_session_with_executions(&session.id)
+            .unwrap()
+            .unwrap();
+        let delegated: Vec<_> = resumed
+            .executions
+            .iter()
+            .filter(|execution| execution.parent_execution_id.is_some())
+            .collect();
+        assert_eq!(delegated.len(), 1);
+        assert_eq!(delegated[0].id, child.id);
+        assert_eq!(
+            delegated[0].status,
+            execution_state::ExecutionStatus::Running
+        );
+        let resumed_session = harness.state.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(resumed_session.pending_delegations, 1);
+        assert!(resumed_session.continuation_needed);
+        let pending = peer_messages
+            .store()
+            .get(&receipt.message_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pending.envelope().payload()["target_execution_id"],
+            child.id
         );
     }
 }

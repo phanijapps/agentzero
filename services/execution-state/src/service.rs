@@ -390,7 +390,7 @@ impl<D: StateDbProvider> StateService<D> {
         Ok(())
     }
 
-    /// Reactivate a completed/crashed execution back to running state.
+    /// Reactivate a paused/completed/crashed execution back to running state.
     ///
     /// Used when continuing a session — the root execution is reused rather
     /// than creating a new one per user message.
@@ -400,9 +400,10 @@ impl<D: StateDbProvider> StateService<D> {
             .get_execution(execution_id)?
             .ok_or_else(|| format!("Execution not found: {}", execution_id))?;
 
-        if execution.status == ExecutionStatus::Completed
-            || execution.status == ExecutionStatus::Crashed
-        {
+        if matches!(
+            execution.status,
+            ExecutionStatus::Paused | ExecutionStatus::Completed | ExecutionStatus::Crashed
+        ) {
             self.repo
                 .update_execution_status(execution_id, ExecutionStatus::Running)?;
         }
@@ -1222,6 +1223,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reactivate_execution_restores_gracefully_paused_identity() {
+        let service = setup_service();
+        let (_, execution) = service.create_session("test-agent").unwrap();
+        service.start_execution(&execution.id).unwrap();
+        service.mark_running_as_paused().unwrap();
+        assert_eq!(
+            service
+                .get_execution(&execution.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            ExecutionStatus::Paused
+        );
+
+        service.reactivate_execution(&execution.id).unwrap();
+
+        assert_eq!(
+            service
+                .get_execution(&execution.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            ExecutionStatus::Running
+        );
+    }
+
     /// End-to-end repro of the original defect: after Stop + continue,
     /// the next call to `complete_execution` must succeed (not skip).
     /// We simulate the runner's check at `runner.rs:1515` directly.
@@ -1672,10 +1700,11 @@ mod tests {
             &child_session.id
         );
 
-        // 6. Simulate what resume_crashed_subagent does:
+        // 6. Simulate what persisted-subagent resume does while preserving
+        // the execution ID used by durable peer work.
         service.reactivate_session(&session.id).unwrap();
         service.reactivate_execution(&root_exec.id).unwrap();
-        service.cancel_execution(&sub_exec.id).unwrap();
+        service.reactivate_execution(&sub_exec.id).unwrap();
         service.reactivate_session(&child_session.id).unwrap();
         service.register_delegation(&session.id).unwrap();
         service.request_continuation(&session.id).unwrap();
@@ -1686,8 +1715,8 @@ mod tests {
         assert!(s.pending_delegations >= 1);
         assert!(s.continuation_needed);
 
-        let old_exec = service.get_execution(&sub_exec.id).unwrap().unwrap();
-        assert_eq!(old_exec.status, ExecutionStatus::Cancelled);
+        let resumed_exec = service.get_execution(&sub_exec.id).unwrap().unwrap();
+        assert_eq!(resumed_exec.status, ExecutionStatus::Running);
     }
 
     #[test]

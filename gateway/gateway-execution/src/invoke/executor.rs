@@ -235,6 +235,7 @@ impl From<SubagentRole> for RuntimeActorKind {
 enum ToolCapability {
     AgentControl,
     AgentDelegate,
+    AgentReply,
     ConnectorInvoke,
     ConnectorQuery,
     ConnectorResourceRead,
@@ -261,6 +262,7 @@ impl ToolCapability {
         match self {
             Self::AgentControl => "agent.control",
             Self::AgentDelegate => "agent.delegate",
+            Self::AgentReply => "agent.reply",
             Self::ConnectorInvoke => "connector.invoke",
             Self::ConnectorQuery => "connector.query",
             Self::ConnectorResourceRead => "connector.resource.read",
@@ -290,6 +292,7 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::AgentReply
                 | ToolCapability::ConnectorInvoke
                 | ToolCapability::ConnectorQuery
                 | ToolCapability::ConnectorResourceRead
@@ -310,7 +313,8 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
         ),
         RuntimeActorKind::DelegatedExecutor => matches!(
             capability,
-            ToolCapability::FileRead
+            ToolCapability::AgentReply
+                | ToolCapability::FileRead
                 | ToolCapability::FileWrite
                 | ToolCapability::GoalWrite
                 | ToolCapability::GraphRead
@@ -326,7 +330,8 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
         ),
         RuntimeActorKind::DelegatedReviewer => matches!(
             capability,
-            ToolCapability::FileRead
+            ToolCapability::AgentReply
+                | ToolCapability::FileRead
                 | ToolCapability::GraphRead
                 | ToolCapability::MemoryRead
                 | ToolCapability::MultimodalAnalyze
@@ -349,6 +354,7 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
     const ALL: &[ToolCapability] = &[
         ToolCapability::AgentControl,
         ToolCapability::AgentDelegate,
+        ToolCapability::AgentReply,
         ToolCapability::ConnectorInvoke,
         ToolCapability::ConnectorQuery,
         ToolCapability::ConnectorResourceRead,
@@ -518,8 +524,10 @@ fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
         "handoff_to_agent"
         | "kill_agent"
         | "list_session_agents"
+        | "message_agent"
         | "steer_agent"
         | "wait_agent" => vec![ToolCapability::AgentControl],
+        "reply_to_agent" => vec![ToolCapability::AgentReply],
         "ingest" => vec![ToolCapability::IngestWrite],
         "load_skill" => vec![ToolCapability::SkillLoad],
         "memory" => vec![ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
@@ -555,6 +563,7 @@ fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::AgentReply
                 | ToolCapability::FileWrite
                 | ToolCapability::GoalWrite
                 | ToolCapability::IngestWrite
@@ -643,7 +652,9 @@ fn owner_crate_for_tool(name: &str) -> &'static str {
         "handoff_to_agent"
         | "kill_agent"
         | "list_session_agents"
+        | "message_agent"
         | "present_surface"
+        | "reply_to_agent"
         | "steer_agent"
         | "wait_agent" => "gateway-execution",
         _ => "agent-tools",
@@ -811,6 +822,7 @@ pub struct ExecutorBuilder {
     /// Trait-routed procedure store for the `run_procedure` tool.
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     memory_recall: Option<Arc<gateway_memory::MemoryRecall>>,
+    peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
     mcp_startup_failure_observer: Option<agent_runtime::mcp::McpStartupFailureObserver>,
     extra_initial_state: Option<Vec<(String, serde_json::Value)>>,
     chat_mode: bool,
@@ -839,6 +851,7 @@ impl ExecutorBuilder {
             messages: None,
             procedure_store: None,
             memory_recall: None,
+            peer_messages: None,
             mcp_startup_failure_observer: None,
             extra_initial_state: None,
             chat_mode: false,
@@ -864,6 +877,15 @@ impl ExecutorBuilder {
     /// is available in the gateway composition root.
     pub fn with_memory_recall(mut self, memory_recall: Arc<gateway_memory::MemoryRecall>) -> Self {
         self.memory_recall = Some(memory_recall);
+        self
+    }
+
+    /// Wire durable same-session peer messaging tools for this executor.
+    pub fn with_peer_messages(
+        mut self,
+        service: Arc<crate::peer_messaging::DurablePeerMessageService>,
+    ) -> Self {
+        self.peer_messages = Some(service);
         self
     }
 
@@ -1584,6 +1606,12 @@ impl ExecutorBuilder {
                 )));
             }
 
+            if let Some(ref peer_messages) = self.peer_messages {
+                tool_registry.register(Arc::new(crate::tools::MessageAgentTool::new(
+                    peer_messages.clone(),
+                )));
+            }
+
             if let Some(ref sr) = self.steering_registry {
                 tool_registry.register(Arc::new(crate::tools::SteerAgentTool::new(sr.clone())));
             }
@@ -1597,6 +1625,14 @@ impl ExecutorBuilder {
                     messages.clone(),
                 )));
                 tool_registry.register(Arc::new(crate::tools::KillAgentTool::new(bus.clone())));
+            }
+        }
+
+        if actor_allows(actor, ToolCapability::AgentReply) {
+            if let Some(ref peer_messages) = self.peer_messages {
+                tool_registry.register(Arc::new(crate::tools::ReplyToAgentTool::new(
+                    peer_messages.clone(),
+                )));
             }
         }
 
@@ -3011,12 +3047,20 @@ mod tests {
                 .expect("conversation pool"),
         ));
 
+        let state = Arc::new(StateService::new(db.clone()));
+        let peer_messages = Arc::new(crate::peer_messaging::DurablePeerMessageService::new(
+            Arc::new(execution_state::SqliteWorkStore::new(db)),
+            Arc::new(gateway_bus::LocalWorkTransport::new()),
+            state.clone(),
+            crate::peer_messaging::PEER_MESSAGE_TARGET,
+        ));
         let mut builder = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
             .with_actor_kind(actor_kind)
-            .with_state_service(Arc::new(StateService::new(db)))
+            .with_state_service(state)
             .with_steering_registry(Arc::new(agent_runtime::SteeringRegistry::new()))
             .with_agent_result_bus(Arc::new(AgentResultBus::new()))
-            .with_message_store(messages);
+            .with_message_store(messages)
+            .with_peer_messages(peer_messages);
         if let Some(mode) = delegation_mode {
             builder = builder.with_initial_state(
                 "app:delegation_mode",
@@ -3491,6 +3535,8 @@ mod tests {
                 "steer_agent",
                 "wait_agent",
                 "kill_agent",
+                "message_agent",
+                "reply_to_agent",
             ],
         );
 
@@ -3503,25 +3549,39 @@ mod tests {
                 "steer_agent",
                 "wait_agent",
                 "kill_agent",
+                "message_agent",
+                "reply_to_agent",
             ],
         );
     }
 
     #[test]
-    fn ordinary_subagents_do_not_get_handoff_tools_even_when_deps_are_wired() {
+    fn ordinary_subagents_get_scoped_reply_but_not_initiation_or_control_tools() {
         let executor_names =
             registry_names_with_agent_control_deps(RuntimeActorKind::DelegatedExecutor);
         assert_missing(
             &executor_names,
-            &["list_session_agents", "handoff_to_agent", "steer_agent"],
+            &[
+                "list_session_agents",
+                "handoff_to_agent",
+                "message_agent",
+                "steer_agent",
+            ],
         );
+        assert_has(&executor_names, &["reply_to_agent"]);
 
         let reviewer_names =
             registry_names_with_agent_control_deps(RuntimeActorKind::DelegatedReviewer);
         assert_missing(
             &reviewer_names,
-            &["list_session_agents", "handoff_to_agent", "steer_agent"],
+            &[
+                "list_session_agents",
+                "handoff_to_agent",
+                "message_agent",
+                "steer_agent",
+            ],
         );
+        assert_has(&reviewer_names, &["reply_to_agent"]);
     }
 
     #[test]
@@ -3627,6 +3687,7 @@ mod tests {
                 "kill_agent",
             ],
         );
+        assert_has(&names, &["reply_to_agent"]);
     }
 
     #[test]

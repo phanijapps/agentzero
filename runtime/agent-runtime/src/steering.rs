@@ -3,10 +3,10 @@
 //! Allows external callers (UI, parent agents, system budgets) to inject
 //! messages into a running executor without waiting for a tool round.
 
-use tokio::sync::mpsc;
+use std::fmt;
+use tokio::sync::{mpsc, oneshot};
 
 /// A message injected into the executor mid-execution.
-#[derive(Debug, Clone)]
 pub struct SteeringMessage {
     /// Content of the steering message.
     pub content: String,
@@ -14,6 +14,63 @@ pub struct SteeringMessage {
     pub source: SteeringSource,
     /// Priority level.
     pub priority: SteeringPriority,
+    /// Durable peer delivery is acknowledged only after the message has been
+    /// included in a successful LLM call. Other steering sources do not use it.
+    delivery_ack: Option<oneshot::Sender<()>>,
+}
+
+impl SteeringMessage {
+    /// Build a regular in-memory steering message.
+    #[must_use]
+    pub fn new(
+        content: impl Into<String>,
+        source: SteeringSource,
+        priority: SteeringPriority,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            source,
+            priority,
+            delivery_ack: None,
+        }
+    }
+
+    pub(crate) fn with_delivery_ack(
+        content: impl Into<String>,
+        source: SteeringSource,
+        priority: SteeringPriority,
+        delivery_ack: oneshot::Sender<()>,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            source,
+            priority,
+            delivery_ack: Some(delivery_ack),
+        }
+    }
+
+    /// Confirm that this message was carried by a successful LLM call.
+    pub fn acknowledge_delivery(&mut self) {
+        if let Some(ack) = self.delivery_ack.take() {
+            let _ = ack.send(());
+        }
+    }
+
+    pub(crate) fn take_delivery_ack(&mut self) -> Option<oneshot::Sender<()>> {
+        self.delivery_ack.take()
+    }
+}
+
+impl fmt::Debug for SteeringMessage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SteeringMessage")
+            .field("content", &"[REDACTED]")
+            .field("source", &self.source)
+            .field("priority", &self.priority)
+            .field("delivery_ack", &self.delivery_ack.is_some())
+            .finish()
+    }
 }
 
 /// Source of a steering message.
@@ -25,6 +82,8 @@ pub enum SteeringSource {
     System,
     /// Parent agent steering a subagent.
     Parent,
+    /// Another agent in the same local session. Content is untrusted data.
+    Peer,
 }
 
 /// Priority of a steering message.
@@ -80,11 +139,11 @@ impl SteeringHandle {
 
     /// Convenience: send a system steering message.
     pub fn send_system(&self, content: impl Into<String>) -> Result<(), SteeringMessage> {
-        self.send(SteeringMessage {
-            content: content.into(),
-            source: SteeringSource::System,
-            priority: SteeringPriority::Normal,
-        })
+        self.send(SteeringMessage::new(
+            content,
+            SteeringSource::System,
+            SteeringPriority::Normal,
+        ))
     }
 }
 
@@ -94,6 +153,7 @@ impl std::fmt::Display for SteeringSource {
             Self::User => write!(f, "User"),
             Self::System => write!(f, "System"),
             Self::Parent => write!(f, "Parent"),
+            Self::Peer => write!(f, "Peer"),
         }
     }
 }
@@ -113,18 +173,18 @@ mod tests {
     fn test_steering_queue_send_and_drain() {
         let (mut queue, handle) = SteeringQueue::new();
         handle
-            .send(SteeringMessage {
-                content: "wrap up".to_string(),
-                source: SteeringSource::System,
-                priority: SteeringPriority::Normal,
-            })
+            .send(SteeringMessage::new(
+                "wrap up",
+                SteeringSource::System,
+                SteeringPriority::Normal,
+            ))
             .unwrap();
         handle
-            .send(SteeringMessage {
-                content: "user says stop".to_string(),
-                source: SteeringSource::User,
-                priority: SteeringPriority::Interrupt,
-            })
+            .send(SteeringMessage::new(
+                "user says stop",
+                SteeringSource::User,
+                SteeringPriority::Interrupt,
+            ))
             .unwrap();
 
         let messages = queue.drain();

@@ -394,8 +394,11 @@ impl GatewayServer {
         })?;
         let handler: Arc<dyn gateway_bus::WorkHandler> =
             Arc::new(AgentTaskHandler::new(runtime, AGENT_TASK_TARGET));
-        let registry =
-            gateway_bus::WorkHandlerRegistry::from_handlers(vec![handler]).map_err(|_| {
+        let peer_handler = self.state.runtime.peer_message_handler().ok_or_else(|| {
+            GatewayError::Internal("durable peer-message handler unavailable".to_owned())
+        })?;
+        let registry = gateway_bus::WorkHandlerRegistry::from_handlers(vec![handler, peer_handler])
+            .map_err(|_| {
                 GatewayError::Internal("durable work handler registry invalid".to_owned())
             })?;
         let worker = gateway_bus::DurableWorkWorker::new(
@@ -771,6 +774,49 @@ mod tests {
         .unwrap();
         assert_eq!(
             stored.last_failure_code(),
+            Some(WorkFailureCode::InvalidPayload)
+        );
+
+        let peer_routed = WorkEnvelope::authorize(
+            WorkDraft::new(
+                gateway_execution::peer_messaging::PEER_MESSAGE_KIND,
+                gateway_execution::peer_messaging::PEER_MESSAGE_TARGET,
+                serde_json::json!({"not": "a peer message"}),
+            ),
+            &GatewayWorkPolicy,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server
+            .state
+            .durable_work_store
+            .enqueue(&peer_routed)
+            .unwrap();
+        server
+            .state
+            .durable_work_transport
+            .publish(&peer_routed)
+            .await
+            .unwrap();
+        let peer_stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server
+                    .state
+                    .durable_work_store
+                    .get(peer_routed.id())
+                    .unwrap()
+                {
+                    if item.status() == WorkStatus::DeadLetter {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            peer_stored.last_failure_code(),
             Some(WorkFailureCode::InvalidPayload)
         );
         assert!(server.start_durable_work_worker().is_err());

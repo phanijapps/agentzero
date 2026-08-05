@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zbot.local/contracts/agent-peer-message.schema.json",
+  "title": "Agent Peer Message v1",
+  "description": "Strict same-daemon payload persisted inside an agent.peer-message.v1 durable work envelope.",
+  "type": "object",
+  "x-spec": "docs/specs/durable-peer-messaging/spec.md",
+  "x-maxSerializedUtf8Bytes": 65536,
+  "required": ["target_execution_id", "content"],
+  "properties": {
+    "target_execution_id": {
+      "type": "string",
+      "pattern": "^exec-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "x-maxUtf8Bytes": 4000,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "reply_to_work_id": {
+      "type": "string",
+      "pattern": "^work-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  },
+  "additionalProperties": false
+}

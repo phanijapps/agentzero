@@ -62,6 +62,7 @@ pub(super) struct InvokeBootstrap {
     /// Trait-routed memory store used to build the executor's fact_store.
     pub(super) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+    pub(super) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
     pub(super) model_registry: Arc<ArcSwapOption<ModelRegistry>>,
     pub(super) rate_limiters: Arc<
         std::sync::RwLock<
@@ -1121,7 +1122,7 @@ impl InvokeBootstrap {
         }
 
         // Create executor (restore ward_id from existing session if available)
-        let (executor, recommended_skills, effective_ward_id) = match self
+        let (mut executor, recommended_skills, effective_ward_id) = match self
             .create_executor(CreateExecutorArgs {
                 agent: &agent,
                 provider: &provider,
@@ -1183,6 +1184,13 @@ impl InvokeBootstrap {
                     ));
                     tracing::info!(ward = %wid, "Injected mandatory planning action for graph task");
                 }
+            }
+        }
+
+        if self.peer_messages.is_some() {
+            if let Some(registry) = &self.steering_registry {
+                let steering_handle = executor.enable_steering();
+                registry.register_peer_only(&execution_id, steering_handle);
             }
         }
 
@@ -1324,6 +1332,9 @@ impl InvokeBootstrap {
         }
         if let Some(ref recall) = self.memory_recall {
             builder = builder.with_memory_recall(recall.clone());
+        }
+        if let Some(ref peer_messages) = self.peer_messages {
+            builder = builder.with_peer_messages(peer_messages.clone());
         }
 
         // Intent analysis for root agent first turns only.
@@ -1467,6 +1478,11 @@ impl InvokeBootstrap {
                 }
             }
         }
+
+        builder = builder.with_initial_state(
+            "execution_id",
+            serde_json::Value::String(execution_id.to_owned()),
+        );
 
         let mut executor = builder
             .build(
@@ -2212,6 +2228,7 @@ mod tests {
             paths,
             memory_store: None,
             memory_recall: None,
+            peer_messages: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,
@@ -2257,6 +2274,7 @@ mod tests {
             paths: paths.clone(),
             memory_store: None,
             memory_recall: None,
+            peer_messages: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,
@@ -2489,6 +2507,7 @@ mod tests {
             paths,
             memory_store: None,
             memory_recall: None,
+            peer_messages: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,

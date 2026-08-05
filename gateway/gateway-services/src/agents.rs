@@ -62,7 +62,7 @@ fn default_voice_recording_enabled() -> bool {
     true
 }
 
-fn validate_agent_id(name: &str) -> Result<(), String> {
+pub fn validate_configured_agent_id(name: &str) -> Result<(), String> {
     let valid = !name.is_empty()
         && name.len() <= 64
         && !is_reserved_agent_id(name)
@@ -87,7 +87,7 @@ fn is_reserved_agent_id(name: &str) -> bool {
 }
 
 fn resolve_agent_dir(agents_dir: &Path, name: &str) -> Result<PathBuf, String> {
-    validate_agent_id(name)?;
+    validate_configured_agent_id(name)?;
     let agent_dir = agents_dir.join(name);
     if agent_dir.starts_with(agents_dir) {
         Ok(agent_dir)

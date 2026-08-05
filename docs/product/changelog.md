@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Research requests are now persisted before acceptance and recovered through
+  the existing local durable-work worker after daemon interruption, while the
+  WebSocket protocol and live Research experience remain unchanged.
 - New Wards for every bundled archetype now start with one Ward-named canonical
   page, agent instructions, an append-only log, and their layout snapshot.
   Specialized work folders, linked pages, sources, and

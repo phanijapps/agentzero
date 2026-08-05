@@ -24,6 +24,7 @@ pub struct WebSocketHandler {
     runtime: Arc<RuntimeService>,
     subscriptions: Arc<SubscriptionManager>,
     agent_surfaces_enabled: bool,
+    agent_tasks: Option<Arc<crate::durable_agent_tasks::DurableAgentTaskService>>,
 }
 
 impl WebSocketHandler {
@@ -43,7 +44,20 @@ impl WebSocketHandler {
             runtime,
             subscriptions: Arc::new(SubscriptionManager::new()),
             agent_surfaces_enabled,
+            agent_tasks: None,
         }
+    }
+
+    pub fn with_agent_tasks(
+        mut self,
+        agent_tasks: Arc<crate::durable_agent_tasks::DurableAgentTaskService>,
+    ) -> Self {
+        self.agent_tasks = Some(agent_tasks);
+        self
+    }
+
+    pub fn agent_tasks(&self) -> Option<Arc<crate::durable_agent_tasks::DurableAgentTaskService>> {
+        self.agent_tasks.clone()
     }
 
     /// Get the subscription manager.
@@ -245,6 +259,7 @@ pub(super) async fn handle_client_message(
     sessions: &SessionRegistry,
     runtime: &RuntimeService,
     subscriptions: Arc<SubscriptionManager>,
+    agent_tasks: Option<Arc<crate::durable_agent_tasks::DurableAgentTaskService>>,
 ) -> Result<()> {
     match msg {
         ClientMessage::Invoke {
@@ -256,22 +271,9 @@ pub(super) async fn handle_client_message(
             mode,
         } => {
             debug!(
-                "Session {} invoking agent {} conversation {} (exec_session: {:?}): {}",
-                session_id, agent_id, conversation_id, exec_session_id, message
+                "Session {} invoking agent {} conversation {} (exec_session: {:?})",
+                session_id, agent_id, conversation_id, exec_session_id
             );
-
-            // Pre-subscribe to the session_id if continuing an existing session.
-            // For new sessions, the on_session_ready callback handles it.
-            if let Some(ref sid) = exec_session_id {
-                let _ = subscriptions
-                    .subscribe_with_scope(
-                        &session_id.to_string(),
-                        sid.clone(),
-                        SubscriptionScope::Session,
-                        Some(SessionScopeState::default()),
-                    )
-                    .await;
-            }
 
             // Create hook context for WebSocket connection
             let mut hook_context = HookContext::web(session_id);
@@ -304,6 +306,100 @@ pub(super) async fn handle_client_message(
             // clients. This path needs only the opaque correlation id, so do
             // not propagate unrelated keys into execution configuration.
             let client_message_id = client_message_id_from_metadata(metadata);
+            if invoke_mode.as_deref() == Some("research") {
+                let Some(agent_tasks) = agent_tasks else {
+                    if let Some(session) = sessions.get(session_id).await {
+                        let _ = session.send(ServerMessage::error(
+                            Some(conversation_id),
+                            "invocation_failed",
+                            "Unable to start this request",
+                        ));
+                    }
+                    return Ok(());
+                };
+                let message_id =
+                    crate::durable_agent_tasks::canonical_message_id(client_message_id.as_deref());
+                let reserved_session_id = exec_session_id.clone().unwrap_or_else(|| {
+                    crate::durable_agent_tasks::reserved_session_id(&message_id)
+                });
+                let already_subscribed = subscriptions
+                    .is_subscribed(&session_id.to_string(), &reserved_session_id)
+                    .await;
+                if !already_subscribed
+                    && subscriptions
+                        .subscribe_with_scope(
+                            &session_id.to_string(),
+                            reserved_session_id,
+                            SubscriptionScope::Session,
+                            Some(SessionScopeState::default()),
+                        )
+                        .await
+                        .is_err()
+                {
+                    if let Some(session) = sessions.get(session_id).await {
+                        let _ = session.send(ServerMessage::error(
+                            Some(conversation_id),
+                            "invocation_failed",
+                            "Unable to start this request",
+                        ));
+                    }
+                    return Ok(());
+                }
+                match agent_tasks
+                    .enqueue_research(
+                        session_id,
+                        &agent_id,
+                        &conversation_id,
+                        &message,
+                        exec_session_id.as_deref(),
+                        Some(&message_id),
+                    )
+                    .await
+                {
+                    Ok(receipt) => {
+                        if let Some(client) = sessions.get(session_id).await {
+                            tokio::spawn(async move {
+                                let ready = agent_tasks.wait_until_ready(&receipt).await;
+                                let response = if ready.is_ok() {
+                                    ServerMessage::InvokeAccepted {
+                                        session_id: receipt.session_id,
+                                        conversation_id: conversation_id.clone(),
+                                    }
+                                } else {
+                                    ServerMessage::error(
+                                        Some(conversation_id),
+                                        "invocation_failed",
+                                        "Unable to start this request",
+                                    )
+                                };
+                                let _ = client.send(response);
+                            });
+                        }
+                    }
+                    Err(_) => {
+                        if let Some(session) = sessions.get(session_id).await {
+                            let _ = session.send(ServerMessage::error(
+                                Some(conversation_id),
+                                "invocation_failed",
+                                "Unable to start this request",
+                            ));
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            // Direct invocations keep the existing continuation subscription
+            // behavior. New direct sessions subscribe in `on_ready`.
+            if let Some(ref sid) = exec_session_id {
+                let _ = subscriptions
+                    .subscribe_with_scope(
+                        &session_id.to_string(),
+                        sid.clone(),
+                        SubscriptionScope::Session,
+                        Some(SessionScopeState::default()),
+                    )
+                    .await;
+            }
             match runtime
                 .invoke_with_hook_and_callback(
                     &agent_id,
@@ -1148,7 +1244,13 @@ fn client_message_id_from_metadata(metadata: Option<serde_json::Value>) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{client_message_id_from_metadata, normalized_invoke_mode};
+    use super::{client_message_id_from_metadata, handle_client_message, normalized_invoke_mode};
+    use crate::server::GatewayServer;
+    use crate::websocket::{ClientMessage, ServerMessage, SessionRegistry, SubscriptionManager};
+    use crate::GatewayConfig;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
 
     #[test]
     fn research_conversation_ids_force_research_mode() {
@@ -1195,6 +1297,165 @@ mod tests {
         assert_eq!(
             client_message_id_from_metadata(Some(serde_json::json!({}))),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn research_subscribes_then_persists_before_acceptance() {
+        let temp_dir = TempDir::new().unwrap();
+        let server = GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
+        let sessions = SessionRegistry::new();
+        let subscriptions = Arc::new(SubscriptionManager::new());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ws_session = crate::websocket::WsSession::new(tx.clone());
+        let client_id = ws_session.id.clone();
+        sessions.register(ws_session).await;
+        subscriptions.connect(client_id.clone(), tx).await;
+        let message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
+        let session_id = crate::durable_agent_tasks::reserved_session_id(message_id);
+        let execution_id = crate::durable_agent_tasks::reserved_execution_id(message_id);
+        let prompt = "Investigate durable handoff";
+        let service = server.ws_handler().agent_tasks().unwrap();
+
+        handle_client_message(
+            &client_id,
+            ClientMessage::Invoke {
+                agent_id: "root".to_owned(),
+                conversation_id: "research-1".to_owned(),
+                message: prompt.to_owned(),
+                session_id: None,
+                metadata: Some(serde_json::json!({"client_message_id": message_id})),
+                mode: "deep".to_owned(),
+            },
+            &sessions,
+            &server.runtime(),
+            subscriptions.clone(),
+            Some(service.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert!(subscriptions.is_subscribed(&client_id, &session_id).await);
+        let duplicate = service
+            .enqueue_research(
+                &client_id,
+                "root",
+                "research-1",
+                prompt,
+                None,
+                Some(message_id),
+            )
+            .await
+            .unwrap();
+        assert!(!duplicate.inserted, "invoke must persist before returning");
+        assert!(rx.try_recv().is_err(), "acceptance must wait for bootstrap");
+
+        let session = execution_state::Session::new_with_id(
+            &session_id,
+            "root",
+            execution_state::TriggerSource::Web,
+        )
+        .unwrap();
+        server
+            .state()
+            .state_service
+            .create_session_from(&session)
+            .unwrap();
+        let execution =
+            execution_state::AgentExecution::new_root_with_id(&execution_id, &session_id, "root")
+                .unwrap();
+        server
+            .state()
+            .state_service
+            .create_execution(&execution)
+            .unwrap();
+        server
+            .state()
+            .messages
+            .append(&zbot_conversation::Message {
+                id: message_id.to_owned(),
+                execution_id: Some(execution_id.clone()),
+                session_id: session_id.clone(),
+                role: "user".to_owned(),
+                content: prompt.to_owned(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                token_count: 1,
+                tool_calls: None,
+                tool_call_id: None,
+                seq: 0,
+            })
+            .unwrap();
+
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            accepted,
+            ServerMessage::InvokeAccepted {
+                session_id: accepted_session,
+                conversation_id
+            } if accepted_session == session_id && conversation_id == "research-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn research_subscription_failure_sends_normalized_error_without_enqueue() {
+        const PROMPT_SENTINEL: &str = "PROMPT-SECRET-SENTINEL";
+        const PROVIDER_SENTINEL: &str = "PROVIDER-RAW-DIAGNOSTIC-SENTINEL";
+        let temp_dir = TempDir::new().unwrap();
+        let server = GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
+        let sessions = SessionRegistry::new();
+        let subscriptions = Arc::new(SubscriptionManager::new());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ws_session = crate::websocket::WsSession::new(tx);
+        let client_id = ws_session.id.clone();
+        sessions.register(ws_session).await;
+        let message_id = "msg-550e8400-e29b-41d4-a716-446655440001";
+        let service = server.ws_handler().agent_tasks().unwrap();
+
+        handle_client_message(
+            &client_id,
+            ClientMessage::Invoke {
+                agent_id: "root".to_owned(),
+                conversation_id: "research-2".to_owned(),
+                message: PROMPT_SENTINEL.to_owned(),
+                session_id: None,
+                metadata: Some(serde_json::json!({"client_message_id": message_id})),
+                mode: "research".to_owned(),
+            },
+            &sessions,
+            &server.runtime(),
+            subscriptions,
+            Some(service.clone()),
+        )
+        .await
+        .unwrap();
+
+        let response = rx.recv().await.unwrap();
+        let encoded_response = serde_json::to_string(&response).unwrap();
+        assert!(matches!(
+            response,
+            ServerMessage::Error { code, message, .. }
+                if code == "invocation_failed" && message == "Unable to start this request"
+        ));
+        for secret in [PROMPT_SENTINEL, PROVIDER_SENTINEL] {
+            assert!(!encoded_response.contains(secret));
+        }
+        let first_enqueue = service
+            .enqueue_research(
+                &client_id,
+                "root",
+                "research-2",
+                PROMPT_SENTINEL,
+                None,
+                Some(message_id),
+            )
+            .await
+            .unwrap();
+        assert!(
+            first_enqueue.inserted,
+            "subscription failure must persist nothing"
         );
     }
 }

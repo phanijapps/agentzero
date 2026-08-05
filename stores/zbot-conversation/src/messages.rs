@@ -14,6 +14,12 @@ pub trait MessageStore: Send + Sync {
     /// server-side.
     fn append(&self, msg: &Message) -> Result<()>;
 
+    /// Read one message by its globally unique durable ID.
+    fn get(&self, id: &str) -> Result<Option<Message>> {
+        let _ = id;
+        anyhow::bail!("message_lookup_unsupported")
+    }
+
     /// Replay messages for a session, ordered by `seq`. If `after_seq` is set,
     /// return only rows with `seq > after_seq` (cursor pagination).
     fn replay(
@@ -61,6 +67,31 @@ impl MessageStore for SqliteMessageStore {
             ],
         )?;
         Ok(())
+    }
+
+    fn get(&self, id: &str) -> Result<Option<Message>> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, execution_id, session_id, role, content, created_at, token_count,
+                    tool_calls, tool_call_id, seq
+             FROM messages WHERE id = ?",
+        )?;
+        let mut rows = stmt.query([id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(Message {
+            id: row.get(0)?,
+            execution_id: row.get(1)?,
+            session_id: row.get(2)?,
+            role: row.get(3)?,
+            content: row.get(4)?,
+            created_at: row.get(5)?,
+            token_count: row.get(6)?,
+            tool_calls: row.get(7)?,
+            tool_call_id: row.get(8)?,
+            seq: row.get(9)?,
+        }))
     }
 
     fn replay(

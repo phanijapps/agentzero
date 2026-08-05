@@ -141,6 +141,8 @@ pub struct ExecutionConfig {
     /// Server-built context for exactly one explicitly resumed ledger item.
     /// Private so generic callers cannot set it through a struct literal.
     ledger_resume_packet: Option<LedgerResumePacket>,
+    /// Suppress raw dependency diagnostics at durable/untrusted boundaries.
+    redact_diagnostics: bool,
 }
 
 /// Session execution mode — split from "fast_mode" to decouple memory injection
@@ -188,6 +190,7 @@ impl ExecutionConfig {
             client_message_id: None,
             mode: None,
             ledger_resume_packet: None,
+            redact_diagnostics: false,
         }
     }
 
@@ -245,6 +248,17 @@ impl ExecutionConfig {
     pub fn with_client_message_id(mut self, client_message_id: String) -> Self {
         self.client_message_id = Some(client_message_id);
         self
+    }
+
+    /// Normalize dependency diagnostics for durable/untrusted invocation paths.
+    #[must_use]
+    pub fn with_redacted_diagnostics(mut self) -> Self {
+        self.redact_diagnostics = true;
+        self
+    }
+
+    pub(crate) fn redact_diagnostics(&self) -> bool {
+        self.redact_diagnostics
     }
 
     /// Set the execution mode ("fast" or "deep").

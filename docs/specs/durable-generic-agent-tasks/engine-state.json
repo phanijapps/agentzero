@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "run_id": "acc46542-5f03-48b3-816d-5ef5321b852b",
+  "feature": "durable-generic-agent-tasks",
+  "mode": "code",
+  "state": "DONE",
+  "last_event": "done",
+  "last_event_context": null,
+  "transition_sequence": 22,
+  "last_transition_at": "2026-08-05T13:58:59Z"
+}

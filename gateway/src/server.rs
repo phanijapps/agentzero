@@ -5,6 +5,10 @@
 use crate::bus::HttpGatewayBus;
 use crate::config::GatewayConfig;
 use crate::cron::{CronScheduler, CronService};
+use crate::durable_agent_tasks::{
+    AgentTaskHandler, AgentTaskRuntime, DurableAgentTaskService, GatewayAgentTaskRuntime,
+    AGENT_TASK_TARGET,
+};
 use crate::error::{GatewayError, Result};
 use crate::events::EventBus;
 use crate::http::create_http_router;
@@ -33,11 +37,22 @@ impl GatewayServer {
     /// Create a new gateway server with the given configuration.
     pub fn new(config: GatewayConfig, vault_dir: PathBuf) -> Self {
         let state = AppState::new(vault_dir);
-        let ws_handler = Arc::new(WebSocketHandler::new_with_surfaces(
-            state.event_bus.clone(),
-            state.runtime.clone(),
-            config.agent_surfaces_enabled,
+        let agent_tasks = Arc::new(DurableAgentTaskService::new(
+            state.durable_work_store.clone(),
+            state.durable_work_transport.clone(),
+            state.state_service.clone(),
+            state.agents.clone(),
+            state.messages.clone(),
+            AGENT_TASK_TARGET,
         ));
+        let ws_handler = Arc::new(
+            WebSocketHandler::new_with_surfaces(
+                state.event_bus.clone(),
+                state.runtime.clone(),
+                config.agent_surfaces_enabled,
+            )
+            .with_agent_tasks(agent_tasks),
+        );
 
         Self {
             config,
@@ -342,23 +357,51 @@ impl GatewayServer {
     }
 
     fn start_durable_work_worker(&mut self) -> Result<()> {
+        let runtime = Arc::new(GatewayAgentTaskRuntime::new(
+            self.state.runtime.clone(),
+            self.state.state_service.clone(),
+            self.state.messages.clone(),
+            self.state.agents.clone(),
+        ));
+        self.start_durable_work_worker_with_runtime(runtime)
+    }
+
+    fn start_durable_work_worker_with_runtime(
+        &mut self,
+        runtime: Arc<dyn AgentTaskRuntime>,
+    ) -> Result<()> {
         if self.durable_work_worker.is_some() {
             return Err(GatewayError::Internal(
                 "durable work worker already started".to_owned(),
             ));
         }
+        let limits = gateway_bus::WorkWorkerLimits::new(
+            4,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(3_600),
+            std::time::Duration::from_secs(30),
+        )
+        .map_err(|_| GatewayError::Internal("durable work worker limits invalid".to_owned()))?;
         let config = gateway_bus::WorkWorkerConfig::new(
-            "zbot.local",
+            AGENT_TASK_TARGET,
             format!("gateway-{}", uuid::Uuid::new_v4()),
-            gateway_bus::WorkWorkerLimits::default(),
+            limits,
         )
         .map_err(|_| {
             GatewayError::Internal("durable work worker configuration invalid".to_owned())
         })?;
+        let handler: Arc<dyn gateway_bus::WorkHandler> =
+            Arc::new(AgentTaskHandler::new(runtime, AGENT_TASK_TARGET));
+        let registry =
+            gateway_bus::WorkHandlerRegistry::from_handlers(vec![handler]).map_err(|_| {
+                GatewayError::Internal("durable work handler registry invalid".to_owned())
+            })?;
         let worker = gateway_bus::DurableWorkWorker::new(
             self.state.durable_work_store.clone(),
             self.state.durable_work_transport.clone(),
-            gateway_bus::WorkHandlerRegistry::empty(),
+            registry,
             config,
         );
         self.durable_work_worker = Some(worker.start());
@@ -533,6 +576,7 @@ mod tests {
         WorkStatus,
     };
     use gateway_bus::WorkTransport;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     struct GatewayWorkPolicy;
@@ -549,6 +593,79 @@ mod tests {
                 "session-test",
                 "execution-test",
             ))
+        }
+    }
+
+    struct PersistedAgentTaskPolicy {
+        task: crate::durable_agent_tasks::AgentTaskV1,
+    }
+
+    impl WorkPolicy for PersistedAgentTaskPolicy {
+        fn authorize(
+            &self,
+            _draft: &WorkDraft,
+        ) -> std::result::Result<WorkAuthorization, WorkPolicyError> {
+            Ok(WorkAuthorization::new(
+                crate::durable_agent_tasks::AGENT_TASK_SOURCE,
+                crate::durable_agent_tasks::AGENT_TASK_TARGET,
+                "connection-restart",
+                &self.task.session_id,
+                &self.task.execution_id,
+            ))
+        }
+    }
+
+    struct RestartRuntime {
+        terminal: AtomicBool,
+        starts: AtomicUsize,
+        resumes: AtomicUsize,
+    }
+
+    impl RestartRuntime {
+        fn new() -> Self {
+            Self {
+                terminal: AtomicBool::new(false),
+                starts: AtomicUsize::new(0),
+                resumes: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::durable_agent_tasks::AgentTaskRuntime for RestartRuntime {
+        async fn inspect(
+            &self,
+            _task: &crate::durable_agent_tasks::AgentTaskV1,
+        ) -> std::result::Result<
+            crate::durable_agent_tasks::AgentTaskRunState,
+            crate::durable_agent_tasks::AgentTaskRuntimeError,
+        > {
+            if self.resumes.load(Ordering::SeqCst) == 0 {
+                return Ok(crate::durable_agent_tasks::AgentTaskRunState::Resume);
+            }
+            if self.terminal.load(Ordering::SeqCst) {
+                Ok(crate::durable_agent_tasks::AgentTaskRunState::Completed)
+            } else {
+                Ok(crate::durable_agent_tasks::AgentTaskRunState::Running)
+            }
+        }
+
+        async fn start(
+            &self,
+            _task: &crate::durable_agent_tasks::AgentTaskV1,
+            _actor_id: &str,
+        ) -> std::result::Result<(), crate::durable_agent_tasks::AgentTaskRuntimeError> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn resume(
+            &self,
+            _task: &crate::durable_agent_tasks::AgentTaskV1,
+            _actor_id: &str,
+        ) -> std::result::Result<(), crate::durable_agent_tasks::AgentTaskRuntimeError> {
+            self.resumes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -622,9 +739,225 @@ mod tests {
             stored.last_failure_code(),
             Some(WorkFailureCode::HandlerUnavailable)
         );
+
+        let routed = WorkEnvelope::authorize(
+            WorkDraft::new(
+                crate::durable_agent_tasks::AGENT_TASK_KIND,
+                crate::durable_agent_tasks::AGENT_TASK_TARGET,
+                serde_json::json!({"not": "an agent task"}),
+            ),
+            &GatewayWorkPolicy,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server.state.durable_work_store.enqueue(&routed).unwrap();
+        server
+            .state
+            .durable_work_transport
+            .publish(&routed)
+            .await
+            .unwrap();
+        let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server.state.durable_work_store.get(routed.id()).unwrap() {
+                    if item.status() == WorkStatus::DeadLetter {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            stored.last_failure_code(),
+            Some(WorkFailureCode::InvalidPayload)
+        );
         assert!(server.start_durable_work_worker().is_err());
 
         server.shutdown().await;
         assert!(server.durable_work_worker.is_none());
+    }
+
+    #[tokio::test]
+    async fn research_enqueue_is_durable_deduplicated_and_conflict_checked() {
+        let temp_dir = TempDir::new().unwrap();
+        let server = GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
+        let service = server.ws_handler.agent_tasks().unwrap();
+        let message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
+
+        let first = service
+            .enqueue_research(
+                "connection-1",
+                "root",
+                "research-1",
+                "Investigate durable handoff",
+                None,
+                Some(message_id),
+            )
+            .await
+            .unwrap();
+        assert!(first.inserted);
+        assert_eq!(
+            first.session_id,
+            crate::durable_agent_tasks::reserved_session_id(message_id)
+        );
+        assert_eq!(
+            first.execution_id,
+            crate::durable_agent_tasks::reserved_execution_id(message_id)
+        );
+        assert_ne!(first.session_id[5..], message_id[4..]);
+
+        let duplicate = service
+            .enqueue_research(
+                "connection-1",
+                "root",
+                "research-1",
+                "Investigate durable handoff",
+                None,
+                Some(message_id),
+            )
+            .await
+            .unwrap();
+        assert!(!duplicate.inserted);
+        assert_eq!(duplicate.work_id, first.work_id);
+
+        assert_eq!(
+            service
+                .enqueue_research(
+                    "connection-1",
+                    "root",
+                    "research-1",
+                    "A conflicting prompt",
+                    None,
+                    Some(message_id),
+                )
+                .await,
+            Err(crate::durable_agent_tasks::AgentTaskEnqueueError::Conflict)
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_restart_polls_persisted_agent_tasks_without_a_wake() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut server =
+            GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
+        let message_id = "msg-550e8400-e29b-41d4-a716-446655440010";
+        let task = crate::durable_agent_tasks::AgentTaskV1 {
+            agent_id: "root".to_owned(),
+            conversation_id: "research-restart".to_owned(),
+            message: "Resume the durable research task".to_owned(),
+            mode: crate::durable_agent_tasks::AgentTaskMode::Research,
+            session_id: crate::durable_agent_tasks::reserved_session_id(message_id),
+            execution_id: crate::durable_agent_tasks::reserved_execution_id(message_id),
+            message_id: message_id.to_owned(),
+        };
+        let session = execution_state::Session::new_with_id(
+            &task.session_id,
+            &task.agent_id,
+            execution_state::TriggerSource::Web,
+        )
+        .unwrap();
+        server
+            .state
+            .state_service
+            .create_session_from(&session)
+            .unwrap();
+        let execution = execution_state::AgentExecution::new_root_with_id(
+            &task.execution_id,
+            &task.session_id,
+            &task.agent_id,
+        )
+        .unwrap();
+        server
+            .state
+            .state_service
+            .create_execution(&execution)
+            .unwrap();
+        server
+            .state
+            .messages
+            .append(&zbot_conversation::Message {
+                id: task.message_id.clone(),
+                execution_id: Some(task.execution_id.clone()),
+                session_id: task.session_id.clone(),
+                role: "user".to_owned(),
+                content: task.message.clone(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                token_count: 1,
+                tool_calls: None,
+                tool_call_id: None,
+                seq: 0,
+            })
+            .unwrap();
+        let persisted = WorkEnvelope::authorize(
+            WorkDraft::new(
+                crate::durable_agent_tasks::AGENT_TASK_KIND,
+                crate::durable_agent_tasks::AGENT_TASK_TARGET,
+                serde_json::to_value(&task).unwrap(),
+            )
+            .with_correlation_id(&task.conversation_id)
+            .with_dedupe_key(&task.message_id),
+            &PersistedAgentTaskPolicy { task: task.clone() },
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server.state.durable_work_store.enqueue(&persisted).unwrap();
+
+        let runtime = Arc::new(RestartRuntime::new());
+        server
+            .start_durable_work_worker_with_runtime(runtime.clone())
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if runtime.resumes.load(Ordering::SeqCst) == 1 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(runtime.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            server
+                .state
+                .durable_work_store
+                .get(persisted.id())
+                .unwrap()
+                .unwrap()
+                .status(),
+            WorkStatus::Leased,
+            "work must remain leased until the resumed execution is terminal"
+        );
+        let messages = server
+            .state
+            .messages
+            .replay(&task.session_id, None, 10)
+            .unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "restart must not append the prompt again"
+        );
+        assert_eq!(messages[0].id, task.message_id);
+
+        runtime.terminal.store(true, Ordering::SeqCst);
+        let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server.state.durable_work_store.get(persisted.id()).unwrap() {
+                    if item.status() == WorkStatus::Completed {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(stored.status(), WorkStatus::Completed);
+        assert_eq!(runtime.resumes.load(Ordering::SeqCst), 1);
+
+        server.shutdown().await;
     }
 }

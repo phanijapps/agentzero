@@ -5,11 +5,13 @@
 
 use crate::StateDbProvider;
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
-use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, InterruptHandle, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -607,6 +609,14 @@ pub trait WorkStore: Send + Sync {
         now: DateTime<Utc>,
         lease_duration: Duration,
     ) -> Result<Option<WorkItem>, WorkError>;
+    fn claim_next_cancellable(
+        &self,
+        target: &str,
+        owner: &str,
+        now: DateTime<Utc>,
+        lease_duration: Duration,
+        cancellation: &WorkClaimCancellation,
+    ) -> Result<Option<WorkItem>, WorkError>;
     fn renew_lease(
         &self,
         id: &str,
@@ -636,6 +646,122 @@ pub trait WorkStore: Send + Sync {
         target: &str,
         now: DateTime<Utc>,
     ) -> Result<RecoveryOutcome, WorkError>;
+}
+
+struct WorkClaimCancellationInner {
+    cancelled: AtomicBool,
+    commit_gate: RwLock<()>,
+    next_interrupt_id: AtomicU64,
+    interrupts: Mutex<HashMap<u64, Arc<InterruptHandle>>>,
+}
+
+struct WorkClaimInterruptRegistration {
+    inner: Arc<WorkClaimCancellationInner>,
+    id: u64,
+}
+
+impl Drop for WorkClaimInterruptRegistration {
+    fn drop(&mut self) {
+        self.inner
+            .interrupts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
+/// Cancellation fence for lease-affecting claim transactions.
+#[derive(Clone)]
+pub struct WorkClaimCancellation {
+    inner: Arc<WorkClaimCancellationInner>,
+}
+
+impl WorkClaimCancellation {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(WorkClaimCancellationInner {
+                cancelled: AtomicBool::new(false),
+                commit_gate: RwLock::new(()),
+                next_interrupt_id: AtomicU64::new(1),
+                interrupts: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    pub fn signal(&self) {
+        self.inner.cancelled.store(true, Ordering::SeqCst);
+        let interrupts = self
+            .inner
+            .interrupts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for interrupt in interrupts {
+            interrupt.interrupt();
+        }
+    }
+
+    pub fn settle(&self) {
+        drop(
+            self.inner
+                .commit_gate
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn commit_if_active<T, E>(
+        &self,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        let _commit_authority = self
+            .inner
+            .commit_gate
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_cancelled() {
+            return Ok(None);
+        }
+        operation().map(Some)
+    }
+
+    fn register_interrupt(&self, interrupt: InterruptHandle) -> WorkClaimInterruptRegistration {
+        let id = self.inner.next_interrupt_id.fetch_add(1, Ordering::SeqCst);
+        let interrupt = Arc::new(interrupt);
+        self.inner
+            .interrupts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, Arc::clone(&interrupt));
+        if self.is_cancelled() {
+            interrupt.interrupt();
+        }
+        WorkClaimInterruptRegistration {
+            inner: Arc::clone(&self.inner),
+            id,
+        }
+    }
+}
+
+impl Default for WorkClaimCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for WorkClaimCancellation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkClaimCancellation")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
+    }
 }
 
 pub struct SqliteWorkStore<D: StateDbProvider> {
@@ -727,6 +853,26 @@ impl<D: StateDbProvider> WorkStore for SqliteWorkStore<D> {
         now: DateTime<Utc>,
         lease_duration: Duration,
     ) -> Result<Option<WorkItem>, WorkError> {
+        self.claim_next_cancellable(
+            target,
+            owner,
+            now,
+            lease_duration,
+            &WorkClaimCancellation::new(),
+        )
+    }
+
+    fn claim_next_cancellable(
+        &self,
+        target: &str,
+        owner: &str,
+        now: DateTime<Utc>,
+        lease_duration: Duration,
+        cancellation: &WorkClaimCancellation,
+    ) -> Result<Option<WorkItem>, WorkError> {
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
         validate_routing_value(target, WorkValidationError::InvalidTarget)?;
         let lease_expires_at = validate_lease(owner, now, lease_duration)?;
         let now_text = format_timestamp(now);
@@ -736,6 +882,11 @@ impl<D: StateDbProvider> WorkStore for SqliteWorkStore<D> {
         let (row, recovery, invalid_candidate) = self
             .db
             .with_connection(|conn| {
+                let _interrupt_registration =
+                    cancellation.register_interrupt(conn.get_interrupt_handle());
+                if cancellation.is_cancelled() {
+                    return Ok((None, RecoveryTransition::default(), None));
+                }
                 let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
                 let recovery = recover_expired_in_tx(&tx, target, now)?;
                 let id: Option<String> = tx
@@ -785,7 +936,9 @@ impl<D: StateDbProvider> WorkStore for SqliteWorkStore<D> {
                 } else {
                     (None, None)
                 };
-                tx.commit()?;
+                if cancellation.commit_if_active(|| tx.commit())?.is_none() {
+                    return Ok((None, RecoveryTransition::default(), None));
+                }
                 Ok((row, recovery, invalid_candidate))
             })
             .map_err(|_| WorkError::StorageUnavailable)?;
@@ -1385,5 +1538,59 @@ fn stored_state_is_consistent(
                 && lease_expires_at.is_none()
                 && completed_at.is_some()
         }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::WorkClaimCancellation;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn cancellation_signal_is_nonblocking_and_settlement_fences_commit() {
+        let cancellation = WorkClaimCancellation::new();
+        let commit_cancellation = cancellation.clone();
+        let (commit_entered_tx, commit_entered_rx) = mpsc::channel();
+        let (release_commit_tx, release_commit_rx) = mpsc::channel();
+        let commit = std::thread::spawn(move || {
+            commit_cancellation.commit_if_active(|| {
+                commit_entered_tx.send(()).unwrap();
+                release_commit_rx.recv().unwrap();
+                Ok::<(), ()>(())
+            })
+        });
+        commit_entered_rx.recv().unwrap();
+
+        let signal_started = std::time::Instant::now();
+        cancellation.signal();
+        assert!(signal_started.elapsed() < Duration::from_millis(50));
+        assert!(cancellation.is_cancelled());
+
+        let settle_cancellation = cancellation.clone();
+        let (settle_done_tx, settle_done_rx) = mpsc::channel();
+        let settle = std::thread::spawn(move || {
+            settle_cancellation.settle();
+            settle_done_tx.send(()).unwrap();
+        });
+        assert!(settle_done_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+
+        release_commit_tx.send(()).unwrap();
+        assert_eq!(commit.join().unwrap(), Ok(Some(())));
+        settle_done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        settle.join().unwrap();
+
+        let invoked = AtomicBool::new(false);
+        let denied = cancellation
+            .commit_if_active(|| {
+                invoked.store(true, Ordering::SeqCst);
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert_eq!(denied, None);
+        assert!(!invoked.load(Ordering::SeqCst));
     }
 }

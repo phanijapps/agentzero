@@ -31,9 +31,11 @@
 
 mod types;
 mod work;
+mod worker;
 
 pub use types::*;
 pub use work::*;
+pub use worker::*;
 
 use async_trait::async_trait;
 use execution_state::SessionStatus;

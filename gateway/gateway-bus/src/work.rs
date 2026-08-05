@@ -37,6 +37,14 @@ pub trait WorkTransport: Send + Sync {
     async fn publish(&self, envelope: &WorkEnvelope) -> Result<(), WorkTransportError>;
 }
 
+/// Broker-neutral wake signal consumed by a durable worker.
+///
+/// A wake is only a hint. The worker still claims through [`WorkStore`].
+#[async_trait]
+pub trait WorkWake: Send + Sync {
+    async fn wait(&self);
+}
+
 /// In-process, wake-only transport. Tokio retains at most one unconsumed permit.
 #[derive(Default)]
 pub struct LocalWorkTransport {
@@ -51,6 +59,13 @@ impl LocalWorkTransport {
     /// Wait until a publisher hints that durable work may be available.
     pub async fn notified(&self) {
         self.notify.notified().await;
+    }
+}
+
+#[async_trait]
+impl WorkWake for LocalWorkTransport {
+    async fn wait(&self) {
+        self.notified().await;
     }
 }
 

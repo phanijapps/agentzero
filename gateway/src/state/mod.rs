@@ -22,7 +22,7 @@ use agent_runtime::{
     ContextSideEffects,
 };
 use api_logs::LogService;
-use execution_state::StateService;
+use execution_state::{SqliteWorkStore, StateService, WorkStore};
 #[cfg(test)]
 use gateway_services::WardProvenance;
 use gateway_services::{EmbeddingService, WardUsage};
@@ -80,6 +80,12 @@ pub struct AppState {
 
     /// State service for execution state management.
     pub state_service: Arc<StateService<DatabaseManager>>,
+
+    /// Durable executable-work store backed by the conversation database.
+    pub durable_work_store: Arc<dyn WorkStore>,
+
+    /// Shared in-process wake path for durable executable work.
+    pub durable_work_transport: Arc<gateway_bus::LocalWorkTransport>,
 
     /// Connector registry for external bridge management.
     pub connector_registry: Arc<ConnectorRegistry>,
@@ -289,6 +295,9 @@ impl AppState {
 
         // Create state service for execution state management
         let state_service = Arc::new(StateService::new(db_manager.clone()));
+        let durable_work_store: Arc<dyn WorkStore> =
+            Arc::new(SqliteWorkStore::new(db_manager.clone()));
+        let durable_work_transport = Arc::new(gateway_bus::LocalWorkTransport::new());
         state_service.set_surface_persistence_enabled(
             settings
                 .get_presentation_settings()
@@ -925,6 +934,8 @@ impl AppState {
             settings,
             log_service,
             state_service,
+            durable_work_store,
+            durable_work_transport,
             connector_registry,
             bridge_registry,
             bridge_outbox,
@@ -985,7 +996,9 @@ impl AppState {
         );
         let log_service = Arc::new(LogService::new(db_manager.clone()));
         let bridge_outbox = Arc::new(gateway_bridge::OutboxRepository::new(db_manager.clone()));
-        let state_service = Arc::new(StateService::new(db_manager));
+        let state_service = Arc::new(StateService::new(db_manager.clone()));
+        let durable_work_store: Arc<dyn WorkStore> = Arc::new(SqliteWorkStore::new(db_manager));
+        let durable_work_transport = Arc::new(gateway_bus::LocalWorkTransport::new());
         let settings = Arc::new(SettingsService::new(paths.clone()));
         state_service.set_surface_persistence_enabled(
             settings
@@ -1050,6 +1063,8 @@ impl AppState {
             settings,
             log_service,
             state_service,
+            durable_work_store,
+            durable_work_transport,
             connector_registry,
             bridge_registry,
             bridge_outbox,
@@ -1270,13 +1285,13 @@ impl AppState {
 
         // Create bridge registry and outbox
         let bridge_registry = Arc::new(gateway_bridge::BridgeRegistry::new());
-        let bridge_outbox = {
-            let db = Arc::new(
-                DatabaseManager::new(paths.clone())
-                    .expect("Failed to initialize database for bridge outbox"),
-            );
-            Arc::new(gateway_bridge::OutboxRepository::new(db))
-        };
+        let db_manager = Arc::new(
+            DatabaseManager::new(paths.clone())
+                .expect("Failed to initialize database for bridge outbox and durable work"),
+        );
+        let bridge_outbox = Arc::new(gateway_bridge::OutboxRepository::new(db_manager.clone()));
+        let durable_work_store: Arc<dyn WorkStore> = Arc::new(SqliteWorkStore::new(db_manager));
+        let durable_work_transport = Arc::new(gateway_bus::LocalWorkTransport::new());
 
         // Create plugin manager
         let plugin_manager = Arc::new(gateway_bridge::PluginManager::new(
@@ -1308,6 +1323,8 @@ impl AppState {
             settings,
             log_service,
             state_service,
+            durable_work_store,
+            durable_work_transport,
             connector_registry,
             bridge_registry,
             bridge_outbox,

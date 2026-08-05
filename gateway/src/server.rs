@@ -5,7 +5,7 @@
 use crate::bus::HttpGatewayBus;
 use crate::config::GatewayConfig;
 use crate::cron::{CronScheduler, CronService};
-use crate::error::Result;
+use crate::error::{GatewayError, Result};
 use crate::events::EventBus;
 use crate::http::create_http_router;
 use crate::services::{AgentService, RuntimeService};
@@ -25,6 +25,7 @@ pub struct GatewayServer {
     ws_handler: Arc<WebSocketHandler>,
     shutdown_tx: Option<broadcast::Sender<()>>,
     bridge_retry_handle: Option<tokio::task::JoinHandle<()>>,
+    durable_work_worker: Option<gateway_bus::WorkWorkerHandle>,
     file_watcher: Option<FileWatcher>,
 }
 
@@ -44,6 +45,7 @@ impl GatewayServer {
             ws_handler,
             shutdown_tx: None,
             bridge_retry_handle: None,
+            durable_work_worker: None,
             file_watcher: None,
         }
     }
@@ -136,6 +138,7 @@ impl GatewayServer {
 
         let (shutdown_tx, _) = broadcast::channel(1);
         self.shutdown_tx = Some(shutdown_tx.clone());
+        self.start_durable_work_worker()?;
 
         // Spawn the WS background tasks (subscription cleanup + event
         // router) BEFORE any WS transport starts accepting connections.
@@ -323,10 +326,43 @@ impl GatewayServer {
             handle.abort();
         }
 
+        if let Some(worker) = self.durable_work_worker.take() {
+            if let Err(error) = worker.shutdown().await {
+                warn!(
+                    reason_code = error.reason_code(),
+                    "Durable work worker shutdown did not settle its active claim"
+                );
+            }
+        }
+
         if let Some(tx) = &self.shutdown_tx {
             let _ = tx.send(());
             info!("Gateway shutdown signal sent");
         }
+    }
+
+    fn start_durable_work_worker(&mut self) -> Result<()> {
+        if self.durable_work_worker.is_some() {
+            return Err(GatewayError::Internal(
+                "durable work worker already started".to_owned(),
+            ));
+        }
+        let config = gateway_bus::WorkWorkerConfig::new(
+            "zbot.local",
+            format!("gateway-{}", uuid::Uuid::new_v4()),
+            gateway_bus::WorkWorkerLimits::default(),
+        )
+        .map_err(|_| {
+            GatewayError::Internal("durable work worker configuration invalid".to_owned())
+        })?;
+        let worker = gateway_bus::DurableWorkWorker::new(
+            self.state.durable_work_store.clone(),
+            self.state.durable_work_transport.clone(),
+            gateway_bus::WorkHandlerRegistry::empty(),
+            config,
+        );
+        self.durable_work_worker = Some(worker.start());
+        Ok(())
     }
 
     /// Pause all running sessions during graceful shutdown.
@@ -492,7 +528,29 @@ pub(crate) fn persist_instance_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use execution_state::{
+        WorkAuthorization, WorkDraft, WorkEnvelope, WorkFailureCode, WorkPolicy, WorkPolicyError,
+        WorkStatus,
+    };
+    use gateway_bus::WorkTransport;
     use tempfile::TempDir;
+
+    struct GatewayWorkPolicy;
+
+    impl WorkPolicy for GatewayWorkPolicy {
+        fn authorize(
+            &self,
+            _draft: &WorkDraft,
+        ) -> std::result::Result<WorkAuthorization, WorkPolicyError> {
+            Ok(WorkAuthorization::new(
+                "gateway-test",
+                "node-local",
+                "root",
+                "session-test",
+                "execution-test",
+            ))
+        }
+    }
 
     #[tokio::test]
     async fn test_server_creation() {
@@ -512,5 +570,61 @@ mod tests {
         };
         let server = GatewayServer::new(config, vault_dir);
         assert_eq!(server.config.http_port, 19001);
+    }
+
+    #[tokio::test]
+    async fn gateway_start_and_shutdown_own_one_durable_worker() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault_dir = temp_dir.path().to_path_buf();
+        let config = GatewayConfig {
+            host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            http_port: 0,
+            ..GatewayConfig::default()
+        };
+        let mut server = GatewayServer::new(config, vault_dir);
+
+        server.start().await.unwrap();
+        assert!(server
+            .durable_work_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished()));
+
+        let envelope = WorkEnvelope::authorize(
+            WorkDraft::new(
+                "test.same-store",
+                "zbot.local",
+                serde_json::json!({"value": "same-store"}),
+            ),
+            &GatewayWorkPolicy,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server.state.durable_work_store.enqueue(&envelope).unwrap();
+        server
+            .state
+            .durable_work_transport
+            .publish(&envelope)
+            .await
+            .unwrap();
+        let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server.state.durable_work_store.get(envelope.id()).unwrap() {
+                    if item.status() == WorkStatus::DeadLetter {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            stored.last_failure_code(),
+            Some(WorkFailureCode::HandlerUnavailable)
+        );
+        assert!(server.start_durable_work_worker().is_err());
+
+        server.shutdown().await;
+        assert!(server.durable_work_worker.is_none());
     }
 }

@@ -79,6 +79,63 @@ struct ToolExecutionResult {
     actions: EventActions,
 }
 
+/// Tool-call events, traces, and conversation rows are externally observable.
+/// Peer text belongs only in the durable work payload and the recipient's
+/// bounded steering envelope, so expose identifiers while replacing content.
+fn externally_visible_tool_args(
+    tool_name: &str,
+    args: &Value,
+    peer_content_in_context: bool,
+) -> Value {
+    if peer_content_in_context {
+        return json!({"redacted": true, "reason": "peer_influenced"});
+    }
+    fn canonical_id(args: &Value, field: &str, prefix: &str) -> Value {
+        let Some(value) = args.get(field).and_then(Value::as_str) else {
+            return Value::Null;
+        };
+        let Some(raw) = value.strip_prefix(prefix) else {
+            return Value::String("[REDACTED]".to_owned());
+        };
+        let Ok(uuid) = uuid::Uuid::parse_str(raw) else {
+            return Value::String("[REDACTED]".to_owned());
+        };
+        if uuid.hyphenated().to_string() != raw {
+            return Value::String("[REDACTED]".to_owned());
+        }
+        Value::String(value.to_owned())
+    }
+
+    match tool_name {
+        "message_agent" => json!({
+            "execution_id": canonical_id(args, "execution_id", "exec-"),
+            "message": "[REDACTED]"
+        }),
+        "reply_to_agent" => json!({
+            "reply_to": canonical_id(args, "reply_to", "work-"),
+            "message": "[REDACTED]"
+        }),
+        _ => args.clone(),
+    }
+}
+
+fn externally_visible_tool_result(
+    peer_content_in_context: bool,
+    result: String,
+    context_result: Option<String>,
+    error: Option<String>,
+) -> (String, Option<String>, Option<String>) {
+    if peer_content_in_context {
+        (
+            "[REDACTED: peer-influenced tool result]".to_owned(),
+            context_result.map(|_| "[REDACTED: peer-influenced tool context]".to_owned()),
+            error.map(|_| "peer_influenced_tool_error".to_owned()),
+        )
+    } else {
+        (result, context_result, error)
+    }
+}
+
 // ============================================================================
 // EXECUTOR CONFIGURATION
 // ============================================================================
@@ -615,6 +672,11 @@ impl AgentExecutor {
         // Set inside the loop; read after the loop to decide whether to emit Done.
         let mut stopped_for_delegation = false;
 
+        // Once peer data enters the prompt tape, every later response in this
+        // executor may be derived from it. Keep diagnostics metadata-only for
+        // the rest of the loop rather than redacting just the first turn.
+        let mut peer_content_in_context = false;
+
         // Create shared tool context that persists across all tool calls in this execution.
         // This allows tools like load_skill to maintain state (e.g., loaded skills, resources)
         // that other tools and middleware can access throughout the execution loop.
@@ -838,13 +900,23 @@ impl AgentExecutor {
                 }
             }
 
-            // Drain steering queue: inject any pending steering messages
+            // Drain steering queue: inject any pending steering messages.
+            // Durable peer acknowledgements remain live until the resulting
+            // LLM call succeeds; a crash/error before then leaves queue work
+            // recoverable for at-least-once redelivery.
+            let mut peer_delivery_acks = Vec::new();
             if let Some(ref steering_mutex) = self.steering_queue {
                 if let Ok(mut queue) = steering_mutex.lock() {
-                    let steering_messages = queue.drain();
-                    for msg in steering_messages {
+                    let mut steering_messages = queue.drain();
+                    for msg in &mut steering_messages {
                         let formatted = format!("[STEER: {}] {}", msg.source, msg.content);
                         current_messages.push(ChatMessage::user(formatted));
+                        if msg.source == crate::steering::SteeringSource::Peer {
+                            peer_content_in_context = true;
+                            if let Some(ack) = msg.take_delivery_ack() {
+                                peer_delivery_acks.push(ack);
+                            }
+                        }
                         tracing::info!(
                             source = %msg.source,
                             priority = ?msg.priority,
@@ -970,6 +1042,9 @@ impl AgentExecutor {
                     )));
                 }
             };
+            for ack in peer_delivery_acks {
+                let _ = ack.send(());
+            }
 
             // Update cumulative token counts and emit event
             if let Some(usage) = &response.usage {
@@ -986,11 +1061,19 @@ impl AgentExecutor {
                 });
             }
 
-            tracing::debug!(
-                "LLM response - content: '{}', tool_calls: {}",
-                response.content,
-                response.tool_calls.as_ref().map_or(0, std::vec::Vec::len)
-            );
+            if peer_content_in_context {
+                tracing::debug!(
+                    response_length = response.content.len(),
+                    tool_call_count = response.tool_calls.as_ref().map_or(0, std::vec::Vec::len),
+                    "LLM response after peer steering"
+                );
+            } else {
+                tracing::debug!(
+                    "LLM response - content: '{}', tool_calls: {}",
+                    response.content,
+                    response.tool_calls.as_ref().map_or(0, std::vec::Vec::len)
+                );
+            }
 
             // Check for tool calls
             let mut tool_calls = response.tool_calls.clone().unwrap_or_default();
@@ -1038,7 +1121,11 @@ impl AgentExecutor {
                     timestamp: chrono::Utc::now().timestamp_millis() as u64,
                     tool_id: tool_call.id.clone(),
                     tool_name: tool_call.name.clone(),
-                    args: tool_call.arguments.clone(),
+                    args: externally_visible_tool_args(
+                        &tool_call.name,
+                        &tool_call.arguments,
+                        peer_content_in_context,
+                    ),
                 });
             }
 
@@ -1063,42 +1150,48 @@ impl AgentExecutor {
                 .filter(|tc| !blocked_results.contains_key(&tc.id))
                 .collect();
 
-            let results: Vec<(Result<ToolExecutionResult, String>, i64)> = if self
-                .config
-                .tool_execution_mode
-                == ToolExecutionMode::Sequential
-            {
-                // Sequential: execute one at a time, in order
-                let mut seq_results = Vec::new();
-                for tc in &non_blocked {
-                    let started = Instant::now();
-                    let result = self
-                        .execute_tool(&shared_tool_context, &tc.id, &tc.name, &tc.arguments)
-                        .await;
-                    let duration_ms = started.elapsed().as_millis() as i64;
-                    seq_results.push((result, duration_ms));
-                }
-                seq_results
-            } else {
-                // Parallel: all at once (current behavior)
-                let tool_futures: Vec<_> = non_blocked
-                    .iter()
-                    .map(|tc| {
-                        let ctx = shared_tool_context.clone();
-                        let tool_id = tc.id.clone();
-                        let tool_name = tc.name.clone();
-                        let args = tc.arguments.clone();
-                        async move {
-                            tracing::debug!("Executing tool: {} with args: {}", tool_name, args);
-                            let started = Instant::now();
-                            let result = self.execute_tool(&ctx, &tool_id, &tool_name, &args).await;
-                            let duration_ms = started.elapsed().as_millis() as i64;
-                            (result, duration_ms)
-                        }
-                    })
-                    .collect();
-                futures::future::join_all(tool_futures).await
-            };
+            let results: Vec<(Result<ToolExecutionResult, String>, i64)> =
+                if self.config.tool_execution_mode == ToolExecutionMode::Sequential {
+                    // Sequential: execute one at a time, in order
+                    let mut seq_results = Vec::new();
+                    for tc in &non_blocked {
+                        let started = Instant::now();
+                        let result = self
+                            .execute_tool(&shared_tool_context, &tc.id, &tc.name, &tc.arguments)
+                            .await;
+                        let duration_ms = started.elapsed().as_millis() as i64;
+                        seq_results.push((result, duration_ms));
+                    }
+                    seq_results
+                } else {
+                    // Parallel: all at once (current behavior)
+                    let tool_futures: Vec<_> = non_blocked
+                        .iter()
+                        .map(|tc| {
+                            let ctx = shared_tool_context.clone();
+                            let tool_id = tc.id.clone();
+                            let tool_name = tc.name.clone();
+                            let args = tc.arguments.clone();
+                            async move {
+                                tracing::debug!(
+                                    tool_name,
+                                    args = %externally_visible_tool_args(
+                                        &tool_name,
+                                        &args,
+                                        peer_content_in_context,
+                                    ),
+                                    "Executing tool"
+                                );
+                                let started = Instant::now();
+                                let result =
+                                    self.execute_tool(&ctx, &tool_id, &tool_name, &args).await;
+                                let duration_ms = started.elapsed().as_millis() as i64;
+                                (result, duration_ms)
+                            }
+                        })
+                        .collect();
+                    futures::future::join_all(tool_futures).await
+                };
 
             // Build a map of executed results (keyed by tool_call id)
             let mut executed_results: HashMap<String, (Result<ToolExecutionResult, String>, i64)> =
@@ -1117,12 +1210,18 @@ impl AgentExecutor {
                         tool_call.id.clone(),
                         blocked_result.clone(),
                     ));
+                    let (event_result, event_context, event_error) = externally_visible_tool_result(
+                        peer_content_in_context,
+                        "[blocked by hook]".to_owned(),
+                        Some(blocked_result.clone()),
+                        Some("blocked_by_hook".to_owned()),
+                    );
                     on_event(StreamEvent::ToolResult {
                         timestamp: chrono::Utc::now().timestamp_millis() as u64,
                         tool_id: tool_call.id.clone(),
-                        result: "[blocked by hook]".to_string(),
-                        context_result: Some(blocked_result.clone()),
-                        error: Some("blocked_by_hook".to_string()),
+                        result: event_result,
+                        context_result: event_context,
+                        error: event_error,
                         duration_ms: Some(0),
                     });
                     progress_tracker.record_tool_call(&tool_call.name, &tool_call.arguments, false);
@@ -1133,7 +1232,15 @@ impl AgentExecutor {
                             let output = tool_result.output;
                             let actions = tool_result.actions;
 
-                            tracing::debug!("Tool result: {}", output);
+                            if peer_content_in_context {
+                                tracing::debug!(
+                                    tool_name,
+                                    output_length = output.len(),
+                                    "Peer-influenced tool completed"
+                                );
+                            } else {
+                                tracing::debug!("Tool result: {}", output);
+                            }
 
                             // Track progress: tool succeeded
                             progress_tracker.record_tool_call(
@@ -1412,12 +1519,19 @@ impl AgentExecutor {
                                 processed_output
                             };
 
+                            let (event_result, event_context, event_error) =
+                                externally_visible_tool_result(
+                                    peer_content_in_context,
+                                    output,
+                                    Some(final_output.clone()),
+                                    None,
+                                );
                             on_event(StreamEvent::ToolResult {
                                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                                 tool_id: tool_call.id.clone(),
-                                result: output,
-                                context_result: Some(final_output.clone()),
-                                error: None,
+                                result: event_result,
+                                context_result: event_context,
+                                error: event_error,
                                 duration_ms: Some(duration_ms),
                             });
 
@@ -1426,7 +1540,11 @@ impl AgentExecutor {
                                 .push(ChatMessage::tool_result(tool_call.id.clone(), final_output));
                         }
                         Err(e) => {
-                            tracing::debug!("Tool error: {}", e);
+                            if peer_content_in_context {
+                                tracing::debug!(tool_name, "Peer-influenced tool failed");
+                            } else {
+                                tracing::debug!("Tool error: {}", e);
+                            }
 
                             // Track progress: tool failed
                             progress_tracker.record_tool_call(
@@ -1447,12 +1565,19 @@ impl AgentExecutor {
                                 error_message
                             };
 
+                            let (event_result, event_context, event_error) =
+                                externally_visible_tool_result(
+                                    peer_content_in_context,
+                                    String::new(),
+                                    Some(final_error.clone()),
+                                    Some(e.clone()),
+                                );
                             on_event(StreamEvent::ToolResult {
                                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                                 tool_id: tool_call.id.clone(),
-                                result: String::new(),
-                                context_result: Some(final_error.clone()),
-                                error: Some(e.clone()),
+                                result: event_result,
+                                context_result: event_context,
+                                error: event_error,
                                 duration_ms: Some(duration_ms),
                             });
 
@@ -1467,7 +1592,11 @@ impl AgentExecutor {
                     timestamp: chrono::Utc::now().timestamp_millis() as u64,
                     tool_id: tool_call.id.clone(),
                     tool_name: tool_name.clone(),
-                    args: tool_call.arguments.clone(),
+                    args: externally_visible_tool_args(
+                        tool_name,
+                        &tool_call.arguments,
+                        peer_content_in_context,
+                    ),
                 });
             }
 
@@ -1910,13 +2039,50 @@ mod hook_tests {
     #[test]
     fn test_steering_message_format() {
         use crate::steering::{SteeringMessage, SteeringPriority, SteeringSource};
-        let msg = SteeringMessage {
-            content: "Wrap up now".to_string(),
-            source: SteeringSource::System,
-            priority: SteeringPriority::Normal,
-        };
+        let msg = SteeringMessage::new(
+            "Wrap up now",
+            SteeringSource::System,
+            SteeringPriority::Normal,
+        );
         let formatted = format!("[STEER: {}] {}", msg.source, msg.content);
         assert_eq!(formatted, "[STEER: System] Wrap up now");
+    }
+
+    #[test]
+    fn peer_tool_event_args_never_expose_message_content_or_unknown_fields() {
+        let secret = "peer-secret-that-must-not-leak";
+        let execution_id = "exec-00000000-0000-0000-0000-000000000001";
+        let work_id = "work-00000000-0000-0000-0000-000000000002";
+        let send = externally_visible_tool_args(
+            "message_agent",
+            &json!({
+                "execution_id": execution_id,
+                "message": secret,
+                "forged": secret
+            }),
+            false,
+        );
+        assert_eq!(send["execution_id"], execution_id);
+        assert_eq!(send["message"], "[REDACTED]");
+        assert!(send.get("forged").is_none());
+        assert!(!send.to_string().contains(secret));
+
+        let reply = externally_visible_tool_args(
+            "reply_to_agent",
+            &json!({"reply_to": work_id, "message": secret}),
+            false,
+        );
+        assert_eq!(reply["reply_to"], work_id);
+        assert_eq!(reply["message"], "[REDACTED]");
+        assert!(!reply.to_string().contains(secret));
+
+        let malformed = externally_visible_tool_args(
+            "message_agent",
+            &json!({"execution_id": secret, "message": secret}),
+            false,
+        );
+        assert_eq!(malformed["execution_id"], "[REDACTED]");
+        assert!(!malformed.to_string().contains(secret));
     }
 
     #[test]
@@ -1992,9 +2158,27 @@ mod executor_helper_coverage_tests {
     use super::*;
     use crate::llm::client::{ChatResponse, LlmError, StreamCallback};
     use crate::mcp::{McpClient, McpError, McpTool};
+    use crate::{SteerResult, SteeringRegistry};
     use agent_primitives::Tool;
     use async_trait::async_trait;
+    use std::io::Write;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use tracing::instrument::WithSubscriber;
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     struct NamedTool {
         name: &'static str,
@@ -2486,6 +2670,35 @@ mod executor_helper_coverage_tests {
     }
 
     #[tokio::test]
+    async fn successful_llm_call_acknowledges_durable_peer_steering() {
+        let called = Arc::new(AtomicBool::new(false));
+        let llm = Arc::new(OneShotLlm {
+            called: Arc::clone(&called),
+        });
+        let mut cfg = ExecutorConfig::new("agent".into(), "p".into(), "m".into());
+        cfg.tools_enabled = false;
+        let mut exec = AgentExecutor::new(
+            cfg,
+            llm,
+            Arc::new(ToolRegistry::new()),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .unwrap();
+        let steering_handle = exec.enable_steering();
+        let registry = SteeringRegistry::new();
+        registry.register("exec-peer-target", steering_handle);
+
+        let delivery = registry.steer_peer("exec-peer-target", "durable peer payload");
+        let execution = exec.execute("initial task", &[]);
+        let (delivery, execution) = tokio::join!(delivery, execution);
+
+        assert_eq!(delivery, SteerResult::Delivered);
+        assert_eq!(execution.unwrap(), "hello world");
+        assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
     async fn execute_stream_emits_metadata_and_done() {
         let llm = Arc::new(OneShotLlm {
             called: Arc::new(AtomicBool::new(false)),
@@ -2540,6 +2753,11 @@ mod executor_helper_coverage_tests {
         tool_name: String,
     }
 
+    struct PeerToolThenDoneLlm {
+        calls: Arc<AtomicUsize>,
+        peer_derived_response: String,
+    }
+
     struct SurfaceMarkerTool {
         name: &'static str,
         update: bool,
@@ -2547,6 +2765,34 @@ mod executor_helper_coverage_tests {
 
     struct RejectingSurfaceTool;
     struct PlanMarkerTool;
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &'static str {
+            "echo_tool"
+        }
+
+        fn description(&self) -> &'static str {
+            "echo a test payload"
+        }
+
+        fn parameters_schema(&self) -> Option<Value> {
+            Some(json!({
+                "type": "object",
+                "properties": {"payload": {"type": "string"}},
+                "required": ["payload"]
+            }))
+        }
+
+        async fn execute(
+            &self,
+            _ctx: Arc<dyn ZeroToolContext>,
+            args: Value,
+        ) -> agent_primitives::Result<Value> {
+            Ok(args)
+        }
+    }
 
     #[async_trait]
     impl Tool for SurfaceMarkerTool {
@@ -2737,6 +2983,120 @@ mod executor_helper_coverage_tests {
                 })
             }
         }
+    }
+
+    #[async_trait]
+    impl LlmClient for PeerToolThenDoneLlm {
+        fn model(&self) -> &str {
+            "peer-redaction"
+        }
+
+        fn provider(&self) -> &str {
+            "peer-redaction"
+        }
+
+        async fn chat(
+            &self,
+            _msgs: Vec<ChatMessage>,
+            _tools: Option<Value>,
+        ) -> Result<ChatResponse, LlmError> {
+            unreachable!()
+        }
+
+        async fn chat_stream(
+            &self,
+            _msgs: Vec<ChatMessage>,
+            _tools: Option<Value>,
+            _cb: StreamCallback,
+        ) -> Result<ChatResponse, LlmError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Ok(ChatResponse {
+                    content: String::new(),
+                    tool_calls: Some(vec![ToolCall::new(
+                        "call-peer-tool".to_owned(),
+                        "echo_tool".to_owned(),
+                        json!({"payload": self.peer_derived_response}),
+                    )]),
+                    reasoning: None,
+                    usage: None,
+                })
+            } else {
+                Ok(ChatResponse {
+                    content: self.peer_derived_response.clone(),
+                    tool_calls: None,
+                    reasoning: None,
+                    usage: None,
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_response_diagnostics_stay_redacted_after_a_tool_round() {
+        let secret = "peer-derived-secret-must-not-be-logged";
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(PeerToolThenDoneLlm {
+            calls: Arc::clone(&calls),
+            peer_derived_response: secret.to_owned(),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(EchoTool));
+        let mut executor = AgentExecutor::new(
+            ExecutorConfig::new("agent".into(), "p".into(), "m".into()),
+            llm,
+            Arc::new(tools),
+            Arc::new(McpManager::new()),
+            Arc::new(MiddlewarePipeline::new()),
+        )
+        .expect("executor");
+        let steering_handle = executor.enable_steering();
+        let steering = SteeringRegistry::new();
+        steering.register_peer_only("exec-peer-target", steering_handle);
+
+        let captured = CapturedLog::default();
+        let sink = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || sink.clone())
+            .finish();
+        let mut events = Vec::new();
+        let run = async {
+            tokio::join!(
+                steering.steer_peer("exec-peer-target", "untrusted peer input"),
+                executor.execute_stream("initial task", &[], |event| events.push(event))
+            )
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        assert_eq!(run.0, SteerResult::Delivered);
+        run.1.expect("execution");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ToolCallStart { args, .. }
+                if args.get("reason").and_then(Value::as_str) == Some("peer_influenced")
+                    && !args.to_string().contains(secret)
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ToolResult {
+                result,
+                context_result,
+                ..
+            } if !result.contains(secret)
+                && context_result
+                    .as_deref()
+                    .is_none_or(|context| !context.contains(secret))
+        )));
+        let output =
+            String::from_utf8(captured.0.lock().expect("log buffer").clone()).expect("UTF-8 logs");
+        assert!(!output.contains(secret));
+        assert!(output.contains("LLM response after peer steering"));
     }
 
     #[tokio::test]

@@ -20,6 +20,7 @@ execution-state = { path = "../../services/execution-state" }
 agent-primitives = { path = "../../runtime/agent-primitives" }
 agent-surfaces = { path = "../../runtime/agent-surfaces" }
 gateway-events = { path = "../gateway-events" }
+gateway-bus = { path = "../gateway-bus" }
 # JSON Schema derivation for the Rig extractor (intent analysis typed output).
 schemars = { workspace = true }
 gateway-memory = { path = "../gateway-memory" }

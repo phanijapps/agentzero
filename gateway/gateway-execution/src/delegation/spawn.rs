@@ -66,6 +66,7 @@ pub async fn spawn_delegated_agent(
     memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     memory_recall: Option<Arc<MemoryRecall>>,
+    peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
     rate_limiters: Arc<
         std::sync::RwLock<
             std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
@@ -516,6 +517,10 @@ pub async fn spawn_delegated_agent(
     let mut builder = ExecutorBuilder::new(paths.vault_dir().clone(), tool_settings)
         .with_model_registry(model_registry)
         .with_actor_kind(actor_kind)
+        .with_initial_state(
+            "execution_id",
+            serde_json::Value::String(execution_id.clone()),
+        )
         .with_initial_state("app:delegation_mode", delegation_mode.as_state_value())
         .with_mcp_startup_failure_observer(mcp_startup_failure_observer(
             log_service.clone(),
@@ -556,6 +561,9 @@ pub async fn spawn_delegated_agent(
     }
     if let Some(recall) = memory_recall.clone() {
         builder = builder.with_memory_recall(recall);
+    }
+    if let Some(peer_messages) = peer_messages {
+        builder = builder.with_peer_messages(peer_messages);
     }
     builder = builder
         .with_state_service(state_service.clone())
@@ -2023,6 +2031,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rate_limiters.clone(),
             None,
             None,
@@ -2156,6 +2165,7 @@ mod tests {
             delegation_tx,
             log_service,
             state_service.clone(),
+            None,
             None,
             None,
             None,

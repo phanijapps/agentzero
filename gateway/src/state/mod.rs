@@ -649,6 +649,14 @@ impl AppState {
             .map(|s| s.max_parallel_agents)
             .unwrap_or(2);
         tracing::info!(max_parallel_agents, "Execution settings loaded");
+        let peer_messages = Arc::new(
+            gateway_execution::peer_messaging::DurablePeerMessageService::new(
+                durable_work_store.clone(),
+                durable_work_transport.clone(),
+                state_service.clone(),
+                gateway_execution::peer_messaging::PEER_MESSAGE_TARGET,
+            ),
+        );
 
         // Create streaming ingestion queue + backpressure BEFORE the runtime so the
         // runner can be wired with an IngestionAdapter.
@@ -724,6 +732,7 @@ impl AppState {
             skills.clone(),
             log_service.clone(),
             state_service.clone(),
+            Some(peer_messages),
             Some(connector_registry.clone()),
             memory_store.clone(),
             distiller,

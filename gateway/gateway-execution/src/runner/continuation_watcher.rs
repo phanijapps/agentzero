@@ -67,6 +67,8 @@ pub(crate) struct RunnerContinuationInvoker {
     pub(crate) distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     pub(crate) handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub(crate) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+    pub(crate) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub(crate) steering_registry: Arc<agent_runtime::SteeringRegistry>,
     /// ArcSwap handle — NOT the inner `Option<Arc<ModelRegistry>>`. Reads
     /// the live value at fire time via `.load_full()`.
     pub(crate) model_registry:
@@ -113,6 +115,8 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             distiller: self.distiller.clone(),
             handoff_writer: self.handoff_writer.clone(),
             memory_recall: self.memory_recall.clone(),
+            peer_messages: self.peer_messages.clone(),
+            steering_registry: self.steering_registry.clone(),
             // Read the live registry at fire time — not a stale capture.
             model_registry: self.model_registry.load_full(),
             kg_store: self.kg_store.clone(),

@@ -1,12 +1,16 @@
 mod handoff_to_agent;
 mod kill_agent;
 mod list_session_agents;
+mod message_agent;
 mod present_surface;
+mod reply_to_agent;
 mod steer_agent;
 mod wait_agent;
 pub use handoff_to_agent::HandoffToAgentTool;
 pub use kill_agent::KillAgentTool;
 pub use list_session_agents::ListSessionAgentsTool;
+pub use message_agent::MessageAgentTool;
 pub use present_surface::PresentSurfaceTool;
+pub use reply_to_agent::ReplyToAgentTool;
 pub use steer_agent::SteerAgentTool;
 pub use wait_agent::WaitAgentTool;

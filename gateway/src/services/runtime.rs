@@ -80,6 +80,7 @@ impl RuntimeService {
             skill_service,
             log_service,
             state_service,
+            None, // peer_messages
             None,
             None, // memory_store
             None, // distiller
@@ -112,6 +113,7 @@ impl RuntimeService {
         skill_service: Arc<SkillService>,
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
+        peer_messages: Option<Arc<gateway_execution::peer_messaging::DurablePeerMessageService>>,
         connector_registry: Option<Arc<ConnectorRegistry>>,
         memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
         distiller: Option<Arc<SessionDistiller>>,
@@ -151,6 +153,7 @@ impl RuntimeService {
             skill_service,
             log_service,
             state_service,
+            peer_messages,
             connector_registry,
             memory_store,
             distiller,
@@ -199,6 +202,11 @@ impl RuntimeService {
     /// Get the execution runner.
     pub fn runner(&self) -> Option<&Arc<ExecutionRunner>> {
         self.runner.as_ref()
+    }
+
+    /// Build the exact durable peer-message handler from runner-owned state.
+    pub fn peer_message_handler(&self) -> Option<Arc<dyn gateway_bus::WorkHandler>> {
+        self.runner.as_ref()?.peer_message_handler()
     }
 
     /// Invoke an agent with a message.

@@ -2648,6 +2648,7 @@ dependencies = [
  "flate2",
  "futures",
  "gateway-bridge",
+ "gateway-bus",
  "gateway-connectors",
  "gateway-events",
  "gateway-memory",

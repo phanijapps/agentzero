@@ -1,6 +1,6 @@
 # Spec: Context Capability Registry
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [`RFC-0014`](../../rfc/0014-context-capability-registry-and-context-graph.md); [`RFC-0011`](../../rfc/0011-engram-memory-engine-cutover.md); [`rig-engine-migration`](../rig-engine-migration/spec.md); [`engram-memory-engine-cutover`](../engram-memory-engine-cutover/spec.md); [`dynamic-ontology-skos-taxonomy`](../dynamic-ontology-skos-taxonomy/spec.md)
@@ -164,7 +164,7 @@ before proceeding; *Never do* is a hard rule, even under time pressure.
 - [x] Synthetic skills + MCP + code + research fixture demonstrates MCP
   discovery through catalog metadata and read-only resources rather than
   model-visible raw discovery tools.
-- [ ] Existing gateway execution, Rig adapter, memory/graph/Observatory,
+- [x] Existing gateway execution, Rig adapter, memory/graph/Observatory,
   Vault/Research, and UI tests continue to pass, or the spec is updated with an
   explicit accepted contract change.
 

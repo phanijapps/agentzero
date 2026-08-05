@@ -1,6 +1,6 @@
 # Plan: Attention Radar UI Rollout
 
-- **Status:** Executing
+- **Status:** Done
 - **Spec:** [`spec.md`](spec.md)
 - **Reference:** [`Mission Control Attention Radar mockup`](../../product/mission-control-attention-radar-mockup.html)
 - **Gallery:** [`Attention Radar UI gallery`](../../product/attention-radar-ui-gallery.html)

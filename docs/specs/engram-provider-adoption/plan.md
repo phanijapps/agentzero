@@ -1,7 +1,7 @@
 # Plan: Engram Provider Adoption
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Done
 
 > **Plan contract:** this is the implementation strategy. The implementation must update it if a material approach changes.
 

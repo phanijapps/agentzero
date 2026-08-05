@@ -34,22 +34,23 @@ Active feature specs for AgentZero.
 | [Persistent Work Surfaces](persistent-work-surfaces/spec.md) | Shipped | Adds opt-in, bounded persistence and reload restoration for validated Quick Chat and Research infographics, plus an explicit clear action. |
 | [Agent Commissioning](agent-commissioning/spec.md) | Shipped | Replaces the legacy setup wizard with durable, personalized model commissioning and a portable semantic profile. |
 | [Commissioning Memory Profile](commissioning-memory-profile/spec.md) | Shipped | Adds an explicit recommended Full Zbot memory choice with built-in embeddings, pinned recall/governance files, and restart-verified activation. |
-| [Engram Provider Adoption](engram-provider-adoption/spec.md) | Implementing | Makes the semantic-memory adapter use Engram's provider facade and expose capability-gated services without changing agent or UI behavior. |
+| [Engram Provider Adoption](engram-provider-adoption/spec.md) | Shipped | Makes the semantic-memory adapter use Engram's provider facade and expose capability-gated services without changing agent or UI behavior. |
 | [Research Terminal State Reconciliation](research-terminal-state-reconciliation/spec.md) | Shipped | Makes successful Research completion deterministically reconcile the plan surface and final response. |
 | [Vault Layout Standardization](vault-layout-standardization/spec.md) | Shipped | Makes vault paths, configuration names, runtime directories, and prompt loading consistent while retiring dormant OKF material. |
 | [SQLite Runtime Store Split](sqlite-runtime-store-split/spec.md) | Shipped | Separates unchanged runtime conversation persistence from quarantined legacy semantic SQLite as Engram owns the active memory layer. |
-| [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Implementing | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
+| [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Shipped | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
 | [Quick Chat Terminal Response Deduplication](quick-chat-terminal-response-dedup/spec.md) | Shipped | Prevents a root terminal fallback from rendering a second Quick Chat answer. |
 | [Quick Chat Recall Ranking](quick-chat-recall-ranking/spec.md) | Shipped | Preserves hybrid recall ranking and supplies query-scoped profile facts from durable memory. |
 | [Graph Planning Gate](graph-planning-gate/spec.md) | Implementing | Enforces cold graph work as ward setup → planner-agent → plan-step execution. |
 | [Execution Capabilities](execution-capabilities/spec.md) | Shipped | Makes skills and MCPs dynamically assigned to root and subagent executions by intent and planning, while retaining static agent mappings as a compatibility fallback. |
 | [MCP ID Normalization](mcp-id-normalization/spec.md) | Shipped | Derives stable IDs for API-managed MCPs and gives the active Blender MCP its canonical `blender-mcp` ID. |
-| [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Implementing | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |
+| [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Archived | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |
 | [Research Context Inspector](research-context-inspector/spec.md) | Implementing | Moves existing intent analysis and delegated-agent context into Research's real right inspector without adding dashboard metrics. |
 | [YFinance Market Analysis Skill Consolidation](yfinance-market-analysis-skill/spec.md) | Shipped | Consolidates bundled yfinance workflows into one primary skill while keeping old `yf-*` IDs as compatibility wrappers. |
 | [Tool Waste Visibility](tool-waste-visibility/spec.md) | Done | Makes blocked hooks, invalid tool arguments, planner skill drift, and tool durations visible in existing session telemetry. |
 | [Mission Control Performance](mission-control-performance/spec.md) | Shipped | Makes Mission Control load bounded summary data first, then lazy-load selected-session detail as the database grows. |
-| [Mission Control Attention Radar](mission-control-attention-radar/spec.md) | Implementing | Replaces Mission Control polling with a bounded live Attention Radar and focused, on-demand observability. |
+| [Mission Control Attention Radar](mission-control-attention-radar/spec.md) | Shipped | Replaces Mission Control polling with a bounded live Attention Radar and focused, on-demand observability. |
+| [Observatory Scale](observatory-scale/spec.md) | Shipped | Keeps Observatory summaries bounded and responsive as the Engram-backed knowledge graph grows beyond 100,000 entities and relationships. |
 | [GitHub Release Installer](github-release-installer/spec.md) | Closed | Defines GitHub Release installers and artifact packaging for Linux, macOS, and Windows. |
 | [Release On Main](release-on-main/spec.md) | Done for now | Automates the daily CalVer release bump and tag when changes land on `main`, while preserving the manual release script. |
 | [Agent Handoff Notes](agent-handoff-notes/spec.md) | Done | Adds current-session agent discovery and one-way handoff notes over existing steering without implementing full Pattern 4 peer messaging. |
@@ -59,7 +60,7 @@ Active feature specs for AgentZero.
 | [Durable Ward Memory](durable-ward-memory/spec.md) | Closed | Defines Layer 4 as `knowledge.db` first-level indexing over durable executable ward workspaces, with preserved ward/file/artifact route hints. |
 | [Engram Memory Engine Cutover](engram-memory-engine-cutover/spec.md) | Shipped | Switches durable memory, knowledge, graph, belief, hierarchy, and recall backing to Engram through a fail-closed AgentZero adapter while preserving gateway/UI/sleep-cycle contracts. |
 | [Dynamic Ontology and SKOS Taxonomy](dynamic-ontology-skos-taxonomy/spec.md) | Implementing | Adds zbot-owned dynamic ontology policy and durable SKOS-style taxonomy classification over Engram without changing gateway/UI contracts. |
-| [Context Capability Registry](context-capability-registry/spec.md) | Implementing | Implements RFC-0014 with an actor-filtered capability catalog, bounded context packets, structured recall/micro-recall, and staged tool-surface cleanup. |
+| [Context Capability Registry](context-capability-registry/spec.md) | Shipped | Implements RFC-0014 with an actor-filtered capability catalog, bounded context packets, structured recall/micro-recall, and staged tool-surface cleanup. |
 | [Unified Recall Default](unified-recall-default/spec.md) | Shipped | Makes a bounded model-visible recall surface use unified semantic retrieval, dynamic taxonomy expansion, and a quality gate before ontology-aware ranking. |
 | [Research Submit Visibility](research-submit-visibility/spec.md) | Shipped | Keeps submitted Research requests visible across intent analysis, snapshots, and delegation. |
 | [Research Live Artifact Refresh](research-live-artifact-refresh/spec.md) | Shipped | Makes newly completed Research artifacts appear in the open session without a page reload. |

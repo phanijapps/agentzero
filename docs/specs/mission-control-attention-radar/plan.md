@@ -1,7 +1,7 @@
 # Plan: Mission Control Attention Radar
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Done
 
 > **Plan contract:** this is the implementation strategy. It can change as the
 > implementation teaches us something; material changes are recorded below.

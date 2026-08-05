@@ -173,6 +173,7 @@ pub enum WorkDispatchRejection {
 pub struct WorkHandlerContext {
     work_id: String,
     source: String,
+    correlation_id: Option<String>,
     provenance: WorkProvenance,
 }
 
@@ -181,6 +182,7 @@ impl WorkHandlerContext {
         Self {
             work_id: envelope.id().to_owned(),
             source: envelope.source().to_owned(),
+            correlation_id: envelope.correlation_id().map(ToOwned::to_owned),
             provenance: envelope.provenance().clone(),
         }
     }
@@ -191,6 +193,10 @@ impl WorkHandlerContext {
 
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.correlation_id.as_deref()
     }
 
     pub fn provenance(&self) -> &WorkProvenance {
@@ -204,6 +210,7 @@ impl fmt::Debug for WorkHandlerContext {
             .debug_struct("WorkHandlerContext")
             .field("work_id", &self.work_id)
             .field("source", &"[REDACTED]")
+            .field("correlation_id", &"[REDACTED]")
             .field("provenance", &"[REDACTED]")
             .finish()
     }

@@ -100,6 +100,7 @@ async fn handle_axum_connection(
                         &sessions,
                         &handler.runtime(),
                         subscriptions.clone(),
+                        handler.agent_tasks(),
                     )
                     .await
                     {

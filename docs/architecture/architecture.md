@@ -1007,6 +1007,16 @@ Sessions track their origin for analytics and UI filtering:
 | Gateway submit | `POST /api/gateway/submit` | Caller specifies in payload |
 | Cron trigger | Internal scheduler | Server sets `cron` |
 
+Research uses the same public WebSocket `invoke` message and event stream, but
+its handoff is durable. The gateway first subscribes the client to a reserved
+session, persists a strict local `agent.task.v1` item in `conversations.db`,
+and lets the existing durable-work worker bootstrap, resume, or monitor the
+ordinary Research runtime. `invoke_accepted` is emitted only after the exact
+session, root execution, and root user message are queryable. Other WebSocket
+modes remain on the direct invocation path. SQLite remains authoritative;
+in-process transport notifications are only wake hints, so eligible work is
+polled again after daemon restart without requiring a broker.
+
 #### POST /api/gateway/submit
 
 For direct API access, include `source` in the request body:

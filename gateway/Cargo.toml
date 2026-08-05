@@ -99,6 +99,7 @@ zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }
 # `zbot-runtime-sqlite`; legacy semantic SQLite is test-only.
 rusqlite = { version = "0.32", features = ["bundled"] }
 assert_matches = "1.5"
+tracing-subscriber = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 axum-test = { version = "16", features = ["ws"] }
 

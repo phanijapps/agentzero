@@ -330,6 +330,17 @@ pub enum SessionWardClaim {
     Existing(String),
 }
 
+fn validate_prefixed_uuid(value: &str, prefix: &str) -> Result<(), String> {
+    let suffix = value
+        .strip_prefix(prefix)
+        .ok_or_else(|| "invalid_reserved_id".to_string())?;
+    let parsed = uuid::Uuid::parse_str(suffix).map_err(|_| "invalid_reserved_id".to_string())?;
+    if parsed.hyphenated().to_string() != suffix {
+        return Err("invalid_reserved_id".to_string());
+    }
+    Ok(())
+}
+
 impl Session {
     /// Create a new session in RUNNING state with Web source (default).
     pub fn new(root_agent_id: impl Into<String>) -> Self {
@@ -361,6 +372,19 @@ impl Session {
         }
     }
 
+    /// Create a running session with a caller-reserved canonical ID.
+    pub fn new_with_id(
+        id: impl Into<String>,
+        root_agent_id: impl Into<String>,
+        source: TriggerSource,
+    ) -> Result<Self, String> {
+        let id = id.into();
+        validate_prefixed_uuid(&id, "sess-")?;
+        let mut session = Self::new_with_source(root_agent_id, source);
+        session.id = id;
+        Ok(session)
+    }
+
     /// Create a new session in QUEUED state (not yet started).
     pub fn new_queued(root_agent_id: impl Into<String>, source: TriggerSource) -> Self {
         Self {
@@ -384,6 +408,19 @@ impl Session {
             respond_to: None,
             mode: None,
         }
+    }
+
+    /// Create a queued session with a caller-reserved canonical ID.
+    pub fn new_queued_with_id(
+        id: impl Into<String>,
+        root_agent_id: impl Into<String>,
+        source: TriggerSource,
+    ) -> Result<Self, String> {
+        let id = id.into();
+        validate_prefixed_uuid(&id, "sess-")?;
+        let mut session = Self::new_queued(root_agent_id, source);
+        session.id = id;
+        Ok(session)
     }
 
     /// Create a child session for a subagent (isolated conversation context).
@@ -527,6 +564,19 @@ impl AgentExecution {
             log_path: None,
             child_session_id: None,
         }
+    }
+
+    /// Create a queued root execution with a caller-reserved canonical ID.
+    pub fn new_root_with_id(
+        id: impl Into<String>,
+        session_id: impl Into<String>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let id = id.into();
+        validate_prefixed_uuid(&id, "exec-")?;
+        let mut execution = Self::new_root(session_id, agent_id);
+        execution.id = id;
+        Ok(execution)
     }
 
     /// Create a new delegated execution.
@@ -1436,6 +1486,16 @@ mod tests {
     }
 
     #[test]
+    fn session_reserved_id_requires_canonical_uuid() {
+        let id = "sess-550e8400-e29b-41d4-a716-446655440000";
+        let session = Session::new_queued_with_id(id, "agent", TriggerSource::Web).unwrap();
+        assert_eq!(session.id, id);
+        assert!(
+            Session::new_queued_with_id("sess-NOT-A-UUID", "agent", TriggerSource::Web).is_err()
+        );
+    }
+
+    #[test]
     fn session_total_tokens() {
         let mut session = Session::new("agent");
         session.total_tokens_in = 1000;
@@ -1470,6 +1530,14 @@ mod tests {
         assert!(exec.started_at.is_none());
         assert_eq!(exec.tokens_in, 0);
         assert_eq!(exec.tokens_out, 0);
+    }
+
+    #[test]
+    fn root_execution_reserved_id_requires_canonical_uuid() {
+        let id = "exec-550e8400-e29b-41d4-a716-446655440000";
+        let execution = AgentExecution::new_root_with_id(id, "sess-1", "agent").unwrap();
+        assert_eq!(execution.id, id);
+        assert!(AgentExecution::new_root_with_id("exec-NOT-A-UUID", "sess-1", "agent").is_err());
     }
 
     #[test]

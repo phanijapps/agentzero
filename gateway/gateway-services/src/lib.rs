@@ -35,7 +35,7 @@ pub mod watcher;
 mod windows_file;
 
 pub use agent_registry::AgentRegistry;
-pub use agents::AgentService;
+pub use agents::{validate_configured_agent_id, AgentService};
 pub use embedding_service::{
     curated_lookup, CuratedModel, EmbeddingBackend, EmbeddingConfig, EmbeddingService, Health,
     LiveEmbeddingClient, OllamaConfig, CURATED_MODELS,

@@ -330,6 +330,61 @@ impl RuntimeService {
         mode: Option<String>,
         client_message_id: Option<String>,
     ) -> Result<(ExecutionHandle, String), String> {
+        self.invoke_with_hook_and_callback_policy(
+            agent_id,
+            conversation_id,
+            message,
+            hook_context,
+            session_id,
+            on_session_ready,
+            mode,
+            client_message_id,
+            false,
+        )
+        .await
+    }
+
+    /// Invoke a durable task through the ordinary bootstrap while keeping
+    /// provider/setup diagnostics behind the normalized task boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_durable_with_hook_and_callback(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        hook_context: HookContext,
+        session_id: Option<String>,
+        on_session_ready: Option<gateway_execution::OnSessionReady>,
+        mode: Option<String>,
+        client_message_id: Option<String>,
+    ) -> Result<(ExecutionHandle, String), String> {
+        self.invoke_with_hook_and_callback_policy(
+            agent_id,
+            conversation_id,
+            message,
+            hook_context,
+            session_id,
+            on_session_ready,
+            mode,
+            client_message_id,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_with_hook_and_callback_policy(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        hook_context: HookContext,
+        session_id: Option<String>,
+        on_session_ready: Option<gateway_execution::OnSessionReady>,
+        mode: Option<String>,
+        client_message_id: Option<String>,
+        redact_setup_errors: bool,
+    ) -> Result<(ExecutionHandle, String), String> {
         let runner = self.runner.as_ref().ok_or_else(|| {
             "Runtime not initialized with executor. Call with_runner() first.".to_string()
         })?;
@@ -358,8 +413,58 @@ impl RuntimeService {
             config = config.with_client_message_id(client_message_id);
         }
 
+        if redact_setup_errors {
+            runner
+                .invoke_redacted_with_callback(config, message.to_string(), on_session_ready)
+                .await
+        } else {
+            runner
+                .invoke_with_callback(config, message.to_string(), on_session_ready)
+                .await
+        }
+    }
+
+    /// Resume an initial invocation whose exact root message is already
+    /// durable, preserving the ordinary bootstrap path after append.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_persisted_with_hook_and_callback(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        hook_context: HookContext,
+        session_id: String,
+        execution_id: String,
+        message_id: String,
+        on_session_ready: Option<gateway_execution::OnSessionReady>,
+        mode: Option<String>,
+    ) -> Result<(ExecutionHandle, String), String> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            "Runtime not initialized with executor. Call with_runner() first.".to_string()
+        })?;
+        let paths = self
+            .paths
+            .clone()
+            .ok_or_else(|| "Vault paths not set".to_string())?;
+        let mut config = ExecutionConfig::new(
+            agent_id.to_string(),
+            conversation_id.to_string(),
+            paths.vault_dir().clone(),
+        )
+        .with_hook_context(hook_context)
+        .with_session_id(session_id)
+        .with_mode(mode.unwrap_or_else(|| "research".to_owned()))
+        .with_client_message_id(message_id.clone());
+        config.source = execution_state::TriggerSource::Web;
+
         runner
-            .invoke_with_callback(config, message.to_string(), on_session_ready)
+            .invoke_persisted_with_callback(
+                config,
+                message.to_owned(),
+                execution_id,
+                message_id,
+                on_session_ready,
+            )
             .await
     }
 

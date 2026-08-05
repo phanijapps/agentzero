@@ -876,7 +876,60 @@ impl ExecutionRunner {
             .begin_setup(&mut config, &message, on_session_ready)
             .await?;
 
-        // Phase 2: emit AgentStarted, load agent, intent analysis, build executor.
+        self.finish_initial_invoke(config, message, partial, true)
+            .await
+    }
+
+    /// Invoke through the ordinary append/bootstrap path while keeping setup
+    /// failures normalized for a durable-work boundary.
+    pub async fn invoke_redacted_with_callback(
+        &self,
+        mut config: ExecutionConfig,
+        message: String,
+        on_session_ready: Option<OnSessionReady>,
+    ) -> Result<(ExecutionHandle, String), String> {
+        config = config.with_redacted_diagnostics();
+        let partial = self
+            .bootstrap
+            .begin_setup(&mut config, &message, on_session_ready)
+            .await?;
+        self.finish_initial_invoke(config, message, partial, false)
+            .await
+    }
+
+    /// Resume the ordinary initial invocation from an exact durable root
+    /// message. Unlike delegation continuation, this runs the same phase-two
+    /// bootstrap and execution stream as [`Self::invoke_with_callback`].
+    pub async fn invoke_persisted_with_callback(
+        &self,
+        mut config: ExecutionConfig,
+        message: String,
+        execution_id: String,
+        message_id: String,
+        on_session_ready: Option<OnSessionReady>,
+    ) -> Result<(ExecutionHandle, String), String> {
+        config = config.with_redacted_diagnostics();
+        let partial = self
+            .bootstrap
+            .begin_setup_from_persisted(
+                &mut config,
+                &message,
+                &execution_id,
+                &message_id,
+                on_session_ready,
+            )
+            .await?;
+        self.finish_initial_invoke(config, message, partial, false)
+            .await
+    }
+
+    async fn finish_initial_invoke(
+        &self,
+        config: ExecutionConfig,
+        message: String,
+        partial: super::invoke_bootstrap::PartialSetup,
+        log_internal_error: bool,
+    ) -> Result<(ExecutionHandle, String), String> {
         let partial_execution_id = partial.execution_id.clone();
         let partial_session_id = partial.session_id.clone();
         let partial_handle = partial.handle.clone();
@@ -887,15 +940,14 @@ impl ExecutionRunner {
         {
             Ok(setup) => setup,
             Err(error) => {
-                // `begin_setup` has already made the root execution visible.
-                // Finish it deterministically instead of leaving a perpetual
-                // running session when workspace binding or executor setup fails.
-                tracing::error!(
-                    session_id = %partial_session_id,
-                    execution_id = %partial_execution_id,
-                    error = %error,
-                    "Invocation setup failed after execution start"
-                );
+                if log_internal_error {
+                    tracing::error!(
+                        session_id = %partial_session_id,
+                        execution_id = %partial_execution_id,
+                        error = %error,
+                        "Invocation setup failed after execution start"
+                    );
+                }
                 {
                     let mut handles = self.handles.write().await;
                     if handles
@@ -918,11 +970,10 @@ impl ExecutionRunner {
                     crash_session: true,
                 })
                 .await;
-                return Err(SAFE_SETUP_ERROR.to_string());
+                return Err(SAFE_SETUP_ERROR.to_owned());
             }
         };
 
-        // Assemble the per-execution stream + context exactly as the old call site did.
         let stream = super::execution_stream::ExecutionStream {
             event_bus: self.event_bus.clone(),
             state_service: self.state_service.clone(),
@@ -958,7 +1009,6 @@ impl ExecutionRunner {
         tokio::spawn(async move {
             let _ = stream.run(ctx, setup.executor).await;
         });
-
         Ok((setup.handle, setup.session_id))
     }
 

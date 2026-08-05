@@ -32,6 +32,7 @@ pub mod bus;
 pub mod config;
 pub mod connectors;
 pub mod cron;
+pub mod durable_agent_tasks;
 pub mod error;
 pub mod events;
 pub mod execution;

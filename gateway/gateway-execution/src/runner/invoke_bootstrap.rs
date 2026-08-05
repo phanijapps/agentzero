@@ -640,6 +640,7 @@ impl InvokeBootstrap {
         let session_id = session_setup.session_id;
         let execution_id = session_setup.execution_id;
         let ward_id = session_setup.ward_id;
+        let redact_diagnostics = config.redact_diagnostics();
 
         // If session has a persisted mode, use it (overrides invoke mode).
         // Otherwise persist the effective invoke mode so replay/monitoring can
@@ -649,12 +650,20 @@ impl InvokeBootstrap {
                 config.mode = Some(persisted_mode.clone());
             } else if let Some(ref mode) = config.mode {
                 if let Err(e) = self.state_service.set_session_mode(&session_id, mode) {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        mode = %mode,
-                        "Failed to persist session mode: {}",
-                        e
-                    );
+                    if redact_diagnostics {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            reason_code = "session_mode_write_failed",
+                            "Invocation bootstrap degraded"
+                        );
+                    } else {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            mode = %mode,
+                            "Failed to persist session mode: {}",
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -670,7 +679,15 @@ impl InvokeBootstrap {
                 config.connector_id.as_deref(),
                 config.respond_to.as_ref(),
             ) {
-                tracing::warn!("Failed to persist session routing: {}", e);
+                if redact_diagnostics {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        reason_code = "session_routing_write_failed",
+                        "Invocation bootstrap degraded"
+                    );
+                } else {
+                    tracing::warn!("Failed to persist session routing: {}", e);
+                }
             }
         }
 
@@ -690,12 +707,21 @@ impl InvokeBootstrap {
                 seq: 0,
             })
             .map_err(|error| {
-                tracing::warn!(
-                    session_id = %session_id,
-                    execution_id = %execution_id,
-                    error = %error,
-                    "Failed to persist root user message before session publication"
-                );
+                if redact_diagnostics {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        execution_id = %execution_id,
+                        reason_code = "root_message_write_failed",
+                        "Invocation bootstrap failed"
+                    );
+                } else {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        execution_id = %execution_id,
+                        error = %error,
+                        "Failed to persist root user message before session publication"
+                    );
+                }
                 "Unable to start this request".to_string()
             })?;
 
@@ -706,22 +732,39 @@ impl InvokeBootstrap {
         self.state_service
             .reactivate_session(&session_id)
             .map_err(|error| {
-                tracing::warn!(
-                    session_id = %session_id,
-                    error = %error,
-                    "Failed to reactivate session after root message persistence"
-                );
+                if redact_diagnostics {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        reason_code = "session_reactivation_failed",
+                        "Invocation bootstrap failed"
+                    );
+                } else {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %error,
+                        "Failed to reactivate session after root message persistence"
+                    );
+                }
                 "Unable to start this request".to_string()
             })?;
         self.state_service
             .reactivate_execution(&execution_id)
             .map_err(|error| {
-                tracing::warn!(
-                    session_id = %session_id,
-                    execution_id = %execution_id,
-                    error = %error,
-                    "Failed to reactivate execution after root message persistence"
-                );
+                if redact_diagnostics {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        execution_id = %execution_id,
+                        reason_code = "execution_reactivation_failed",
+                        "Invocation bootstrap failed"
+                    );
+                } else {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        execution_id = %execution_id,
+                        error = %error,
+                        "Failed to reactivate execution after root message persistence"
+                    );
+                }
                 "Unable to start this request".to_string()
             })?;
 
@@ -755,6 +798,98 @@ impl InvokeBootstrap {
             root_message_id,
             handle,
             ward_id,
+        })
+    }
+
+    /// Resume the ordinary initial bootstrap after its root message is already
+    /// durable. This skips only the append step; phase two is shared with a
+    /// normal invocation so prompt, intent, hook, and tool behavior cannot
+    /// drift into continuation semantics.
+    pub(super) async fn begin_setup_from_persisted(
+        &self,
+        config: &mut ExecutionConfig,
+        message: &str,
+        expected_execution_id: &str,
+        expected_message_id: &str,
+        on_session_ready: Option<OnSessionReady>,
+    ) -> Result<PartialSetup, String> {
+        let session_id = config
+            .session_id
+            .clone()
+            .ok_or_else(|| "durable_resume_session_missing".to_string())?;
+        let session = self
+            .state_service
+            .get_session(&session_id)
+            .map_err(|_| "durable_resume_session_read_failed".to_string())?
+            .ok_or_else(|| "durable_resume_session_missing".to_string())?;
+        if session.root_agent_id != config.agent_id {
+            return Err("durable_resume_identity_mismatch".to_string());
+        }
+        let execution = self
+            .state_service
+            .get_root_execution(&session_id)
+            .map_err(|_| "durable_resume_execution_read_failed".to_string())?
+            .ok_or_else(|| "durable_resume_execution_missing".to_string())?;
+        if execution.id != expected_execution_id || execution.agent_id != config.agent_id {
+            return Err("durable_resume_identity_mismatch".to_string());
+        }
+        let persisted = self
+            .messages
+            .get(expected_message_id)
+            .map_err(|_| "durable_resume_message_read_failed".to_string())?
+            .ok_or_else(|| "durable_resume_message_missing".to_string())?;
+        if persisted.session_id != session_id
+            || persisted.execution_id.as_deref() != Some(expected_execution_id)
+            || persisted.role != "user"
+            || persisted.content != message
+        {
+            return Err("durable_resume_message_mismatch".to_string());
+        }
+
+        if let Some(ref persisted_mode) = session.mode {
+            config.mode = Some(persisted_mode.clone());
+        } else if let Some(ref mode) = config.mode {
+            self.state_service
+                .set_session_mode(&session_id, mode)
+                .map_err(|_| "durable_resume_mode_write_failed".to_string())?;
+        }
+
+        if session.status == execution_state::SessionStatus::Paused {
+            self.state_service
+                .resume_session(&session_id)
+                .map_err(|_| "durable_resume_state_failed".to_string())?;
+        } else {
+            self.state_service
+                .reactivate_session(&session_id)
+                .map_err(|_| "durable_resume_state_failed".to_string())?;
+        }
+        self.state_service
+            .reactivate_execution(expected_execution_id)
+            .map_err(|_| "durable_resume_state_failed".to_string())?;
+        start_execution(
+            &self.state_service,
+            &self.log_service,
+            expected_execution_id,
+            &session_id,
+            &config.agent_id,
+            None,
+        );
+
+        let handle = ExecutionHandle::new(config.max_iterations);
+        {
+            let mut handles = self.handles.write().await;
+            handles.insert(config.conversation_id.clone(), handle.clone());
+        }
+        if let Some(callback) = on_session_ready {
+            callback(session_id.clone()).await;
+        }
+
+        Ok(PartialSetup {
+            session_id,
+            execution_id: expected_execution_id.to_owned(),
+            root_message_id: expected_message_id.to_owned(),
+            handle,
+            ward_id: session.ward_id,
         })
     }
 
@@ -800,7 +935,12 @@ impl InvokeBootstrap {
         let (agent, provider) = match agent_loader.load_or_create_root(&config.agent_id).await {
             Ok(result) => result,
             Err(e) => {
-                self.emit_error(&config.conversation_id, &config.agent_id, &e)
+                let client_error = if config.redact_diagnostics() {
+                    "Unable to start this request"
+                } else {
+                    &e
+                };
+                self.emit_error(&config.conversation_id, &config.agent_id, client_error)
                     .await;
                 return Err(e);
             }
@@ -997,7 +1137,12 @@ impl InvokeBootstrap {
         {
             Ok(result) => result,
             Err(e) => {
-                self.emit_error(&config.conversation_id, &config.agent_id, &e)
+                let client_error = if config.redact_diagnostics() {
+                    "Unable to start this request"
+                } else {
+                    &e
+                };
+                self.emit_error(&config.conversation_id, &config.agent_id, client_error)
                     .await;
                 return Err(e);
             }
@@ -1199,8 +1344,13 @@ impl InvokeBootstrap {
             })
             .await;
         let intent_title_hint = outcome.as_ref().map(|out| out.title_hint.as_str());
-        self.derive_and_publish_session_title(session_id, user_message, intent_title_hint)
-            .await;
+        self.derive_and_publish_session_title(
+            session_id,
+            user_message,
+            intent_title_hint,
+            config.redact_diagnostics(),
+        )
+        .await;
         let mut effective_ward_id = ward_id.map(str::to_owned);
         if let Some(out) = outcome {
             if effective_ward_id.is_none() {
@@ -1440,7 +1590,16 @@ impl InvokeBootstrap {
         let raw_client = match agent_runtime::OpenAiClient::new(llm_config) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("Failed to create LLM client for intent analysis: {}", e);
+                if config.redact_diagnostics() {
+                    tracing::warn!(
+                        session_id,
+                        execution_id,
+                        reason_code = "intent_client_unavailable",
+                        "Intent analysis unavailable"
+                    );
+                } else {
+                    tracing::warn!("Failed to create LLM client for intent analysis: {}", e);
+                }
                 self.emit_intent_fallback_complete(
                     session_id,
                     execution_id,
@@ -1486,7 +1645,16 @@ impl InvokeBootstrap {
         {
             Ok(a) => a,
             Err(e) => {
-                tracing::warn!("Intent analysis failed (non-fatal): {}", e);
+                if config.redact_diagnostics() {
+                    tracing::warn!(
+                        session_id,
+                        execution_id,
+                        reason_code = "intent_analysis_failed",
+                        "Intent analysis unavailable"
+                    );
+                } else {
+                    tracing::warn!("Intent analysis failed (non-fatal): {}", e);
+                }
                 self.emit_intent_fallback_complete(
                     session_id,
                     execution_id,
@@ -1628,6 +1796,7 @@ impl InvokeBootstrap {
         session_id: &str,
         user_message: Option<&str>,
         intent_title_hint: Option<&str>,
+        redact_diagnostics: bool,
     ) {
         if self
             .state_service
@@ -1650,7 +1819,15 @@ impl InvokeBootstrap {
         };
 
         if let Err(err) = self.state_service.update_session_title(session_id, &title) {
-            tracing::warn!(session_id = %session_id, error = %err, "Failed to persist derived session title");
+            if redact_diagnostics {
+                tracing::warn!(
+                    session_id,
+                    reason_code = "session_title_write_failed",
+                    "Session title persistence failed"
+                );
+            } else {
+                tracing::warn!(session_id = %session_id, error = %err, "Failed to persist derived session title");
+            }
             return;
         }
 
@@ -2192,6 +2369,33 @@ mod tests {
             .expect("read execution after failed retry")
             .expect("execution exists");
         assert_eq!(after_failure_execution.status.as_str(), "completed");
+
+        let resumed = bootstrap
+            .begin_setup_from_persisted(
+                &mut retry_config,
+                "persist before intent analysis",
+                &setup.execution_id,
+                client_message_id,
+                None,
+            )
+            .await
+            .expect("durable resume should reuse the exact root prompt");
+        assert_eq!(resumed.session_id, setup.session_id);
+        assert_eq!(resumed.execution_id, setup.execution_id);
+        assert_eq!(resumed.root_message_id, client_message_id);
+        let after_resume = messages
+            .replay(&resumed.session_id, None, 10)
+            .expect("message replay should succeed");
+        assert_eq!(after_resume.len(), 1, "resume must not append the prompt");
+        assert_eq!(
+            bootstrap
+                .state_service
+                .get_session(&resumed.session_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            execution_state::SessionStatus::Running
+        );
     }
 
     #[test]

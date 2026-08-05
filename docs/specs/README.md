@@ -4,6 +4,7 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Durable Queue Worker Runtime](durable-queue-worker-runtime/spec.md) | Shipped | Runs a supervised local worker with exact handler dispatch, typed payload validation, lease heartbeats, bounded concurrency/timeouts/shutdown, fail-closed store errors, and no migrated producer or production handler. |
 | [Durable Work Queue](durable-work-queue/spec.md) | Shipped | Adds a local SQLite work queue with bounded envelopes, fenced leases, capped retries, dead-letter state, and a broker-neutral internal transport port without adding a broker or migrating current execution flows. |
 | [Unique Model Tool Inventory](unique-tool-inventory/spec.md) | Shipped | Keeps every actor's model-visible tool names unique while preserving strict schema validation and existing capability membership. |
 | [Prompt Cache and Tool Footprint](prompt-cache-tool-footprint/spec.md) | Shipped | Preserves existing prompt-cache behavior while canonicalizing, measuring, and fail-closed bounding model-visible tool inventories before provider requests. |

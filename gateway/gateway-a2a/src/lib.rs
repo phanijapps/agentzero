@@ -6,10 +6,13 @@ use a2a::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write;
 
 pub mod config;
 pub mod peers;
+pub mod registry;
 pub mod secrets;
 pub mod url_policy;
 
@@ -522,9 +525,40 @@ fn validate_task_id(value: &str) -> Result<(), ProtocolError> {
 fn validate_raw_send_message_shape(body: &[u8]) -> Result<(), ProtocolError> {
     let raw: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| ProtocolError::InvalidRequest)?;
-    let parts = raw
+    let root = raw.as_object().ok_or(ProtocolError::InvalidRequest)?;
+    reject_unknown_fields(root, &["message", "configuration", "metadata", "tenant"])?;
+    let message = root
         .get("message")
-        .and_then(|message| message.get("parts"))
+        .and_then(serde_json::Value::as_object)
+        .ok_or(ProtocolError::InvalidParams)?;
+    reject_unknown_fields(
+        message,
+        &[
+            "messageId",
+            "contextId",
+            "taskId",
+            "role",
+            "parts",
+            "metadata",
+            "extensions",
+            "referenceTaskIds",
+        ],
+    )?;
+    let configuration = root
+        .get("configuration")
+        .and_then(serde_json::Value::as_object)
+        .ok_or(ProtocolError::InvalidParams)?;
+    reject_unknown_fields(
+        configuration,
+        &[
+            "acceptedOutputModes",
+            "taskPushNotificationConfig",
+            "historyLength",
+            "returnImmediately",
+        ],
+    )?;
+    let parts = message
+        .get("parts")
         .and_then(serde_json::Value::as_array)
         .ok_or(ProtocolError::InvalidParams)?;
     for part in parts {
@@ -547,14 +581,23 @@ fn validate_raw_send_message_shape(body: &[u8]) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+fn reject_unknown_fields(
+    object: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+) -> Result<(), ProtocolError> {
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(ProtocolError::InvalidParams);
+    }
+    Ok(())
+}
+
 fn derived_id(base: &str, suffix: &str) -> String {
-    let separator_len = 1;
-    let suffix_len = suffix.len();
-    let max_base_len = MAX_TASK_ID_BYTES.saturating_sub(separator_len + suffix_len);
-    let mut id =
-        String::with_capacity(MAX_TASK_ID_BYTES.min(base.len() + separator_len + suffix_len));
-    id.push_str(&base[..base.floor_char_boundary(max_base_len)]);
-    id.push('-');
+    let digest = Sha256::digest([base.as_bytes(), b"\0", suffix.as_bytes()].concat());
+    let mut id = String::with_capacity(suffix.len() + 1 + digest.len() * 2);
     id.push_str(suffix);
+    id.push('-');
+    for byte in digest {
+        write!(&mut id, "{byte:02x}").expect("writing to a String cannot fail");
+    }
     id
 }

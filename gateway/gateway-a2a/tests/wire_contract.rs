@@ -1,7 +1,8 @@
 use gateway_a2a::{
-    agent_card, cancel_task_request, error_response, list_tasks_response, project_task,
-    send_message_response, validate_headers, validate_send_message_request, AgentCardConfig,
-    AgentSkillConfig, ProtocolError, TaskProjection, TaskProjectionState, APPLICATION_A2A_JSON,
+    agent_card, cancel_task_request, error_response, list_tasks_response,
+    parse_send_message_request, project_task, send_message_response, validate_headers,
+    validate_send_message_request, AgentCardConfig, AgentSkillConfig, ProtocolError,
+    TaskProjection, TaskProjectionState, APPLICATION_A2A_JSON,
 };
 use serde_json::json;
 
@@ -150,6 +151,64 @@ fn send_requires_immediate_text() {
 }
 
 #[test]
+fn raw_send_rejects_ambiguous_or_unknown_part_shapes() {
+    for invalid in [
+        json!({
+            "message": {
+                "messageId": "msg-mixed-url",
+                "role": "ROLE_USER",
+                "parts": [{ "text": "hello", "url": "https://example.test/file" }]
+            },
+            "configuration": { "acceptedOutputModes": ["text/plain"], "returnImmediately": true }
+        }),
+        json!({
+            "message": {
+                "messageId": "msg-mixed-raw",
+                "role": "ROLE_USER",
+                "parts": [{ "text": "hello", "raw": "aGVsbG8=" }]
+            },
+            "configuration": { "acceptedOutputModes": ["text/plain"], "returnImmediately": true }
+        }),
+        json!({
+            "message": {
+                "messageId": "msg-unknown",
+                "role": "ROLE_USER",
+                "parts": [{ "text": "hello", "futureField": true }]
+            },
+            "configuration": { "acceptedOutputModes": ["text/plain"], "returnImmediately": true }
+        }),
+        json!({
+            "message": {
+                "messageId": "msg-unknown-envelope",
+                "role": "ROLE_USER",
+                "parts": [{ "text": "hello" }],
+                "futureMessageField": true
+            },
+            "configuration": { "acceptedOutputModes": ["text/plain"], "returnImmediately": true },
+            "futureRequestField": true
+        }),
+    ] {
+        let body = serde_json::to_vec(&invalid).unwrap();
+        assert_eq!(
+            parse_send_message_request(&body).unwrap_err(),
+            ProtocolError::InvalidParams
+        );
+    }
+
+    let valid = serde_json::to_vec(&json!({
+        "message": {
+            "messageId": "msg-strict",
+            "role": "ROLE_USER",
+            "parts": [{ "text": "hello", "mediaType": "text/plain" }]
+        },
+        "configuration": { "acceptedOutputModes": ["text/plain"], "returnImmediately": true }
+    }))
+    .unwrap();
+    let (_request, accepted) = parse_send_message_request(&valid).expect("strict valid send");
+    assert_eq!(accepted.message_id, "msg-strict");
+}
+
+#[test]
 fn task_projection_matches_contract() {
     let submitted = project_task(TaskProjection {
         id: "task-1".into(),
@@ -198,6 +257,42 @@ fn task_projection_matches_contract() {
         "next"
     );
     assert_eq!(cancel_task_request("task-1").id, "task-1");
+
+    let max_id = "t".repeat(128);
+    let bounded = project_task(TaskProjection {
+        id: max_id,
+        context_id: "c".repeat(128),
+        state: TaskProjectionState::Completed,
+        message: Some("done".into()),
+        artifact_text: Some("final answer".into()),
+        updated_at: None,
+    })
+    .expect("boundary-valid task ids must project");
+    assert!(bounded
+        .status
+        .message
+        .as_ref()
+        .is_some_and(|message| message.message_id.len() <= 128));
+    assert!(bounded.artifacts.as_ref().is_some_and(|artifacts| {
+        artifacts
+            .iter()
+            .all(|artifact| artifact.artifact_id.len() <= 128)
+    }));
+
+    let other = project_task(TaskProjection {
+        id: format!("{}z", "t".repeat(127)),
+        context_id: "ctx-other".into(),
+        state: TaskProjectionState::Completed,
+        message: Some("done".into()),
+        artifact_text: None,
+        updated_at: None,
+    })
+    .unwrap();
+    assert_ne!(
+        bounded.status.message.unwrap().message_id,
+        other.status.message.unwrap().message_id,
+        "derived message IDs must not collapse long task IDs sharing a prefix"
+    );
 }
 
 #[test]

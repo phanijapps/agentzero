@@ -1,7 +1,7 @@
 # Plan: Execution Capabilities
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Done
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as implementation reveals new facts.

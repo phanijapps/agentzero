@@ -1,6 +1,6 @@
 # Spec: Observatory scale-safe summaries
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none
@@ -52,15 +52,15 @@ database columns instead of loading and deserializing the whole graph.
 
 ## Acceptance Criteria
 
-- [ ] Aggregate graph counts return the active entity and relationship totals
+- [x] Aggregate graph counts return the active entity and relationship totals
   without deserializing entity or relationship JSON payloads.
-- [ ] Given hierarchy is disabled, when `/api/hierarchy/stats` is requested,
+- [x] Given hierarchy is disabled, when `/api/hierarchy/stats` is requested,
   the response remains disabled with an empty summary and does not query the
   knowledge graph store.
-- [ ] Given hierarchy is enabled, hierarchy layer counts, inter-cluster count,
+- [x] Given hierarchy is enabled, hierarchy layer counts, inter-cluster count,
   and top aggregates are derived from scalar sidecar columns and keep the
   current response shape.
-- [ ] The default Observatory remains a bounded 200-node / 500-edge preview;
+- [x] The default Observatory remains a bounded 200-node / 500-edge preview;
   it does not render a 100,000-node SVG graph.
 
 ## Assumptions

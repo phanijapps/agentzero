@@ -1,6 +1,6 @@
 # Spec: Quiet Instrument UI
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** zbot maintainers
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none

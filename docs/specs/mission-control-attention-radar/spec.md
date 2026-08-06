@@ -1,6 +1,6 @@
 # Spec: Mission Control Attention Radar
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** zbot maintainers
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none
@@ -71,34 +71,34 @@ without changing any other route in this feature.
 
 ## Acceptance Criteria
 
-- [ ] Given Mission Control opens, when the WebSocket connects, the page
+- [x] Given Mission Control opens, when the WebSocket connects, the page
   renders one bounded Radar snapshot and then applies mission deltas without a
   `setInterval`-based list or selected-token refresh.
-- [ ] Given an active, stalled, or failed session, when its normalized state
+- [x] Given an active, stalled, or failed session, when its normalized state
   changes, the Radar ranks and labels its attention reason and updates the
   focused mission without fetching the complete history; durable decision
   threads remain a separate visible queue.
-- [ ] Given a disconnect or daemon restart, when the transport reconnects, the
+- [x] Given a disconnect or daemon restart, when the transport reconnects, the
   Radar requests and renders an authoritative fresh-epoch snapshot without
   duplicate rows or stale optimistic state.
-- [ ] Given the Radar chooses or a user focuses a mission, its current plan,
+- [x] Given the Radar chooses or a user focuses a mission, its current plan,
   delegation/activity summary, and selected-session trace are expanded by
   default in a separately scrollable focused-mission panel; raw tools are
   loaded only for that one focused session.
-- [ ] Given an inspected mission receives a `plan_updated` delta, when its
+- [x] Given an inspected mission receives a `plan_updated` delta, when its
   plan revision changes, the visible current plan refreshes once from the
   selected-session token endpoint without fetching its trace history.
-- [ ] Given desktop, tablet, and narrow mobile widths, when the route renders,
+- [x] Given desktop, tablet, and narrow mobile widths, when the route renders,
   the header, KPI strip, Radar, focused mission, attention queue, and operation
   feed remain readable, keyboard-operable, and free of horizontal page
   overflow.
-- [ ] Given a client that did not explicitly subscribe to Mission Control,
+- [x] Given a client that did not explicitly subscribe to Mission Control,
   when lifecycle events occur, it receives no Radar snapshot or delta.
-- [ ] Given malformed, oversized, unknown-field, or repeated Mission Control
+- [x] Given malformed, oversized, unknown-field, or repeated Mission Control
   frames, when the server handles them, it rejects only the sender with a fixed
   code, performs at most one snapshot query in flight per connection, and
   exposes no raw event/database text.
-- [ ] Given this feature branch, when its targeted UI/Rust tests, lint,
+- [x] Given this feature branch, when its targeted UI/Rust tests, lint,
   formatting, and production build gates run, all pass or a pre-existing
   failure is documented with evidence.
 

@@ -1,6 +1,6 @@
 # Spec: Attention Radar UI Rollout
 
-- **Status:** Implementing
+- **Status:** Archived
 - **Owner:** zbot maintainers
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** none
@@ -114,8 +114,9 @@ routes, accessibility, and public contracts remains in force.
 - Product: the Mission Control Attention Radar mock is the art-direction
   reference and all distinct user-facing surfaces receive mocks before
   production implementation (source: user confirmation 2026-07-15).
-- Process: this remains a living spec with a plan and acceptance criteria while
-  implementation is active (source: `docs/CONVENTIONS.md` §4).
+- Process: this rollout was archived before the remaining route cohorts and
+  cross-route verification were completed; its open criteria preserve that
+  historical scope (source: lifecycle closeout on 2026-08-05).
 
 ## Screen contract
 

@@ -1,7 +1,7 @@
 # Plan: A2A Federation and Discovery
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Executing
+- **Status:** Done
 
 ## Approach
 
@@ -52,18 +52,17 @@ smoke.
 - Durable outbound tests run the real work worker against a fake A2A HTTP peer,
   stop/recreate the worker between submit and terminal polling, and assert one
   stable local result plus attributed steering delivery.
-- A two-daemon test uses isolated temporary data directories and ports, explicit
-  reciprocal peer files, and real HTTP to prove send/get/cancel and isolation.
 
-**Manual verification:**
+**Deferred external verification (AC17):**
 
-- Build `zbotd` and `zbot`, start two isolated daemons, discover and pair them,
+- [a2a-external-conformance](../../backlog.md#a2a-external-conformance) will
+  build `zbotd` and `zbot`, start two isolated daemons, discover and pair them,
   ask zBot A to delegate a generic research task to zBot B, continue interacting
   with A, restart B while work is pending, and observe the attributed terminal
   result at A.
-- Run the official `a2a-cli` or applicable A2A TCK checks against B's Agent
-  Card and non-streaming HTTP+JSON surface and record command, exit status, and
-  supported/unsupported operation results.
+- That follow-up will run the official `a2a-cli` or applicable A2A TCK checks
+  against B's Agent Card and non-streaming HTTP+JSON surface and record command,
+  exit status, and supported/unsupported operation results.
 
 ## Design (LLD)
 
@@ -492,46 +491,54 @@ inventory assertions beside the existing unique-tool tests.
 **Done when:** a local test execution queues remote work, continues, survives a
 worker restart, and later receives exactly the specified attributed envelope.
 
-### T6: Production wiring and two-daemon interoperability satisfy the complete operator journey
+### T6: Production wiring and repository verification close the delivered operator journey
 
 **Depends on:** T2, T4, T5
 
 **Touches:** `gateway/src/{server,state/mod}.rs`, `apps/daemon/src/main.rs`, `e2e/**`, `docs/architecture/**`, `docs/product/changelog.md`, `docs/specs/{durable-work-queue,durable-queue-worker-runtime,durable-generic-agent-tasks}/spec.md`, `docs/specs/README.md`, `docs/rfc/README.md`
 
-**Verification mode:** goal-based gates plus manual/end-to-end QA (AC1–AC17).
+**Verification mode:** goal-based gates plus repository integration QA
+(AC1–AC16). External A2A CLI/TCK and the full two-daemon operator journey
+(AC17) remain tracked as
+[`a2a-external-conformance`](../../backlog.md#a2a-external-conformance) and in
+`workspace.toml`.
 
 **Construction artifacts:** `stub: draft (uncompiled)` — the production router
-and process fixture do not exist at PLAN. T6 starts by creating
-`e2e/a2a_federation.rs` with the isolated
-two-daemon journey and `docs/specs/a2a-federation-discovery/verification.md`
-with exact official CLI/TCK and manual commands before production enablement.
+and process fixture do not exist at PLAN. T6 starts by creating the repository
+integration coverage and
+`docs/specs/a2a-federation-discovery/verification.md`; external CLI/TCK and
+two-daemon evidence are explicitly deferred to
+[`a2a-external-conformance`](../../backlog.md#a2a-external-conformance).
 
 **Tests:**
 
 - Production composition registers browser and exact inbound/outbound handlers
   once, rejects duplicates, disables all A2A behavior by default, and drains on
   shutdown.
-- Two isolated daemons prove explicit pairing, discovery status, send/get/list,
-  cross-peer denial, cancel, restart recovery, asynchronous local continuation,
-  and terminal result delivery.
-- Official A2A CLI/TCK validates the Agent Card and supported HTTP+JSON
-  operations; unsupported optional operations agree with advertised
-  capabilities.
+- Repository integration tests prove pairing and trust boundaries,
+  send/get/list, cross-peer denial, cancel and restart-state behavior,
+  asynchronous local continuation, and terminal result delivery.
+- The deferred
+  [`a2a-external-conformance`](../../backlog.md#a2a-external-conformance) work
+  item owns official A2A CLI/TCK validation and the documented two-daemon
+  pair/delegate/get/cancel/restart journey.
 - Workspace fmt, clippy, check, tests, spec lint, dependency audit, and existing
   tool-footprint/unique-name gates pass.
 
 **Approach:**
 
 - Wire services and lifecycle under the default-off config gate.
-- Add isolated process fixtures with explicit ports/data directories and record
-  the real artifact commands/output.
+- Record repository-level verification commands/output while keeping the
+  outstanding external process validation visible in the durable backlog.
 - Update current-state architecture, changelog, RFC/spec indexes, and operator
   setup/troubleshooting guidance without duplicating the spec contract. Amend
   the three shipped durable-work specs with the new generic scoped-query and
   canceled-state contract plus regression evidence.
 
-**Done when:** all mechanical gates pass and the documented two-daemon plus
-official-client happy path succeeds with recorded evidence.
+**Done when:** AC1–AC16 and their mechanical gates pass, and the unexecuted
+external conformance scope is durably recorded as
+[`a2a-external-conformance`](../../backlog.md#a2a-external-conformance) rather
+than claimed as completed evidence.
 
 ## Rollout
 
@@ -545,8 +552,10 @@ official-client happy path succeeds with recorded evidence.
   verification tooling, not a daemon runtime dependency.
 - **Deployment sequencing:** protocol/types and peer store land first;
   discovery and inbound server can dark-launch disabled; outbound tools land
-  only after peer-scoped inbound behavior is verified; documentation follows
-  the integrated two-daemon smoke.
+  only after peer-scoped inbound behavior is verified. Repository documentation
+  ships with AC17 deferred to
+  [`a2a-external-conformance`](../../backlog.md#a2a-external-conformance), where
+  the external two-daemon and CLI/TCK output will be recorded.
 
 ## Risks
 

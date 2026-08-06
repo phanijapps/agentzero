@@ -77,6 +77,8 @@ same not-found response as an unknown task.
 The supported surface is mechanically checked against
 `contracts/openapi/a2a-federation.yaml` and the official `a2a-lf` 1.0 wire
 types. An external A2A CLI/TCK was not installed or run in this change; that is
-a release-validation step, not claimed evidence here. Streaming, push
-notifications, extended cards, files, structured parts, and subscriptions are
-intentionally unsupported and advertised as such.
+a release-validation step tracked by
+[`a2a-external-conformance`](../../backlog.md#a2a-external-conformance), not
+claimed evidence here. Streaming, push notifications, extended cards, files,
+structured parts, and subscriptions are intentionally unsupported and
+advertised as such.

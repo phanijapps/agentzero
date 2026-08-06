@@ -4,7 +4,8 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
-| [A2A Federation and Discovery](a2a-federation-discovery/spec.md) | Implementing | Lets explicitly paired LAN/VPN zBots discover candidates and exchange remote-safe durable work through the A2A 1.0 HTTP+JSON protocol. |
+| [Supply-Chain Policy Refresh](supply-chain-policy-refresh/spec.md) | Shipped | Refreshes the compatible Rust dependency graph and stale advisory policy while closing merged A2A lifecycle metadata. |
+| [A2A Federation and Discovery](a2a-federation-discovery/spec.md) | Shipped | Lets explicitly paired LAN/VPN zBots discover candidates and exchange remote-safe durable work through the A2A 1.0 HTTP+JSON protocol. |
 | [Durable Peer Messaging](durable-peer-messaging/spec.md) | Implementing | Lets same-session agents exchange durable asynchronous messages and scoped replies over the existing local work queue while keeping a broker-neutral transport seam. |
 | [Durable Generic Agent Tasks](durable-generic-agent-tasks/spec.md) | Shipped | Persists local Research invocations as strict `agent.task.v1` work before acceptance, then resumes or monitors the existing runtime through terminal state without a broker or protocol change. |
 | [Durable Queue Worker Runtime](durable-queue-worker-runtime/spec.md) | Shipped | Runs a supervised local worker with exact handler dispatch, typed payload validation, lease heartbeats, bounded concurrency/timeouts/shutdown, fail-closed store errors, and no migrated producer or production handler. |

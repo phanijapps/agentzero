@@ -23,16 +23,12 @@ unmaintained = "all"
 ignore = [
     # Existing transitive dev/test dependency via httpmock -> async-object-pool.
     "RUSTSEC-2025-0052",
-    # Existing transitive fastembed/image dependency via ravif -> rav1e -> bitstream-io.
-    "RUSTSEC-2026-0105",
     # Existing transitive gateway-services file-watch dependency via notify.
     "RUSTSEC-2024-0384",
     # Existing transitive fastembed/hf-hub progress dependency via indicatif.
     "RUSTSEC-2025-0119",
     # Existing transitive fastembed/tokenizers macro dependency.
     "RUSTSEC-2024-0436",
-    # Inactive rust_decimal optional feature; rkyv is not compiled by any target.
-    "RUSTSEC-2026-0235",
 ]
 
 # ---------------------------------------------------------------------------

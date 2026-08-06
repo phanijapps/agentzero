@@ -94,6 +94,8 @@ pub enum ProtocolError {
     TaskNotFound,
     #[error("task not cancelable")]
     TaskNotCancelable,
+    #[error("internal error")]
+    InternalError,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,6 +443,7 @@ impl ProtocolError {
             ProtocolError::Unauthorized => 401,
             ProtocolError::TaskNotFound => 404,
             ProtocolError::PayloadTooLarge => 413,
+            ProtocolError::InternalError => 500,
             ProtocolError::InvalidRequest
             | ProtocolError::InvalidParams
             | ProtocolError::UnsupportedOperation
@@ -463,6 +466,7 @@ impl ProtocolError {
             ProtocolError::Unauthorized => "UNAUTHORIZED",
             ProtocolError::TaskNotFound => "TASK_NOT_FOUND",
             ProtocolError::TaskNotCancelable => "TASK_NOT_CANCELABLE",
+            ProtocolError::InternalError => "INTERNAL",
         }
     }
 
@@ -480,6 +484,7 @@ impl ProtocolError {
             ProtocolError::Unauthorized => "A2A peer authentication failed.",
             ProtocolError::TaskNotFound => "The A2A task was not found.",
             ProtocolError::TaskNotCancelable => "The A2A task is not cancelable.",
+            ProtocolError::InternalError => "The A2A service is temporarily unavailable.",
         }
     }
 }

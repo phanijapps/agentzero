@@ -2527,6 +2527,7 @@ dependencies = [
 name = "gateway"
 version = "2026.8.4"
 dependencies = [
+ "a2a-lf",
  "agent-primitives",
  "agent-runtime",
  "agent-surfaces",
@@ -2538,12 +2539,14 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-test",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "dirs 5.0.1",
  "discovery",
  "execution-state",
  "futures",
+ "gateway-a2a",
  "gateway-bridge",
  "gateway-bus",
  "gateway-connectors",

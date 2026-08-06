@@ -28,6 +28,7 @@
 //! - **HTTP API** - RESTful endpoints for agents, conversations, tools
 //! - **Event Bus** - Broadcast events to all connected clients
 
+pub mod a2a_tasks;
 pub mod bus;
 pub mod config;
 pub mod connectors;

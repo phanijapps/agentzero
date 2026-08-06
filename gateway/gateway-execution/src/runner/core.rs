@@ -1301,6 +1301,21 @@ impl ExecutionRunner {
         Ok(())
     }
 
+    /// Cancel one session and only the handle registered for its exact
+    /// conversation. This is used by externally scoped work where signaling
+    /// unrelated executions would cross an authorization boundary.
+    pub async fn cancel_exact(
+        &self,
+        session_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), String> {
+        self.state_service.cancel_session(session_id)?;
+
+        cancel_exact_handle(&*self.handles.read().await, conversation_id);
+
+        Ok(())
+    }
+
     /// End a session (mark as completed).
     ///
     /// Called when user explicitly ends a session via /end, /new, or +new button.
@@ -1414,6 +1429,32 @@ impl ExecutionRunner {
                 Err(e)
             }
         }
+    }
+}
+
+fn cancel_exact_handle(handles: &HashMap<String, ExecutionHandle>, conversation_id: &str) {
+    if let Some(handle) = handles.get(conversation_id) {
+        handle.cancel();
+    }
+}
+
+#[cfg(test)]
+mod exact_cancel_tests {
+    use super::*;
+
+    #[test]
+    fn exact_cancel_does_not_signal_an_unrelated_execution() {
+        let selected = ExecutionHandle::new(10);
+        let unrelated = ExecutionHandle::new(10);
+        let handles = HashMap::from([
+            ("selected".to_string(), selected.clone()),
+            ("unrelated".to_string(), unrelated.clone()),
+        ]);
+
+        cancel_exact_handle(&handles, "selected");
+
+        assert!(selected.is_cancelled());
+        assert!(!unrelated.is_cancelled());
     }
 }
 

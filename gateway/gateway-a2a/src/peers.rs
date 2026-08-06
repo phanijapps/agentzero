@@ -178,7 +178,7 @@ impl PeerStore {
         &self,
         request: IssueCredential,
     ) -> Result<IssuedCredential, PeerStoreError> {
-        validate_id(&request.peer_id)?;
+        validate_peer_id(&request.peer_id)?;
         validate_id(&request.target_agent_id)?;
         let days = request
             .lifetime_days
@@ -220,7 +220,7 @@ impl PeerStore {
     }
 
     pub fn add_peer(&self, request: AddPeer) -> Result<(), PeerStoreError> {
-        validate_id(&request.peer_id)?;
+        validate_peer_id(&request.peer_id)?;
         validate_id(&request.target_agent_id)?;
         validate_bounded(&request.display_name, 1, 120)?;
         let origin = UrlPolicy::validate_peer_origin(&request.origin, request.allow_private_http)?;
@@ -364,6 +364,29 @@ impl PeerSnapshot {
                 .any(|credential| credential.credential_hash.verify(token))
         })
     }
+
+    /// Resolve a bearer credential to one peer while evaluating every active
+    /// credential. Callers never accept a model- or request-supplied peer ID.
+    pub fn authenticate_inbound_token(&self, token: &str) -> Option<&TrustedPeer> {
+        let now = Utc::now();
+        let mut matched = None;
+        for peer in self.peers.values() {
+            let peer_matches = peer
+                .inbound_credentials
+                .iter()
+                .filter(|credential| credential.active(now))
+                .fold(false, |found, credential| {
+                    credential.credential_hash.verify(token) || found
+                });
+            if peer_matches {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some(peer);
+            }
+        }
+        matched
+    }
 }
 
 impl TrustedPeer {
@@ -442,7 +465,7 @@ fn validate_file(file: &PeerStoreFile) -> Result<(), PeerStoreError> {
         return Err(PeerStoreError::TooManyPeers);
     }
     for peer in &file.peers {
-        validate_id(&peer.node_id)?;
+        validate_peer_id(&peer.node_id)?;
         validate_bounded(&peer.display_name, 1, 120)?;
         validate_id(&peer.target_agent_id)?;
         let active = peer
@@ -465,6 +488,18 @@ fn validate_file(file: &PeerStoreFile) -> Result<(), PeerStoreError> {
 
 fn validate_id(value: &str) -> Result<(), PeerStoreError> {
     validate_bounded(value, 1, 128)?;
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+    {
+        Ok(())
+    } else {
+        Err(PeerStoreError::InvalidPeer)
+    }
+}
+
+fn validate_peer_id(value: &str) -> Result<(), PeerStoreError> {
+    validate_bounded(value, 1, 120)?;
     if value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))

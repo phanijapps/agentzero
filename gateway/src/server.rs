@@ -397,10 +397,19 @@ impl GatewayServer {
         let peer_handler = self.state.runtime.peer_message_handler().ok_or_else(|| {
             GatewayError::Internal("durable peer-message handler unavailable".to_owned())
         })?;
-        let registry = gateway_bus::WorkHandlerRegistry::from_handlers(vec![handler, peer_handler])
-            .map_err(|_| {
-                GatewayError::Internal("durable work handler registry invalid".to_owned())
-            })?;
+        let mut handlers = vec![handler, peer_handler];
+        if self.config.a2a_enabled {
+            handlers.push(Arc::new(crate::a2a_tasks::A2aInboundHandler::new(
+                self.state.durable_work_store.clone(),
+                self.state.runtime.clone(),
+                self.state.state_service.clone(),
+                self.state.messages.clone(),
+                self.state.agents.clone(),
+            )) as Arc<dyn gateway_bus::WorkHandler>);
+        }
+        let registry = gateway_bus::WorkHandlerRegistry::from_handlers(handlers).map_err(|_| {
+            GatewayError::Internal("durable work handler registry invalid".to_owned())
+        })?;
         let worker = gateway_bus::DurableWorkWorker::new(
             self.state.durable_work_store.clone(),
             self.state.durable_work_transport.clone(),

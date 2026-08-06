@@ -8,6 +8,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
+pub mod config;
+pub mod peers;
+pub mod secrets;
+pub mod url_policy;
+
 pub const APPLICATION_A2A_JSON: &str = "application/a2a+json";
 pub const TEXT_PLAIN: &str = "text/plain";
 pub const MAX_SERIALIZED_INBOUND_REQUEST_BYTES: usize = 65_536;
@@ -220,6 +225,17 @@ pub fn validate_serialized_request(body: &[u8]) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+pub fn parse_send_message_request(
+    body: &[u8],
+) -> Result<(SendMessageRequest, AcceptedTextMessage), ProtocolError> {
+    validate_serialized_request(body)?;
+    validate_raw_send_message_shape(body)?;
+    let request: SendMessageRequest =
+        serde_json::from_slice(body).map_err(|_| ProtocolError::InvalidRequest)?;
+    let accepted = validate_send_message_request(&request)?;
+    Ok((request, accepted))
+}
+
 pub fn validate_send_message_request(
     request: &SendMessageRequest,
 ) -> Result<AcceptedTextMessage, ProtocolError> {
@@ -295,14 +311,14 @@ pub fn project_task(projection: TaskProjection) -> Result<Task, ProtocolError> {
 
     let message = projection
         .message
-        .map(|text| agent_message(format!("{}-status", projection.id), text))
+        .map(|text| agent_message(derived_id(&projection.id, "status"), text))
         .transpose()?;
     let artifacts = projection
         .artifact_text
         .map(|text| {
             validate_text(&text)?;
             Ok(vec![Artifact {
-                artifact_id: format!("{}-artifact", projection.id),
+                artifact_id: derived_id(&projection.id, "artifact"),
                 name: None,
                 description: None,
                 parts: vec![Part::text(text).with_media_type(TEXT_PLAIN)],
@@ -501,4 +517,44 @@ fn validate_task_id(value: &str) -> Result<(), ProtocolError> {
         return Err(ProtocolError::InvalidParams);
     }
     Ok(())
+}
+
+fn validate_raw_send_message_shape(body: &[u8]) -> Result<(), ProtocolError> {
+    let raw: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| ProtocolError::InvalidRequest)?;
+    let parts = raw
+        .get("message")
+        .and_then(|message| message.get("parts"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or(ProtocolError::InvalidParams)?;
+    for part in parts {
+        let object = part.as_object().ok_or(ProtocolError::InvalidParams)?;
+        let text_fields = object.contains_key("text") as u8;
+        let unsupported_fields = ["raw", "url", "file", "data"]
+            .into_iter()
+            .filter(|field| object.contains_key(*field))
+            .count() as u8;
+        if text_fields != 1 || unsupported_fields != 0 {
+            return Err(ProtocolError::InvalidParams);
+        }
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "text" | "mediaType"))
+        {
+            return Err(ProtocolError::InvalidParams);
+        }
+    }
+    Ok(())
+}
+
+fn derived_id(base: &str, suffix: &str) -> String {
+    let separator_len = 1;
+    let suffix_len = suffix.len();
+    let max_base_len = MAX_TASK_ID_BYTES.saturating_sub(separator_len + suffix_len);
+    let mut id =
+        String::with_capacity(MAX_TASK_ID_BYTES.min(base.len() + separator_len + suffix_len));
+    id.push_str(&base[..base.floor_char_boundary(max_base_len)]);
+    id.push('-');
+    id.push_str(suffix);
+    id
 }

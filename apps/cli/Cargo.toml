@@ -20,6 +20,7 @@ rustyline = { version = "14", default-features = false, features = ["with-file-h
 
 # Shared WS protocol types — keeps the CLI in lock-step with the daemon
 gateway-ws-protocol = { path = "../../gateway/gateway-ws-protocol" }
+gateway-a2a = { path = "../../gateway/gateway-a2a" }
 
 # Async runtime + I/O
 tokio = { workspace = true }
@@ -48,6 +49,11 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 dirs = "5"
 toml = "0.8"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
 
 [lints]
 workspace = true

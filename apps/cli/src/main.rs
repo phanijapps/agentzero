@@ -17,14 +17,15 @@ mod client;
 mod config;
 mod events;
 mod oneshot;
+mod peers;
 mod repl;
 mod slash;
 mod stream;
 mod style;
 
 use anyhow::{Context, Result};
-use clap::Parser;
-use std::io::IsTerminal;
+use clap::{Parser, Subcommand};
+use std::{io::IsTerminal, path::PathBuf};
 
 use crate::client::DaemonClient;
 use crate::config::Config;
@@ -63,15 +64,33 @@ struct Args {
     #[arg(long, value_name = "STATE")]
     expected_state: Option<String>,
 
+    /// z-Bot data directory for local file commands (default: ~/Documents/zbot).
+    #[arg(long, value_name = "DIR")]
+    data_dir: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// One-shot prompt. When provided, sends and exits on turn completion.
     /// If stdin is not a TTY, its contents are prepended to this message.
     prompt: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Manage explicitly trusted A2A peers using the local peer store.
+    Peers(peers::PeersArgs),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
     let args = Args::parse();
+
+    if let Some(Commands::Peers(peers_args)) = args.command {
+        peers::run(peers_args, resolve_data_dir(args.data_dir)?).context("manage A2A peers")?;
+        return Ok(());
+    }
 
     let cfg = Config::resolve(args.url.clone()).context("resolve daemon URL")?;
     let client = DaemonClient::new(cfg.clone());
@@ -154,6 +173,16 @@ fn use_color(no_color_flag: bool) -> bool {
         return false;
     }
     std::io::stdout().is_terminal()
+}
+
+fn resolve_data_dir(override_dir: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = override_dir {
+        return Ok(path);
+    }
+    Ok(dirs::document_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("zbot"))
 }
 
 fn init_tracing() {

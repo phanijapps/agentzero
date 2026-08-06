@@ -1,0 +1,24 @@
+# ============================================================================
+# GATEWAY-A2A: A2A federation domain and wire contract helpers
+# ============================================================================
+
+[package]
+name = "gateway-a2a"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "A2A 1.0 federation domain types and strict wire validation"
+
+[dependencies]
+a2a-lf = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }
+
+[lints]
+workspace = true

@@ -26,6 +26,7 @@ pub const MAX_ATTEMPTS: u8 = 20;
 pub const MIN_LEASE_SECONDS: u64 = 1;
 pub const MAX_LEASE_SECONDS: u64 = 300;
 pub const MAX_FAILURE_CODE_BYTES: usize = 64;
+pub const MAX_WORK_PAGE_SIZE: u16 = 100;
 
 /// Safe, normalized validation failures. No input text is retained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Error)]
@@ -55,6 +56,8 @@ pub enum WorkValidationError {
     InvalidTimestamp,
     #[error("invalid_lease_owner")]
     InvalidLeaseOwner,
+    #[error("invalid_page_limit")]
+    InvalidPageLimit,
 }
 
 /// Closed policy rejection reasons. Routing labels never grant authority.
@@ -426,6 +429,7 @@ pub enum WorkStatus {
     Leased,
     Completed,
     DeadLetter,
+    Canceled,
 }
 
 impl WorkStatus {
@@ -435,6 +439,7 @@ impl WorkStatus {
             Self::Leased => "leased",
             Self::Completed => "completed",
             Self::DeadLetter => "dead_letter",
+            Self::Canceled => "canceled",
         }
     }
 
@@ -444,6 +449,7 @@ impl WorkStatus {
             "leased" => Ok(Self::Leased),
             "completed" => Ok(Self::Completed),
             "dead_letter" => Ok(Self::DeadLetter),
+            "canceled" => Ok(Self::Canceled),
             _ => Err(WorkError::StoredDataInvalid),
         }
     }
@@ -539,6 +545,10 @@ impl WorkItem {
     pub fn completed_at(&self) -> Option<DateTime<Utc>> {
         self.completed_at
     }
+
+    pub fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
 }
 
 impl fmt::Debug for WorkItem {
@@ -580,6 +590,90 @@ pub struct RecoveryOutcome {
     pub dead_lettered: usize,
 }
 
+/// Exact host-owned scope for querying durable work without a read/authorize race.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkScope {
+    source: String,
+    kind: String,
+    provenance_actor_id: String,
+}
+
+impl WorkScope {
+    pub fn new(
+        source: impl Into<String>,
+        kind: impl Into<String>,
+        provenance_actor_id: impl Into<String>,
+    ) -> Result<Self, WorkError> {
+        let scope = Self {
+            source: source.into(),
+            kind: kind.into(),
+            provenance_actor_id: provenance_actor_id.into(),
+        };
+        validate_required(&scope.source, WorkValidationError::InvalidSource)?;
+        validate_required(&scope.kind, WorkValidationError::InvalidKind)?;
+        if scope.provenance_actor_id.is_empty()
+            || scope.provenance_actor_id.len() > MAX_PROVENANCE_ID_BYTES
+        {
+            return Err(WorkError::InvalidEnvelope(
+                WorkValidationError::InvalidProvenance,
+            ));
+        }
+        Ok(scope)
+    }
+}
+
+/// Stable internal cursor. Protocol adapters must encode it opaquely.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkCursor {
+    updated_at: DateTime<Utc>,
+    id: String,
+}
+
+impl WorkCursor {
+    pub fn new(updated_at: DateTime<Utc>, id: impl Into<String>) -> Result<Self, WorkError> {
+        let id = id.into();
+        validate_required(&id, WorkValidationError::InvalidCorrelation)?;
+        Ok(Self { updated_at, id })
+    }
+
+    pub fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkPage {
+    items: Vec<WorkItem>,
+    next_cursor: Option<WorkCursor>,
+    total_size: u64,
+}
+
+impl WorkPage {
+    pub fn items(&self) -> &[WorkItem] {
+        &self.items
+    }
+
+    pub fn next_cursor(&self) -> Option<&WorkCursor> {
+        self.next_cursor.as_ref()
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.total_size
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkCancelOutcome {
+    Canceled(WorkItem),
+    AlreadyCanceled(WorkItem),
+    NotCancelable(WorkItem),
+    NotFound,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryDisposition {
     Requeued,
@@ -602,6 +696,23 @@ struct RecoveryTransition {
 pub trait WorkStore: Send + Sync {
     fn enqueue(&self, envelope: &WorkEnvelope) -> Result<EnqueueOutcome, WorkError>;
     fn get(&self, id: &str) -> Result<Option<WorkItem>, WorkError>;
+    fn find_scoped(
+        &self,
+        scope: &WorkScope,
+        correlation_id: &str,
+    ) -> Result<Option<WorkItem>, WorkError>;
+    fn list_scoped(
+        &self,
+        scope: &WorkScope,
+        cursor: Option<&WorkCursor>,
+        limit: u16,
+    ) -> Result<WorkPage, WorkError>;
+    fn cancel_scoped(
+        &self,
+        scope: &WorkScope,
+        correlation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<WorkCancelOutcome, WorkError>;
     fn claim_next(
         &self,
         target: &str,
@@ -844,6 +955,141 @@ impl<D: StateDbProvider> WorkStore for SqliteWorkStore<D> {
             .with_connection(|conn| query_stored_by_id(conn, id))
             .map_err(|_| WorkError::StorageUnavailable)?;
         row.map(StoredWorkRow::try_into_item).transpose()
+    }
+
+    fn find_scoped(
+        &self,
+        scope: &WorkScope,
+        correlation_id: &str,
+    ) -> Result<Option<WorkItem>, WorkError> {
+        validate_optional(
+            Some(correlation_id),
+            MAX_CORRELATION_BYTES,
+            WorkValidationError::InvalidCorrelation,
+        )?;
+        let rows = self
+            .db
+            .with_connection(|conn| query_stored_by_scope(conn, scope, correlation_id))
+            .map_err(|_| WorkError::StorageUnavailable)?;
+        unique_scoped_item(rows)
+    }
+
+    fn list_scoped(
+        &self,
+        scope: &WorkScope,
+        cursor: Option<&WorkCursor>,
+        limit: u16,
+    ) -> Result<WorkPage, WorkError> {
+        if limit == 0 || limit > MAX_WORK_PAGE_SIZE {
+            return Err(WorkError::InvalidEnvelope(
+                WorkValidationError::InvalidPageLimit,
+            ));
+        }
+        let fetch_limit = i64::from(limit) + 1;
+        let (rows, total_size) = self
+            .db
+            .with_connection(|conn| {
+                Ok((
+                    query_stored_page(conn, scope, cursor, fetch_limit)?,
+                    count_stored_scope(conn, scope)?,
+                ))
+            })
+            .map_err(|_| WorkError::StorageUnavailable)?;
+        let mut items = rows
+            .into_iter()
+            .map(StoredWorkRow::try_into_item)
+            .collect::<Result<Vec<_>, _>>()?;
+        let has_more = items.len() > usize::from(limit);
+        if has_more {
+            items.truncate(usize::from(limit));
+        }
+        let next_cursor = if has_more {
+            items.last().map(|item| WorkCursor {
+                updated_at: item.updated_at(),
+                id: item.envelope().id().to_string(),
+            })
+        } else {
+            None
+        };
+        let total_size = u64::try_from(total_size).map_err(|_| WorkError::StoredDataInvalid)?;
+        Ok(WorkPage {
+            items,
+            next_cursor,
+            total_size,
+        })
+    }
+
+    fn cancel_scoped(
+        &self,
+        scope: &WorkScope,
+        correlation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<WorkCancelOutcome, WorkError> {
+        validate_optional(
+            Some(correlation_id),
+            MAX_CORRELATION_BYTES,
+            WorkValidationError::InvalidCorrelation,
+        )?;
+        let now_text = format_timestamp(now);
+        let outcome = self
+            .db
+            .with_connection(|conn| {
+                let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+                let rows = query_stored_by_scope(&tx, scope, correlation_id)?;
+                let outcome = match rows.as_slice() {
+                    [] => WorkCancelOutcome::NotFound,
+                    [_first, _second, ..] => {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    }
+                    [stored] => {
+                        let item = stored.clone().try_into_item().map_err(|_| {
+                            rusqlite::Error::InvalidColumnType(
+                                0,
+                                "durable_work_items".to_string(),
+                                rusqlite::types::Type::Text,
+                            )
+                        })?;
+                        match item.status() {
+                            WorkStatus::Pending | WorkStatus::Leased => {
+                                let changed = tx.execute(
+                                    "UPDATE durable_work_items
+                                     SET status = 'canceled', lease_owner = NULL,
+                                         lease_token = NULL, lease_expires_at = NULL,
+                                         updated_at = ?6, completed_at = ?6
+                                     WHERE id = ?1 AND source = ?2 AND kind = ?3
+                                       AND provenance_actor_id = ?4
+                                       AND correlation_id = ?5
+                                       AND status IN ('pending', 'leased')",
+                                    params![
+                                        item.envelope().id(),
+                                        &scope.source,
+                                        &scope.kind,
+                                        &scope.provenance_actor_id,
+                                        correlation_id,
+                                        now_text,
+                                    ],
+                                )?;
+                                if changed != 1 {
+                                    return Err(rusqlite::Error::InvalidQuery);
+                                }
+                                let updated = query_stored_by_id(&tx, item.envelope().id())?
+                                    .ok_or(rusqlite::Error::QueryReturnedNoRows)?
+                                    .try_into_item()
+                                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                                WorkCancelOutcome::Canceled(updated)
+                            }
+                            WorkStatus::Canceled => WorkCancelOutcome::AlreadyCanceled(item),
+                            WorkStatus::Completed | WorkStatus::DeadLetter => {
+                                WorkCancelOutcome::NotCancelable(item)
+                            }
+                        }
+                    }
+                };
+                tx.commit()?;
+                Ok(outcome)
+            })
+            .map_err(|_| WorkError::StorageUnavailable)?;
+        Ok(outcome)
     }
 
     fn claim_next(
@@ -1344,6 +1590,101 @@ fn query_stored_by_dedupe(
     .optional()
 }
 
+fn query_stored_by_scope(
+    conn: &rusqlite::Connection,
+    scope: &WorkScope,
+    correlation_id: &str,
+) -> rusqlite::Result<Vec<StoredWorkRow>> {
+    let mut statement = conn.prepare(&format!(
+        "{WORK_SELECT}
+         WHERE source = ?1 AND kind = ?2 AND provenance_actor_id = ?3
+           AND correlation_id = ?4
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 2"
+    ))?;
+    let rows = statement
+        .query_map(
+            params![
+                &scope.source,
+                &scope.kind,
+                &scope.provenance_actor_id,
+                correlation_id
+            ],
+            StoredWorkRow::from_row,
+        )?
+        .collect();
+    rows
+}
+
+fn query_stored_page(
+    conn: &rusqlite::Connection,
+    scope: &WorkScope,
+    cursor: Option<&WorkCursor>,
+    limit: i64,
+) -> rusqlite::Result<Vec<StoredWorkRow>> {
+    let rows = if let Some(cursor) = cursor {
+        let mut statement = conn.prepare(&format!(
+            "{WORK_SELECT}
+             WHERE source = ?1 AND kind = ?2 AND provenance_actor_id = ?3
+               AND (updated_at < ?4 OR (updated_at = ?4 AND id < ?5))
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?6"
+        ))?;
+        let rows = statement
+            .query_map(
+                params![
+                    &scope.source,
+                    &scope.kind,
+                    &scope.provenance_actor_id,
+                    format_timestamp(cursor.updated_at),
+                    &cursor.id,
+                    limit,
+                ],
+                StoredWorkRow::from_row,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    } else {
+        let mut statement = conn.prepare(&format!(
+            "{WORK_SELECT}
+             WHERE source = ?1 AND kind = ?2 AND provenance_actor_id = ?3
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?4"
+        ))?;
+        let rows = statement
+            .query_map(
+                params![
+                    &scope.source,
+                    &scope.kind,
+                    &scope.provenance_actor_id,
+                    limit
+                ],
+                StoredWorkRow::from_row,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    Ok(rows)
+}
+
+fn count_stored_scope(conn: &rusqlite::Connection, scope: &WorkScope) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM durable_work_items
+         WHERE source = ?1 AND kind = ?2 AND provenance_actor_id = ?3",
+        params![&scope.source, &scope.kind, &scope.provenance_actor_id],
+        |row| row.get(0),
+    )
+}
+
+fn unique_scoped_item(rows: Vec<StoredWorkRow>) -> Result<Option<WorkItem>, WorkError> {
+    match rows.as_slice() {
+        [] => Ok(None),
+        [_first, _second, ..] => Err(WorkError::StoredDataInvalid),
+        [stored] => stored.clone().try_into_item().map(Some),
+    }
+}
+
+#[derive(Clone)]
 struct StoredWorkRow {
     id: String,
     envelope_version: i64,
@@ -1532,7 +1873,7 @@ fn stored_state_is_consistent(
         WorkStatus::Leased => {
             owner_valid && token_valid && lease_expires_at.is_some() && completed_at.is_none()
         }
-        WorkStatus::Completed | WorkStatus::DeadLetter => {
+        WorkStatus::Completed | WorkStatus::DeadLetter | WorkStatus::Canceled => {
             lease_owner.is_none()
                 && lease_token.is_none()
                 && lease_expires_at.is_none()

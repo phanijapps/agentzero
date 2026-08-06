@@ -88,7 +88,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(Commands::Peers(peers_args)) = args.command {
-        peers::run(peers_args, resolve_data_dir(args.data_dir)?).context("manage A2A peers")?;
+        peers::run(peers_args, resolve_data_dir(args.data_dir)?)
+            .await
+            .context("manage A2A peers")?;
         return Ok(());
     }
 

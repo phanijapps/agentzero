@@ -63,6 +63,7 @@ pub(super) struct InvokeBootstrap {
     pub(super) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub(super) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub(super) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     pub(super) model_registry: Arc<ArcSwapOption<ModelRegistry>>,
     pub(super) rate_limiters: Arc<
         std::sync::RwLock<
@@ -289,6 +290,10 @@ fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
     }
     if bootstrap.goal_adapter.is_some() {
         names.push("goal".to_string());
+    }
+    if bootstrap.a2a_delegation.is_some() {
+        names.push("list_zbots".to_string());
+        names.push("delegate_to_zbot".to_string());
     }
     names
 }
@@ -1355,6 +1360,9 @@ impl InvokeBootstrap {
         if let Some(ref peer_messages) = self.peer_messages {
             builder = builder.with_peer_messages(peer_messages.clone());
         }
+        if let Some(ref service) = self.a2a_delegation {
+            builder = builder.with_a2a_delegation(service.clone());
+        }
 
         // Intent analysis for root agent first turns only.
         // Note: execution_logs stores execution_id in the session_id column,
@@ -2254,6 +2262,7 @@ mod tests {
             memory_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,
@@ -2300,6 +2309,7 @@ mod tests {
             memory_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,
@@ -2533,6 +2543,7 @@ mod tests {
             memory_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,

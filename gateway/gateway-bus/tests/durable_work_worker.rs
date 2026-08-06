@@ -1037,6 +1037,14 @@ impl WorkStore for FaultStore {
         self.inner.get(id)
     }
 
+    fn find_deduped(&self, source: &str, dedupe_key: &str) -> Result<Option<WorkItem>, WorkError> {
+        self.inner.find_deduped(source, dedupe_key)
+    }
+
+    fn count_scoped_nonterminal(&self, scope: &WorkScope) -> Result<u64, WorkError> {
+        self.inner.count_scoped_nonterminal(scope)
+    }
+
     fn find_scoped(
         &self,
         scope: &WorkScope,

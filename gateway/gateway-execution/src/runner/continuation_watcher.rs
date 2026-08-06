@@ -68,6 +68,7 @@ pub(crate) struct RunnerContinuationInvoker {
     pub(crate) handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub(crate) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub(crate) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub(crate) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     pub(crate) steering_registry: Arc<agent_runtime::SteeringRegistry>,
     /// ArcSwap handle — NOT the inner `Option<Arc<ModelRegistry>>`. Reads
     /// the live value at fire time via `.load_full()`.
@@ -116,6 +117,7 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             handoff_writer: self.handoff_writer.clone(),
             memory_recall: self.memory_recall.clone(),
             peer_messages: self.peer_messages.clone(),
+            a2a_delegation: self.a2a_delegation.clone(),
             steering_registry: self.steering_registry.clone(),
             // Read the live registry at fire time — not a stale capture.
             model_registry: self.model_registry.load_full(),

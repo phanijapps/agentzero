@@ -468,6 +468,21 @@ fn validate_file(file: &PeerStoreFile) -> Result<(), PeerStoreError> {
         validate_peer_id(&peer.node_id)?;
         validate_bounded(&peer.display_name, 1, 120)?;
         validate_id(&peer.target_agent_id)?;
+        match &peer.origin {
+            Some(origin)
+                if UrlPolicy::validate_peer_origin(origin.origin(), peer.allow_private_http)
+                    .as_ref()
+                    == Ok(origin) => {}
+            Some(_) => return Err(PeerStoreError::InvalidPeer),
+            None => {}
+        }
+        if peer
+            .outbound_credential
+            .as_ref()
+            .is_some_and(|token| token.exposed().is_empty() || token.exposed().len() > 512)
+        {
+            return Err(PeerStoreError::InvalidPeer);
+        }
         let active = peer
             .inbound_credentials
             .iter()

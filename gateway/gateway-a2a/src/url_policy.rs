@@ -61,7 +61,7 @@ impl ResolvedPeerEndpoint {
         ips: impl IntoIterator<Item = IpAddr>,
     ) -> Result<Self, UrlPolicyError> {
         let ips: BTreeSet<_> = ips.into_iter().collect();
-        if ips.is_empty() || ips.iter().any(|ip| prohibited_ip(*ip)) {
+        if ips.is_empty() || ips.iter().any(|ip| !endpoint.allows_resolved_ip(*ip)) {
             return Err(UrlPolicyError::ProhibitedDestination);
         }
         Ok(Self { endpoint, ips })
@@ -79,6 +79,15 @@ impl ResolvedPeerEndpoint {
     }
 }
 
+impl PeerOrigin {
+    fn allows_resolved_ip(&self, ip: IpAddr) -> bool {
+        match self.host.parse::<IpAddr>() {
+            Ok(configured) => ip == configured && (!prohibited_ip(ip) || ip.is_loopback()),
+            Err(_) => !prohibited_ip(ip),
+        }
+    }
+}
+
 pub struct UrlPolicy;
 
 impl UrlPolicy {
@@ -91,6 +100,7 @@ impl UrlPolicy {
             || url.password().is_some()
             || url.query().is_some()
             || url.fragment().is_some()
+            || !matches!(url.path(), "/" | "/a2a" | "/a2a/")
         {
             return Err(UrlPolicyError::MutableUrlComponents);
         }

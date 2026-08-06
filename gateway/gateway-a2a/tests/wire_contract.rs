@@ -49,6 +49,36 @@ fn agent_card_declares_bearer_auth() {
 }
 
 #[test]
+fn agent_card_rejects_ambiguous_or_credentialed_base_urls() {
+    for base_url in [
+        "file:///tmp/zbot",
+        "https://user:secret@peer.example.test",
+        "https://peer.example.test/base",
+        "https://peer.example.test?redirect=https://evil.example",
+        "https://peer.example.test/#fragment",
+    ] {
+        let result = agent_card(AgentCardConfig {
+            name: "Research zBot".into(),
+            description: "Bounded remote text work".into(),
+            version: "2026.8.4".into(),
+            base_url: base_url.into(),
+            skills: vec![AgentSkillConfig {
+                id: "research".into(),
+                name: "Research".into(),
+                description: "Answers bounded text prompts".into(),
+                tags: vec![],
+                examples: vec![],
+            }],
+        });
+        assert_eq!(
+            result.unwrap_err(),
+            ProtocolError::InvalidParams,
+            "{base_url}"
+        );
+    }
+}
+
+#[test]
 fn send_requires_immediate_text() {
     let valid = json!({
         "message": {

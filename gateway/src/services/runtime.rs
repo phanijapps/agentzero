@@ -81,6 +81,7 @@ impl RuntimeService {
             log_service,
             state_service,
             None, // peer_messages
+            None, // a2a_delegation
             None,
             None, // memory_store
             None, // distiller
@@ -114,6 +115,7 @@ impl RuntimeService {
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
         peer_messages: Option<Arc<gateway_execution::peer_messaging::DurablePeerMessageService>>,
+        a2a_delegation: Option<Arc<dyn gateway_execution::a2a::A2aDelegationService>>,
         connector_registry: Option<Arc<ConnectorRegistry>>,
         memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
         distiller: Option<Arc<SessionDistiller>>,
@@ -154,6 +156,7 @@ impl RuntimeService {
             log_service,
             state_service,
             peer_messages,
+            a2a_delegation,
             connector_registry,
             memory_store,
             distiller,

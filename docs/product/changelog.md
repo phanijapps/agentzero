@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional A2A 1.0 federation lets explicitly paired zBots discover one
+  another on a LAN/VPN and delegate bounded text work asynchronously. Remote
+  work is durable, authenticated, peer-scoped, and restricted to a
+  respond-only execution profile; no broker or second listener is required.
 - Ward creation now supports explicit `generic` and `coding` archetypes from a
   local, editable registry. Existing singular Ward templates transition
   non-destructively into `generic`, while created Wards retain their copied
@@ -62,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A2A federation is disabled by default, stores per-peer bearer credentials in
+  an owner-readable local trust file, rejects unsafe endpoint resolution and
+  redirects, throttles failed authentication, and treats all discovered
+  metadata and remote results as untrusted data.
 - Commissioning completion now rejects non-local originless peers before body
   parsing and provisions fixed memory-profile files without following symlinks
   or overwriting conflicting content.

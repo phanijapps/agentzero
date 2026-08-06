@@ -14,3 +14,7 @@ pub use present_surface::PresentSurfaceTool;
 pub use reply_to_agent::ReplyToAgentTool;
 pub use steer_agent::SteerAgentTool;
 pub use wait_agent::WaitAgentTool;
+mod delegate_to_zbot;
+mod list_zbots;
+pub use delegate_to_zbot::DelegateToZbotTool;
+pub use list_zbots::ListZbotsTool;

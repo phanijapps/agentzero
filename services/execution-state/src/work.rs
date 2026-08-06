@@ -696,6 +696,8 @@ struct RecoveryTransition {
 pub trait WorkStore: Send + Sync {
     fn enqueue(&self, envelope: &WorkEnvelope) -> Result<EnqueueOutcome, WorkError>;
     fn get(&self, id: &str) -> Result<Option<WorkItem>, WorkError>;
+    fn find_deduped(&self, source: &str, dedupe_key: &str) -> Result<Option<WorkItem>, WorkError>;
+    fn count_scoped_nonterminal(&self, scope: &WorkScope) -> Result<u64, WorkError>;
     fn find_scoped(
         &self,
         scope: &WorkScope,
@@ -955,6 +957,28 @@ impl<D: StateDbProvider> WorkStore for SqliteWorkStore<D> {
             .with_connection(|conn| query_stored_by_id(conn, id))
             .map_err(|_| WorkError::StorageUnavailable)?;
         row.map(StoredWorkRow::try_into_item).transpose()
+    }
+
+    fn find_deduped(&self, source: &str, dedupe_key: &str) -> Result<Option<WorkItem>, WorkError> {
+        validate_required(source, WorkValidationError::InvalidSource)?;
+        validate_optional(
+            Some(dedupe_key),
+            MAX_DEDUPE_BYTES,
+            WorkValidationError::InvalidDedupeKey,
+        )?;
+        let row = self
+            .db
+            .with_connection(|conn| query_stored_by_dedupe(conn, source, dedupe_key))
+            .map_err(|_| WorkError::StorageUnavailable)?;
+        row.map(StoredWorkRow::try_into_item).transpose()
+    }
+
+    fn count_scoped_nonterminal(&self, scope: &WorkScope) -> Result<u64, WorkError> {
+        let count = self
+            .db
+            .with_connection(|conn| count_stored_scope_nonterminal(conn, scope))
+            .map_err(|_| WorkError::StorageUnavailable)?;
+        u64::try_from(count).map_err(|_| WorkError::StoredDataInvalid)
     }
 
     fn find_scoped(
@@ -1671,6 +1695,19 @@ fn count_stored_scope(conn: &rusqlite::Connection, scope: &WorkScope) -> rusqlit
     conn.query_row(
         "SELECT COUNT(*) FROM durable_work_items
          WHERE source = ?1 AND kind = ?2 AND provenance_actor_id = ?3",
+        params![&scope.source, &scope.kind, &scope.provenance_actor_id],
+        |row| row.get(0),
+    )
+}
+
+fn count_stored_scope_nonterminal(
+    conn: &rusqlite::Connection,
+    scope: &WorkScope,
+) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM durable_work_items
+         WHERE source = ?1 AND kind = ?2 AND provenance_actor_id = ?3
+           AND status IN ('pending', 'leased')",
         params![&scope.source, &scope.kind, &scope.provenance_actor_id],
         |row| row.get(0),
     )

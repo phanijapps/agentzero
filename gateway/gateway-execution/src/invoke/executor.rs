@@ -249,6 +249,7 @@ enum ToolCapability {
     MemoryRead,
     MemoryWrite,
     MultimodalAnalyze,
+    PeerDelegate,
     PlanWrite,
     ProcedureRun,
     Respond,
@@ -276,6 +277,7 @@ impl ToolCapability {
             Self::MemoryRead => "memory.read",
             Self::MemoryWrite => "memory.write",
             Self::MultimodalAnalyze => "multimodal.analyze",
+            Self::PeerDelegate => "peer.delegate",
             Self::PlanWrite => "plan.write",
             Self::ProcedureRun => "procedure.run",
             Self::Respond => "respond",
@@ -305,6 +307,7 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::MemoryRead
                 | ToolCapability::MemoryWrite
                 | ToolCapability::MultimodalAnalyze
+                | ToolCapability::PeerDelegate
                 | ToolCapability::PlanWrite
                 | ToolCapability::ProcedureRun
                 | ToolCapability::Respond
@@ -369,6 +372,7 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
         ToolCapability::MemoryRead,
         ToolCapability::MemoryWrite,
         ToolCapability::MultimodalAnalyze,
+        ToolCapability::PeerDelegate,
         ToolCapability::PlanWrite,
         ToolCapability::ProcedureRun,
         ToolCapability::Respond,
@@ -520,6 +524,7 @@ fn display_name(tool_name: &str) -> String {
 fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
     match name {
         "delegate_to_agent" => vec![ToolCapability::AgentDelegate],
+        "delegate_to_zbot" | "list_zbots" => vec![ToolCapability::PeerDelegate],
         "connector_invoke" => vec![ToolCapability::ConnectorInvoke],
         "connector_resource" => vec![ToolCapability::ConnectorResourceRead],
         "edit" | "edit_file" | "write" | "write_file" => vec![ToolCapability::FileWrite],
@@ -551,7 +556,7 @@ fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
 }
 
 fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextSideEffects {
-    if name == "wait_agent" || name == "list_session_agents" {
+    if name == "wait_agent" || name == "list_session_agents" || name == "list_zbots" {
         return ContextSideEffects::ReadExternal;
     }
     if capabilities.contains(&ToolCapability::Shell) {
@@ -568,6 +573,7 @@ fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::PeerDelegate
                 | ToolCapability::AgentReply
                 | ToolCapability::FileWrite
                 | ToolCapability::GoalWrite
@@ -588,7 +594,7 @@ fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
 }
 
 fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRiskLevel {
-    if name == "wait_agent" || name == "list_session_agents" {
+    if name == "wait_agent" || name == "list_session_agents" || name == "list_zbots" {
         return ContextRiskLevel::Low;
     }
     if capabilities.contains(&ToolCapability::Shell) {
@@ -602,6 +608,7 @@ fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRi
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::PeerDelegate
                 | ToolCapability::FileWrite
                 | ToolCapability::IngestWrite
                 | ToolCapability::WardWrite
@@ -654,14 +661,16 @@ fn token_hint_for_tool(name: &str) -> Option<u32> {
 fn owner_crate_for_tool(name: &str) -> &'static str {
     match name {
         "delegate_to_agent" | "respond" | "run_procedure" => "agent-runtime",
-        "handoff_to_agent"
+        "delegate_to_zbot"
+        | "handoff_to_agent"
         | "kill_agent"
         | "list_session_agents"
         | "message_agent"
         | "present_surface"
         | "reply_to_agent"
         | "steer_agent"
-        | "wait_agent" => "gateway-execution",
+        | "wait_agent"
+        | "list_zbots" => "gateway-execution",
         _ => "agent-tools",
     }
 }
@@ -828,6 +837,7 @@ pub struct ExecutorBuilder {
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     memory_recall: Option<Arc<gateway_memory::MemoryRecall>>,
     peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     mcp_startup_failure_observer: Option<agent_runtime::mcp::McpStartupFailureObserver>,
     extra_initial_state: Option<Vec<(String, serde_json::Value)>>,
     chat_mode: bool,
@@ -858,6 +868,7 @@ impl ExecutorBuilder {
             procedure_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             mcp_startup_failure_observer: None,
             extra_initial_state: None,
             chat_mode: false,
@@ -893,6 +904,14 @@ impl ExecutorBuilder {
         service: Arc<crate::peer_messaging::DurablePeerMessageService>,
     ) -> Self {
         self.peer_messages = Some(service);
+        self
+    }
+
+    pub fn with_a2a_delegation(
+        mut self,
+        service: Arc<dyn crate::a2a::A2aDelegationService>,
+    ) -> Self {
+        self.a2a_delegation = Some(service);
         self
     }
 
@@ -1618,6 +1637,14 @@ impl ExecutorBuilder {
                 &[ToolCapability::AgentDelegate],
                 Arc::new(DelegateTool::new()),
             );
+        }
+        if actor_allows(actor, ToolCapability::PeerDelegate) {
+            if let Some(ref service) = self.a2a_delegation {
+                tool_registry.register(Arc::new(crate::tools::ListZbotsTool::new(service.clone())));
+                tool_registry.register(Arc::new(crate::tools::DelegateToZbotTool::new(
+                    service.clone(),
+                )));
+            }
         }
         if self.has_planner_capability_catalog() && !self.is_step_executor() {
             tool_registry.register(Arc::new(agent_runtime::tools::CapabilityCatalogTool::new()));
@@ -2580,6 +2607,62 @@ mod tests {
             .iter()
             .map(|tool| tool.name().to_string())
             .collect()
+    }
+
+    struct FakeA2aDelegation;
+
+    #[async_trait]
+    impl crate::a2a::A2aDelegationService for FakeA2aDelegation {
+        async fn list_peers(
+            &self,
+            _context: &crate::a2a::A2aDelegationContext,
+        ) -> Result<Vec<crate::a2a::A2aPeerSummary>, crate::a2a::A2aDelegationError> {
+            Ok(Vec::new())
+        }
+
+        async fn delegate(
+            &self,
+            _context: crate::a2a::A2aDelegationContext,
+            _peer_id: &str,
+            _content: &str,
+        ) -> Result<crate::a2a::A2aDelegationReceipt, crate::a2a::A2aDelegationError> {
+            Ok(crate::a2a::A2aDelegationReceipt {
+                task_id: "work-test".to_owned(),
+            })
+        }
+    }
+
+    fn registry_names_with_a2a(actor_kind: RuntimeActorKind) -> BTreeSet<String> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .with_a2a_delegation(Arc::new(FakeA2aDelegation))
+            .build_tool_registry(fs_context)
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a2a_tools_are_root_and_ward_only() {
+        for actor in [RuntimeActorKind::Root, RuntimeActorKind::WardAgent] {
+            assert_has(
+                &registry_names_with_a2a(actor),
+                &["list_zbots", "delegate_to_zbot"],
+            );
+        }
+        for actor in [
+            RuntimeActorKind::DelegatedExecutor,
+            RuntimeActorKind::DelegatedReviewer,
+            RuntimeActorKind::RemotePeer,
+        ] {
+            assert_missing(
+                &registry_names_with_a2a(actor),
+                &["list_zbots", "delegate_to_zbot"],
+            );
+        }
     }
 
     // STUB: A2A AC8/AC15 — remote peers receive no local side-effect surface.

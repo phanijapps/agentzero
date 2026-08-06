@@ -1,14 +1,15 @@
 mod common;
 
 use axum::http::StatusCode;
-use axum_test::TestServer;
+use axum_test::{TestServer, TestServerConfig, Transport};
 use common::make_state;
 use gateway::{
     a2a_tasks::A2aInboundPayload, http::create_http_router, websocket::WebSocketHandler, AppState,
     GatewayConfig,
 };
-use gateway_a2a::peers::{IssueCredential, PeerStore};
-use gateway_a2a::APPLICATION_A2A_JSON;
+use gateway_a2a::client::{A2aTransport, HttpA2aTransport};
+use gateway_a2a::peers::{AddPeer, IssueCredential, PeerStore};
+use gateway_a2a::{outbound_send_message_request, APPLICATION_A2A_JSON};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -176,6 +177,70 @@ async fn authenticated_send_is_durable_idempotent_scoped_and_cancelable() {
 }
 
 #[tokio::test]
+async fn hardened_http_client_interoperates_with_the_real_a2a_router() {
+    let (dir_b, state_b) = make_state();
+    let inbound_token = PeerStore::new(dir_b.path())
+        .issue_credential(IssueCredential {
+            peer_id: "peer-a".into(),
+            display_name: Some("Peer A".into()),
+            target_agent_id: "assistant".into(),
+            lifetime_days: None,
+        })
+        .unwrap()
+        .token
+        .exposed()
+        .to_owned();
+    let ws_handler = Arc::new(WebSocketHandler::new(
+        state_b.event_bus.clone(),
+        state_b.runtime.clone(),
+    ));
+    let router = create_http_router(
+        GatewayConfig {
+            a2a_enabled: true,
+            ..GatewayConfig::default()
+        },
+        state_b,
+        ws_handler,
+    );
+    let server = TestServer::new_with_config(
+        router,
+        TestServerConfig {
+            transport: Some(Transport::HttpRandomPort),
+            ..TestServerConfig::default()
+        },
+    )
+    .unwrap();
+
+    let dir_a = tempfile::tempdir().unwrap();
+    let peers_a = PeerStore::new(dir_a.path());
+    peers_a
+        .add_peer(AddPeer {
+            peer_id: "peer-b".into(),
+            display_name: "Peer B".into(),
+            origin: server.server_address().unwrap().to_string(),
+            target_agent_id: "assistant".into(),
+            outbound_token: Some(inbound_token),
+            allow_private_http: false,
+        })
+        .unwrap();
+    let snapshot = peers_a.load_snapshot().unwrap();
+    let peer_b = snapshot.get("peer-b").unwrap();
+    let client = HttpA2aTransport::default();
+    let task = client
+        .send_message(
+            peer_b,
+            &outbound_send_message_request("msg-real-http", "real transport request").unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task.status.state, a2a::TaskState::Submitted);
+
+    let projected = client.get_task(peer_b, &task.id).await.unwrap();
+    assert_eq!(projected.id, task.id);
+    assert_eq!(projected.status.state, a2a::TaskState::Submitted);
+}
+
+#[tokio::test]
 async fn browser_origin_is_rejected_before_enqueue() {
     let (server, _dir, peer_a, _peer_b, _state) = setup_enabled();
     server
@@ -198,6 +263,76 @@ async fn browser_origin_is_rejected_before_enqueue() {
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn repeated_authentication_failures_exhaust_the_origin_budget() {
+    let (server, _dir, peer_a, _peer_b, _state) = setup_enabled();
+    for attempt in 0..10 {
+        server
+            .post("/a2a/message:send")
+            .add_header("A2A-Version", "1.0")
+            .add_header("authorization", format!("Bearer invalid-{attempt}"))
+            .json(&send_body(
+                &format!("msg-invalid-{attempt}"),
+                "must not persist",
+            ))
+            .content_type(APPLICATION_A2A_JSON)
+            .await
+            .assert_status_unauthorized();
+    }
+
+    server
+        .post("/a2a/message:send")
+        .add_header("A2A-Version", "1.0")
+        .add_header("authorization", format!("Bearer {peer_a}"))
+        .json(&send_body("msg-rate-limited", "must not persist"))
+        .content_type(APPLICATION_A2A_JSON)
+        .await
+        .assert_status_unauthorized();
+}
+
+#[tokio::test]
+async fn per_peer_outstanding_task_limit_preserves_idempotent_replay() {
+    let (server, _dir, peer_a, _peer_b, _state) = setup_enabled();
+    let mut first_task_id = None;
+    for index in 0..100 {
+        let accepted = server
+            .post("/a2a/message:send")
+            .add_header("A2A-Version", "1.0")
+            .add_header("authorization", format!("Bearer {peer_a}"))
+            .json(&send_body(&format!("msg-capacity-{index}"), "bounded work"))
+            .content_type(APPLICATION_A2A_JSON)
+            .await;
+        accepted.assert_status_ok();
+        if index == 0 {
+            first_task_id = accepted.json::<Value>()["task"]["id"]
+                .as_str()
+                .map(str::to_owned);
+        }
+    }
+
+    let replay = server
+        .post("/a2a/message:send")
+        .add_header("A2A-Version", "1.0")
+        .add_header("authorization", format!("Bearer {peer_a}"))
+        .json(&send_body("msg-capacity-0", "bounded work"))
+        .content_type(APPLICATION_A2A_JSON)
+        .await;
+    replay.assert_status_ok();
+    assert_eq!(
+        replay.json::<Value>()["task"]["id"].as_str(),
+        first_task_id.as_deref()
+    );
+
+    server
+        .post("/a2a/message:send")
+        .add_header("A2A-Version", "1.0")
+        .add_header("authorization", format!("Bearer {peer_a}"))
+        .json(&send_body("msg-over-capacity", "must not persist"))
+        .content_type(APPLICATION_A2A_JSON)
+        .await
+        .assert_status_bad_request();
 }
 
 #[tokio::test]

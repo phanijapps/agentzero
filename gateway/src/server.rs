@@ -30,13 +30,15 @@ pub struct GatewayServer {
     shutdown_tx: Option<broadcast::Sender<()>>,
     bridge_retry_handle: Option<tokio::task::JoinHandle<()>>,
     durable_work_worker: Option<gateway_bus::WorkWorkerHandle>,
+    a2a_browse_handle: Option<discovery::BrowseHandle>,
+    a2a_candidates: discovery::CandidateRegistry,
     file_watcher: Option<FileWatcher>,
 }
 
 impl GatewayServer {
     /// Create a new gateway server with the given configuration.
     pub fn new(config: GatewayConfig, vault_dir: PathBuf) -> Self {
-        let state = AppState::new(vault_dir);
+        let state = AppState::new_with_a2a(vault_dir, config.a2a_enabled);
         let agent_tasks = Arc::new(DurableAgentTaskService::new(
             state.durable_work_store.clone(),
             state.durable_work_transport.clone(),
@@ -61,6 +63,8 @@ impl GatewayServer {
             shutdown_tx: None,
             bridge_retry_handle: None,
             durable_work_worker: None,
+            a2a_browse_handle: None,
+            a2a_candidates: discovery::CandidateRegistry::default(),
             file_watcher: None,
         }
     }
@@ -231,7 +235,12 @@ impl GatewayServer {
                 .clone()
                 .unwrap_or_else(default_instance_name);
 
-            let instance_id = match network_cfg.discovery.instance_id.clone() {
+            let instance_id = match network_cfg
+                .discovery
+                .instance_id
+                .clone()
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+            {
                 Some(id) => id,
                 None => {
                     let new_id = uuid::Uuid::new_v4().to_string();
@@ -256,6 +265,15 @@ impl GatewayServer {
             txt.insert("name".into(), instance_name.clone());
             txt.insert("path".into(), "/".into());
             txt.insert("ws".into(), "1".into());
+            if self.config.a2a_enabled {
+                match discovery::advertise_a2a_txt_records(
+                    &instance_id,
+                    discovery::A2A_AGENT_CARD_PATH,
+                ) {
+                    Ok(records) => txt.extend(records),
+                    Err(error) => warn!("A2A discovery metadata is invalid: {}", error),
+                }
+            }
             for (k, v) in &network_cfg.discovery.txt_records {
                 txt.entry(k.clone()).or_insert_with(|| v.clone());
             }
@@ -304,6 +322,24 @@ impl GatewayServer {
             // treats advertise_handle.is_some() as the source of truth for "mDNS
             // is live", not AppState.advertiser's concrete type.
             drop(advertiser);
+
+            if self.config.a2a_enabled {
+                match discovery::MdnsBrowser::new().and_then(|browser| {
+                    discovery::start_browser_if_enabled(
+                        discovery::BrowseConfig::enabled(
+                            network_cfg.discovery.service_type.clone(),
+                        ),
+                        &browser,
+                        self.a2a_candidates.clone(),
+                    )
+                }) {
+                    Ok(handle) => self.a2a_browse_handle = handle,
+                    Err(error) => warn!(
+                        "A2A discovery browser failed to start; configured peers remain usable: {}",
+                        error
+                    ),
+                }
+            }
         }
 
         info!(
@@ -319,6 +355,8 @@ impl GatewayServer {
     /// This pauses all running sessions so they can be resumed on restart,
     /// disconnects bridge workers, and sends the shutdown signal.
     pub async fn shutdown(&mut self) {
+        self.a2a_browse_handle.take();
+
         // Withdraw mDNS advertisement before tearing down the listener.
         if let Ok(mut guard) = self.state.advertise_handle.lock() {
             if let Some(handle) = guard.take() {
@@ -399,12 +437,35 @@ impl GatewayServer {
         })?;
         let mut handlers = vec![handler, peer_handler];
         if self.config.a2a_enabled {
+            let remote_transport: Arc<dyn gateway_a2a::client::A2aTransport> =
+                Arc::new(gateway_a2a::client::HttpA2aTransport::default());
             handlers.push(Arc::new(crate::a2a_tasks::A2aInboundHandler::new(
+                self.state.paths.vault_dir(),
                 self.state.durable_work_store.clone(),
                 self.state.runtime.clone(),
                 self.state.state_service.clone(),
                 self.state.messages.clone(),
                 self.state.agents.clone(),
+            )) as Arc<dyn gateway_bus::WorkHandler>);
+            handlers.push(Arc::new(crate::a2a_tasks::A2aOutboundDispatchHandler::new(
+                self.state.paths.vault_dir(),
+                self.state.durable_work_store.clone(),
+                self.state.durable_work_transport.clone(),
+                remote_transport.clone(),
+            )) as Arc<dyn gateway_bus::WorkHandler>);
+            let steering = self
+                .state
+                .runtime
+                .runner()
+                .ok_or_else(|| GatewayError::Internal("execution runner unavailable".to_owned()))?
+                .steering_registry();
+            handlers.push(Arc::new(crate::a2a_tasks::A2aOutboundPollHandler::new(
+                self.state.paths.vault_dir(),
+                remote_transport,
+                steering,
+                self.state.state_service.clone(),
+                self.state.messages.clone(),
+                self.state.event_bus.clone(),
             )) as Arc<dyn gateway_bus::WorkHandler>);
         }
         let registry = gateway_bus::WorkHandlerRegistry::from_handlers(handlers).map_err(|_| {

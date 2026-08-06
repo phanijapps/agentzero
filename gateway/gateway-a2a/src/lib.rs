@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
 
+pub mod client;
 pub mod config;
 pub mod peers;
 pub mod registry;
@@ -23,6 +24,7 @@ pub const MAX_TEXT_CODE_POINTS: usize = 1_000;
 pub const MAX_TEXT_UTF8_BYTES: usize = 4_000;
 pub const MAX_TASK_ID_BYTES: usize = 128;
 pub const MAX_PAGE_SIZE: i32 = 100;
+pub const MAX_RESPONSE_BODY_BYTES: usize = 1_048_576;
 
 const SECURITY_SCHEME_NAME: &str = "peerBearer";
 const ERROR_DOMAIN: &str = "a2a-protocol.org";
@@ -133,6 +135,7 @@ pub fn agent_card(config: AgentCardConfig) -> Result<AgentCard, ProtocolError> {
     validate_len(&config.name, 1, 80)?;
     validate_len(&config.description, 0, 500)?;
     validate_len(&config.version, 1, 32)?;
+    let interface_url = agent_interface_url(&config.base_url)?;
     if config.skills.is_empty() || config.skills.len() > 16 {
         return Err(ProtocolError::InvalidParams);
     }
@@ -155,7 +158,7 @@ pub fn agent_card(config: AgentCardConfig) -> Result<AgentCard, ProtocolError> {
         description: config.description,
         version: config.version,
         supported_interfaces: vec![AgentInterface {
-            url: format!("{}/a2a", config.base_url.trim_end_matches('/')),
+            url: interface_url,
             protocol_binding: TRANSPORT_PROTOCOL_HTTP_JSON.to_string(),
             protocol_version: VERSION.to_string(),
             tenant: None,
@@ -180,6 +183,25 @@ pub fn agent_card(config: AgentCardConfig) -> Result<AgentCard, ProtocolError> {
         security_requirements: Some(vec![security_requirement]),
         signatures: None,
     })
+}
+
+fn agent_interface_url(base_url: &str) -> Result<String, ProtocolError> {
+    if base_url.len() > 2_048 {
+        return Err(ProtocolError::InvalidParams);
+    }
+    let mut base = url::Url::parse(base_url).map_err(|_| ProtocolError::InvalidParams)?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || base.path() != "/"
+    {
+        return Err(ProtocolError::InvalidParams);
+    }
+    base.set_path("/a2a");
+    Ok(base.into())
 }
 
 fn agent_skill(config: AgentSkillConfig) -> Result<AgentSkill, ProtocolError> {
@@ -239,6 +261,36 @@ pub fn parse_send_message_request(
         serde_json::from_slice(body).map_err(|_| ProtocolError::InvalidRequest)?;
     let accepted = validate_send_message_request(&request)?;
     Ok((request, accepted))
+}
+
+pub fn outbound_send_message_request(
+    message_id: impl Into<String>,
+    text: impl Into<String>,
+) -> Result<SendMessageRequest, ProtocolError> {
+    let message_id = message_id.into();
+    let text = text.into();
+    validate_len(&message_id, 1, 128)?;
+    validate_text(&text)?;
+    Ok(SendMessageRequest {
+        message: Message {
+            message_id,
+            context_id: None,
+            task_id: None,
+            role: Role::User,
+            parts: vec![Part::text(text).with_media_type(TEXT_PLAIN)],
+            metadata: None,
+            extensions: None,
+            reference_task_ids: None,
+        },
+        configuration: Some(a2a::SendMessageConfiguration {
+            accepted_output_modes: Some(vec![TEXT_PLAIN.to_string()]),
+            task_push_notification_config: None,
+            history_length: None,
+            return_immediately: Some(true),
+        }),
+        metadata: None,
+        tenant: None,
+    })
 }
 
 pub fn validate_send_message_request(

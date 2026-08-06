@@ -128,6 +128,14 @@ stricter handler-specific limits but cannot exceed these bounds.
   contract, broker, remote transport, dead-letter replay, or third-party
   dependency is introduced.
 
+## Follow-on compatibility
+
+The later A2A federation feature registers exact inbound, outbound-dispatch,
+and outbound-poll handlers in this same supervised worker only while A2A is
+enabled. Handler timeouts, lease renewal, normalized outcomes, duplicate
+registration rejection, and bounded shutdown are unchanged. See
+[`A2A Federation and Discovery`](../a2a-federation-discovery/spec.md).
+
 ## Assumptions
 
 - Technical: `WorkStore` is authoritative and `LocalWorkTransport` is a

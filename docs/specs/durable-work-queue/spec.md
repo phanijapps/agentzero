@@ -153,6 +153,15 @@ reference this table rather than defining parallel values.
   four stale-deferral findings and ten dangling traceability pointers; this
   spec adds no new documentation-lint finding.
 
+## Follow-on compatibility
+
+The later A2A federation feature reuses this queue without changing its
+authority model: peer ownership is expressed through `WorkScope`, cancellation
+uses the generic fenced `canceled` transition, and outbound dispatch/poll remain
+ordinary immutable work items. No broker was added; `WorkTransport` remains a
+wake-only replaceable seam. See
+[`A2A Federation and Discovery`](../a2a-federation-discovery/spec.md).
+
 ## Assumptions
 
 - Technical: execution state already uses bundled SQLite/rusqlite (source:

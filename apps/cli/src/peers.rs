@@ -14,7 +14,11 @@ enum PeerCommand {
     /// Show trusted peers and credential metadata without secret material.
     List,
     /// Discover currently visible A2A candidates.
-    Discover,
+    Discover {
+        /// Time to browse before printing the current untrusted candidates.
+        #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..=30))]
+        wait_seconds: u64,
+    },
     /// Issue a new inbound credential for a trusted peer.
     Issue(TokenArgs),
     /// Alias for issue; prints the new inbound credential once.
@@ -58,14 +62,11 @@ struct AddArgs {
     allow_private_http: bool,
 }
 
-pub fn run(args: PeersArgs, data_dir: PathBuf) -> Result<()> {
+pub async fn run(args: PeersArgs, data_dir: PathBuf) -> Result<()> {
     let store = PeerStore::new(data_dir);
     match args.command {
         PeerCommand::List => list(&store),
-        PeerCommand::Discover => {
-            println!("A2A discovery candidates are managed by the daemon; no local candidates available.");
-            Ok(())
-        }
+        PeerCommand::Discover { wait_seconds } => discover(wait_seconds).await,
         PeerCommand::Issue(args) | PeerCommand::Token(args) | PeerCommand::Rotate(args) => {
             let issued = store
                 .issue_credential(IssueCredential {
@@ -111,6 +112,34 @@ pub fn run(args: PeersArgs, data_dir: PathBuf) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn discover(wait_seconds: u64) -> Result<()> {
+    let registry = discovery::CandidateRegistry::default();
+    let browser = discovery::MdnsBrowser::new().context("start A2A discovery browser")?;
+    let handle = discovery::start_browser_if_enabled(
+        discovery::BrowseConfig::enabled(discovery::DEFAULT_A2A_SERVICE_TYPE),
+        &browser,
+        registry.clone(),
+    )?
+    .expect("enabled browser returns a handle");
+    tokio::time::sleep(std::time::Duration::from_secs(wait_seconds)).await;
+    let candidates = registry.candidates();
+    drop(handle);
+
+    if candidates.is_empty() {
+        println!("no untrusted A2A candidates discovered");
+        return Ok(());
+    }
+    for candidate in candidates {
+        println!("peer_id: {}", candidate.node_id);
+        println!("display_name: {}", candidate.instance_name);
+        println!("addresses: {:?}", candidate.addresses);
+        println!("port: {}", candidate.port);
+        println!("agent_card_path: {}", candidate.agent_card_path);
+        println!("trust: untrusted (use `zbot peers add` explicitly)");
+    }
+    Ok(())
 }
 
 fn list(store: &PeerStore) -> Result<()> {

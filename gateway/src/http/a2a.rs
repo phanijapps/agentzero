@@ -3,7 +3,7 @@
 use crate::a2a_tasks::{A2aPeerIdentity, A2aTaskError, A2aTaskService};
 use crate::config::GatewayConfig;
 use axum::body::{to_bytes, Body};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
@@ -19,7 +19,14 @@ use gateway_a2a::{
 };
 use gateway_bus::WorkTransport;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
+
+const AUTH_ORIGIN_CAPACITY: f64 = 10.0;
+const AUTH_GLOBAL_CAPACITY: f64 = 100.0;
+const MAX_AUTH_ORIGIN_BUCKETS: usize = 1_024;
 
 #[derive(Clone)]
 pub(crate) struct A2aHttpState {
@@ -29,6 +36,7 @@ pub(crate) struct A2aHttpState {
     card: a2a::AgentCard,
     public_skill_instructions: Arc<String>,
     runtime: Arc<crate::services::RuntimeService>,
+    auth_failures: Arc<AuthFailureLimiter>,
 }
 
 impl A2aHttpState {
@@ -65,6 +73,7 @@ impl A2aHttpState {
             card,
             public_skill_instructions: Arc::new(config.a2a_public_skill_instructions.clone()),
             runtime,
+            auth_failures: Arc::new(AuthFailureLimiter::new()),
         })
     }
 }
@@ -81,14 +90,15 @@ async fn a2a_operation(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> Response {
+    let remote_ip = remote_ip(&request);
     match (request.method(), path.as_str()) {
-        (&Method::POST, "message:send") => send_message(&state, request).await,
+        (&Method::POST, "message:send") => send_message(&state, request, remote_ip).await,
         (&Method::GET, "tasks") => {
             let query = match Query::<ListTaskQuery>::try_from_uri(request.uri()) {
                 Ok(Query(query)) => query,
                 Err(_) => return protocol_error(ProtocolError::InvalidParams),
             };
-            list_tasks(&state, request.headers(), query).await
+            list_tasks(&state, request.headers(), query, remote_ip).await
         }
         (&Method::GET, path) if path.starts_with("tasks/") && !path.ends_with(":cancel") => {
             let task_id = path.trim_start_matches("tasks/");
@@ -96,12 +106,18 @@ async fn a2a_operation(
                 Ok(Query(query)) => query,
                 Err(_) => return protocol_error(ProtocolError::InvalidParams),
             };
-            get_task(&state, task_id, request.headers(), query)
+            get_task(&state, task_id, request.headers(), query, remote_ip)
         }
         (&Method::POST, path) if path.starts_with("tasks/") && path.ends_with(":cancel") => {
-            cancel_task(&state, path.trim_start_matches("tasks/"), request.headers()).await
+            cancel_task(
+                &state,
+                path.trim_start_matches("tasks/"),
+                request.headers(),
+                remote_ip,
+            )
+            .await
         }
-        _ => unsupported_operation(&state, request.headers()),
+        _ => unsupported_operation(&state, request.headers(), remote_ip),
     }
 }
 
@@ -117,8 +133,8 @@ async fn agent_card_handler(State(state): State<A2aHttpState>) -> Response {
     response
 }
 
-async fn send_message(state: &A2aHttpState, request: Request<Body>) -> Response {
-    let peer = match authenticate(state, request.headers(), true) {
+async fn send_message(state: &A2aHttpState, request: Request<Body>, remote_ip: IpAddr) -> Response {
+    let peer = match authenticate(state, request.headers(), true, remote_ip) {
         Ok(peer) => peer,
         Err(error) => return protocol_error(error),
     };
@@ -155,8 +171,9 @@ fn get_task(
     task_id: &str,
     headers: &HeaderMap,
     query: GetTaskQuery,
+    remote_ip: IpAddr,
 ) -> Response {
-    let peer = match authenticate(state, headers, false) {
+    let peer = match authenticate(state, headers, false, remote_ip) {
         Ok(peer) => peer,
         Err(error) => return protocol_error(error),
     };
@@ -172,8 +189,13 @@ fn get_task(
     }
 }
 
-async fn list_tasks(state: &A2aHttpState, headers: &HeaderMap, query: ListTaskQuery) -> Response {
-    let peer = match authenticate(state, headers, false) {
+async fn list_tasks(
+    state: &A2aHttpState,
+    headers: &HeaderMap,
+    query: ListTaskQuery,
+    remote_ip: IpAddr,
+) -> Response {
+    let peer = match authenticate(state, headers, false, remote_ip) {
         Ok(peer) => peer,
         Err(error) => return protocol_error(error),
     };
@@ -207,8 +229,13 @@ async fn list_tasks(state: &A2aHttpState, headers: &HeaderMap, query: ListTaskQu
     }
 }
 
-async fn cancel_task(state: &A2aHttpState, path_id: &str, headers: &HeaderMap) -> Response {
-    let peer = match authenticate(state, headers, false) {
+async fn cancel_task(
+    state: &A2aHttpState,
+    path_id: &str,
+    headers: &HeaderMap,
+    remote_ip: IpAddr,
+) -> Response {
+    let peer = match authenticate(state, headers, false, remote_ip) {
         Ok(peer) => peer,
         Err(error) => return protocol_error(error),
     };
@@ -232,8 +259,8 @@ async fn cancel_task(state: &A2aHttpState, path_id: &str, headers: &HeaderMap) -
     }
 }
 
-fn unsupported_operation(state: &A2aHttpState, headers: &HeaderMap) -> Response {
-    if let Err(error) = authenticate(state, headers, false) {
+fn unsupported_operation(state: &A2aHttpState, headers: &HeaderMap, remote_ip: IpAddr) -> Response {
+    if let Err(error) = authenticate(state, headers, false, remote_ip) {
         return protocol_error(error);
     }
     protocol_error(ProtocolError::UnsupportedOperation)
@@ -243,6 +270,38 @@ fn authenticate(
     state: &A2aHttpState,
     headers: &HeaderMap,
     require_content_type: bool,
+    remote_ip: IpAddr,
+) -> Result<A2aPeerIdentity, ProtocolError> {
+    if state.auth_failures.is_blocked(remote_ip) {
+        return Err(ProtocolError::Unauthorized);
+    }
+    let authenticated = authenticate_peer(state, headers);
+    let peer = match authenticated {
+        Ok(peer) => peer,
+        Err(error) => {
+            if error == ProtocolError::Unauthorized {
+                state.auth_failures.record_failure(remote_ip);
+            }
+            return Err(error);
+        }
+    };
+    let version = headers
+        .get("A2A-Version")
+        .and_then(|value| value.to_str().ok());
+    if require_content_type {
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        validate_headers(version, content_type)?;
+    } else if version != Some(a2a::VERSION) {
+        return Err(ProtocolError::VersionNotSupported);
+    }
+    Ok(peer)
+}
+
+fn authenticate_peer(
+    state: &A2aHttpState,
+    headers: &HeaderMap,
 ) -> Result<A2aPeerIdentity, ProtocolError> {
     if let Some(origin) = headers.get(header::ORIGIN) {
         let allowed = origin.to_str().ok().is_some_and(|origin| {
@@ -267,21 +326,100 @@ fn authenticate(
     let peer = snapshot
         .authenticate_inbound_token(token)
         .ok_or(ProtocolError::Unauthorized)?;
-    let version = headers
-        .get("A2A-Version")
-        .and_then(|value| value.to_str().ok());
-    if require_content_type {
-        let content_type = headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok());
-        validate_headers(version, content_type)?;
-    } else if version != Some(a2a::VERSION) {
-        return Err(ProtocolError::VersionNotSupported);
-    }
     Ok(A2aPeerIdentity {
         peer_id: peer.node_id.clone(),
         target_agent_id: peer.target_agent_id.clone(),
     })
+}
+
+fn remote_ip(request: &Request<Body>) -> IpAddr {
+    request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(address)| address.ip())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+}
+
+#[derive(Debug)]
+struct AuthFailureLimiter {
+    inner: std::sync::Mutex<AuthFailureState>,
+}
+
+#[derive(Debug)]
+struct AuthFailureState {
+    global: TokenBucket,
+    origins: HashMap<IpAddr, TokenBucket>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokenBucket {
+    tokens: f64,
+    updated_at: Instant,
+}
+
+impl AuthFailureLimiter {
+    fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(AuthFailureState {
+                global: TokenBucket::full(AUTH_GLOBAL_CAPACITY),
+                origins: HashMap::new(),
+            }),
+        }
+    }
+
+    fn is_blocked(&self, origin: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut state = self.inner.lock().expect("auth limiter poisoned");
+        state.global.refill(AUTH_GLOBAL_CAPACITY, now);
+        if state.global.tokens < 1.0 {
+            return true;
+        }
+        state.origins.get_mut(&origin).is_some_and(|bucket| {
+            bucket.refill(AUTH_ORIGIN_CAPACITY, now);
+            bucket.tokens < 1.0
+        })
+    }
+
+    fn record_failure(&self, origin: IpAddr) {
+        let now = Instant::now();
+        let mut state = self.inner.lock().expect("auth limiter poisoned");
+        state.global.take(AUTH_GLOBAL_CAPACITY, now);
+        if !state.origins.contains_key(&origin) && state.origins.len() >= MAX_AUTH_ORIGIN_BUCKETS {
+            if let Some(oldest) = state
+                .origins
+                .iter()
+                .min_by_key(|(_, bucket)| bucket.updated_at)
+                .map(|(origin, _)| *origin)
+            {
+                state.origins.remove(&oldest);
+            }
+        }
+        state
+            .origins
+            .entry(origin)
+            .or_insert_with(|| TokenBucket::full(AUTH_ORIGIN_CAPACITY))
+            .take(AUTH_ORIGIN_CAPACITY, now);
+    }
+}
+
+impl TokenBucket {
+    fn full(capacity: f64) -> Self {
+        Self {
+            tokens: capacity,
+            updated_at: Instant::now(),
+        }
+    }
+
+    fn refill(&mut self, capacity: f64, now: Instant) {
+        let elapsed = now.duration_since(self.updated_at).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * capacity / 60.0).min(capacity);
+        self.updated_at = now;
+    }
+
+    fn take(&mut self, capacity: f64, now: Instant) {
+        self.refill(capacity, now);
+        self.tokens = (self.tokens - 1.0).max(0.0);
+    }
 }
 
 fn bearer_token(value: &str) -> Option<&str> {
@@ -344,9 +482,9 @@ fn decode_cursor(value: &str, peer_id: &str) -> Result<WorkCursor, ProtocolError
 
 fn task_error(error: A2aTaskError) -> Response {
     protocol_error(match error {
-        A2aTaskError::InvalidRequest | A2aTaskError::MessageConflict => {
-            ProtocolError::InvalidParams
-        }
+        A2aTaskError::InvalidRequest
+        | A2aTaskError::MessageConflict
+        | A2aTaskError::CapacityExceeded => ProtocolError::InvalidParams,
         A2aTaskError::NotFound => ProtocolError::TaskNotFound,
         A2aTaskError::NotCancelable => ProtocolError::TaskNotCancelable,
         A2aTaskError::StorageUnavailable => ProtocolError::InternalError,

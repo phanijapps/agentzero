@@ -1245,6 +1245,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs 5.0.1",
+ "discovery",
  "futures-util",
  "gateway-a2a",
  "gateway-ws-protocol",
@@ -2595,9 +2596,11 @@ name = "gateway-a2a"
 version = "2026.8.4"
 dependencies = [
  "a2a-lf",
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "rand 0.8.5",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2605,6 +2608,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "url",
  "zeroize",
 ]

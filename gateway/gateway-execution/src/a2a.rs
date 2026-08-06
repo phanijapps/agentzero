@@ -1,5 +1,7 @@
 //! Execution-boundary types for authenticated remote A2A work.
 
+use async_trait::async_trait;
+use serde::Serialize;
 use thiserror::Error;
 
 pub const MAX_REMOTE_TEXT_CODE_POINTS: usize = 1_000;
@@ -30,6 +32,60 @@ pub enum RemotePromptError {
     InvalidRemoteText,
     #[error("public skill instructions are invalid")]
     InvalidPublicSkill,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalA2aActorKind {
+    Root,
+    Ward,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A2aDelegationContext {
+    pub actor_kind: LocalA2aActorKind,
+    pub agent_id: String,
+    pub session_id: String,
+    pub execution_id: String,
+    pub conversation_id: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct A2aPeerSummary {
+    pub peer_id: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct A2aDelegationReceipt {
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum A2aDelegationError {
+    #[error("invalid A2A delegation request")]
+    InvalidRequest,
+    #[error("A2A delegation is not authorized")]
+    NotAuthorized,
+    #[error("trusted peer is unavailable")]
+    PeerUnavailable,
+    #[error("A2A delegation is temporarily unavailable")]
+    TemporarilyUnavailable,
+}
+
+#[async_trait]
+pub trait A2aDelegationService: Send + Sync {
+    async fn list_peers(
+        &self,
+        context: &A2aDelegationContext,
+    ) -> Result<Vec<A2aPeerSummary>, A2aDelegationError>;
+
+    async fn delegate(
+        &self,
+        context: A2aDelegationContext,
+        peer_id: &str,
+        content: &str,
+    ) -> Result<A2aDelegationReceipt, A2aDelegationError>;
 }
 
 /// Build the complete model-visible prompt for a remote peer from an explicit

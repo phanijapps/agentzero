@@ -16,8 +16,8 @@
     },
     "peerId": {
       "type": "string",
-      "pattern": "^zbot-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "maxLength": 41
+      "pattern": "^[A-Za-z0-9._:-]{1,120}$",
+      "maxLength": 120
     },
     "executionId": {
       "type": "string",
@@ -31,8 +31,8 @@
     },
     "messageId": {
       "type": "string",
-      "pattern": "^msg-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "maxLength": 40
+      "pattern": "^msg-[0-9a-f]{64}$",
+      "maxLength": 68
     },
     "workId": {
       "type": "string",
@@ -45,9 +45,12 @@
         "version",
         "peer_id",
         "content",
+        "source_agent_id",
         "source_session_id",
         "source_execution_id",
-        "client_message_id"
+        "source_conversation_id",
+        "client_message_id",
+        "deadline_at"
       ],
       "properties": {
         "version": { "const": 1 },
@@ -58,9 +61,20 @@
           "maxLength": 1000,
           "x-maxUtf8Bytes": 4000
         },
+        "source_agent_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "source_session_id": { "$ref": "#/$defs/sessionId" },
         "source_execution_id": { "$ref": "#/$defs/executionId" },
-        "client_message_id": { "$ref": "#/$defs/messageId" }
+        "source_conversation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "client_message_id": { "$ref": "#/$defs/messageId" },
+        "deadline_at": { "type": "string", "format": "date-time" }
       }
     },
     "dispatch": {
@@ -74,9 +88,12 @@
             "version",
             "peer_id",
             "content",
+            "source_agent_id",
             "source_session_id",
             "source_execution_id",
-            "client_message_id"
+            "source_conversation_id",
+            "client_message_id",
+            "deadline_at"
           ],
           "properties": {
             "kind": { "const": "dispatch" },
@@ -88,9 +105,20 @@
               "maxLength": 1000,
               "x-maxUtf8Bytes": 4000
             },
+            "source_agent_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "source_session_id": { "$ref": "#/$defs/sessionId" },
             "source_execution_id": { "$ref": "#/$defs/executionId" },
-            "client_message_id": { "$ref": "#/$defs/messageId" }
+            "source_conversation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "client_message_id": { "$ref": "#/$defs/messageId" },
+            "deadline_at": { "type": "string", "format": "date-time" }
           }
         }
       ]
@@ -106,9 +134,12 @@
             "version",
             "peer_id",
             "content",
+            "source_agent_id",
             "source_session_id",
             "source_execution_id",
+            "source_conversation_id",
             "client_message_id",
+            "deadline_at",
             "dispatch_work_id",
             "remote_task_id"
           ],
@@ -122,9 +153,20 @@
               "maxLength": 1000,
               "x-maxUtf8Bytes": 4000
             },
+            "source_agent_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "source_session_id": { "$ref": "#/$defs/sessionId" },
             "source_execution_id": { "$ref": "#/$defs/executionId" },
+            "source_conversation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "client_message_id": { "$ref": "#/$defs/messageId" },
+            "deadline_at": { "type": "string", "format": "date-time" },
             "dispatch_work_id": { "$ref": "#/$defs/workId" },
             "remote_task_id": {
               "type": "string",

@@ -140,6 +140,31 @@ explicit cleanup release.
 | Serialization | serde + serde_json | JSON handling |
 | Logging | tracing + tracing-subscriber + tracing-appender | Structured logging with file rotation |
 
+## A2A Federation (optional)
+
+The daemon can expose a default-off A2A 1.0 `HTTP+JSON` surface on the existing
+HTTP listener. `/.well-known/agent-card.json` is public; send, get, list, and
+cancel operations live under `/a2a` and require a per-peer Bearer credential.
+The local CLI owns explicit trust in `config/a2a-peers.json`; mDNS only produces
+untrusted `_zbot._tcp.local.` candidates and never changes a trusted route.
+
+Inbound requests are authenticated before parsing or enqueue and become
+peer-scoped durable work. They run as a remote actor whose model-visible tool
+inventory is exactly `respond`. Root and ward actors can use `list_zbots` and
+`delegate_to_zbot`; dispatch and polling are separate durable work items, so a
+transport wake can be replaced later without changing queue authority. Remote
+results first steer a live originating execution. If that turn has ended, the
+result is persisted once and a respond-only continuation is scheduled. Remote
+content never becomes system authority or gains connector, memory-write,
+filesystem, shell, or onward-delegation capabilities.
+
+Enable the surface with `zbotd --a2a`. Pairing remains an explicit two-sided
+operator action through `zbot peers issue`, `zbot peers add`, and related
+commands. HTTPS is the default; loopback HTTP is accepted and private-network
+HTTP requires a per-peer opt-in. MQTT, Kafka, NATS, registries, streaming, push
+notifications, and ACP are outside this layer; the durable `WorkTransport` and
+A2A transport traits remain the extension seams.
+
 ## Model Configuration
 
 Models are configured directly on providers, agents, and Advanced settings.

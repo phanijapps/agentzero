@@ -67,6 +67,7 @@ pub async fn spawn_delegated_agent(
     distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     memory_recall: Option<Arc<MemoryRecall>>,
     peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     rate_limiters: Arc<
         std::sync::RwLock<
             std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
@@ -254,7 +255,8 @@ pub async fn spawn_delegated_agent(
         RuntimeActorKind::DelegatedReviewer => crate::invoke::SubagentRole::Reviewer,
         RuntimeActorKind::Root
         | RuntimeActorKind::DelegatedExecutor
-        | RuntimeActorKind::WardAgent => crate::invoke::SubagentRole::Executor,
+        | RuntimeActorKind::WardAgent
+        | RuntimeActorKind::RemotePeer => crate::invoke::SubagentRole::Executor,
     };
     tracing::info!(
         child_agent = %request.child_agent_id,
@@ -564,6 +566,9 @@ pub async fn spawn_delegated_agent(
     }
     if let Some(peer_messages) = peer_messages {
         builder = builder.with_peer_messages(peer_messages);
+    }
+    if let Some(service) = a2a_delegation {
+        builder = builder.with_a2a_delegation(service);
     }
     builder = builder
         .with_state_service(state_service.clone())
@@ -1747,6 +1752,7 @@ fn context_actor_kind(actor_kind: RuntimeActorKind) -> ContextActorKind {
         RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
         RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
         RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
+        RuntimeActorKind::RemotePeer => ContextActorKind::RemotePeer,
     }
 }
 
@@ -2032,6 +2038,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rate_limiters.clone(),
             None,
             None,
@@ -2165,6 +2172,7 @@ mod tests {
             delegation_tx,
             log_service,
             state_service.clone(),
+            None,
             None,
             None,
             None,

@@ -2,6 +2,7 @@
 //!
 //! RESTful HTTP API for the gateway.
 
+mod a2a;
 mod agents;
 mod artifacts;
 mod autonomy;
@@ -511,7 +512,25 @@ pub fn create_http_router(
         )
         .route("/api/plugins/discover", post(plugins::discover_plugins))
         // State
-        .with_state(state);
+        .with_state(state.clone());
+
+    if config.a2a_enabled {
+        match a2a::A2aHttpState::new(
+            &config,
+            &state.vault_dir,
+            state.durable_work_store.clone(),
+            state.durable_work_transport.clone(),
+            state.messages.clone(),
+            state.runtime.clone(),
+        ) {
+            Ok(a2a_state) => {
+                router = router.merge(a2a::routes(a2a_state));
+            }
+            Err(error) => {
+                tracing::error!(reason = %error, "A2A routes disabled because configuration is invalid");
+            }
+        }
+    }
 
     // Add static file serving for web dashboard
     if config.serve_dashboard {

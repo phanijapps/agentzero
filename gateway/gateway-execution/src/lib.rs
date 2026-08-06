@@ -20,6 +20,7 @@
 //! - `lifecycle` - Session and execution state management
 //! - `runner` - Main execution runner
 
+pub mod a2a;
 pub mod agent_pool;
 pub mod archiver;
 pub mod artifacts;

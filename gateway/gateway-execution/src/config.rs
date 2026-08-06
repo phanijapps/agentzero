@@ -143,6 +143,8 @@ pub struct ExecutionConfig {
     ledger_resume_packet: Option<LedgerResumePacket>,
     /// Suppress raw dependency diagnostics at durable/untrusted boundaries.
     redact_diagnostics: bool,
+    /// Isolated public-only prompt for an authenticated remote A2A actor.
+    remote_peer_prompt: Option<crate::a2a::RemotePeerPrompt>,
 }
 
 /// Session execution mode — split from "fast_mode" to decouple memory injection
@@ -191,6 +193,7 @@ impl ExecutionConfig {
             mode: None,
             ledger_resume_packet: None,
             redact_diagnostics: false,
+            remote_peer_prompt: None,
         }
     }
 
@@ -248,6 +251,21 @@ impl ExecutionConfig {
     pub fn with_client_message_id(mut self, client_message_id: String) -> Self {
         self.client_message_id = Some(client_message_id);
         self
+    }
+
+    /// Mark this execution as remote A2A work with an isolated prompt.
+    #[must_use]
+    pub fn with_remote_peer_prompt(mut self, prompt: crate::a2a::RemotePeerPrompt) -> Self {
+        self.remote_peer_prompt = Some(prompt);
+        self
+    }
+
+    pub fn remote_peer_prompt(&self) -> Option<&crate::a2a::RemotePeerPrompt> {
+        self.remote_peer_prompt.as_ref()
+    }
+
+    pub fn is_remote_peer(&self) -> bool {
+        self.remote_peer_prompt.is_some()
     }
 
     /// Normalize dependency diagnostics for durable/untrusted invocation paths.

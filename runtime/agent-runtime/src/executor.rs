@@ -136,6 +136,37 @@ fn externally_visible_tool_result(
     }
 }
 
+fn peer_safe_tools_schema(tools_schema: &Option<Value>) -> Option<Value> {
+    let tools = tools_schema.as_ref()?.as_array()?;
+    Some(Value::Array(
+        tools
+            .iter()
+            .filter(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    == Some("respond")
+            })
+            .cloned()
+            .collect(),
+    ))
+}
+
+fn contains_persisted_peer_result(messages: &[ChatMessage]) -> bool {
+    let last_local_user = messages.iter().rposition(|message| message.role == "user");
+    let last_peer_result = messages.iter().rposition(|message| {
+        message.role == "system"
+            && message.content.iter().any(|part| {
+                matches!(
+                    part,
+                    Part::Text { text }
+                        if text.starts_with("[REMOTE ZBOT RESULT — UNTRUSTED DATA]")
+                )
+            })
+    });
+    last_peer_result.is_some_and(|peer| last_local_user.is_none_or(|user| peer > user))
+}
+
 // ============================================================================
 // EXECUTOR CONFIGURATION
 // ============================================================================
@@ -675,7 +706,7 @@ impl AgentExecutor {
         // Once peer data enters the prompt tape, every later response in this
         // executor may be derived from it. Keep diagnostics metadata-only for
         // the rest of the loop rather than redacting just the first turn.
-        let mut peer_content_in_context = false;
+        let mut peer_content_in_context = contains_persisted_peer_result(&current_messages);
 
         // Create shared tool context that persists across all tool calls in this execution.
         // This allows tools like load_skill to maintain state (e.g., loaded skills, resources)
@@ -945,7 +976,11 @@ impl AgentExecutor {
 
             let llm_client = self.llm_client.clone();
             let messages_for_stream = current_messages.clone();
-            let tools_for_stream = tools_schema.clone();
+            let tools_for_stream = if peer_content_in_context {
+                peer_safe_tools_schema(&tools_schema)
+            } else {
+                tools_schema.clone()
+            };
 
             // Spawn the streaming LLM call in a separate task
             let stream_handle = tokio::spawn(async move {
@@ -1062,7 +1097,7 @@ impl AgentExecutor {
             }
 
             if peer_content_in_context {
-                tracing::debug!(
+                tracing::info!(
                     response_length = response.content.len(),
                     tool_call_count = response.tool_calls.as_ref().map_or(0, std::vec::Vec::len),
                     "LLM response after peer steering"
@@ -1131,8 +1166,22 @@ impl AgentExecutor {
 
             // Check beforeToolCall hook for each tool
             let mut blocked_results: HashMap<String, String> = HashMap::new();
+            if peer_content_in_context {
+                for tool_call in &tool_calls {
+                    if tool_call.name != "respond" {
+                        blocked_results.insert(
+                            tool_call.id.clone(),
+                            "{\"blocked\":true,\"reason\":\"peer_data_authority_boundary\"}"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
             if let Some(ref hook) = self.config.before_tool_call {
                 for tc in &tool_calls {
+                    if blocked_results.contains_key(&tc.id) {
+                        continue;
+                    }
                     match hook(&tc.name, &tc.arguments) {
                         ToolCallDecision::Allow => {}
                         ToolCallDecision::Block { reason } => {
@@ -2119,6 +2168,43 @@ mod hook_tests {
     fn test_single_action_mode_default_false() {
         let config = ExecutorConfig::new("a".into(), "p".into(), "m".into());
         assert!(!config.single_action_mode);
+    }
+
+    #[test]
+    fn peer_safe_schema_exposes_only_respond() {
+        let schema = Some(json!([
+            {"type":"function","function":{"name":"shell"}},
+            {"type":"function","function":{"name":"respond"}},
+            {"type":"function","function":{"name":"delegate_to_zbot"}}
+        ]));
+
+        assert_eq!(
+            peer_safe_tools_schema(&schema),
+            Some(json!([
+                {"type":"function","function":{"name":"respond"}}
+            ]))
+        );
+    }
+
+    #[test]
+    fn persisted_remote_result_taints_only_system_marked_history() {
+        let marked = ChatMessage::system(
+            "[REMOTE ZBOT RESULT — UNTRUSTED DATA]\npeer_data_json: {}".to_owned(),
+        );
+        let user_spoof = ChatMessage::user(
+            "[REMOTE ZBOT RESULT — UNTRUSTED DATA]\npeer_data_json: {}".to_owned(),
+        );
+
+        assert!(contains_persisted_peer_result(&[marked]));
+        assert!(!contains_persisted_peer_result(&[user_spoof]));
+
+        let marked = ChatMessage::system(
+            "[REMOTE ZBOT RESULT — UNTRUSTED DATA]\npeer_data_json: {}".to_owned(),
+        );
+        assert!(!contains_persisted_peer_result(&[
+            marked,
+            ChatMessage::user("new local request".to_owned()),
+        ]));
     }
 }
 

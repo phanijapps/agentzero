@@ -1,7 +1,8 @@
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use execution_state::{
-    SqliteWorkStore, StateDbProvider, WorkAuthorization, WorkDraft, WorkEnvelope, WorkError,
-    WorkFailureCode, WorkPolicy, WorkPolicyError, WorkStatus, WorkStore, MAX_PAYLOAD_BYTES,
+    SqliteWorkStore, StateDbProvider, WorkAuthorization, WorkCancelOutcome, WorkDraft,
+    WorkEnvelope, WorkError, WorkFailureCode, WorkPolicy, WorkPolicyError, WorkScope, WorkStatus,
+    WorkStore, MAX_PAYLOAD_BYTES,
 };
 use gateway_services::VaultPaths;
 use rusqlite::Connection;
@@ -13,6 +14,26 @@ use zbot_runtime_sqlite::DatabaseManager;
 
 struct AllowTestWork {
     source: String,
+}
+
+struct AllowScopedTestWork {
+    source: String,
+    actor_id: String,
+}
+
+impl WorkPolicy for AllowScopedTestWork {
+    fn authorize(&self, draft: &WorkDraft) -> Result<WorkAuthorization, WorkPolicyError> {
+        if draft.kind() != "test.scoped" || draft.target() != "worker.local" {
+            return Err(WorkPolicyError::KindNotAllowed);
+        }
+        Ok(WorkAuthorization::new(
+            &self.source,
+            "node-local",
+            &self.actor_id,
+            "sess-scoped",
+            "exec-scoped",
+        ))
+    }
 }
 
 impl WorkPolicy for AllowTestWork {
@@ -84,6 +105,90 @@ fn envelope(
         created_at,
     )
     .unwrap()
+}
+
+fn scoped_envelope(
+    actor_id: &str,
+    correlation_id: &str,
+    created_at: DateTime<Utc>,
+    value: &str,
+) -> WorkEnvelope {
+    WorkEnvelope::authorize(
+        WorkDraft::new("test.scoped", "worker.local", json!({"value": value}))
+            .with_correlation_id(correlation_id),
+        &AllowScopedTestWork {
+            source: "a2a".to_string(),
+            actor_id: actor_id.to_string(),
+        },
+        created_at,
+    )
+    .unwrap()
+}
+
+// STUB: AC9 — scoped task reads and pages cannot cross peer provenance.
+#[test]
+fn scoped_find_and_list_are_peer_isolated_and_stable() {
+    let (_temp, store, _db) = setup();
+    let peer_a = WorkScope::new("a2a", "test.scoped", "a2a:peer-a").unwrap();
+    let peer_b = WorkScope::new("a2a", "test.scoped", "a2a:peer-b").unwrap();
+    let a_old = scoped_envelope("a2a:peer-a", "task-old", at(0), "old");
+    let a_middle = scoped_envelope("a2a:peer-a", "task-middle", at(1), "middle");
+    let a_new = scoped_envelope("a2a:peer-a", "task-new", at(2), "new");
+    let b_same_id = scoped_envelope("a2a:peer-b", "task-new", at(3), "foreign");
+    for item in [&a_old, &a_middle, &a_new, &b_same_id] {
+        store.enqueue(item).unwrap();
+    }
+
+    let found_a = store.find_scoped(&peer_a, "task-new").unwrap().unwrap();
+    let found_b = store.find_scoped(&peer_b, "task-new").unwrap().unwrap();
+    assert_eq!(found_a.envelope().id(), a_new.id());
+    assert_eq!(found_b.envelope().id(), b_same_id.id());
+
+    let first = store.list_scoped(&peer_a, None, 2).unwrap();
+    assert_eq!(first.items().len(), 2);
+    assert_eq!(first.total_size(), 3);
+    assert_eq!(first.items()[0].envelope().id(), a_new.id());
+    assert_eq!(first.items()[1].envelope().id(), a_middle.id());
+    let second = store.list_scoped(&peer_a, first.next_cursor(), 2).unwrap();
+    assert_eq!(second.items().len(), 1);
+    assert_eq!(second.items()[0].envelope().id(), a_old.id());
+    assert!(second.next_cursor().is_none());
+    assert!(matches!(
+        store.list_scoped(&peer_a, None, 0),
+        Err(WorkError::InvalidEnvelope(_))
+    ));
+}
+
+// STUB: AC11 — cancel fences a leased worker and persists an idempotent terminal state.
+#[test]
+fn scoped_cancel_fences_stale_lease_settlement() {
+    let (_temp, store, _db) = setup();
+    let scope = WorkScope::new("a2a", "test.scoped", "a2a:peer-a").unwrap();
+    let envelope = scoped_envelope("a2a:peer-a", "task-cancel", at(0), "cancel");
+    store.enqueue(&envelope).unwrap();
+    let leased = store
+        .claim_next("worker.local", "worker-1", at(1), Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    let lease_token = leased.lease_token().unwrap().to_string();
+
+    let canceled = store.cancel_scoped(&scope, "task-cancel", at(2)).unwrap();
+    assert!(matches!(
+        canceled,
+        WorkCancelOutcome::Canceled(ref item) if item.status() == WorkStatus::Canceled
+    ));
+    assert_eq!(
+        store.complete(envelope.id(), "worker-1", &lease_token, at(3)),
+        Err(WorkError::StaleLease)
+    );
+    assert!(matches!(
+        store.cancel_scoped(&scope, "task-cancel", at(4)).unwrap(),
+        WorkCancelOutcome::AlreadyCanceled(_)
+    ));
+    assert_eq!(
+        store.get(envelope.id()).unwrap().unwrap().status(),
+        WorkStatus::Canceled
+    );
 }
 
 // STUB: AC-enqueue-dedupe

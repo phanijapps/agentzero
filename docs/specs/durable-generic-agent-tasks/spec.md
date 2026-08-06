@@ -204,6 +204,14 @@ Research experience remain unchanged.
   lifecycle tests exercise the same acceptance-to-restart boundary without
   spending provider quota.
 
+## Follow-on compatibility
+
+The later A2A federation feature uses the same persisted-bootstrap and
+canonical terminal-assistant patterns for remote-safe tasks, but keeps a
+distinct work kind, peer provenance, HTTP contract, and respond-only actor
+policy. The local Research contract remains unchanged. See
+[`A2A Federation and Discovery`](../a2a-federation-discovery/spec.md).
+
 ## Assumptions
 
 - Technical: the SQLite `WorkStore` remains authoritative and transport wakes

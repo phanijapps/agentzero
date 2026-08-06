@@ -1,0 +1,464 @@
+openapi: 3.1.0
+info:
+  title: z-Bot A2A Federation API
+  version: 1.0.0
+  description: >-
+    The supported z-Bot subset of the Agent2Agent Protocol 1.0 HTTP+JSON
+    binding. Normative A2A semantics and object definitions come from
+    https://a2a-protocol.org/latest/specification/; this contract narrows the
+    capabilities exposed by z-Bot.
+x-spec:
+  - docs/specs/a2a-federation-discovery/
+x-a2a-unsupported-operations:
+  behavior: All known optional operations and unmatched /a2a/* paths return the standard A2A unsupported-operation error.
+  operations:
+    - SendStreamingMessage
+    - SubscribeToTask
+    - CreateTaskPushNotificationConfig
+    - GetTaskPushNotificationConfig
+    - ListTaskPushNotificationConfigs
+    - DeleteTaskPushNotificationConfig
+    - GetExtendedAgentCard
+servers:
+  - url: http://localhost:18791
+    description: Local default; trusted remote peers require HTTPS or explicit private-network HTTP opt-in.
+paths:
+  /.well-known/agent-card.json:
+    get:
+      operationId: getA2aAgentCard
+      summary: Discover the public z-Bot A2A service and supported capabilities
+      security: []
+      responses:
+        '200':
+          description: Public A2A 1.0 Agent Card
+          headers:
+            ETag:
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCard'
+  /a2a/message:send:
+    post:
+      operationId: sendA2aMessage
+      summary: Submit bounded text work to the paired z-Bot
+      security:
+        - peerBearer: []
+      parameters:
+        - $ref: '#/components/parameters/A2aVersion'
+      requestBody:
+        required: true
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '200':
+          description: A durable task was accepted or deduplicated
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+  /a2a/tasks:
+    get:
+      operationId: listA2aTasks
+      summary: List only tasks owned by the authenticated peer
+      security:
+        - peerBearer: []
+      parameters:
+        - $ref: '#/components/parameters/A2aVersion'
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: pageToken
+          in: query
+          schema: { type: string, maxLength: 512 }
+        - name: includeArtifacts
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Peer-scoped page ordered by status update time and task ID descending
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /a2a/tasks/{id}:
+    get:
+      operationId: getA2aTask
+      summary: Get a task owned by the authenticated peer
+      security:
+        - peerBearer: []
+      parameters:
+        - $ref: '#/components/parameters/A2aVersion'
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Current task projection
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/TaskNotFound'
+  /a2a/tasks/{id}:cancel:
+    post:
+      operationId: cancelA2aTask
+      summary: Cancel a cancelable task owned by the authenticated peer
+      security:
+        - peerBearer: []
+      parameters:
+        - $ref: '#/components/parameters/A2aVersion'
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Updated canceled task projection
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/TaskNotCancelable'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/TaskNotFound'
+components:
+  securitySchemes:
+    peerBearer:
+      type: http
+      scheme: bearer
+      description: Random per-peer credential provisioned out of band; never appears in an Agent Card.
+  parameters:
+    A2aVersion:
+      name: A2A-Version
+      in: header
+      required: true
+      schema:
+        type: string
+        const: '1.0'
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: Invalid request, version, content, or unsupported operation
+      content:
+        application/a2a+json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: Missing or invalid peer authentication
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, const: Bearer }
+      content:
+        application/a2a+json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    PayloadTooLarge:
+      description: Request exceeds the bounded A2A body limit
+      content:
+        application/a2a+json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    TaskNotFound:
+      description: Task is missing or inaccessible to this peer
+      content:
+        application/a2a+json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    TaskNotCancelable:
+      description: A peer-owned terminal task is not cancelable; inaccessible tasks use TaskNotFound
+      content:
+        application/a2a+json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    AgentCard:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - description
+        - version
+        - supportedInterfaces
+        - capabilities
+        - defaultInputModes
+        - defaultOutputModes
+        - skills
+        - securitySchemes
+        - securityRequirements
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 500 }
+        version: { type: string, minLength: 1, maxLength: 32 }
+        supportedInterfaces:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/AgentInterface'
+        capabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+        defaultInputModes:
+          type: array
+          minItems: 1
+          maxItems: 1
+          prefixItems: [{ const: text/plain }]
+        defaultOutputModes:
+          type: array
+          minItems: 1
+          maxItems: 1
+          prefixItems: [{ const: text/plain }]
+        skills:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/AgentSkill'
+        securitySchemes:
+          $ref: '#/components/schemas/AgentCardSecuritySchemes'
+        securityRequirements:
+          $ref: '#/components/schemas/AgentCardSecurityRequirements'
+    AgentCardSecuritySchemes:
+      type: object
+      additionalProperties: false
+      required: [peerBearer]
+      properties:
+        peerBearer:
+          type: object
+          additionalProperties: false
+          required: [httpAuthSecurityScheme]
+          properties:
+            httpAuthSecurityScheme:
+              type: object
+              additionalProperties: false
+              required: [scheme]
+              properties:
+                scheme: { type: string, const: Bearer }
+                description: { type: string, maxLength: 256 }
+                bearerFormat: { type: string, maxLength: 64 }
+    AgentCardSecurityRequirements:
+      type: array
+      minItems: 1
+      maxItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required: [peerBearer]
+        properties:
+          peerBearer:
+            type: array
+            maxItems: 0
+    AgentInterface:
+      type: object
+      additionalProperties: false
+      required: [url, protocolBinding, protocolVersion]
+      properties:
+        url: { type: string, format: uri, maxLength: 2048 }
+        protocolBinding: { type: string, const: 'HTTP+JSON' }
+        protocolVersion: { type: string, const: '1.0' }
+    AgentCapabilities:
+      type: object
+      additionalProperties: false
+      required: [streaming, pushNotifications, extendedAgentCard]
+      properties:
+        streaming: { type: boolean, const: false }
+        pushNotifications: { type: boolean, const: false }
+        extendedAgentCard: { type: boolean, const: false }
+    AgentSkill:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, tags]
+      properties:
+        id: { type: string, minLength: 1, maxLength: 128 }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 500 }
+        tags:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 64 }
+        examples:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 500 }
+        inputModes:
+          type: array
+          maxItems: 1
+          items: { const: text/plain }
+        outputModes:
+          type: array
+          maxItems: 1
+          items: { const: text/plain }
+    SendMessageRequest:
+      type: object
+      additionalProperties: false
+      required: [message, configuration]
+      properties:
+        message:
+          $ref: '#/components/schemas/UserMessage'
+        configuration:
+          $ref: '#/components/schemas/SendMessageConfiguration'
+    SendMessageConfiguration:
+      type: object
+      additionalProperties: false
+      required: [acceptedOutputModes, returnImmediately]
+      properties:
+        acceptedOutputModes:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items: { const: text/plain }
+        returnImmediately: { type: boolean, const: true }
+    UserMessage:
+      type: object
+      additionalProperties: false
+      required: [messageId, role, parts]
+      properties:
+        messageId: { type: string, minLength: 1, maxLength: 128 }
+        role: { type: string, const: ROLE_USER }
+        parts:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/TextPart'
+    AgentMessage:
+      type: object
+      additionalProperties: false
+      required: [messageId, role, parts]
+      properties:
+        messageId: { type: string, minLength: 1, maxLength: 128 }
+        role: { type: string, const: ROLE_AGENT }
+        parts:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/TextPart'
+    TextPart:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          x-maxUtf8Bytes: 4000
+        mediaType: { type: string, const: text/plain }
+    SendMessageResponse:
+      type: object
+      additionalProperties: false
+      required: [task]
+      properties:
+        task:
+          $ref: '#/components/schemas/Task'
+    Task:
+      type: object
+      additionalProperties: false
+      required: [id, contextId, status]
+      properties:
+        id: { type: string, minLength: 1, maxLength: 128 }
+        contextId: { type: string, minLength: 1, maxLength: 128 }
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        artifacts:
+          type: array
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/Artifact'
+    TaskStatus:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/TaskState'
+        message:
+          $ref: '#/components/schemas/AgentMessage'
+        timestamp: { type: string, format: date-time }
+    TaskState:
+      type: string
+      enum:
+        - TASK_STATE_SUBMITTED
+        - TASK_STATE_WORKING
+        - TASK_STATE_COMPLETED
+        - TASK_STATE_FAILED
+        - TASK_STATE_CANCELED
+        - TASK_STATE_REJECTED
+    Artifact:
+      type: object
+      additionalProperties: false
+      required: [artifactId, parts]
+      properties:
+        artifactId: { type: string, minLength: 1, maxLength: 128 }
+        name: { type: string, maxLength: 80 }
+        description: { type: string, maxLength: 500 }
+        parts:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/TextPart'
+    ListTasksResponse:
+      type: object
+      additionalProperties: false
+      required: [tasks, nextPageToken, pageSize, totalSize]
+      properties:
+        tasks:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Task'
+        nextPageToken: { type: string, maxLength: 512 }
+        pageSize: { type: integer, minimum: 0, maximum: 100 }
+        totalSize: { type: integer, minimum: 0 }
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/RpcStatus'
+    RpcStatus:
+      type: object
+      additionalProperties: false
+      required: [code, status, message, details]
+      properties:
+        code: { type: integer, minimum: 400, maximum: 599 }
+        status: { type: string, maxLength: 64 }
+        message: { type: string, maxLength: 256 }
+        details:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/ErrorInfo'
+    ErrorInfo:
+      type: object
+      additionalProperties: false
+      required: ['@type', reason, domain]
+      properties:
+        '@type':
+          type: string
+          const: type.googleapis.com/google.rpc.ErrorInfo
+        reason: { type: string, maxLength: 64 }
+        domain: { type: string, const: a2a-protocol.org }

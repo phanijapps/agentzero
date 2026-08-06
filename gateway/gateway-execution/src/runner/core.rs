@@ -98,6 +98,7 @@ pub struct ExecutionRunner {
     /// Memory recall for automatic fact retrieval at session start
     memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     /// Semaphore to limit concurrent delegation spawns (prevents resource exhaustion)
     delegation_semaphore: Arc<Semaphore>,
     /// Embedding client for generating vector embeddings (semantic search in memory)
@@ -180,6 +181,7 @@ pub struct ExecutionRunnerConfig {
     pub handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     pub bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
     pub bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
     pub embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
@@ -222,6 +224,7 @@ pub(super) struct ContinuationArgs<'a> {
     pub(super) handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub(super) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub(super) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     pub(super) steering_registry: Arc<agent_runtime::SteeringRegistry>,
     pub(super) model_registry: Option<Arc<gateway_services::models::ModelRegistry>>,
     pub(super) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
@@ -515,6 +518,7 @@ impl ExecutionRunner {
             handoff_writer,
             memory_recall,
             peer_messages,
+            a2a_delegation,
             bridge_registry,
             bridge_outbox,
             embedding_client,
@@ -561,6 +565,7 @@ impl ExecutionRunner {
             memory_store: memory_store.clone(),
             memory_recall: memory_recall.clone(),
             peer_messages: peer_messages.clone(),
+            a2a_delegation: a2a_delegation.clone(),
             model_registry: model_registry.clone(),
             rate_limiters: rate_limiters.clone(),
             connector_registry: connector_registry.clone(),
@@ -601,6 +606,7 @@ impl ExecutionRunner {
             handoff_writer,
             memory_recall,
             peer_messages,
+            a2a_delegation,
             delegation_semaphore,
             embedding_client,
             model_registry,
@@ -656,6 +662,10 @@ impl ExecutionRunner {
             self.steering_registry.clone(),
             crate::peer_messaging::PEER_MESSAGE_TARGET,
         )))
+    }
+
+    pub fn steering_registry(&self) -> Arc<agent_runtime::SteeringRegistry> {
+        self.steering_registry.clone()
     }
 
     /// Set the KG episode store used by post-distillation ward indexing.
@@ -798,6 +808,7 @@ impl ExecutionRunner {
             handoff_writer: self.handoff_writer.clone(),
             memory_recall: self.memory_recall.clone(),
             peer_messages: self.peer_messages.clone(),
+            a2a_delegation: self.a2a_delegation.clone(),
             steering_registry: self.steering_registry.clone(),
             model_registry: self.model_registry.clone(),
             kg_store: self.kg_store.clone(),
@@ -836,6 +847,7 @@ impl ExecutionRunner {
             distiller: self.distiller.clone(),
             memory_recall: self.memory_recall.clone(),
             peer_messages: self.peer_messages.clone(),
+            a2a_delegation: self.a2a_delegation.clone(),
             rate_limiters: self.rate_limiters.clone(),
             kg_store: self.kg_store.clone(),
             ingestion_adapter: self.ingestion_adapter.clone(),
@@ -1273,6 +1285,7 @@ impl ExecutionRunner {
             self.distiller.clone(),
             self.memory_recall.clone(),
             self.peer_messages.clone(),
+            self.a2a_delegation.clone(),
             self.rate_limiters.clone(),
             self.kg_store.clone(),
             self.ingestion_adapter.clone(),
@@ -1297,6 +1310,21 @@ impl ExecutionRunner {
         for handle in handles.values() {
             handle.cancel();
         }
+
+        Ok(())
+    }
+
+    /// Cancel one session and only the handle registered for its exact
+    /// conversation. This is used by externally scoped work where signaling
+    /// unrelated executions would cross an authorization boundary.
+    pub async fn cancel_exact(
+        &self,
+        session_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), String> {
+        self.state_service.cancel_session(session_id)?;
+
+        cancel_exact_handle(&*self.handles.read().await, conversation_id);
 
         Ok(())
     }
@@ -1417,6 +1445,32 @@ impl ExecutionRunner {
     }
 }
 
+fn cancel_exact_handle(handles: &HashMap<String, ExecutionHandle>, conversation_id: &str) {
+    if let Some(handle) = handles.get(conversation_id) {
+        handle.cancel();
+    }
+}
+
+#[cfg(test)]
+mod exact_cancel_tests {
+    use super::*;
+
+    #[test]
+    fn exact_cancel_does_not_signal_an_unrelated_execution() {
+        let selected = ExecutionHandle::new(10);
+        let unrelated = ExecutionHandle::new(10);
+        let handles = HashMap::from([
+            ("selected".to_string(), selected.clone()),
+            ("unrelated".to_string(), unrelated.clone()),
+        ]);
+
+        cancel_exact_handle(&handles, "selected");
+
+        assert!(selected.is_cancelled());
+        assert!(!unrelated.is_cancelled());
+    }
+}
+
 // ============================================================================
 // CONTINUATION HANDLER
 // ============================================================================
@@ -1456,6 +1510,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         handoff_writer,
         memory_recall,
         peer_messages,
+        a2a_delegation,
         steering_registry,
         model_registry,
         kg_store,
@@ -1606,6 +1661,9 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     let peer_messaging_enabled = peer_messages.is_some();
     if let Some(peer_messages) = peer_messages {
         builder = builder.with_peer_messages(peer_messages);
+    }
+    if let Some(service) = a2a_delegation {
+        builder = builder.with_a2a_delegation(service);
     }
     builder = builder.with_initial_state(
         "execution_id",
@@ -2405,6 +2463,7 @@ mod setup_failure_cleanup_tests {
             handoff_writer: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             bridge_registry: None,
             bridge_outbox: None,
             embedding_client: None,
@@ -2590,6 +2649,7 @@ mod setup_failure_cleanup_tests {
             handoff_writer: None,
             memory_recall: None,
             peer_messages: Some(peer_messages),
+            a2a_delegation: None,
             bridge_registry: None,
             bridge_outbox: None,
             embedding_client: None,
@@ -2793,6 +2853,7 @@ mod peer_root_lifecycle_tests {
             handoff_writer: None,
             memory_recall: None,
             peer_messages: Some(peer_messages),
+            a2a_delegation: None,
             bridge_registry: None,
             bridge_outbox: None,
             embedding_client: None,
@@ -2905,6 +2966,7 @@ mod peer_root_lifecycle_tests {
             handoff_writer: None,
             memory_recall: None,
             peer_messages: harness.runner.peer_messages.clone(),
+            a2a_delegation: harness.runner.a2a_delegation.clone(),
             steering_registry: harness.steering.clone(),
             model_registry: None,
             kg_store: None,

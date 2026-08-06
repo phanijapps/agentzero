@@ -193,6 +193,7 @@ pub enum RuntimeActorKind {
     DelegatedExecutor,
     DelegatedReviewer,
     WardAgent,
+    RemotePeer,
 }
 
 impl RuntimeActorKind {
@@ -202,6 +203,7 @@ impl RuntimeActorKind {
             Self::DelegatedExecutor => "delegated_executor",
             Self::DelegatedReviewer => "delegated_reviewer",
             Self::WardAgent => "ward_agent",
+            Self::RemotePeer => "remote_peer",
         }
     }
 
@@ -217,7 +219,7 @@ impl RuntimeActorKind {
         match self {
             Self::DelegatedExecutor => Some(SubagentRole::Executor),
             Self::DelegatedReviewer => Some(SubagentRole::Reviewer),
-            Self::Root | Self::WardAgent => None,
+            Self::Root | Self::WardAgent | Self::RemotePeer => None,
         }
     }
 }
@@ -247,6 +249,7 @@ enum ToolCapability {
     MemoryRead,
     MemoryWrite,
     MultimodalAnalyze,
+    PeerDelegate,
     PlanWrite,
     ProcedureRun,
     Respond,
@@ -274,6 +277,7 @@ impl ToolCapability {
             Self::MemoryRead => "memory.read",
             Self::MemoryWrite => "memory.write",
             Self::MultimodalAnalyze => "multimodal.analyze",
+            Self::PeerDelegate => "peer.delegate",
             Self::PlanWrite => "plan.write",
             Self::ProcedureRun => "procedure.run",
             Self::Respond => "respond",
@@ -303,6 +307,7 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::MemoryRead
                 | ToolCapability::MemoryWrite
                 | ToolCapability::MultimodalAnalyze
+                | ToolCapability::PeerDelegate
                 | ToolCapability::PlanWrite
                 | ToolCapability::ProcedureRun
                 | ToolCapability::Respond
@@ -340,6 +345,7 @@ fn actor_allows(actor: RuntimeActorKind, capability: ToolCapability) -> bool {
                 | ToolCapability::WardRead
         ),
         RuntimeActorKind::WardAgent => true,
+        RuntimeActorKind::RemotePeer => matches!(capability, ToolCapability::Respond),
     }
 }
 
@@ -366,6 +372,7 @@ fn actor_capabilities(actor: RuntimeActorKind) -> Vec<&'static str> {
         ToolCapability::MemoryRead,
         ToolCapability::MemoryWrite,
         ToolCapability::MultimodalAnalyze,
+        ToolCapability::PeerDelegate,
         ToolCapability::PlanWrite,
         ToolCapability::ProcedureRun,
         ToolCapability::Respond,
@@ -474,6 +481,7 @@ fn context_actor_kind(actor: RuntimeActorKind) -> ContextActorKind {
         RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
         RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
         RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
+        RuntimeActorKind::RemotePeer => ContextActorKind::RemotePeer,
     }
 }
 
@@ -490,6 +498,7 @@ fn actor_policy_for_capabilities(
         RuntimeActorKind::DelegatedExecutor,
         RuntimeActorKind::DelegatedReviewer,
         RuntimeActorKind::WardAgent,
+        RuntimeActorKind::RemotePeer,
     ]
     .into_iter()
     .filter(|actor| actor_allows_all(*actor, capabilities))
@@ -515,6 +524,7 @@ fn display_name(tool_name: &str) -> String {
 fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
     match name {
         "delegate_to_agent" => vec![ToolCapability::AgentDelegate],
+        "delegate_to_zbot" | "list_zbots" => vec![ToolCapability::PeerDelegate],
         "connector_invoke" => vec![ToolCapability::ConnectorInvoke],
         "connector_resource" => vec![ToolCapability::ConnectorResourceRead],
         "edit" | "edit_file" | "write" | "write_file" => vec![ToolCapability::FileWrite],
@@ -546,7 +556,7 @@ fn tool_capabilities(name: &str) -> Vec<ToolCapability> {
 }
 
 fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextSideEffects {
-    if name == "wait_agent" || name == "list_session_agents" {
+    if name == "wait_agent" || name == "list_session_agents" || name == "list_zbots" {
         return ContextSideEffects::ReadExternal;
     }
     if capabilities.contains(&ToolCapability::Shell) {
@@ -563,6 +573,7 @@ fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::PeerDelegate
                 | ToolCapability::AgentReply
                 | ToolCapability::FileWrite
                 | ToolCapability::GoalWrite
@@ -583,7 +594,7 @@ fn side_effects_for_tool(name: &str, capabilities: &[ToolCapability]) -> Context
 }
 
 fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRiskLevel {
-    if name == "wait_agent" || name == "list_session_agents" {
+    if name == "wait_agent" || name == "list_session_agents" || name == "list_zbots" {
         return ContextRiskLevel::Low;
     }
     if capabilities.contains(&ToolCapability::Shell) {
@@ -597,6 +608,7 @@ fn risk_level_for_tool(name: &str, capabilities: &[ToolCapability]) -> ContextRi
             capability,
             ToolCapability::AgentControl
                 | ToolCapability::AgentDelegate
+                | ToolCapability::PeerDelegate
                 | ToolCapability::FileWrite
                 | ToolCapability::IngestWrite
                 | ToolCapability::WardWrite
@@ -649,14 +661,16 @@ fn token_hint_for_tool(name: &str) -> Option<u32> {
 fn owner_crate_for_tool(name: &str) -> &'static str {
     match name {
         "delegate_to_agent" | "respond" | "run_procedure" => "agent-runtime",
-        "handoff_to_agent"
+        "delegate_to_zbot"
+        | "handoff_to_agent"
         | "kill_agent"
         | "list_session_agents"
         | "message_agent"
         | "present_surface"
         | "reply_to_agent"
         | "steer_agent"
-        | "wait_agent" => "gateway-execution",
+        | "wait_agent"
+        | "list_zbots" => "gateway-execution",
         _ => "agent-tools",
     }
 }
@@ -823,9 +837,11 @@ pub struct ExecutorBuilder {
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     memory_recall: Option<Arc<gateway_memory::MemoryRecall>>,
     peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     mcp_startup_failure_observer: Option<agent_runtime::mcp::McpStartupFailureObserver>,
     extra_initial_state: Option<Vec<(String, serde_json::Value)>>,
     chat_mode: bool,
+    remote_peer_prompt: Option<crate::a2a::RemotePeerPrompt>,
 }
 
 impl ExecutorBuilder {
@@ -852,9 +868,11 @@ impl ExecutorBuilder {
             procedure_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             mcp_startup_failure_observer: None,
             extra_initial_state: None,
             chat_mode: false,
+            remote_peer_prompt: None,
         }
     }
 
@@ -886,6 +904,14 @@ impl ExecutorBuilder {
         service: Arc<crate::peer_messaging::DurablePeerMessageService>,
     ) -> Self {
         self.peer_messages = Some(service);
+        self
+    }
+
+    pub fn with_a2a_delegation(
+        mut self,
+        service: Arc<dyn crate::a2a::A2aDelegationService>,
+    ) -> Self {
+        self.a2a_delegation = Some(service);
         self
     }
 
@@ -933,6 +959,13 @@ impl ExecutorBuilder {
     /// Set the exact runtime actor kind.
     pub fn with_actor_kind(mut self, actor_kind: RuntimeActorKind) -> Self {
         self.actor_kind = actor_kind;
+        self
+    }
+
+    /// Supply the isolated prompt required by [`RuntimeActorKind::RemotePeer`].
+    pub fn with_remote_peer_prompt(mut self, prompt: crate::a2a::RemotePeerPrompt) -> Self {
+        self.actor_kind = RuntimeActorKind::RemotePeer;
+        self.remote_peer_prompt = Some(prompt);
         self
     }
 
@@ -1104,6 +1137,15 @@ impl ExecutorBuilder {
         mcp_service: &McpService,
         ward_id: Option<&str>,
     ) -> Result<AgentExecutor, String> {
+        let remote_prompt = if matches!(self.actor_kind, RuntimeActorKind::RemotePeer) {
+            Some(
+                self.remote_peer_prompt
+                    .as_ref()
+                    .ok_or_else(|| "remote peer prompt is required".to_string())?,
+            )
+        } else {
+            None
+        };
         // Build executor config
         let mut executor_config = ExecutorConfig::new(
             agent.id.clone(),
@@ -1113,12 +1155,15 @@ impl ExecutorBuilder {
         .with_model_hidden_tools(model_hidden_tools_for_actor(self.actor_kind));
 
         // Add hook context to initial state if present
-        if let Some(hook_ctx) = hook_context {
-            executor_config = executor_config.with_initial_state("hook_context", hook_ctx.clone());
+        if remote_prompt.is_none() {
+            if let Some(hook_ctx) = hook_context {
+                executor_config =
+                    executor_config.with_initial_state("hook_context", hook_ctx.clone());
+            }
         }
 
         // Cache available agents for list_agents tool
-        if !available_agents.is_empty() {
+        if remote_prompt.is_none() && !available_agents.is_empty() {
             executor_config = executor_config.with_initial_state(
                 "available_agents",
                 serde_json::Value::Array(available_agents.to_vec()),
@@ -1126,7 +1171,7 @@ impl ExecutorBuilder {
         }
 
         // Cache available skills for runtime context/catalog metadata.
-        if !available_skills.is_empty() {
+        if remote_prompt.is_none() && !available_skills.is_empty() {
             executor_config = executor_config.with_initial_state(
                 "available_skills",
                 serde_json::Value::Array(available_skills.to_vec()),
@@ -1140,36 +1185,38 @@ impl ExecutorBuilder {
         );
 
         let mut ward_template_prompt = None;
-        if let Some(ward) = ward_id {
-            executor_config = executor_config
-                .with_initial_state("ward_id", serde_json::Value::String(ward.to_string()));
-
-            // The template is root-orchestrator context only. Loading failure is
-            // represented in state and never prevents orchestration from starting.
-            if matches!(self.actor_kind, RuntimeActorKind::Root) {
-                let root_context_id = uuid::Uuid::now_v7().to_string();
-                let layout = self
-                    .ward_usage_service
-                    .clone()
-                    .map(|usage| {
-                        super::ward_layout_adapter::GatewayWardLayoutAccess::with_usage(
-                            self.vault_dir.clone(),
-                            usage,
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        super::ward_layout_adapter::GatewayWardLayoutAccess::new(
-                            self.vault_dir.clone(),
-                        )
-                    })
-                    .state(ward, session_id, &root_context_id);
-                ward_template_prompt = layout.context;
+        if remote_prompt.is_none() {
+            if let Some(ward) = ward_id {
                 executor_config = executor_config
-                    .with_initial_state("ward_template", layout.packet)
-                    .with_initial_state(
-                        "ward_template_context_id",
-                        serde_json::Value::String(root_context_id),
-                    );
+                    .with_initial_state("ward_id", serde_json::Value::String(ward.to_string()));
+
+                // The template is root-orchestrator context only. Loading failure is
+                // represented in state and never prevents orchestration from starting.
+                if matches!(self.actor_kind, RuntimeActorKind::Root) {
+                    let root_context_id = uuid::Uuid::now_v7().to_string();
+                    let layout = self
+                        .ward_usage_service
+                        .clone()
+                        .map(|usage| {
+                            super::ward_layout_adapter::GatewayWardLayoutAccess::with_usage(
+                                self.vault_dir.clone(),
+                                usage,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            super::ward_layout_adapter::GatewayWardLayoutAccess::new(
+                                self.vault_dir.clone(),
+                            )
+                        })
+                        .state(ward, session_id, &root_context_id);
+                    ward_template_prompt = layout.context;
+                    executor_config = executor_config
+                        .with_initial_state("ward_template", layout.packet)
+                        .with_initial_state(
+                            "ward_template_context_id",
+                            serde_json::Value::String(root_context_id),
+                        );
+                }
             }
         }
 
@@ -1201,44 +1248,48 @@ impl ExecutorBuilder {
         }
 
         // Inject extra initial state (e.g., ward_purpose, ward_structure from intent analysis)
-        if let Some(entries) = &self.extra_initial_state {
-            for (key, value) in entries {
-                executor_config = executor_config.with_initial_state(key, value.clone());
+        if remote_prompt.is_none() {
+            if let Some(entries) = &self.extra_initial_state {
+                for (key, value) in entries {
+                    executor_config = executor_config.with_initial_state(key, value.clone());
+                }
             }
         }
 
         // Inject multimodal config for the multimodal_analyze tool
         let settings_service = SettingsService::from_vault_dir(self.vault_dir.clone());
-        if let Ok(settings) = settings_service.load() {
-            let mm = &settings.execution.multimodal;
-            if let (Some(provider_id), Some(model)) = (&mm.provider_id, &mm.model) {
-                // Resolve the provider to get base_url and api_key
-                let providers_path = VaultPaths::new(self.vault_dir.clone()).providers();
-                let provider_creds = std::fs::read_to_string(&providers_path)
-                    .ok()
-                    .and_then(|content| {
-                        serde_json::from_str::<Vec<serde_json::Value>>(&content).ok()
-                    })
-                    .and_then(|providers| {
-                        providers
-                            .into_iter()
-                            .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(provider_id))
-                    });
+        if remote_prompt.is_none() {
+            if let Ok(settings) = settings_service.load() {
+                let mm = &settings.execution.multimodal;
+                if let (Some(provider_id), Some(model)) = (&mm.provider_id, &mm.model) {
+                    // Resolve the provider to get base_url and api_key
+                    let providers_path = VaultPaths::new(self.vault_dir.clone()).providers();
+                    let provider_creds = std::fs::read_to_string(&providers_path)
+                        .ok()
+                        .and_then(|content| {
+                            serde_json::from_str::<Vec<serde_json::Value>>(&content).ok()
+                        })
+                        .and_then(|providers| {
+                            providers
+                                .into_iter()
+                                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(provider_id))
+                        });
 
-                if let Some(prov) = provider_creds {
-                    let base_url = prov.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
-                    let api_key = prov.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
-                    executor_config = executor_config.with_initial_state(
-                        "multimodal_config",
-                        serde_json::json!({
-                            "providerId": provider_id,
-                            "model": model,
-                            "temperature": mm.temperature,
-                            "maxTokens": mm.max_tokens,
-                            "baseUrl": base_url,
-                            "apiKey": api_key,
-                        }),
-                    );
+                    if let Some(prov) = provider_creds {
+                        let base_url = prov.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
+                        let api_key = prov.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
+                        executor_config = executor_config.with_initial_state(
+                            "multimodal_config",
+                            serde_json::json!({
+                                "providerId": provider_id,
+                                "model": model,
+                                "temperature": mm.temperature,
+                                "maxTokens": mm.max_tokens,
+                                "baseUrl": base_url,
+                                "apiKey": api_key,
+                            }),
+                        );
+                    }
                 }
             }
         }
@@ -1275,7 +1326,16 @@ impl ExecutorBuilder {
         .with_max_tokens(effective_max_output)
         .with_thinking(thinking_enabled);
 
-        let rig_agent_config = build_rig_agent_config(agent, &llm_config, effective_max_input);
+        let rig_agent_config = match remote_prompt {
+            Some(prompt) => RigAgentConfig::new(
+                "remote-peer",
+                "Remote A2A responder",
+                "Bounded public A2A skill execution",
+                prompt.system_instruction(),
+                RigModelConfig::from_llm_config(&llm_config, effective_max_input),
+            ),
+            None => build_rig_agent_config(agent, &llm_config, effective_max_input),
+        };
 
         let raw_client: Arc<dyn agent_runtime::LlmClient> = Arc::new(
             OpenAiClient::new(llm_config)
@@ -1317,18 +1377,29 @@ impl ExecutorBuilder {
         let tool_registry = self.build_tool_registry_with_recall(fs_context, recall_authorization);
 
         // Build MCP manager
-        let mcp_manager = self.build_mcp_manager(agent, mcp_service).await;
+        let mcp_manager = if remote_prompt.is_some() {
+            Arc::new(McpManager::new())
+        } else {
+            self.build_mcp_manager(agent, mcp_service).await
+        };
 
         // Build final executor config with system instruction
-        executor_config.system_instruction = Some(match ward_template_prompt {
-            Some(template) => format!("{}\n\n{}", agent.instructions, template),
-            None => agent.instructions.clone(),
+        executor_config.system_instruction = Some(match remote_prompt {
+            Some(prompt) => prompt.system_instruction().to_string(),
+            None => match ward_template_prompt {
+                Some(template) => format!("{}\n\n{}", agent.instructions, template),
+                None => agent.instructions.clone(),
+            },
         });
         executor_config.conversation_id = Some(conversation_id.to_string());
         executor_config.temperature = agent.temperature;
         executor_config.max_tokens = effective_max_output;
         executor_config.context_window_tokens = effective_max_input;
-        executor_config.mcps = agent.mcps.clone();
+        executor_config.mcps = if remote_prompt.is_some() {
+            Vec::new()
+        } else {
+            agent.mcps.clone()
+        };
         executor_config.rig_agent_config = Some(rig_agent_config);
 
         // Create middleware pipeline after context_window_tokens is resolved.
@@ -1566,6 +1637,14 @@ impl ExecutorBuilder {
                 &[ToolCapability::AgentDelegate],
                 Arc::new(DelegateTool::new()),
             );
+        }
+        if actor_allows(actor, ToolCapability::PeerDelegate) {
+            if let Some(ref service) = self.a2a_delegation {
+                tool_registry.register(Arc::new(crate::tools::ListZbotsTool::new(service.clone())));
+                tool_registry.register(Arc::new(crate::tools::DelegateToZbotTool::new(
+                    service.clone(),
+                )));
+            }
         }
         if self.has_planner_capability_catalog() && !self.is_step_executor() {
             tool_registry.register(Arc::new(agent_runtime::tools::CapabilityCatalogTool::new()));
@@ -2530,6 +2609,81 @@ mod tests {
             .collect()
     }
 
+    struct FakeA2aDelegation;
+
+    #[async_trait]
+    impl crate::a2a::A2aDelegationService for FakeA2aDelegation {
+        async fn list_peers(
+            &self,
+            _context: &crate::a2a::A2aDelegationContext,
+        ) -> Result<Vec<crate::a2a::A2aPeerSummary>, crate::a2a::A2aDelegationError> {
+            Ok(Vec::new())
+        }
+
+        async fn delegate(
+            &self,
+            _context: crate::a2a::A2aDelegationContext,
+            _peer_id: &str,
+            _content: &str,
+        ) -> Result<crate::a2a::A2aDelegationReceipt, crate::a2a::A2aDelegationError> {
+            Ok(crate::a2a::A2aDelegationReceipt {
+                task_id: "work-test".to_owned(),
+            })
+        }
+    }
+
+    fn registry_names_with_a2a(actor_kind: RuntimeActorKind) -> BTreeSet<String> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(actor_kind)
+            .with_a2a_delegation(Arc::new(FakeA2aDelegation))
+            .build_tool_registry(fs_context)
+            .get_all()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a2a_tools_are_root_and_ward_only() {
+        for actor in [RuntimeActorKind::Root, RuntimeActorKind::WardAgent] {
+            assert_has(
+                &registry_names_with_a2a(actor),
+                &["list_zbots", "delegate_to_zbot"],
+            );
+        }
+        for actor in [
+            RuntimeActorKind::DelegatedExecutor,
+            RuntimeActorKind::DelegatedReviewer,
+            RuntimeActorKind::RemotePeer,
+        ] {
+            assert_missing(
+                &registry_names_with_a2a(actor),
+                &["list_zbots", "delegate_to_zbot"],
+            );
+        }
+    }
+
+    // STUB: A2A AC8/AC15 — remote peers receive no local side-effect surface.
+    #[test]
+    fn remote_peer_inventory_is_exactly_respond() {
+        assert_eq!(
+            registry_names(RuntimeActorKind::RemotePeer),
+            BTreeSet::from(["respond".to_string()])
+        );
+        let catalog = catalog_for_actor(RuntimeActorKind::RemotePeer);
+        assert_eq!(catalog.actor_kind, ContextActorKind::RemotePeer);
+        assert_eq!(
+            catalog
+                .capabilities
+                .iter()
+                .map(|capability| capability.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["respond"]
+        );
+    }
+
     // STUB: AC1, AC2, AC3, AC4 — raw actor inventories remain stable and unique.
     #[test]
     fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories() {
@@ -2538,6 +2692,7 @@ mod tests {
             RuntimeActorKind::DelegatedExecutor,
             RuntimeActorKind::DelegatedReviewer,
             RuntimeActorKind::WardAgent,
+            RuntimeActorKind::RemotePeer,
         ] {
             for file_tools in [false, true] {
                 let dir = tempfile::tempdir().expect("tempdir");
@@ -2633,6 +2788,7 @@ mod tests {
                         "ward",
                         "write_file",
                     ],
+                    (RuntimeActorKind::RemotePeer, _) => &["respond"],
                 };
                 let expected = expected_names
                     .iter()

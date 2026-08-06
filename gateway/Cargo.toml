@@ -45,7 +45,9 @@ gateway-cron = { path = "gateway-cron" }
 gateway-bus = { path = "gateway-bus" }
 gateway-ws-protocol = { path = "gateway-ws-protocol" }
 gateway-bridge = { path = "gateway-bridge" }
+gateway-a2a = { path = "gateway-a2a" }
 discovery = { path = "../discovery" }
+a2a-lf = { workspace = true }
 
 # Web framework
 axum = { version = "0.7", features = ["ws", "macros", "multipart"] }
@@ -63,6 +65,7 @@ tokio-stream = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+base64 = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use execution_state::{
-    RecoveryOutcome, SqliteWorkStore, StateDbProvider, WorkAuthorization, WorkClaimCancellation,
-    WorkDraft, WorkEnvelope, WorkError, WorkFailureCode, WorkItem, WorkPolicy, WorkPolicyError,
-    WorkStatus, WorkStore,
+    RecoveryOutcome, SqliteWorkStore, StateDbProvider, WorkAuthorization, WorkCancelOutcome,
+    WorkClaimCancellation, WorkCursor, WorkDraft, WorkEnvelope, WorkError, WorkFailureCode,
+    WorkItem, WorkPage, WorkPolicy, WorkPolicyError, WorkScope, WorkStatus, WorkStore,
 };
 use gateway_bus::{
     DurableWorkWorker, LocalWorkTransport, ValidatedWorkCommand, WorkDispatchRejection,
@@ -1035,6 +1035,40 @@ impl WorkStore for FaultStore {
 
     fn get(&self, id: &str) -> Result<Option<WorkItem>, WorkError> {
         self.inner.get(id)
+    }
+
+    fn find_deduped(&self, source: &str, dedupe_key: &str) -> Result<Option<WorkItem>, WorkError> {
+        self.inner.find_deduped(source, dedupe_key)
+    }
+
+    fn count_scoped_nonterminal(&self, scope: &WorkScope) -> Result<u64, WorkError> {
+        self.inner.count_scoped_nonterminal(scope)
+    }
+
+    fn find_scoped(
+        &self,
+        scope: &WorkScope,
+        correlation_id: &str,
+    ) -> Result<Option<WorkItem>, WorkError> {
+        self.inner.find_scoped(scope, correlation_id)
+    }
+
+    fn list_scoped(
+        &self,
+        scope: &WorkScope,
+        cursor: Option<&WorkCursor>,
+        limit: u16,
+    ) -> Result<WorkPage, WorkError> {
+        self.inner.list_scoped(scope, cursor, limit)
+    }
+
+    fn cancel_scoped(
+        &self,
+        scope: &WorkScope,
+        correlation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<WorkCancelOutcome, WorkError> {
+        self.inner.cancel_scoped(scope, correlation_id, now)
     }
 
     fn claim_next(

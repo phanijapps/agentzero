@@ -232,6 +232,10 @@ impl AppState {
     ///
     /// This creates a fully initialized state with execution runner and SQLite database.
     pub fn new(vault_dir: PathBuf) -> Self {
+        Self::new_with_a2a(vault_dir, false)
+    }
+
+    pub fn new_with_a2a(vault_dir: PathBuf, a2a_enabled: bool) -> Self {
         // Create centralized vault paths
         let paths = Arc::new(VaultPaths::new(vault_dir.clone()));
 
@@ -657,6 +661,14 @@ impl AppState {
                 gateway_execution::peer_messaging::PEER_MESSAGE_TARGET,
             ),
         );
+        let a2a_delegation = a2a_enabled.then(|| {
+            Arc::new(crate::a2a_tasks::GatewayA2aDelegationService::new(
+                paths.vault_dir(),
+                durable_work_store.clone(),
+                durable_work_transport.clone(),
+                state_service.clone(),
+            )) as Arc<dyn gateway_execution::a2a::A2aDelegationService>
+        });
 
         // Create streaming ingestion queue + backpressure BEFORE the runtime so the
         // runner can be wired with an IngestionAdapter.
@@ -733,6 +745,7 @@ impl AppState {
             log_service.clone(),
             state_service.clone(),
             Some(peer_messages),
+            a2a_delegation,
             Some(connector_registry.clone()),
             memory_store.clone(),
             distiller,

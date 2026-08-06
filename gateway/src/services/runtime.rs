@@ -81,6 +81,7 @@ impl RuntimeService {
             log_service,
             state_service,
             None, // peer_messages
+            None, // a2a_delegation
             None,
             None, // memory_store
             None, // distiller
@@ -114,6 +115,7 @@ impl RuntimeService {
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
         peer_messages: Option<Arc<gateway_execution::peer_messaging::DurablePeerMessageService>>,
+        a2a_delegation: Option<Arc<dyn gateway_execution::a2a::A2aDelegationService>>,
         connector_registry: Option<Arc<ConnectorRegistry>>,
         memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
         distiller: Option<Arc<SessionDistiller>>,
@@ -154,6 +156,7 @@ impl RuntimeService {
             log_service,
             state_service,
             peer_messages,
+            a2a_delegation,
             connector_registry,
             memory_store,
             distiller,
@@ -380,6 +383,42 @@ impl RuntimeService {
         .await
     }
 
+    /// Invoke authenticated remote A2A work through the isolated RemotePeer
+    /// actor profile. The prompt is built by the trusted host boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_remote_peer_durable(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        actor_id: &str,
+        session_id: String,
+        client_message_id: String,
+        prompt: gateway_execution::a2a::RemotePeerPrompt,
+    ) -> Result<(ExecutionHandle, String), String> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            "Runtime not initialized with executor. Call with_runner() first.".to_string()
+        })?;
+        let paths = self
+            .paths
+            .clone()
+            .ok_or_else(|| "Vault paths not set".to_string())?;
+        let config = ExecutionConfig::new(
+            agent_id.to_string(),
+            conversation_id.to_string(),
+            paths.vault_dir().clone(),
+        )
+        .with_hook_context(HookContext::web(actor_id))
+        .with_session_id(session_id)
+        .with_mode("chat".to_string())
+        .with_client_message_id(client_message_id)
+        .with_remote_peer_prompt(prompt)
+        .with_redacted_diagnostics();
+        runner
+            .invoke_redacted_with_callback(config, message.to_string(), None)
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn invoke_with_hook_and_callback_policy(
         &self,
@@ -472,6 +511,50 @@ impl RuntimeService {
                 execution_id,
                 message_id,
                 on_session_ready,
+            )
+            .await
+    }
+
+    /// Resume an A2A execution while preserving the same isolated prompt and
+    /// RemotePeer tool policy used for its first launch.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_remote_peer_persisted(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        actor_id: &str,
+        session_id: String,
+        execution_id: String,
+        message_id: String,
+        prompt: gateway_execution::a2a::RemotePeerPrompt,
+    ) -> Result<(ExecutionHandle, String), String> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            "Runtime not initialized with executor. Call with_runner() first.".to_string()
+        })?;
+        let paths = self
+            .paths
+            .clone()
+            .ok_or_else(|| "Vault paths not set".to_string())?;
+        let mut config = ExecutionConfig::new(
+            agent_id.to_string(),
+            conversation_id.to_string(),
+            paths.vault_dir().clone(),
+        )
+        .with_hook_context(HookContext::web(actor_id))
+        .with_session_id(session_id)
+        .with_mode("chat".to_string())
+        .with_client_message_id(message_id.clone())
+        .with_remote_peer_prompt(prompt)
+        .with_redacted_diagnostics();
+        config.source = execution_state::TriggerSource::Web;
+        runner
+            .invoke_persisted_with_callback(
+                config,
+                message.to_owned(),
+                execution_id,
+                message_id,
+                None,
             )
             .await
     }
@@ -569,6 +652,20 @@ impl RuntimeService {
     pub async fn cancel(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
             runner.cancel(session_id).await
+        } else {
+            Err("Runtime not initialized with executor".to_string())
+        }
+    }
+
+    /// Cancel one known session/conversation pair without signaling unrelated
+    /// live executions.
+    pub async fn cancel_exact(
+        &self,
+        session_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), String> {
+        if let Some(runner) = &self.runner {
+            runner.cancel_exact(session_id, conversation_id).await
         } else {
             Err("Runtime not initialized with executor".to_string())
         }

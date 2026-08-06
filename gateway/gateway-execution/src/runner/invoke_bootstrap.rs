@@ -63,6 +63,7 @@ pub(super) struct InvokeBootstrap {
     pub(super) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub(super) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub(super) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     pub(super) model_registry: Arc<ArcSwapOption<ModelRegistry>>,
     pub(super) rate_limiters: Arc<
         std::sync::RwLock<
@@ -289,6 +290,10 @@ fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
     }
     if bootstrap.goal_adapter.is_some() {
         names.push("goal".to_string());
+    }
+    if bootstrap.a2a_delegation.is_some() {
+        names.push("list_zbots".to_string());
+        names.push("delegate_to_zbot".to_string());
     }
     names
 }
@@ -948,14 +953,18 @@ impl InvokeBootstrap {
         };
 
         // Load full session conversation (all messages including tool calls/results).
-        let mut history: Vec<ChatMessage> = self
-            .messages
-            .replay(&session_id, None, 200)
-            .map(|rows| history_before_current_prompt(rows, &root_message_id))
-            .unwrap_or_default();
+        let mut history: Vec<ChatMessage> = if config.is_remote_peer() {
+            Vec::new()
+        } else {
+            self.messages
+                .replay(&session_id, None, 200)
+                .map(|rows| history_before_current_prompt(rows, &root_message_id))
+                .unwrap_or_default()
+        };
         let mut initial_recall_keys = std::collections::HashSet::new();
 
-        let skip_eager_context = config.is_chat_mode() && is_trivial_chat_prompt(message);
+        let skip_eager_context =
+            config.is_remote_peer() || config.is_chat_mode() && is_trivial_chat_prompt(message);
         if skip_eager_context {
             tracing::debug!(
                 session_id = %session_id,
@@ -1128,7 +1137,9 @@ impl InvokeBootstrap {
                 provider: &provider,
                 config,
                 session_id: &session_id,
-                ward_id: ward_id.as_deref(),
+                ward_id: (!config.is_remote_peer())
+                    .then_some(ward_id.as_deref())
+                    .flatten(),
                 is_root: true,
                 user_message: Some(message),
                 execution_id: &execution_id,
@@ -1227,18 +1238,28 @@ impl InvokeBootstrap {
         } = args;
 
         // Collect available agents and skills for executor state
-        let available_agents = collect_agents_summary(&self.agent_service, &self.paths).await;
-        let available_skills = collect_skills_summary(&self.skill_service).await;
+        let (available_agents, available_skills) = if config.is_remote_peer() {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                collect_agents_summary(&self.agent_service, &self.paths).await,
+                collect_skills_summary(&self.skill_service).await,
+            )
+        };
 
         // Get tool settings
         let settings_service = gateway_services::SettingsService::new(self.paths.clone());
         let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
 
         // Build hook context if present
-        let hook_context = config
-            .hook_context
-            .as_ref()
-            .and_then(|ctx| serde_json::to_value(ctx).ok());
+        let hook_context = (!config.is_remote_peer())
+            .then(|| {
+                config
+                    .hook_context
+                    .as_ref()
+                    .and_then(|ctx| serde_json::to_value(ctx).ok())
+            })
+            .flatten();
 
         // Trait-routed fact store wired by AppState. None only in
         // stripped-down test fixtures that don't drive save_fact / recall paths.
@@ -1289,6 +1310,9 @@ impl InvokeBootstrap {
                 session_id,
                 &agent.id,
             ));
+        if let Some(prompt) = config.remote_peer_prompt().cloned() {
+            builder = builder.with_remote_peer_prompt(prompt);
+        }
         if let Some(registry) = self.model_registry.load_full() {
             builder = builder.with_model_registry(registry);
         }
@@ -1335,6 +1359,9 @@ impl InvokeBootstrap {
         }
         if let Some(ref peer_messages) = self.peer_messages {
             builder = builder.with_peer_messages(peer_messages.clone());
+        }
+        if let Some(ref service) = self.a2a_delegation {
+            builder = builder.with_a2a_delegation(service.clone());
         }
 
         // Intent analysis for root agent first turns only.
@@ -1498,15 +1525,17 @@ impl InvokeBootstrap {
             )
             .await?;
 
-        super::core::attach_mid_session_recall_hook(
-            &mut executor,
-            self.memory_recall.as_ref(),
-            self.goal_adapter.as_ref(),
-            &agent.id,
-            session_id,
-            effective_ward_id.as_deref(),
-            initial_recall_keys,
-        );
+        if !config.is_remote_peer() {
+            super::core::attach_mid_session_recall_hook(
+                &mut executor,
+                self.memory_recall.as_ref(),
+                self.goal_adapter.as_ref(),
+                &agent.id,
+                session_id,
+                effective_ward_id.as_deref(),
+                initial_recall_keys,
+            );
+        }
 
         Ok((executor, recommended_skills, effective_ward_id))
     }
@@ -1524,6 +1553,10 @@ impl InvokeBootstrap {
             user_message,
             fact_store,
         } = ctx;
+
+        if config.is_remote_peer() {
+            return None;
+        }
 
         // Only root executions own intent analysis. Quick Chat uses the same
         // bounded capability selection, but its result is forced to the fast
@@ -2229,6 +2262,7 @@ mod tests {
             memory_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,
@@ -2275,6 +2309,7 @@ mod tests {
             memory_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,
@@ -2508,6 +2543,7 @@ mod tests {
             memory_store: None,
             memory_recall: None,
             peer_messages: None,
+            a2a_delegation: None,
             model_registry: Arc::new(ArcSwapOption::empty()),
             rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             connector_registry: None,

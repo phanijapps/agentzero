@@ -251,6 +251,7 @@ pub(crate) struct RunnerDelegationInvoker {
     pub(crate) distiller: Option<Arc<crate::distillation::SessionDistiller>>,
     pub(crate) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub(crate) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+    pub(crate) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
     pub(crate) rate_limiters: Arc<
         std::sync::RwLock<
             std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
@@ -315,6 +316,7 @@ impl DelegationSpawner for RunnerDelegationInvoker {
             self.distiller.clone(),
             self.memory_recall.clone(),
             self.peer_messages.clone(),
+            self.a2a_delegation.clone(),
             self.rate_limiters.clone(),
             self.kg_store.clone(),
             self.ingestion_adapter.clone(),

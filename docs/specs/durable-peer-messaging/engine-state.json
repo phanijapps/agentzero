@@ -3,9 +3,9 @@
   "run_id": "9e132f34-e5b5-480a-be2b-b3e4224d41ee",
   "feature": "durable-peer-messaging",
   "mode": "code",
-  "state": "CODE-HUMAN-GATE",
-  "last_event": "reviewers-clean",
+  "state": "DONE",
+  "last_event": "done",
   "last_event_context": null,
-  "transition_sequence": 8,
-  "last_transition_at": "2026-08-05T20:04:06Z"
+  "transition_sequence": 9,
+  "last_transition_at": "2026-08-05T21:02:06Z"
 }

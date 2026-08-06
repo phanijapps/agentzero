@@ -371,6 +371,9 @@ impl PeerSnapshot {
         let now = Utc::now();
         let mut matched = None;
         for peer in self.peers.values() {
+            // Deliberately do not short-circuit: authentication must evaluate
+            // every active credential instead of leaking the match position.
+            #[allow(clippy::unnecessary_fold)]
             let peer_matches = peer
                 .inbound_credentials
                 .iter()

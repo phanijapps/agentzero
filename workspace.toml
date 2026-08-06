@@ -1,0 +1,11 @@
+# Repository-durable work that is not part of an active initiative queue.
+
+[backlog]
+open = [
+  # Run the official A2A CLI/TCK plus the documented two-daemon pair/delegate/get/cancel/restart journey and record the output before claiming external conformance.
+  { slug = "a2a-external-conformance", source = "spec/a2a-federation-discovery AC17" },
+  { slug = "conversation-store-revamp-summary-store", source = "spec/conversation-store-revamp" },
+  { slug = "engram-pinned-source-before-release", source = "spec/engram-memory-engine-cutover" },
+  { slug = "engram-fresh-db-manual-smoke", source = "spec/engram-memory-engine-cutover" },
+  { slug = "p4-react-router-830", source = "spec/p4-tech-debt" },
+]

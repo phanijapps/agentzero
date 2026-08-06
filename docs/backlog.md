@@ -30,6 +30,16 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
 
 ---
 
+## a2a-external-conformance
+
+- **A2A Federation and Discovery AC17:** Run the official A2A CLI/TCK and a
+  documented two-daemon pair/delegate/get/cancel/restart journey, then record
+  the commands and results in the verification artifact. Blocked because the
+  repository integration suite does not provide an external authenticated A2A
+  client or isolated process harness; unblocked by supplying that harness
+  without weakening peer authentication and passing the advertised HTTP+JSON
+  surface checks.
+
 ## p4-react-router-830
 
 - **P4 CI and E2E Debt Cleanup AC7:** Remove the narrow

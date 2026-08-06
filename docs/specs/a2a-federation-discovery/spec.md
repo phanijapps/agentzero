@@ -1,6 +1,6 @@
 # Spec: A2A Federation and Discovery
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [RFC-0020](../../rfc/0020-a2a-zbot-federation.md),
@@ -132,14 +132,14 @@ maximum is a startup validation error. Auth buckets are keyed by the normalized
 transport origin address before authentication; successful authentication does
 not refund tokens, and a global bucket prevents distributed-origin bypass.
 
-- [ ] **AC1 — standard Agent Card:** when A2A is enabled, `GET
+- [x] **AC1 — standard Agent Card:** when A2A is enabled, `GET
   /.well-known/agent-card.json` returns a valid A2A 1.0 Agent Card with one
   preferred `HTTP+JSON` interface under `/a2a`, bounded public identity/skill
   metadata, `text/plain` modes, a required public HTTP Bearer security scheme
   and matching security requirement, and false streaming, push-notification,
   and extended-card capabilities. It contains no credential, internal path,
   session/execution ID, provider secret, or untrusted discovered-card content.
-- [ ] **AC2 — protocol negotiation:** every `/a2a` operation enforces
+- [x] **AC2 — protocol negotiation:** every `/a2a` operation enforces
   `A2A-Version: 1.0`; body operations enforce
   `application/a2a+json`; malformed, unsupported-version, unsupported-extension,
   and unsupported-operation requests return bounded standard A2A errors without
@@ -148,14 +148,14 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   rather than the gateway's generic 404. A2A routes reject browser `Origin`
   requests unless the origin is on an exact A2A-specific allowlist; gateway
   wildcard CORS never applies as peer authorization.
-- [ ] **AC3 — explicit trust:** an mDNS candidate has no routing or execution
+- [x] **AC3 — explicit trust:** an mDNS candidate has no routing or execution
   authority until a local CLI trust action binds its canonical node ID, exact
   normalized origin, credential direction, allowed local agent/skill, and
   transport policy. Every authentication, outbound dispatch, list tool, and
   task operation reads the current atomically replaceable peer-store snapshot;
   removing trust therefore blocks new inbound and outbound calls in a running
   daemon without deleting historical tasks or waiting for restart.
-- [ ] **AC4 — secret lifecycle and handling:** generated credentials contain at
+- [x] **AC4 — secret lifecycle and handling:** generated credentials contain at
   least 256 bits of OS randomness, have an opaque credential ID, default to
   90-day expiry with a configurable maximum of 365 days, and are displayed
   once. Inbound credentials persist only as hashes
@@ -166,13 +166,13 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   value. Expired and revoked credentials fail closed. No list command, API,
   Agent Card, tool, `Debug`, trace, error, transcript, or memory record reveals
   credential material.
-- [ ] **AC5 — safe endpoint resolution:** trusted endpoints accept HTTPS by
+- [x] **AC5 — safe endpoint resolution:** trusted endpoints accept HTTPS by
   default, permit HTTP only for loopback or an explicit per-peer
   private-network opt-in, contain no userinfo/query/fragment, do not follow
   redirects, and are resolved under an outbound policy that rejects prohibited
   destinations and rebinding. Model-visible tools accept peer IDs only, never
   URLs, headers, or credentials.
-- [ ] **AC6 — untrusted discovery:** the discovery browser emits bounded
+- [x] **AC6 — untrusted discovery:** the discovery browser emits bounded
   candidate records for `_zbot._tcp.local.` advertisements carrying `nodeId`,
   `a2aVersion`, and `agentCardPath`. Malformed records are dropped with
   identifier-only diagnostics; expiry removes candidates; candidate changes
@@ -181,7 +181,7 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   hostname, user, ward, or agent name, and are stable only within one operator
   identity; explicit rotation invalidates existing peer trust. Display names
   and skills are bounded, local-operator-authored public metadata.
-- [ ] **AC7 — authenticated durable send:** an authenticated `POST
+- [x] **AC7 — authenticated durable send:** an authenticated `POST
   /a2a/message:send` accepts exactly one non-empty text part with `ROLE_USER`,
   bounded to 1,000 Unicode code points, 4,000 UTF-8 bytes, and a 65,536-byte
   serialized body, and requires `configuration.returnImmediately: true` with
@@ -192,7 +192,7 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   session, and execution identifiers, persists that ID and authorized durable
   work before returning an A2A Task in `TASK_STATE_SUBMITTED`; duplicates with
   the same peer/message ID are idempotent and conflicting reuse fails closed.
-- [ ] **AC8 — remote-safe execution:** inbound work runs only as the peer-bound
+- [x] **AC8 — remote-safe execution:** inbound work runs only as the peer-bound
   target agent under `RemotePeer` actor policy. Its model-visible capabilities
   contain exactly the built-in `respond` tool. Delegation, shell, filesystem,
   connectors, memory, graph, skills, multimodal, goals, plans, wards, peer
@@ -205,7 +205,7 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   OS and prompt shards, ward files, memory/recall, conversation history,
   provider/tool/catalog metadata, credentials, paths, and all non-public host
   context.
-- [ ] **AC9 — peer-scoped task access:** `GET /a2a/tasks/{id}`, `GET
+- [x] **AC9 — peer-scoped task access:** `GET /a2a/tasks/{id}`, `GET
   /a2a/tasks`, and `POST /a2a/tasks/{id}:cancel` expose only tasks owned by the
   authenticated peer. Ownership and task correlation are rechecked by a
   durable indexed query, not by parsing the task ID or trusting request
@@ -214,13 +214,13 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   opaque task ID descending, uses an opaque peer-bound cursor, defaults to 50,
   caps at 100, and never exposes zBot session/execution/work provenance.
   Artifacts are omitted by default and included only when explicitly requested.
-- [ ] **AC10 — honest state and result projection:** submitted, working,
+- [x] **AC10 — honest state and result projection:** submitted, working,
   completed, failed, canceled, and rejected durable/runtime states map
   deterministically to A2A Task states. A completed task includes one bounded
   text artifact built from the canonical persisted terminal assistant row,
   including terminal content carried by `respond` tool arguments; failures
   expose normalized codes rather than raw runtime/provider errors.
-- [ ] **AC11 — cancellation:** an authorized cancel request fences pending work
+- [x] **AC11 — cancellation:** an authorized cancel request fences pending work
   by durably transitioning it to canceled, or atomically fences leased work and
   signals only the matching running execution. It is idempotent once canceled,
   cannot cancel completed, foreign, or unrelated local executions, and a stale
@@ -228,13 +228,13 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   malformed, and inaccessible task IDs take the same normalized 404 path;
   only an ownership-proven terminal task may return not-cancelable. Restart
   preserves the canceled terminal state.
-- [ ] **AC12 — non-blocking outbound delegation:** `list_zbots` and
+- [x] **AC12 — non-blocking outbound delegation:** `list_zbots` and
   `delegate_to_zbot` are available only to root and ward actors. Delegation
   accepts a trusted peer ID and bounded text, persists one outbound durable work
   item, and returns its stable local task ID without waiting for remote
   completion; ordinary delegated, reviewer, and remote-peer actors cannot start
   cross-node work.
-- [ ] **AC13 — durable remote completion:** the outbound worker sends a
+- [x] **AC13 — durable remote completion:** the outbound worker sends a
   standards-compliant A2A request, stores the remote task correlation, polls
   with capped exponential backoff and per-request timeouts, survives daemon
   restart using the same message ID, and converts remote terminal state into
@@ -242,7 +242,7 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   one logical task; for other explicitly trusted A2A implementations the
   crash-before-correlation window is honestly at-least-once remote submission
   rather than an exactly-once claim.
-- [ ] **AC14 — prompt boundary:** a remote terminal result reaches the
+- [x] **AC14 — prompt boundary:** a remote terminal result reaches the
   originating execution as a bounded, attributed `agent.peer`-style steering
   envelope naming peer ID and stable task ID, explicitly labeling content as
   untrusted remote data and permitting at-least-once duplicate delivery. It is
@@ -251,7 +251,7 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   host-internal non-model operations; it cannot invoke side-effecting tools,
   connectors, memory writes, or local/remote delegation. Further action
   requires a subsequent local-user-authored turn under ordinary policy.
-- [ ] **AC15 — isolation and limits:** authentication precedes enqueue and task
+- [x] **AC15 — isolation and limits:** authentication precedes enqueue and task
   lookup; every accepted path re-authorizes at delivery. Per-peer concurrency,
   request size, task-list, timeout, retry, and outstanding-task limits are
   enforced. Authentication failures are throttled by bounded per-origin and
@@ -259,12 +259,13 @@ not refund tokens, and a global bucket prevents distributed-origin bypass.
   successful authentication does not reset another origin's budget.
   Diagnostics contain only canonical IDs, operation names, durations, states,
   and normalized reason codes.
-- [ ] **AC16 — production lifecycle:** production starts and supervises the
+- [x] **AC16 — production lifecycle:** production starts and supervises the
   discovery browser plus exact inbound/outbound durable handlers once, rejects
   duplicate handler registration, and drains them through normal daemon
   shutdown. Disabling A2A stops discovery browsing and remote acceptance while
   preserving peer configuration and durable history.
-- [ ] **AC17 — interoperability:** two isolated zBot daemons pass the documented
+- [ ] **AC17 — interoperability (deferred: a2a-external-conformance):** two
+  isolated zBot daemons pass the documented
   pair/delegate/get/cancel/restart journey, and the advertised non-streaming
   HTTP+JSON surface passes the applicable official A2A CLI/TCK checks. Existing
   local peer messaging, Research, Quick Chat, HTTP/WS clients, and tool inventory

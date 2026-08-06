@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "run_id": "dfd66468-3999-4603-9b3c-d4f820eac775",
+  "feature": "supply-chain-policy-refresh",
+  "mode": "code",
+  "state": "CODE-HUMAN-GATE",
+  "last_event": "reviewers-clean",
+  "last_event_context": null,
+  "transition_sequence": 20,
+  "last_transition_at": "2026-08-06T15:29:27Z"
+}

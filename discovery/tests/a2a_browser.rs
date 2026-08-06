@@ -1,6 +1,6 @@
 use discovery::{
-    BrowseConfig, Browser, CandidateEvent, CandidateRegistry, DiscoveredService, DiscoveryResult,
-    advertise_a2a_txt_records, candidate_from_service, start_browser_if_enabled,
+    advertise_a2a_txt_records, candidate_from_service, start_browser_if_enabled, BrowseConfig,
+    Browser, CandidateEvent, CandidateRegistry, DiscoveredService, DiscoveryResult,
 };
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -39,11 +39,9 @@ fn candidate_events_are_untrusted_and_expire() {
     .expect("valid candidate");
     registry.apply_event(CandidateEvent::Upsert(candidate));
 
-    assert!(
-        registry
-            .candidate("11111111-1111-4111-8111-111111111111")
-            .is_some()
-    );
+    assert!(registry
+        .candidate("11111111-1111-4111-8111-111111111111")
+        .is_some());
     assert!(!registry.is_trusted("11111111-1111-4111-8111-111111111111"));
     assert!(registry.is_trusted("trusted-peer"));
 
@@ -66,11 +64,9 @@ fn candidate_events_are_untrusted_and_expire() {
     );
 
     registry.expire(now + Duration::from_secs(4));
-    assert!(
-        registry
-            .candidate("11111111-1111-4111-8111-111111111111")
-            .is_none()
-    );
+    assert!(registry
+        .candidate("11111111-1111-4111-8111-111111111111")
+        .is_none());
     assert!(registry.is_trusted("trusted-peer"));
 }
 
@@ -201,11 +197,9 @@ fn loopback_goodbye_removes_candidate() {
     {
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(
-        registry
-            .candidate("44444444-4444-4444-8444-444444444444")
-            .is_some()
-    );
+    assert!(registry
+        .candidate("44444444-4444-4444-8444-444444444444")
+        .is_some());
 
     drop(handle);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -217,9 +211,7 @@ fn loopback_goodbye_removes_candidate() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    assert!(
-        registry
-            .candidate("44444444-4444-4444-8444-444444444444")
-            .is_none()
-    );
+    assert!(registry
+        .candidate("44444444-4444-4444-8444-444444444444")
+        .is_none());
 }

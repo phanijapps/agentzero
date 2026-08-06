@@ -15,19 +15,20 @@ pub mod mdns_browser;
 pub mod network_info;
 
 pub use advertiser::{
-    AdvertiseHandle, AdvertiseInner, Advertiser, DiscoveryError, NoopAdvertiser,
-    Result as DiscoveryResult, ServiceInfo, noop,
+    noop, AdvertiseHandle, AdvertiseInner, Advertiser, DiscoveryError, NoopAdvertiser,
+    Result as DiscoveryResult, ServiceInfo,
 };
 pub use browser::{
-    A2A_AGENT_CARD_PATH, A2A_AGENT_CARD_PATH_TXT, A2A_NODE_ID_TXT, A2A_VERSION, A2A_VERSION_TXT,
-    BrowseConfig, BrowseHandle, BrowseInner, Browser, CandidateEvent, CandidateRecord,
-    CandidateRegistry, DEFAULT_A2A_SERVICE_TYPE, DiscoveredService, advertise_a2a_txt_records,
-    candidate_from_service, generate_a2a_node_id, start_browser_if_enabled,
+    advertise_a2a_txt_records, candidate_from_service, generate_a2a_node_id,
+    start_browser_if_enabled, BrowseConfig, BrowseHandle, BrowseInner, Browser, CandidateEvent,
+    CandidateRecord, CandidateRegistry, DiscoveredService, A2A_AGENT_CARD_PATH,
+    A2A_AGENT_CARD_PATH_TXT, A2A_NODE_ID_TXT, A2A_VERSION, A2A_VERSION_TXT,
+    DEFAULT_A2A_SERVICE_TYPE,
 };
 pub use config::{AdvancedConfig, DiscoveryConfig, DiscoveryDetails};
 pub use interfaces::{
-    Interface, InterfaceEnumerator, RealEnumerator, filter_interfaces, ipv4_only,
+    filter_interfaces, ipv4_only, Interface, InterfaceEnumerator, RealEnumerator,
 };
 pub use mdns::MdnsAdvertiser;
 pub use mdns_browser::MdnsBrowser;
-pub use network_info::{MdnsStatus, NetworkInfo, collect_network_info, sanitize_for_hostname};
+pub use network_info::{collect_network_info, sanitize_for_hostname, MdnsStatus, NetworkInfo};

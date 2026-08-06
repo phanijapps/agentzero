@@ -1,14 +1,14 @@
 //! Real mDNS browser backed by the pure-Rust `mdns-sd` crate.
 
 use crate::browser::{
-    BrowseConfig, BrowseHandle, BrowseInner, Browser, CandidateEvent, CandidateRegistry,
-    DiscoveredService, candidate_from_service,
+    candidate_from_service, BrowseConfig, BrowseHandle, BrowseInner, Browser, CandidateEvent,
+    CandidateRegistry, DiscoveredService,
 };
 use crate::{DiscoveryError, DiscoveryResult};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};

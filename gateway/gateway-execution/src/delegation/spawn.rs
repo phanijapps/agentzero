@@ -254,7 +254,8 @@ pub async fn spawn_delegated_agent(
         RuntimeActorKind::DelegatedReviewer => crate::invoke::SubagentRole::Reviewer,
         RuntimeActorKind::Root
         | RuntimeActorKind::DelegatedExecutor
-        | RuntimeActorKind::WardAgent => crate::invoke::SubagentRole::Executor,
+        | RuntimeActorKind::WardAgent
+        | RuntimeActorKind::RemotePeer => crate::invoke::SubagentRole::Executor,
     };
     tracing::info!(
         child_agent = %request.child_agent_id,
@@ -1747,6 +1748,7 @@ fn context_actor_kind(actor_kind: RuntimeActorKind) -> ContextActorKind {
         RuntimeActorKind::DelegatedExecutor => ContextActorKind::DelegatedExecutor,
         RuntimeActorKind::DelegatedReviewer => ContextActorKind::DelegatedReviewer,
         RuntimeActorKind::WardAgent => ContextActorKind::WardAgent,
+        RuntimeActorKind::RemotePeer => ContextActorKind::RemotePeer,
     }
 }
 

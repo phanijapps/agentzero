@@ -36,8 +36,8 @@ use crate::invoke::{
 };
 use crate::lifecycle::{emit_agent_started, get_or_create_session, start_execution};
 use crate::middleware::intent_analysis::{
-    analyze_intent_with_capabilities, format_intent_injection, index_resources, ExecutionApproach,
-    IntentAnalysis, WardAction,
+    analyze_intent_with_capabilities, format_intent_injection, format_planner_task,
+    index_resources, ExecutionApproach, IntentAnalysis, WardAction,
 };
 use crate::session_title::{SessionTitleInputs, SessionTitleService};
 
@@ -160,6 +160,8 @@ struct IntentOutcome {
     /// A ward accepted by filesystem validation. This is the only
     /// intent-derived ward identifier allowed into runtime state.
     existing_ward_id: Option<String>,
+    /// Present only for cold graph work that must establish a ward before planning.
+    planning_task: Option<String>,
     /// Host-owned full catalog used by planner-only `lookup_capabilities`.
     planning_capability_catalog: Option<serde_json::Value>,
     /// Sanitized intent data, held until the active ward is known. Delaying
@@ -170,6 +172,15 @@ struct IntentOutcome {
 // ============================================================================
 // FREE FUNCTIONS
 // ============================================================================
+
+fn cold_graph_planning_task(
+    analysis: &IntentAnalysis,
+    existing_ward_id: Option<&str>,
+    original_message: &str,
+) -> Option<String> {
+    (analysis.execution_strategy.approach == ExecutionApproach::Graph && existing_ward_id.is_none())
+        .then(|| format_planner_task(analysis, Some(original_message)))
+}
 
 /// Return an existing ward identifier only when it names exactly one real,
 /// non-symlinked child of the real wards root.
@@ -1480,6 +1491,15 @@ impl InvokeBootstrap {
                         catalog.clone(),
                     );
                 }
+                if let Some(task) = out.planning_task.as_deref() {
+                    builder = builder.with_initial_state(
+                        agent_tools::guards::PLANNING_GATE_STATE,
+                        serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                            task,
+                        ))
+                        .expect("planning gate is serializable"),
+                    );
+                }
             }
             agent_for_build
                 .instructions
@@ -1823,6 +1843,7 @@ impl InvokeBootstrap {
             } else {
                 None
             };
+        let planning_task = cold_graph_planning_task(&analysis, existing_ward_id.as_deref(), msg);
 
         Some(IntentOutcome {
             recommended_skills: analysis.recommended_skills.clone(),
@@ -1835,6 +1856,7 @@ impl InvokeBootstrap {
                 Some(msg),
             ),
             existing_ward_id,
+            planning_task,
             planning_capability_catalog,
             intent_snapshot: intent_json,
         })
@@ -2133,6 +2155,19 @@ mod tests {
 
         assert_eq!(assigned, vec!["research", "coding"]);
         assert_eq!(analysis.recommended_skills, vec!["coding", "research"]);
+    }
+
+    #[test]
+    fn cold_graph_intent_installs_a_planner_task_but_warm_and_simple_paths_do_not() {
+        let graph = intent_with_approach(ExecutionApproach::Graph);
+        let task = cold_graph_planning_task(&graph, None, "Build a scene")
+            .expect("cold graph work requires planning");
+        assert!(task.contains("Original request: Build a scene"));
+        assert!(task.contains("creative-design"));
+
+        assert!(cold_graph_planning_task(&graph, Some("existing-ward"), "Build a scene").is_none());
+        let simple = intent_with_approach(ExecutionApproach::Simple);
+        assert!(cold_graph_planning_task(&simple, None, "Hi").is_none());
     }
 
     #[test]

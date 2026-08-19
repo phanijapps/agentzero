@@ -4,6 +4,7 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Planner Template Handoff](planner-template-handoff/spec.md) | Shipped | Carries the selected normalized ward template into automatic graph planning and persists applicable declared planning roles. |
 | [Supply-Chain Policy Refresh](supply-chain-policy-refresh/spec.md) | Shipped | Refreshes the compatible Rust dependency graph and stale advisory policy while closing merged A2A lifecycle metadata. |
 | [A2A Federation and Discovery](a2a-federation-discovery/spec.md) | Shipped | Lets explicitly paired LAN/VPN zBots discover candidates and exchange remote-safe durable work through the A2A 1.0 HTTP+JSON protocol. |
 | [Durable Peer Messaging](durable-peer-messaging/spec.md) | Implementing | Lets same-session agents exchange durable asynchronous messages and scoped replies over the existing local work queue while keeping a broker-neutral transport seam. |
@@ -43,7 +44,7 @@ Active feature specs for AgentZero.
 | [Quiet Instrument UI](quiet-instrument-ui/spec.md) | Shipped | Unifies every zbot UI route under a restrained, premium operational visual system while preserving all behavior and contracts. |
 | [Quick Chat Terminal Response Deduplication](quick-chat-terminal-response-dedup/spec.md) | Shipped | Prevents a root terminal fallback from rendering a second Quick Chat answer. |
 | [Quick Chat Recall Ranking](quick-chat-recall-ranking/spec.md) | Shipped | Preserves hybrid recall ranking and supplies query-scoped profile facts from durable memory. |
-| [Graph Planning Gate](graph-planning-gate/spec.md) | Implementing | Enforces cold graph work as ward setup → planner-agent → plan-step execution. |
+| [Graph Planning Gate](graph-planning-gate/spec.md) | Shipped | Enforces cold graph work as ward setup → planner-agent → plan-step execution. |
 | [Execution Capabilities](execution-capabilities/spec.md) | Shipped | Makes skills and MCPs dynamically assigned to root and subagent executions by intent and planning, while retaining static agent mappings as a compatibility fallback. |
 | [MCP ID Normalization](mcp-id-normalization/spec.md) | Shipped | Derives stable IDs for API-managed MCPs and gives the active Blender MCP its canonical `blender-mcp` ID. |
 | [Attention Radar UI Rollout](attention-radar-ui-rollout/spec.md) | Archived | Uses the Mission Control Attention Radar as the successor visual contract and route-by-route rollout plan for the full z-Bot UI. |

@@ -4,10 +4,16 @@ You never write implementation code or execute data skills.
 Enter the assigned ward and treat any Active Ward Template block supplied in
 your task as the only filesystem-shape authority. Load `spec-builder` and `plan-composer` as
 needed. Do not infer artifact behavior from rule IDs or remembered conventions.
-The plan always exists in session state; persist artifacts only through matching
-declared rules. If a role is absent, return `role_not_declared` for that artifact
-and continue with the ephemeral plan. Propagate the template digest to every
-delegation.
+The plan always exists in session state. A cold graph task with a concrete refinement slug
+is a refinement run: every matching declared required specification and plan role is
+applicable even when the user's request does not say "spec". An optional repeatable task
+role is applicable only when the concrete plan is actually decomposed into task artifacts;
+never create placeholder tasks. Persist every applicable declared artifact before returning execution steps,
+then require a successful ward lint.
+Report the selected ward, template digest, and resolved ward-relative artifact paths.
+If an applicable role is genuinely absent, return `role_not_declared` for that artifact
+and continue with the ephemeral plan. Never invent a fallback path. Propagate the template
+digest to every delegation.
 
 The user's verbatim request is authoritative. Assign only agents/capabilities
 present in the live agent catalog. Every step must name one recommended agent

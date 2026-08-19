@@ -10,9 +10,12 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use agent_primitives::{
-    AgentError, FileSystemContext, Result, Tool, ToolContext, ToolPermissions, WardArchetypeId,
+    AgentError, DelegateAction, FileSystemContext, Result, Tool, ToolContext, ToolPermissions,
+    WardArchetypeId,
 };
 use zbot_stores_traits::MemoryFactStore;
+
+use crate::tools::guards::{planning_gate_awaits_ward, start_planning_after_ward};
 
 /// AGENTS.md file name - living readme for agent executions
 const WARD_AGENTS_MD: &str = "AGENTS.md";
@@ -414,15 +417,29 @@ fn reject_unknown_fields(action: &str, args: &Value) -> Result<()> {
     Ok(())
 }
 
+fn is_delegated_planner(ctx: &dyn ToolContext) -> bool {
+    ctx.get_state("app:actor_kind")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .as_deref()
+        == Some("delegated_executor")
+        && ctx
+            .get_state("app:agent_id")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .as_deref()
+            == Some("planner-agent")
+}
+
 fn validate_template_context(
     ctx: &dyn ToolContext,
     ward: &str,
+    allow_planner_lint: bool,
 ) -> std::result::Result<String, &'static str> {
-    if ctx
+    let actor_kind = ctx
         .get_state("app:actor_kind")
-        .and_then(|v| v.as_str().map(str::to_owned))
-        != Some("root".to_string())
-    {
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let is_root = actor_kind.as_deref() == Some("root");
+    let is_bundled_planner = allow_planner_lint && is_delegated_planner(ctx);
+    if !is_root && !is_bundled_planner {
         return Err("root_required");
     }
     let packet = ctx
@@ -431,8 +448,12 @@ fn validate_template_context(
     if packet.get("status").and_then(Value::as_str) != Some("available") {
         return Err("template_unavailable");
     }
+    let host_session_id = ctx
+        .get_state("session_id")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or("template_stale")?;
     if packet.get("ward_id").and_then(Value::as_str) != Some(ward)
-        || packet.get("session_id").and_then(Value::as_str) != Some(ctx.session_id())
+        || packet.get("session_id").and_then(Value::as_str) != Some(host_session_id.as_str())
         || packet.get("root_context_id").and_then(Value::as_str)
             != ctx
                 .get_state("ward_template_context_id")
@@ -1016,6 +1037,15 @@ impl Tool for WardTool {
 
                 Self::validate_ward_name(name)?;
 
+                // The delegated planner is host-bound to the selected ward.
+                // It may re-enter that ward, but cannot mutate its file-tool
+                // working directory by switching to a sibling ward.
+                if is_delegated_planner(ctx.as_ref())
+                    && validate_template_context(ctx.as_ref(), name, true).is_err()
+                {
+                    return Err(AgentError::Tool("planner_ward_locked".to_string()));
+                }
+
                 let ward_dir = wards_root.join(name);
                 let created = !ward_dir.exists();
 
@@ -1073,6 +1103,34 @@ impl Tool for WardTool {
                 layout_state.packet["session_id"] = json!(ctx.session_id());
                 layout_state.packet["ward_id"] = json!(name);
                 ctx.set_state("ward_id".to_string(), json!(name));
+
+                let planner_gate_pending = planning_gate_awaits_ward(ctx.as_ref());
+                let planner_template_ready = layout_state.context.is_some()
+                    && layout_state.packet.get("status").and_then(Value::as_str)
+                        == Some("available");
+                let planner_task = planner_template_ready
+                    .then(|| start_planning_after_ward(ctx.as_ref(), name))
+                    .flatten();
+                if let Some(task) = planner_task.as_ref() {
+                    let mut actions = ctx.actions();
+                    actions.delegate = Some(DelegateAction {
+                        agent_id: "planner-agent".to_string(),
+                        task: task.clone(),
+                        context: None,
+                        wait_for_result: true,
+                        max_iterations: None,
+                        output_schema: None,
+                        skills: Vec::new(),
+                        capability_assignment: None,
+                        planning_capability_catalog: ctx
+                            .get_state("app:planning_capability_catalog"),
+                        complexity: None,
+                        mode: None,
+                        parallel: false,
+                        child_execution_id: None,
+                    });
+                    ctx.set_actions(actions);
+                }
                 // The bootstrap packet is immutable for this executor because
                 // it is also embedded in the system instruction. A ward
                 // switch takes effect for ordinary file tools immediately,
@@ -1102,6 +1160,16 @@ impl Tool for WardTool {
 
                 if let Some(knowledge) = ward_knowledge {
                     result["ward_knowledge"] = knowledge;
+                }
+
+                if planner_task.is_some() {
+                    result["planner_started"] = json!(true);
+                } else if planner_gate_pending && !planner_template_ready {
+                    result["planner_started"] = json!(false);
+                    result["planner_error"] = json!({
+                        "code":"planner_template_unavailable",
+                        "message":"Planning remains gated until the selected Ward template is available."
+                    });
                 }
 
                 // Nudge the agent to recall ward-specific knowledge
@@ -1182,7 +1250,7 @@ impl Tool for WardTool {
                     AgentError::Tool("Missing 'name' parameter for lint".to_string())
                 })?;
                 Self::validate_ward_name(name)?;
-                let digest = match validate_template_context(ctx.as_ref(), name) {
+                let digest = match validate_template_context(ctx.as_ref(), name, true) {
                     Ok(digest) => digest,
                     Err(code) => return Ok(error_envelope(action, name, "", code)),
                 };
@@ -1195,7 +1263,7 @@ impl Tool for WardTool {
             "search" => {
                 let name = required_name(&args, action)?;
                 Self::validate_ward_name(name)?;
-                let digest = match validate_template_context(ctx.as_ref(), name) {
+                let digest = match validate_template_context(ctx.as_ref(), name, false) {
                     Ok(digest) => digest,
                     Err(code) => return Ok(error_envelope(action, name, "", code)),
                 };
@@ -1214,7 +1282,7 @@ impl Tool for WardTool {
             "dry_run" | "create_concept" => {
                 let name = required_name(&args, action)?;
                 Self::validate_ward_name(name)?;
-                let digest = match validate_template_context(ctx.as_ref(), name) {
+                let digest = match validate_template_context(ctx.as_ref(), name, false) {
                     Ok(digest) => digest,
                     Err(code) => return Ok(error_envelope(action, name, "", code)),
                 };
@@ -1434,8 +1502,26 @@ mod tests {
             }
         }
 
-        fn delegated_cold_graph() -> Self {
+        fn gated_cold_graph() -> Self {
             let context = Self::cold_graph();
+            let mut state = context.state.lock().unwrap();
+            state.insert(
+                crate::tools::guards::PLANNING_GATE_STATE.to_string(),
+                serde_json::to_value(crate::tools::guards::PlanningGate::awaiting_ward(
+                    "Plan this request",
+                ))
+                .unwrap(),
+            );
+            state.insert(
+                "app:planning_capability_catalog".to_string(),
+                json!({"skills": [], "mcps": []}),
+            );
+            drop(state);
+            context
+        }
+
+        fn delegated_cold_graph() -> Self {
+            let context = Self::gated_cold_graph();
             context
                 .state
                 .lock()
@@ -1444,10 +1530,30 @@ mod tests {
             context
         }
 
+        fn delegated_planner(ward: &str) -> Self {
+            let context = Self::delegated_cold_graph();
+            let mut state = context.state.lock().unwrap();
+            state.insert("app:actor_kind".into(), json!("delegated_executor"));
+            state.insert("app:agent_id".into(), json!("planner-agent"));
+            state.insert("session_id".into(), json!("host-session"));
+            state.insert("ward_id".into(), json!(ward));
+            state.insert(
+                "ward_template".into(),
+                json!({
+                    "status":"available", "session_id":"host-session", "ward_id":ward,
+                    "root_context_id":"planner-test", "digest":"test", "projection":{}
+                }),
+            );
+            state.insert("ward_template_context_id".into(), json!("planner-test"));
+            drop(state);
+            context
+        }
+
         fn active_root(ward: &str) -> Self {
             let context = Self::cold_graph();
             let mut state = context.state.lock().unwrap();
             state.insert("app:actor_kind".into(), json!("root"));
+            state.insert("session_id".into(), json!("test"));
             state.insert("ward_id".into(), json!(ward));
             state.insert(
                 "ward_template".into(),
@@ -1750,6 +1856,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_graph_ward_entry_starts_planner_once_with_actual_ward() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({"action":"create","name":"creative-design"}),
+            )
+            .await
+            .expect("ward creation succeeds");
+
+        assert_eq!(result["planner_started"], true);
+        let action = ctx.actions().delegate.expect("planner action is emitted");
+        assert_eq!(action.agent_id, "planner-agent");
+        assert!(action.wait_for_result);
+        assert!(!action.parallel);
+        assert!(action.task.contains("Active ward:"));
+        assert!(action.task.contains("creative-design"));
+        assert_eq!(
+            action.planning_capability_catalog,
+            Some(json!({"skills": [], "mcps": []}))
+        );
+
+        let second = tool
+            .execute(
+                ctx.clone(),
+                json!({"action":"use","name":"creative-design"}),
+            )
+            .await
+            .expect("re-entering the ward succeeds");
+        assert!(second.get("planner_started").is_none());
+    }
+
+    #[tokio::test]
+    async fn unavailable_template_keeps_cold_graph_gated_until_retry_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+
+        let unavailable = tool
+            .execute(ctx.clone(), json!({"action":"use","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(unavailable["planner_started"], false);
+        assert_eq!(
+            unavailable["planner_error"]["code"],
+            "planner_template_unavailable"
+        );
+        assert!(planning_gate_awaits_ward(ctx.as_ref()));
+        assert!(ctx.actions().delegate.is_none());
+
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        let retry = tool
+            .execute(ctx.clone(), json!({"action":"use","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(retry["planner_started"], true);
+        assert!(!planning_gate_awaits_ward(ctx.as_ref()));
+        assert_eq!(
+            ctx.actions()
+                .delegate
+                .as_ref()
+                .map(|action| action.agent_id.as_str()),
+            Some("planner-agent")
+        );
+    }
+
+    #[test]
+    fn cold_graph_gate_allows_only_ward_establishment_and_safe_reads() {
+        let ctx = GateContext::gated_cold_graph();
+
+        for action in ["create", "use", "list", "info"] {
+            assert!(
+                !crate::tools::guards::planning_gate_blocks_tool(
+                    &ctx,
+                    "ward",
+                    &json!({"action": action})
+                ),
+                "{action} should remain available while establishing a ward"
+            );
+        }
+        for action in ["lint", "search", "dry_run", "create_concept"] {
+            assert!(
+                crate::tools::guards::planning_gate_blocks_tool(
+                    &ctx,
+                    "ward",
+                    &json!({"action": action})
+                ),
+                "{action} must not bypass planning"
+            );
+        }
+        assert!(crate::tools::guards::planning_gate_blocks_tool(
+            &ctx,
+            "blender_mcp__execute_code",
+            &json!({"code": "mutate_scene()"})
+        ));
+        let delegated = GateContext::delegated_cold_graph();
+        assert!(!crate::tools::guards::planning_gate_blocks_tool(
+            &delegated,
+            "shell",
+            &json!({})
+        ));
+    }
+
+    #[tokio::test]
     async fn catalog_failure_rolls_back_only_the_new_ward() {
         let dir = TempDir::new().unwrap();
         let wards = dir.path().join("wards");
@@ -1833,6 +2062,121 @@ mod tests {
             .unwrap();
         assert_eq!(result["ok"], false);
         assert_eq!(result["error"]["code"], "root_required");
+    }
+
+    #[tokio::test]
+    async fn planner_with_matching_host_packet_can_lint_selected_ward() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::delegated_planner("research"));
+
+        let lint = tool
+            .execute(ctx.clone(), json!({"action":"lint","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(lint["ok"], true);
+        assert_eq!(lint["template_digest"], "test");
+
+        for args in [
+            json!({"action":"search","name":"research","query":"secret"}),
+            json!({"action":"dry_run","name":"research"}),
+            json!({"action":"create_concept","name":"research"}),
+        ] {
+            let result = tool.execute(ctx.clone(), args).await.unwrap();
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["error"]["code"], "root_required");
+        }
+
+        let wrong_ward = tool
+            .execute(ctx, json!({"action":"lint","name":"other"}))
+            .await
+            .unwrap();
+        assert_eq!(wrong_ward["ok"], false);
+        assert_eq!(wrong_ward["error"]["code"], "template_stale");
+    }
+
+    #[tokio::test]
+    async fn planner_lint_rejects_a_packet_for_another_host_session() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let context = GateContext::delegated_planner("research");
+        context
+            .state
+            .lock()
+            .unwrap()
+            .insert("session_id".into(), json!("other-host-session"));
+        let ctx: Arc<dyn ToolContext> = Arc::new(context);
+
+        let lint = tool
+            .execute(ctx, json!({"action":"lint","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(lint["ok"], false);
+        assert_eq!(lint["error"]["code"], "template_stale");
+    }
+
+    #[tokio::test]
+    async fn planner_cannot_switch_ward_before_writing() {
+        let dir = TempDir::new().unwrap();
+        for ward in ["research", "sibling"] {
+            let path = dir.path().join("wards").join(ward);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("ward-conf.yaml"), "test").unwrap();
+        }
+        let fs: Arc<dyn FileSystemContext> = Arc::new(TestFs {
+            base: dir.path().to_path_buf(),
+        });
+        let tool = WardTool::new(fs.clone(), None, None, test_layout(dir.path()));
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::delegated_planner("research"));
+
+        let error = tool
+            .execute(ctx.clone(), json!({"action":"use","name":"sibling"}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("planner_ward_locked"));
+        assert_eq!(ctx.get_state("ward_id"), Some(json!("research")));
+
+        let writer = crate::tools::WriteFileTool::new(fs);
+        writer
+            .execute(
+                ctx,
+                json!({
+                    "path":".zbot/specs/locked/spec.md",
+                    "content":"# Locked to selected ward\n"
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            dir.path()
+                .join("wards/research/.zbot/specs/locked/spec.md")
+                .is_file()
+        );
+        assert!(
+            !dir.path()
+                .join("wards/sibling/.zbot/specs/locked/spec.md")
+                .exists()
+        );
     }
 
     #[tokio::test]

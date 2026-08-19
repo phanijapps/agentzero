@@ -355,16 +355,19 @@ impl<'a> AgentLoader<'a> {
         );
         identity.push_str(
             "\n## First-turn protocol\n\
-             1. ward(action=\"use\") — land in your ward directory.\n\
-             2. recall — pull this ward's procedures, facts and past episodes \
+             You are already bound to the ward named in your identity and supplied ward_snapshot. \
+             Do not call the ward tool to enter it again.\n\
+             1. recall — pull this ward's procedures, facts and past episodes \
              for the task.\n\
-             3. Plan — take the cheapest route recall supports: replay a \
+             2. Plan before execution — call update_plan with the concrete steps before any \
+             write, shell mutation, procedure execution, or sub-delegation. Take the cheapest \
+             route recall supports: replay a \
              matching promoted procedure with run_procedure; adapt a partial \
              match into a step plan; or, if nothing matches, decompose the \
              task into steps yourself, binding each step to a tool, skill, or \
              sub-delegation.\n\
-             4. Execute the plan step by step — act, observe, adjust.\n\
-             5. respond using the Handoff schema in your doctrine below.\n\
+             3. Execute the plan step by step — act, observe, adjust.\n\
+             4. respond using the Handoff schema in your doctrine below.\n\
              \n\
              If the task falls outside your Purpose / Scope, do not attempt \
              it — call `respond` with a single line: \

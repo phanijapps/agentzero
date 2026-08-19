@@ -179,6 +179,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
         let mut tool_names_by_call_id = HashMap::new();
+        let mut stopped_for_delegation = false;
         while let Some(item) = stream.next().await {
             if let Some(flag) = &stop_flag {
                 if flag.load(Ordering::Acquire) {
@@ -245,6 +246,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                         // and wait_agent would hang forever on the Rig path.
                         let actions = self.shared_context.take_actions();
                         if let Some(delegate) = actions.delegate {
+                            stopped_for_delegation = !delegate.parallel;
                             on_event(StreamEvent::ActionDelegate {
                                 timestamp: current_timestamp(),
                                 agent_id: delegate.agent_id,
@@ -394,13 +396,22 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 // are ignored until the full mapping lands.
                 _ => {}
             }
+
+            // A sequential delegation transfers control to the child. Stop
+            // polling Rig immediately so later tool calls from the same model
+            // turn cannot run before the continuation resumes the root.
+            if stopped_for_delegation {
+                break;
+            }
         }
 
-        on_event(StreamEvent::Done {
-            timestamp: current_timestamp(),
-            final_message,
-            token_count: (total_input + total_output) as usize,
-        });
+        if !stopped_for_delegation {
+            on_event(StreamEvent::Done {
+                timestamp: current_timestamp(),
+                final_message,
+                token_count: (total_input + total_output) as usize,
+            });
+        }
         Ok(())
     }
 }
@@ -1238,6 +1249,132 @@ mod tests {
                     if agent_id == "ward:x" && task == "do thing"
             )),
             "ActionDelegate must surface after the tool runs; got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sequential_ward_planner_delegation_stops_later_rig_tools_and_done() {
+        #[derive(Clone)]
+        struct WardThenMutationModel;
+
+        impl CompletionModel for WardThenMutationModel {
+            type Response = ();
+            type StreamingResponse = ();
+            type Client = ();
+
+            fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+                Self
+            }
+
+            async fn completion(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
+                unreachable!("streaming test model")
+            }
+
+            async fn stream(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+            {
+                use rig::streaming::RawStreamingToolCall;
+                let call = |id: &str, name: &str| {
+                    Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall {
+                        id: id.to_string(),
+                        internal_call_id: id.to_string(),
+                        call_id: Some(id.to_string()),
+                        name: name.to_string(),
+                        arguments: serde_json::json!({}),
+                        signature: None,
+                        additional_params: None,
+                    }))
+                };
+                Ok(StreamingCompletionResponse::stream(Box::pin(
+                    futures::stream::iter(vec![
+                        call("ward_call", "ward"),
+                        call("mutation_call", "mutation"),
+                        Ok(RawStreamingChoice::FinalResponse(())),
+                    ]),
+                )))
+            }
+        }
+
+        struct WardPlannerTool;
+        #[async_trait::async_trait]
+        impl agent_primitives::Tool for WardPlannerTool {
+            fn name(&self) -> &str {
+                "ward"
+            }
+            fn description(&self) -> &str {
+                "bind ward and start planner"
+            }
+            async fn execute(
+                &self,
+                ctx: Arc<dyn agent_primitives::ToolContext>,
+                _args: Value,
+            ) -> Result<Value, agent_primitives::error::AgentError> {
+                let mut actions = ctx.actions();
+                actions.delegate = Some(agent_primitives::event::DelegateAction {
+                    agent_id: "planner-agent".to_string(),
+                    task: "plan ward work".to_string(),
+                    context: None,
+                    wait_for_result: true,
+                    max_iterations: None,
+                    output_schema: None,
+                    skills: vec![],
+                    capability_assignment: None,
+                    planning_capability_catalog: None,
+                    complexity: None,
+                    mode: None,
+                    parallel: false,
+                    child_execution_id: None,
+                });
+                ctx.set_actions(actions);
+                Ok(serde_json::json!({
+                    "__ward_changed__": true,
+                    "ward_id": "new-ward",
+                    "planner_started": true
+                }))
+            }
+        }
+
+        let mutation_calls = Arc::new(AtomicU32::new(0));
+        let engine = RigAgentEngine::new(
+            sample_config(),
+            WardThenMutationModel,
+            vec![
+                RigToolAdapter::boxed(Arc::new(WardPlannerTool)),
+                RigToolAdapter::boxed(Arc::new(RecordingTool::new("mutation", &mutation_calls))),
+            ],
+            Arc::new(crate::tools::context::ToolContext::default()),
+        );
+
+        let mut events = Vec::new();
+        engine
+            .execute_stream("hi", &[], &mut |event| events.push(event))
+            .await
+            .expect("run");
+
+        assert_eq!(
+            mutation_calls.load(Ordering::SeqCst),
+            0,
+            "Rig must stop before later tools execute after planner delegation"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ActionDelegate { agent_id, parallel: false, .. }
+                if agent_id == "planner-agent"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::WardChanged { ward_id, .. } if ward_id == "new-ward"
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::Done { .. })),
+            "delegated root must remain resumable instead of completing"
         );
     }
 

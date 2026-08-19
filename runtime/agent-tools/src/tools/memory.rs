@@ -1962,6 +1962,7 @@ mod tests {
             async fn ingest_structured(
                 &self,
                 _agent_id: &str,
+                _ward_id: Option<String>,
                 _entities: Vec<StructuredEntity>,
                 _relationships: Vec<StructuredRelationship>,
             ) -> std::result::Result<StructuredCounts, String> {

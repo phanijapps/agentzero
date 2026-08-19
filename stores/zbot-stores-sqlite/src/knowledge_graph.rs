@@ -349,6 +349,14 @@ impl KnowledgeGraphStore for SqliteKgStore {
         .await
     }
 
+    async fn get_entity_by_normalized_name(
+        &self,
+        agent_id: &str,
+        normalized_name: &str,
+    ) -> StoreResult<Option<Entity>> {
+        self.get_entity_by_name(agent_id, normalized_name).await
+    }
+
     async fn search_entities_view(
         &self,
         agent_id: &str,

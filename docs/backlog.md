@@ -50,21 +50,32 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   multiple other high-severity advisories. Unblocked when the patched release
   is installable and passes install, audit, lint, build, unit, and E2E gates.
 
-## engram-pinned-source-before-release
-
-- **engram-memory-engine-cutover AC5:** Release/publish still needs Engram
-  pinned through the sanctioned dependency mechanism instead of mutable local
-  path dependencies. Blocked on the final source mechanism; unblocked by
-  replacing local Engram path dependencies with the accepted pin and recording
-  metadata, lockfile, revision/provenance, and dirty-state evidence.
-
 ## engram-fresh-db-manual-smoke
 
-- **engram-memory-engine-cutover AC19:** User-run fresh-DB daemon/UI or CLI
-  smoke still needs to cover chat, memory/knowledge activity, AgentZero-owned
-  sleep-cycle cleanup, reload, and Memory/Graph/Observatory tabs. Blocked on
-  manual runtime validation; unblocked by running the smoke against a fresh
-  zbot data directory.
+- **engram-memory-engine-cutover AC19:** The 2026-08-06 isolated fresh-vault
+  smoke recorded provider startup, a root-agent turn, memory write/recall,
+  on-demand consolidation, restart/session reload, and Memory/Graph/Observatory
+  route rendering. Final acceptance is blocked on exercising knowledge-graph
+  activity and an AgentZero-owned sleep-cycle cleanup, and on removing
+  system-instruction fields from persisted traces; unblocked by recording the
+  missing fresh-vault checks and landing/validating the
+  `llm-instruction-log-redaction` follow-up. The separate CLI deep-mode
+  pre-start failure remains tracked below.
+
+## fresh-cli-deep-invocation
+
+- **engram-memory-engine-cutover AC19 smoke:** Fresh-vault CLI one-shot forces
+  deep mode and receives the normalized pre-start failure, while the fast
+  WebSocket route completed a root-agent turn. Blocked on diagnosing the
+  durable Research startup path; unblocked by a targeted fix and fresh-vault
+  CLI evidence.
+
+## llm-instruction-log-redaction
+
+- **engram-memory-engine-cutover AC19 smoke:** Fresh-vault tracing exposed LLM
+  system-instruction fields at info level. Blocked on safe trace serialization;
+  unblocked by redacting instruction/prompt fields before persistence and
+  validating that observability remains useful without private configuration.
 
 ## sqlite-store-crate-split
 

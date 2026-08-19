@@ -5,7 +5,11 @@ open = [
   # Run the official A2A CLI/TCK plus the documented two-daemon pair/delegate/get/cancel/restart journey and record the output before claiming external conformance.
   { slug = "a2a-external-conformance", source = "spec/a2a-federation-discovery AC17" },
   { slug = "conversation-store-revamp-summary-store", source = "spec/conversation-store-revamp" },
-  { slug = "engram-pinned-source-before-release", source = "spec/engram-memory-engine-cutover" },
-  { slug = "engram-fresh-db-manual-smoke", source = "spec/engram-memory-engine-cutover" },
+  # Partial fresh-vault evidence is recorded, but closure needs knowledge-graph and AgentZero sleep-cycle checks plus LLM system-instruction trace redaction.
+  { slug = "engram-fresh-db-manual-smoke", source = "spec/engram-memory-engine-cutover AC19" },
+  # Fresh-vault CLI one-shot uses deep mode and currently receives the normalized pre-start failure, while the documented fast WebSocket route completes; diagnose durable Research acceptance separately.
+  { slug = "fresh-cli-deep-invocation", source = "spec/engram-memory-engine-cutover AC19 smoke" },
+  # Fresh-vault tracing exposed LLM system-instruction fields at info level; redact instruction/prompt fields from persisted traces before they can contain user-private configuration.
+  { slug = "llm-instruction-log-redaction", source = "spec/engram-memory-engine-cutover AC19 smoke" },
   { slug = "p4-react-router-830", source = "spec/p4-tech-debt" },
 ]

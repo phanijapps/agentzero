@@ -689,6 +689,14 @@ pub struct ReindexResponse {
     pub entities_created: usize,
 }
 
+fn valid_ward_directory_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 /// POST /api/graph/reindex — force re-indexing of every ward on disk.
 /// Idempotent: relationships upsert via UNIQUE(source, target, type).
 ///
@@ -698,8 +706,6 @@ pub struct ReindexResponse {
 pub async fn reindex_all_wards(
     State(state): State<AppState>,
 ) -> Result<Json<ReindexResponse>, StatusCode> {
-    use gateway_execution::ward_artifact_indexer::{index_ward_with_options, IndexOptions};
-
     let episode_store = state
         .kg_episode_store
         .clone()
@@ -709,27 +715,56 @@ pub async fn reindex_all_wards(
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let wards_dir = state.paths.wards_dir();
-    let Ok(read) = std::fs::read_dir(&wards_dir) else {
-        return Ok(Json(ReindexResponse {
+    let response =
+        reindex_ward_directories(&state.paths.wards_dir(), &episode_store, &kg_store).await;
+    Ok(Json(response))
+}
+
+async fn reindex_ward_directories(
+    wards_dir: &std::path::Path,
+    episode_store: &Arc<dyn zbot_stores_traits::KgEpisodeStore>,
+    kg_store: &Arc<dyn KnowledgeGraphStore>,
+) -> ReindexResponse {
+    use gateway_execution::ward_artifact_indexer::{index_ward_with_options, IndexOptions};
+
+    if std::fs::symlink_metadata(wards_dir)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        return ReindexResponse {
             wards_processed: 0,
             entities_created: 0,
-        }));
+        };
+    }
+    let Ok(read) = std::fs::read_dir(wards_dir) else {
+        return ReindexResponse {
+            wards_processed: 0,
+            entities_created: 0,
+        };
     };
 
     let mut total_entities = 0_usize;
     let mut wards_processed = 0_usize;
     for entry in read.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
             continue;
         }
+        let file_name = entry.file_name();
+        let Some(ward_id) = file_name.to_str().filter(|id| valid_ward_directory_id(id)) else {
+            tracing::warn!(path = %path.display(), "Skipping invalid Ward directory during graph reindex");
+            continue;
+        };
         let n = index_ward_with_options(
             &path,
+            ward_id,
             "admin-reindex",
             "root",
-            &episode_store,
-            &kg_store,
+            episode_store,
+            kg_store,
             IndexOptions {
                 force_reindex: true,
             },
@@ -739,8 +774,109 @@ pub async fn reindex_all_wards(
         wards_processed += 1;
     }
 
-    Ok(Json(ReindexResponse {
+    ReindexResponse {
         wards_processed,
         entities_created: total_entities,
-    }))
+    }
+}
+
+#[cfg(test)]
+mod reindex_scope_tests {
+    use super::{reindex_ward_directories, valid_ward_directory_id};
+    use gateway_services::VaultPaths;
+    use std::sync::Arc;
+    use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
+    use zbot_stores::KnowledgeGraphStore;
+    use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
+    use zbot_stores_traits::KgEpisodeStore;
+
+    #[test]
+    fn ward_directory_scope_requires_a_single_valid_component() {
+        assert!(valid_ward_directory_id("research-ward_1"));
+        assert!(!valid_ward_directory_id(""));
+        assert!(!valid_ward_directory_id("../other-ward"));
+        assert!(!valid_ward_directory_id("ward/other"));
+        assert!(!valid_ward_directory_id(&"a".repeat(65)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reindex_uses_directory_ward_scope_and_skips_invalid_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wards_dir = tmp.path().join("wards");
+        let valid = wards_dir.join("research-ward");
+        let invalid = wards_dir.join("invalid.ward");
+        std::fs::create_dir_all(&valid).expect("valid ward");
+        std::fs::create_dir_all(&invalid).expect("invalid ward");
+        std::fs::write(
+            valid.join("people.json"),
+            r#"[{"name":"Ada Lovelace","role":"Mathematician"}]"#,
+        )
+        .expect("valid artifact");
+        std::fs::write(
+            invalid.join("people.json"),
+            r#"[{"name":"Must Not Index"}]"#,
+        )
+        .expect("invalid artifact");
+        let outside = tmp.path().join("outside-ward");
+        std::fs::create_dir_all(&outside).expect("outside Ward directory");
+        std::fs::write(
+            outside.join("people.json"),
+            r#"[{"name":"Must Not Follow Ward Symlink"}]"#,
+        )
+        .expect("outside Ward artifact");
+        std::os::unix::fs::symlink(&outside, wards_dir.join("symlink-ward")).expect("symlink ward");
+        let nested_outside = tmp.path().join("outside-nested");
+        std::fs::create_dir_all(&nested_outside).expect("outside nested directory");
+        std::fs::write(
+            nested_outside.join("people.json"),
+            r#"[{"name":"Must Not Follow Nested Symlink"}]"#,
+        )
+        .expect("outside nested artifact");
+        std::os::unix::fs::symlink(&nested_outside, valid.join("linked-outside"))
+            .expect("nested symlink");
+
+        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
+        let episode_repo = Arc::new(KgEpisodeRepository::new(db));
+        let episode_store: Arc<dyn KgEpisodeStore> =
+            Arc::new(GatewayKgEpisodeStore::new(episode_repo));
+        let engram = Arc::new(
+            EngramKnowledgeGraphStore::open(AdapterConfig::engram_for_data_root(
+                tmp.path(),
+                "engram-reindex-test.db",
+            ))
+            .expect("Engram graph"),
+        );
+        let kg_store: Arc<dyn KnowledgeGraphStore> = engram.clone();
+
+        let response = reindex_ward_directories(&wards_dir, &episode_store, &kg_store).await;
+
+        assert_eq!(response.wards_processed, 1);
+        assert!(response.entities_created >= 2);
+        let ada = engram
+            .get_entity_by_name("root", "Ada Lovelace")
+            .await
+            .expect("query Ada")
+            .expect("Ada indexed");
+        assert_eq!(
+            ada.properties.get("ward_id"),
+            Some(&serde_json::json!("research-ward"))
+        );
+        assert!(engram
+            .get_entity_by_name("root", "Must Not Index")
+            .await
+            .expect("query invalid artifact")
+            .is_none());
+        assert!(engram
+            .get_entity_by_name("root", "Must Not Follow Ward Symlink")
+            .await
+            .expect("query Ward symlink artifact")
+            .is_none());
+        assert!(engram
+            .get_entity_by_name("root", "Must Not Follow Nested Symlink")
+            .await
+            .expect("query nested symlink artifact")
+            .is_none());
+    }
 }

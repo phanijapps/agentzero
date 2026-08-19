@@ -90,6 +90,7 @@ test-stubs = []
 [dev-dependencies]
 tempfile = "3"
 zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
+zbot-engram-adapter = { path = "../../stores/zbot-engram-adapter" }
 tokio-test = "0.4"
 filetime = "0.2"
 

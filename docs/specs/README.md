@@ -4,6 +4,8 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Distillation Graph Governance](distillation-graph-governance/spec.md) | Shipped | Filters session-distillation graph candidates through z-Bot's built-in entity and relationship governance without changing durable fact persistence. |
+| [Engram Local Graph Repair](engram-local-graph-repair/spec.md) | Shipped | Provides a dry-run-first, backup-protected utility for removing unsupported relationships and relationship-only unknown stubs from an explicit local graph database. |
 | [Planner Template Handoff](planner-template-handoff/spec.md) | Shipped | Carries the selected normalized ward template into automatic graph planning and persists applicable declared planning roles. |
 | [Supply-Chain Policy Refresh](supply-chain-policy-refresh/spec.md) | Shipped | Refreshes the compatible Rust dependency graph and stale advisory policy while closing merged A2A lifecycle metadata. |
 | [A2A Federation and Discovery](a2a-federation-discovery/spec.md) | Shipped | Lets explicitly paired LAN/VPN zBots discover candidates and exchange remote-safe durable work through the A2A 1.0 HTTP+JSON protocol. |

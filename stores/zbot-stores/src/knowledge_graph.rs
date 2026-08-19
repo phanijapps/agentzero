@@ -108,6 +108,18 @@ pub trait KnowledgeGraphStore: Send + Sync {
         Ok(matches.into_iter().find(|e| e.name == name))
     }
 
+    /// Exact entity lookup after callers normalize a human or model-produced
+    /// name. Backends with case-insensitive indexes should override this; the
+    /// default preserves the legacy exact-name behavior without turning an
+    /// identity lookup into an unbounded ranked search.
+    async fn get_entity_by_normalized_name(
+        &self,
+        agent_id: &str,
+        normalized_name: &str,
+    ) -> StoreResult<Option<Entity>> {
+        self.get_entity_by_name(agent_id, normalized_name).await
+    }
+
     /// Search entities through a specific [`GraphView`] lens. Backends
     /// implement at least `Semantic` (mention_count DESC); other views
     /// may degrade to `Semantic` with a tracing warn. Default routes

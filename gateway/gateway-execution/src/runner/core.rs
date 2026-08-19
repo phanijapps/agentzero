@@ -2179,9 +2179,10 @@ pub(super) async fn run_ward_artifact_indexer(
     if !ward_path.exists() {
         return;
     }
-    let n =
-        crate::ward_artifact_indexer::index_ward(&ward_path, session_id, agent_id, ep_store, kg)
-            .await;
+    let n = crate::ward_artifact_indexer::index_ward(
+        &ward_path, wid, session_id, agent_id, ep_store, kg,
+    )
+    .await;
     tracing::info!(
         ward = %wid,
         indexed_entities = n,

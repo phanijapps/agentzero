@@ -126,11 +126,11 @@ Protected public contract matrix:
 - [x] Store-trait parity fixtures can run the same accepted calls against the
   current SQLite provider and the Engram provider for every feature the adapter
   reports as supported.
-- [ ] Engram dependency source is pinned before release/publish. (deferred: engram-pinned-source-before-release)
-  The final pin must use the sanctioned dependency mechanism and include exact
-  source revision/provenance, dirty-state policy, `cargo metadata` evidence,
-  lockfile evidence, and dependency scanner evidence; mutable local path
-  dependencies remain a local implementation waiver only.
+- [x] Engram tracks the upstream `main` branch through the sanctioned Git
+  dependency declaration. `Cargo.lock` records the exact resolved revision for
+  each build; release/publish evidence includes `cargo metadata --locked`, the
+  lockfile, and the dependency scanner. Mutable local path dependencies remain
+  a local implementation waiver only.
 - [x] Memory fact read/write/list/recall behavior is backed by Engram memory
   records or an explicitly documented adapter sidecar while preserving
   `MemoryFactStore` semantics.
@@ -180,9 +180,14 @@ Protected public contract matrix:
   The only allowed SQLite remnants are conversation/execution/outbox concerns,
   migration readers, and tests.
 - [ ] Fresh DB manual smoke passes. (deferred: engram-fresh-db-manual-smoke)
-  The run must start the daemon/UI or CLI, invoke an agent, record
-  memory/knowledge activity, run sleep-cycle cleanup owned by AgentZero, reload
-  the session, and show Memory, Graph, and Observatory tabs.
+  On 2026-08-06, an isolated fresh vault started with the Engram provider,
+  completed a real root-agent turn, wrote and recalled a memory fact, completed
+  an on-demand consolidation cycle, preserved the session across restart, and
+  rendered the Memory, Graph, and Observatory routes through the Vite UI. The
+  partial functional evidence is recorded, but acceptance remains open until
+  knowledge-graph activity and an AgentZero-owned sleep-cycle cleanup are
+  exercised and system-instruction fields are redacted from persisted traces;
+  no credentials, database paths, or smoke artifacts were retained.
 
 ## Assumptions
 

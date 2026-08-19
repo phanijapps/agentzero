@@ -29,7 +29,7 @@ row contents, embeddings, connector data, or secrets.
 | `Cargo.lock` | Recorded | Lockfile contains the Engram crate set, resolved Git revision, and adapter package entry. |
 | Dependency scanner | Recorded | Repository search confirms Engram implementation imports stay behind `zbot-engram-adapter`; gateway imports only the adapter. |
 | Engram source revision | Recorded | `https://github.com/phanijapps/engram` `main` revision is recorded in `Cargo.lock`. |
-| Dirty-state policy | Recorded | Untracked local tool-cache state such as `.serena/` is not a release input; release/publish still requires a pinned source decision. |
+| Dirty-state policy | Recorded | Untracked local tool-cache state such as `.serena/` is not a release input. Engram intentionally tracks upstream `main`; the committed lockfile supplies the exact resolved revision for each build/release. |
 
 ## Provider-Selection Gate
 

@@ -27,6 +27,22 @@ use crate::ingest::{
     IngestionQueue,
 };
 
+/// Property names whose values select graph scope or governance behavior.
+/// These values must come from trusted runtime/configuration context, never
+/// from model-produced graph candidates or caller-supplied structured data.
+pub(crate) const GRAPH_CONTROL_PROPERTY_KEYS: [&str; 10] = [
+    "ward_id",
+    "ontology_id",
+    "taxonomy_id",
+    "epistemic_class",
+    "parent_cluster_id",
+    "layer",
+    "confidence",
+    "governance_ontology_ids",
+    "governance_taxonomy_scheme_ids",
+    "governance_record_kind",
+];
+
 /// Adapter that implements [`IngestionAccess`] for both text and structured
 /// ingestion paths.
 pub struct IngestionAdapter {
@@ -111,12 +127,13 @@ impl IngestionAccess for IngestionAdapter {
     async fn ingest_structured(
         &self,
         agent_id: &str,
+        ward_id: Option<String>,
         entities: Vec<StructuredEntity>,
         relationships: Vec<StructuredRelationship>,
     ) -> std::result::Result<StructuredCounts, String> {
         let entity_count = entities.len();
         let relationship_count = relationships.len();
-        let knowledge = build_knowledge(agent_id, entities, relationships);
+        let knowledge = build_knowledge(agent_id, ward_id.as_deref(), entities, relationships);
         self.kg_store
             .store_knowledge(agent_id, knowledge)
             .await
@@ -134,6 +151,7 @@ impl IngestionAccess for IngestionAdapter {
 /// `KnowledgeGraphStore::store_knowledge`.
 fn build_knowledge(
     agent_id: &str,
+    ward_id: Option<&str>,
     entities: Vec<StructuredEntity>,
     relationships: Vec<StructuredRelationship>,
 ) -> zbot_stores::ExtractedKnowledge {
@@ -142,10 +160,7 @@ fn build_knowledge(
     let kg_entities: Vec<Entity> = entities
         .into_iter()
         .map(|e| {
-            let mut props: HashMap<String, serde_json::Value> = HashMap::new();
-            for (k, v) in e.properties {
-                props.insert(k, v);
-            }
+            let props = trusted_graph_properties(e.properties, ward_id);
             Entity {
                 id: e.id,
                 agent_id: agent_id.to_string(),
@@ -163,10 +178,7 @@ fn build_knowledge(
     let kg_relationships: Vec<Relationship> = relationships
         .into_iter()
         .map(|r| {
-            let mut props: HashMap<String, serde_json::Value> = HashMap::new();
-            for (k, v) in r.properties {
-                props.insert(k, v);
-            }
+            let props = trusted_graph_properties(r.properties, ward_id);
             Relationship {
                 id: format!("rel-{}", uuid::Uuid::new_v4()),
                 agent_id: agent_id.to_string(),
@@ -187,11 +199,26 @@ fn build_knowledge(
     }
 }
 
+fn trusted_graph_properties(
+    properties: serde_json::Map<String, serde_json::Value>,
+    ward_id: Option<&str>,
+) -> HashMap<String, serde_json::Value> {
+    let mut trusted: HashMap<String, serde_json::Value> = properties
+        .into_iter()
+        .filter(|(key, _)| !GRAPH_CONTROL_PROPERTY_KEYS.contains(&key.as_str()))
+        .collect();
+    if let Some(ward_id) = ward_id.map(str::trim).filter(|ward| !ward.is_empty()) {
+        trusted.insert("ward_id".to_string(), serde_json::json!(ward_id));
+    }
+    trusted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ingest::extractor::Extractor;
     use gateway_services::VaultPaths;
+    use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
     use zbot_stores_sqlite::kg::storage::GraphStorage;
     use zbot_stores_sqlite::{
         GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase, SqliteKgStore,
@@ -256,22 +283,31 @@ mod tests {
             id: "alice".into(),
             name: "Alice".into(),
             entity_type: "person".into(),
-            properties: serde_json::json!({"role": "author"})
-                .as_object()
-                .unwrap()
-                .clone(),
+            properties: serde_json::json!({
+                "role": "author",
+                "ward_id": "attacker-ward",
+                "ontology_id": "attacker-ontology",
+                "governance_ontology_ids": ["attacker-ontology"]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
         };
         let rel = StructuredRelationship {
             rel_type: "uses".into(),
             from: "alice".into(),
             to: "rust".into(),
-            properties: serde_json::json!({"since": "2026"})
-                .as_object()
-                .unwrap()
-                .clone(),
+            properties: serde_json::json!({
+                "since": "2026",
+                "ward_id": "attacker-ward",
+                "governance_record_kind": "attacker"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
         };
 
-        let knowledge = build_knowledge("agent-x", vec![entity], vec![rel]);
+        let knowledge = build_knowledge("agent-x", Some("trusted-ward"), vec![entity], vec![rel]);
 
         assert_eq!(knowledge.entities.len(), 1);
         let e = &knowledge.entities[0];
@@ -280,11 +316,22 @@ mod tests {
         assert_eq!(e.agent_id, "agent-x");
         assert_eq!(e.mention_count, 1);
         assert_eq!(e.properties.get("role"), Some(&serde_json::json!("author")));
+        assert_eq!(
+            e.properties.get("ward_id"),
+            Some(&serde_json::json!("trusted-ward"))
+        );
+        assert!(!e.properties.contains_key("ontology_id"));
+        assert!(!e.properties.contains_key("governance_ontology_ids"));
 
         assert_eq!(knowledge.relationships.len(), 1);
         let r = &knowledge.relationships[0];
         assert!(r.id.starts_with("rel-"));
         assert_eq!(r.agent_id, "agent-x");
+        assert_eq!(
+            r.properties.get("ward_id"),
+            Some(&serde_json::json!("trusted-ward"))
+        );
+        assert!(!r.properties.contains_key("governance_record_kind"));
         assert_eq!(r.source_entity_id, "alice");
         assert_eq!(r.target_entity_id, "rust");
         assert_eq!(r.mention_count, 1);
@@ -293,7 +340,7 @@ mod tests {
 
     #[test]
     fn build_knowledge_empty_inputs_produce_empty_outputs() {
-        let knowledge = build_knowledge("agent-x", vec![], vec![]);
+        let knowledge = build_knowledge("agent-x", None, vec![], vec![]);
         assert!(knowledge.entities.is_empty());
         assert!(knowledge.relationships.is_empty());
     }
@@ -384,7 +431,14 @@ mod tests {
                 id: "e1".into(),
                 name: "EntityOne".into(),
                 entity_type: "concept".into(),
-                properties: serde_json::Map::new(),
+                properties: serde_json::json!({
+                    "ward_id": "attacker-ward",
+                    "governance_record_kind": "attacker",
+                    "display_name": "Entity One"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
             },
             StructuredEntity {
                 id: "e2".into(),
@@ -394,7 +448,7 @@ mod tests {
             },
         ];
         let relationships = vec![StructuredRelationship {
-            rel_type: "relates-to".into(),
+            rel_type: "related_to".into(),
             from: "e1".into(),
             to: "e2".into(),
             properties: serde_json::Map::new(),
@@ -402,7 +456,12 @@ mod tests {
 
         let counts = h
             .adapter
-            .ingest_structured("agent-x", entities, relationships)
+            .ingest_structured(
+                "agent-x",
+                Some("ward-1".to_string()),
+                entities,
+                relationships,
+            )
             .await
             .expect("ingest_structured");
 
@@ -411,7 +470,16 @@ mod tests {
 
         // The entities should actually have landed in the graph.
         let stored = h.graph.get_entity_by_name("agent-x", "EntityOne").unwrap();
-        assert!(stored.is_some(), "EntityOne should be retrievable");
+        let stored = stored.expect("EntityOne should be retrievable");
+        assert_eq!(
+            stored.properties.get("ward_id"),
+            Some(&serde_json::json!("ward-1"))
+        );
+        assert!(!stored.properties.contains_key("governance_record_kind"));
+        assert_eq!(
+            stored.properties.get("display_name"),
+            Some(&serde_json::json!("Entity One"))
+        );
     }
 
     #[tokio::test]
@@ -419,10 +487,73 @@ mod tests {
         let h = setup();
         let counts = h
             .adapter
-            .ingest_structured("agent-x", vec![], vec![])
+            .ingest_structured("agent-x", None, vec![], vec![])
             .await
             .expect("ingest_structured");
         assert_eq!(counts.entities_upserted, 0);
         assert_eq!(counts.relationships_upserted, 0);
+    }
+
+    #[tokio::test]
+    async fn ingest_structured_rejects_custom_predicate_without_partial_engram_writes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
+        let episode_repo = Arc::new(KgEpisodeRepository::new(db));
+        let episode_store: Arc<dyn KgEpisodeStore> =
+            Arc::new(GatewayKgEpisodeStore::new(episode_repo));
+        let engram = Arc::new(
+            EngramKnowledgeGraphStore::open(AdapterConfig::engram_for_data_root(
+                tmp.path(),
+                "engram-ingest-test.db",
+            ))
+            .expect("Engram graph"),
+        );
+        let kg_store: Arc<dyn KnowledgeGraphStore> = engram.clone();
+        let queue = Arc::new(IngestionQueue::start(
+            0,
+            episode_store.clone(),
+            kg_store.clone(),
+            Arc::new(NoopExtractor),
+        ));
+        let adapter = IngestionAdapter::new(queue, episode_store, kg_store);
+
+        let error = adapter
+            .ingest_structured(
+                "agent-x",
+                Some("trusted-ward".to_string()),
+                vec![
+                    StructuredEntity {
+                        id: "person:alice".to_string(),
+                        name: "Alice".to_string(),
+                        entity_type: "person".to_string(),
+                        properties: serde_json::Map::new(),
+                    },
+                    StructuredEntity {
+                        id: "project:zbot".to_string(),
+                        name: "ZBot".to_string(),
+                        entity_type: "project".to_string(),
+                        properties: serde_json::Map::new(),
+                    },
+                ],
+                vec![StructuredRelationship {
+                    rel_type: "unsupported_predicate".to_string(),
+                    from: "person:alice".to_string(),
+                    to: "project:zbot".to_string(),
+                    properties: serde_json::Map::new(),
+                }],
+            )
+            .await
+            .expect_err("Engram must reject a custom predicate");
+
+        assert!(error.contains("built-in ontology predicate"));
+        assert_eq!(engram.count_all_entities().await.expect("entity count"), 0);
+        assert_eq!(
+            engram
+                .count_all_relationships()
+                .await
+                .expect("relationship count"),
+            0
+        );
     }
 }

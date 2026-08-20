@@ -139,10 +139,29 @@ impl WardTool {
         files
     }
 
-    /// Read AGENTS.md content from a ward directory, if it exists.
+    /// Read the ward's AGENTS.md doctrine, bounded to `AGENTS_MD_CAP` bytes.
+    /// Oversized doctrine truncates with a visible marker instead of loading
+    /// unbounded bytes into the model context. Doctrine that is not valid
+    /// UTF-8 within the cap is dropped (None), matching the previous
+    /// `read_to_string` failure semantics — never a misleading marker.
     fn read_agents_md(&self, ward_dir: &std::path::Path) -> Option<String> {
-        let agents_md_path = ward_dir.join(WARD_AGENTS_MD);
-        std::fs::read_to_string(&agents_md_path).ok()
+        const AGENTS_MD_CAP: usize = 32 * 1024;
+        use std::io::Read;
+        let file = std::fs::File::open(ward_dir.join(WARD_AGENTS_MD)).ok()?;
+        let mut bytes = Vec::with_capacity(AGENTS_MD_CAP.min(8 * 1024));
+        file.take(AGENTS_MD_CAP as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() > AGENTS_MD_CAP {
+            bytes.truncate(AGENTS_MD_CAP);
+            let mut doctrine = String::from_utf8(bytes).ok()?;
+            doctrine.push_str(&format!(
+                "\n\n[AGENTS.md truncated at {} KiB]",
+                AGENTS_MD_CAP / 1024
+            ));
+            return Some(doctrine);
+        }
+        String::from_utf8(bytes).ok()
     }
 
     fn register_ward(wards_root: &std::path::Path, ward_name: &str) -> std::io::Result<()> {
@@ -193,7 +212,7 @@ impl WardTool {
 
         let query = format!("ward {} context patterns corrections", ward_name);
         match store
-            .recall_facts_prioritized(&agent_id, &query, 5, None)
+            .recall_facts_prioritized(&agent_id, &query, 3, None)
             .await
         {
             Ok(result) => {
@@ -1147,15 +1166,25 @@ impl Tool for WardTool {
                 // Best-effort recall of ward-scoped knowledge
                 let ward_knowledge = self.recall_ward_facts(name, &ctx).await;
 
-                // Return result with __ward_changed__ marker for the executor
+                // Return result with __ward_changed__ marker for the executor.
+                // Slim by contract (spec ward-slim AC1): only model-actionable
+                // fields. The full template packet reaches the model through
+                // executor state → next-turn system instruction; digests and
+                // the layout projection are lint machinery, not model input.
                 let mut result = json!({
                     "__ward_changed__": true,
                     "ward_id": name,
                     "action": if created { "created" } else { "switched" },
+                    "ward_status": {
+                        "status": layout_state.packet.get("status").cloned().unwrap_or(json!("unknown")),
+                        // null when the packet declares no archetype
+                        // (user-created/legacy wards, unavailable template) —
+                        // never a fabricated concrete archetype.
+                        "archetype": layout_state.packet.get("archetype").cloned().unwrap_or(Value::Null),
+                    },
                     "files": files,
                     "file_count": files.len(),
                     "agents_md": agents_md,
-                    "ward_template": layout_state.packet,
                 });
 
                 if let Some(knowledge) = ward_knowledge {
@@ -1163,20 +1192,12 @@ impl Tool for WardTool {
                 }
 
                 if planner_task.is_some() {
-                    result["planner_started"] = json!(true);
+                    result["planner"] = json!("started");
                 } else if planner_gate_pending && !planner_template_ready {
-                    result["planner_started"] = json!(false);
-                    result["planner_error"] = json!({
-                        "code":"planner_template_unavailable",
-                        "message":"Planning remains gated until the selected Ward template is available."
-                    });
+                    // Template-unavailable stays fail-closed (#249): the gate
+                    // keeps awaiting the ward and the next ward(use) retries.
+                    result["planner"] = json!("pending-template");
                 }
-
-                // Nudge the agent to recall ward-specific knowledge
-                result["recall_nudge"] = json!(format!(
-                    "[Recall] You entered ward '{}'. Use the memory tool to recall ward-specific knowledge before proceeding.",
-                    name
-                ));
 
                 Ok(result)
             }
@@ -1852,7 +1873,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(created["ward_template"]["archetype"], "coding");
+        assert_eq!(created["ward_status"]["archetype"], "coding");
     }
 
     #[tokio::test]
@@ -1876,7 +1897,7 @@ mod tests {
             .await
             .expect("ward creation succeeds");
 
-        assert_eq!(result["planner_started"], true);
+        assert_eq!(result["planner"], "started");
         let action = ctx.actions().delegate.expect("planner action is emitted");
         assert_eq!(action.agent_id, "planner-agent");
         assert!(action.wait_for_result);
@@ -1895,7 +1916,207 @@ mod tests {
             )
             .await
             .expect("re-entering the ward succeeds");
-        assert!(second.get("planner_started").is_none());
+        assert!(second.get("planner").is_none());
+    }
+
+    #[tokio::test]
+    async fn ward_entry_result_is_slim() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+
+        let result = tool
+            .execute(ctx, json!({"action":"create","name":"slim-check"}))
+            .await
+            .expect("ward creation succeeds");
+
+        // Exact key set — nothing the model cannot act on
+        let mut keys: Vec<&str> = result
+            .as_object()
+            .expect("result is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut expected = vec![
+            "__ward_changed__",
+            "ward_id",
+            "action",
+            "ward_status",
+            "files",
+            "file_count",
+            "agents_md",
+            "planner",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected);
+        assert_eq!(result["ward_status"]["status"], "available");
+        let rendered = result.to_string();
+        assert!(!rendered.contains("projection"), "no layout projection");
+        assert!(!rendered.contains("digest"), "no digests");
+        assert!(!rendered.contains("recall_nudge"));
+        assert!(!rendered.contains("planner_started"));
+        assert!(!rendered.contains("planner_error"));
+    }
+
+    /// Records the requested recall limit and returns a canned envelope.
+    struct RecordingFactStore {
+        requested_limit: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl RecordingFactStore {
+        fn envelope(limit: usize) -> Value {
+            let results: Vec<Value> = (0..limit)
+                .map(|i| json!({"content": format!("fact {i}"), "category": "correction"}))
+                .collect();
+            json!({
+                "query": "ward",
+                "results": results,
+                "count": limit,
+                "source": "memory_db",
+                "prioritized": true,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryFactStore for RecordingFactStore {
+        async fn save_fact(
+            &self,
+            _agent_id: &str,
+            _category: &str,
+            _key: &str,
+            _content: &str,
+            _confidence: f64,
+            _session_id: Option<&str>,
+            _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> std::result::Result<Value, String> {
+            Ok(json!({"saved": true}))
+        }
+
+        async fn recall_facts(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            limit: usize,
+        ) -> std::result::Result<Value, String> {
+            Ok(Self::envelope(limit))
+        }
+
+        async fn recall_facts_prioritized(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            limit: usize,
+            _as_of: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> std::result::Result<Value, String> {
+            self.requested_limit.lock().unwrap().push(limit);
+            Ok(Self::envelope(limit))
+        }
+    }
+
+    #[tokio::test]
+    async fn ward_entry_recall_is_trimmed_and_present() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(RecordingFactStore {
+            requested_limit: std::sync::Mutex::new(Vec::new()),
+        });
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            Some(store.clone()),
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+        ctx.set_state("app:agent_id".to_string(), json!("root"));
+
+        let result = tool
+            .execute(ctx, json!({"action":"create","name":"knowing"}))
+            .await
+            .expect("ward creation succeeds");
+
+        // The tool must request exactly 3 facts (spec AC3)
+        assert_eq!(*store.requested_limit.lock().unwrap(), vec![3]);
+
+        let knowledge = result["ward_knowledge"]
+            .as_object()
+            .expect("knowledge present");
+        assert_eq!(
+            knowledge["count"], 3,
+            "count reports the trimmed result count"
+        );
+        assert_eq!(
+            knowledge["results"].as_array().map(Vec::len),
+            Some(3),
+            "at most 3 facts ride the entry payload"
+        );
+        // Full key set = slim schema + ward_knowledge
+        let mut keys: Vec<&str> = result
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut expected = vec![
+            "__ward_changed__",
+            "ward_id",
+            "action",
+            "ward_status",
+            "files",
+            "file_count",
+            "agents_md",
+            "planner",
+            "ward_knowledge",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected);
+    }
+
+    #[tokio::test]
+    async fn agents_md_is_bounded() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("verbose");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        // ~64 KiB of doctrine — double the cap
+        let huge = "# Verbose Ward\n\n".to_string() + &"doctrine line\n".repeat(4_500);
+        std::fs::write(ward.join(WARD_AGENTS_MD), &huge).unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::active_root("verbose"));
+
+        let result = tool
+            .execute(ctx, json!({"action":"use","name":"verbose"}))
+            .await
+            .expect("ward entry succeeds");
+
+        let agents_md = result["agents_md"].as_str().expect("agents_md present");
+        assert!(
+            agents_md.len() <= 32 * 1024 + 64,
+            "agents_md must be bounded, got {} bytes",
+            agents_md.len()
+        );
+        assert!(
+            agents_md.contains("truncated at 32 KiB"),
+            "oversized doctrine must carry a truncation marker"
+        );
+        assert!(agents_md.starts_with("# Verbose Ward"));
     }
 
     #[tokio::test]
@@ -1917,11 +2138,7 @@ mod tests {
             .execute(ctx.clone(), json!({"action":"use","name":"research"}))
             .await
             .unwrap();
-        assert_eq!(unavailable["planner_started"], false);
-        assert_eq!(
-            unavailable["planner_error"]["code"],
-            "planner_template_unavailable"
-        );
+        assert_eq!(unavailable["planner"], "pending-template");
         assert!(planning_gate_awaits_ward(ctx.as_ref()));
         assert!(ctx.actions().delegate.is_none());
 
@@ -1930,7 +2147,7 @@ mod tests {
             .execute(ctx.clone(), json!({"action":"use","name":"research"}))
             .await
             .unwrap();
-        assert_eq!(retry["planner_started"], true);
+        assert_eq!(retry["planner"], "started");
         assert!(!planning_gate_awaits_ward(ctx.as_ref()));
         assert_eq!(
             ctx.actions()

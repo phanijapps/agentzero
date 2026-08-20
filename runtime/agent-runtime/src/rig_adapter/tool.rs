@@ -151,11 +151,7 @@ impl RigToolAdapter {
                 inner.name(),
                 &args_value,
             ) {
-                return Ok(json!({
-                    "status": "redirect",
-                    "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call other tools yet."
-                })
-                .to_string());
+                return Ok(agent_tools::guards::cold_graph_redirect().to_string());
             }
 
             let result = inner
@@ -363,6 +359,9 @@ mod tests {
 
         assert!(result.contains("redirect"));
         assert!(result.contains("planner-agent"));
+        // Canonical shared message (guards::cold_graph_redirect) — pins the
+        // exact text so this site can never silently drift from the executor's.
+        assert!(result.contains("do not call MCP tools or other tools yet."));
         assert!(seen.lock().unwrap().is_empty());
     }
 

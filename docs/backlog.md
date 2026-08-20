@@ -30,6 +30,29 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
 
 ---
 
+## multimodal-provider-file-dialects
+
+- **Multimodal Analyze URL Fetch AC2:** Give `multimodal_analyze` real
+  document/file analysis by encoding per-provider file dialects (OpenAI
+  `input_file`, GLM `file_url`) behind an encoder layer. Blocked because the
+  OpenAI-compatible chat/completions surface has no file content part — the
+  current shape (`{"type":"file","file":{"url":…}}`) is rejected by every
+  provider (Ollama: 400 "invalid message format"), so file inputs fast-fail
+  with shell-extraction guidance instead. Unblocked by a provider-dialect
+  encoder selected from the multimodal config, with captured-request tests
+  per dialect.
+
+## main-path-multimodal-dialect
+
+- **Multimodal Analyze URL Fetch (deferred):** Align the main LLM path's
+  multimodal serialization with the OpenAI wire dialect — `ChatMessage`
+  currently serializes image parts as `{"type":"image","source":…}` instead
+  of `{"type":"image_url","image_url":…}`. Latent: no caller flows multimodal
+  parts through the main LLM call today (vision goes through
+  `multimodal_analyze`), but any future native-vision agent message would be
+  rejected by providers. Unblocked by an encoder pass over message content
+  before `build_request_body`, with serialization tests pinning the dialect.
+
 ## a2a-external-conformance
 
 - **A2A Federation and Discovery AC17:** Run the official A2A CLI/TCK and a

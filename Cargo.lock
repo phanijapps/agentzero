@@ -2737,6 +2737,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zbot-conversation",
+ "zbot-engram-adapter",
  "zbot-runtime-sqlite",
  "zbot-stores",
  "zbot-stores-domain",

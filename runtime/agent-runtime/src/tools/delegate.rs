@@ -8,6 +8,7 @@
 //! 3. Parent receives a callback when subagent completes
 
 use agent_primitives::{Tool, ToolContext};
+use agent_tools::guards::planning_gate_awaits_ward;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -246,6 +247,13 @@ impl Tool for DelegateTool {
                 "Cannot delegate to yourself. Use a different agent or handle the task directly."
                     .to_string(),
             ));
+        }
+
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request is awaiting ward(create/use). Do not delegate to a worker or planner manually; entering the ward will automatically start planner-agent."
+            }));
         }
 
         // Guard: Only one sequential delegation at a time per session.
@@ -519,6 +527,33 @@ mod tests {
             .await;
         let err = res.expect_err("self-delegation must fail");
         assert!(format!("{err}").contains("Cannot delegate to yourself"));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_direct_worker_delegation() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("root");
+        ctx.set_state(
+            "app:planning_gate".to_string(),
+            json!({"task": "Plan the research request", "phase": "awaiting_ward"}),
+        );
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({ "agent_id": "builder-agent", "task": "skip planning" }),
+            )
+            .await
+            .expect("planning gate returns a redirect");
+
+        assert_eq!(
+            result.get("status").and_then(Value::as_str),
+            Some("redirect")
+        );
+        assert!(
+            ctx.actions().delegate.is_none(),
+            "a cold graph gate must not emit a worker delegation"
+        );
     }
 
     #[tokio::test]

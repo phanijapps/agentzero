@@ -143,6 +143,8 @@ docs/*
 !docs/architecture/
 docs/architecture/*
 !docs/architecture/security.md
+!docs/architecture/engram-code-graph-indexing.md
+!docs/architecture/engram-graph-noise-audit.md
 !docs/adr/
 !docs/adr/**
 !docs/product/

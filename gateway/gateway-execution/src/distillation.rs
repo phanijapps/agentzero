@@ -590,13 +590,7 @@ impl SessionDistiller {
                 }
             }
 
-            let upsert_res = match self.memory_store.as_ref() {
-                Some(store) => match serde_json::to_value(&fact) {
-                    Ok(v) => store.upsert_typed_fact(v, fact.embedding.clone()).await,
-                    Err(e) => Err(format!("encode fact: {e}")),
-                },
-                None => Err("no memory store wired".to_string()),
-            };
+            let upsert_res = upsert_distilled_fact(self.memory_store.as_deref(), &fact).await;
             if let Err(e) = upsert_res {
                 tracing::warn!(
                     key = %ef.key,
@@ -613,99 +607,25 @@ impl SessionDistiller {
         // Phase E6c: trait-routed. Block is a no-op when kg_store
         // isn't wired (defensive — production composition always
         // wires it).
-        let mut kg_relationships_stored = 0_i32;
-        let mut kg_relationships_dropped = 0_i32;
-        if self.kg_store.is_some() {
-            // Build entity map for relationship resolution
-            let mut entity_map: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-
-            for ee in &response.entities {
-                // Check if entity already exists (dedup by name).
-                let existing_id = self.find_entity_by_name(agent_id, &ee.name).await;
-                match existing_id {
-                    Some(id) => {
-                        // Entity already exists — bump mention count and reuse ID
-                        if let Err(e) = self.bump_entity_mention(&id).await {
-                            tracing::warn!(entity = %ee.name, error = %e, "Failed to bump entity mention");
-                        }
-                        entity_map.insert(ee.name.clone(), id);
-                    }
-                    None => {
-                        // Entity not found — create new
-                        let mut entity = Entity::new(
-                            agent_id.to_string(),
-                            EntityType::from_str(&ee.entity_type),
-                            ee.name.clone(),
-                        );
-                        entity.properties = ee.properties.clone();
-                        match self.store_knowledge_one_entity(agent_id, entity).await {
-                            Ok(id) => {
-                                entity_map.insert(ee.name.clone(), id);
-                            }
-                            Err(e) => {
-                                tracing::warn!(entity = %ee.name, error = %e, "Failed to store entity");
-                            }
-                        }
-                    }
-                }
+        let graph_projection = match self.kg_store.as_deref() {
+            Some(store) => {
+                project_distilled_graph(
+                    store,
+                    agent_id,
+                    &response.entities,
+                    &response.relationships,
+                )
+                .await
             }
-
-            // Canonicalize relationships before storage: fix common direction
-            // errors from the LLM (passive voice inversions, agent/ward confusion).
-            // See `canonicalize_relationship` for the rules.
-            let canonicalized: Vec<_> = response
-                .relationships
-                .iter()
-                .filter_map(|er| canonicalize_relationship(er, &response.entities))
-                .collect();
-
-            for er in &canonicalized {
-                // Resolve both endpoints to real entity IDs (creating stubs
-                // if the LLM only named them in the relationships block).
-                let source_id = self
-                    .resolve_relationship_endpoint(agent_id, &er.source, &mut entity_map)
-                    .await;
-                let target_id = self
-                    .resolve_relationship_endpoint(agent_id, &er.target, &mut entity_map)
-                    .await;
-                let (Some(source_id), Some(target_id)) = (source_id, target_id) else {
-                    kg_relationships_dropped += 1;
-                    tracing::warn!(
-                        source = %er.source,
-                        target = %er.target,
-                        kg_relationship_dropped = true,
-                        "Dropped relationship because one or both endpoints were not persisted"
-                    );
-                    continue;
-                };
-
-                let relationship = Relationship::new(
-                    agent_id.to_string(),
-                    source_id,
-                    target_id,
-                    RelationshipType::from_str(&er.relationship_type),
-                );
-
-                if let Err(e) = self
-                    .store_knowledge_one_relationship(agent_id, relationship)
-                    .await
-                {
-                    tracing::warn!(
-                        source = %er.source, target = %er.target,
-                        error = %e, "Failed to store relationship"
-                    );
-                } else {
-                    kg_relationships_stored += 1;
-                }
-            }
-            if kg_relationships_dropped > 0 {
-                tracing::warn!(
-                    kg_relationship_dropped_count = kg_relationships_dropped,
-                    kg_relationship_stored_count = kg_relationships_stored,
-                    "Distillation dropped relationships with unresolved endpoints"
-                );
-            }
+            None => GraphProjectionOutcome::default(),
+        };
+        if graph_projection.relationships_dropped_total() > 0 {
+            tracing::warn!(
+                kg_relationship_dropped_ungoverned_count = graph_projection.relationships_dropped_ungoverned,
+                kg_relationship_dropped_unresolved_count = graph_projection.relationships_dropped_unresolved,
+                kg_relationship_stored_count = graph_projection.relationships_stored,
+                "Distillation omitted graph relationships that failed governance or endpoint resolution"
+            );
         }
 
         // 6. Store episode if extracted
@@ -756,7 +676,7 @@ impl SessionDistiller {
             session_id,
             response.facts.len() as i32,
             response.entities.len() as i32,
-            kg_relationships_stored,
+            graph_projection.relationships_stored,
             episode_created,
             duration_ms,
         )
@@ -1534,118 +1454,6 @@ impl SessionDistiller {
     }
 
     // =========================================================================
-    // Knowledge graph helpers (trait-routed)
-    // =========================================================================
-
-    /// Find an entity by exact name via the trait `kg_store`
-    /// (case-insensitive name match via `search_entities_by_name`).
-    async fn find_entity_by_name(&self, agent_id: &str, name: &str) -> Option<String> {
-        let store = self.kg_store.as_ref()?;
-        store
-            .get_entity_by_name(agent_id, name)
-            .await
-            .ok()
-            .flatten()
-            .map(|e| e.id)
-    }
-
-    /// Bump an entity's mention counter via the trait.
-    async fn bump_entity_mention(&self, id: &str) -> Result<(), String> {
-        let store = self
-            .kg_store
-            .as_ref()
-            .ok_or_else(|| "no kg store wired".to_string())?;
-        store
-            .bump_entity_mention(&zbot_stores::EntityId::from(id.to_string()))
-            .await
-            .map_err(|e| e.to_string())
-    }
-
-    /// Persist a single new entity via the trait.
-    async fn store_knowledge_one_entity(
-        &self,
-        agent_id: &str,
-        entity: Entity,
-    ) -> Result<String, String> {
-        let store = self
-            .kg_store
-            .as_ref()
-            .ok_or_else(|| "no kg store wired".to_string())?;
-        store
-            .upsert_entity(agent_id, entity)
-            .await
-            .map(|id| id.0)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Persist a single new relationship via the trait.
-    async fn store_knowledge_one_relationship(
-        &self,
-        agent_id: &str,
-        rel: Relationship,
-    ) -> Result<(), String> {
-        let store = self
-            .kg_store
-            .as_ref()
-            .ok_or_else(|| "no kg store wired".to_string())?;
-        store
-            .upsert_relationship(agent_id, rel)
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
-    /// Resolve a relationship endpoint (source/target name) to a real
-    /// entity id. Lookup order: cached `entity_map` -> trait
-    /// `find_entity_by_name` -> auto-create a stub of type `custom("unknown")`
-    /// so the FK constraint on `relationship` is satisfied. Returns `None`
-    /// when a stub cannot be persisted; callers must drop the relationship
-    /// instead of writing an FK-invalid edge.
-    async fn resolve_relationship_endpoint(
-        &self,
-        agent_id: &str,
-        name: &str,
-        entity_map: &mut std::collections::HashMap<String, String>,
-    ) -> Option<String> {
-        if let Some(id) = entity_map.get(name) {
-            return Some(id.clone());
-        }
-        if let Some(existing_id) = self.find_entity_by_name(agent_id, name).await {
-            entity_map.insert(name.to_string(), existing_id.clone());
-            return Some(existing_id);
-        }
-        // Nothing found — create a stub so the relationship can be persisted.
-        let stub = Entity::new(
-            agent_id.to_string(),
-            EntityType::Custom("unknown".to_string()),
-            name.to_string(),
-        );
-        if let Err(e) = self.store_knowledge_one_entity(agent_id, stub).await {
-            tracing::warn!(
-                name = %name,
-                error = %e,
-                "Failed to auto-create stub entity for relationship endpoint"
-            );
-            None
-        } else if let Some(stub_id) = self.find_entity_by_name(agent_id, name).await {
-            tracing::debug!(
-                name = %name,
-                id = %stub_id,
-                "Auto-created stub entity for undeclared relationship endpoint"
-            );
-            entity_map.insert(name.to_string(), stub_id.clone());
-            Some(stub_id)
-        } else {
-            tracing::warn!(
-                name = %name,
-                kg_relationship_dropped = true,
-                "Auto-created stub entity could not be resolved after persistence"
-            );
-            None
-        }
-    }
-
-    // =========================================================================
     // Procedure upsert
     // =========================================================================
 
@@ -1750,43 +1558,259 @@ impl SessionDistiller {
     }
 }
 
-/// Test-only synchronous helper that mirrors
-/// `SessionDistiller::resolve_relationship_endpoint` against a concrete
-/// `GraphStorage`. Production calls the trait-routed instance method;
-/// this exists so the FK-survival contract test below can run without
-/// having to construct a full SessionDistiller (provider service +
-/// conversation repo + paths + settings + embedding client).
-#[cfg(test)]
-fn resolve_relationship_endpoint(
-    graph: &zbot_stores_sqlite::kg::storage::GraphStorage,
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GraphProjectionOutcome {
+    relationships_stored: i32,
+    relationships_dropped_ungoverned: i32,
+    relationships_dropped_unresolved: i32,
+}
+
+impl GraphProjectionOutcome {
+    fn relationships_dropped_total(&self) -> i32 {
+        self.relationships_dropped_ungoverned + self.relationships_dropped_unresolved
+    }
+}
+
+/// Project only ontology-governed candidates into the graph through its store
+/// trait. Facts are intentionally handled by the separate memory-fact path.
+async fn project_distilled_graph(
+    store: &dyn zbot_stores::KnowledgeGraphStore,
+    agent_id: &str,
+    entities: &[ExtractedEntity],
+    relationships: &[ExtractedRelationship],
+) -> GraphProjectionOutcome {
+    let mut outcome = GraphProjectionOutcome::default();
+    let mut entity_map = std::collections::HashMap::new();
+
+    for entity_candidate in entities {
+        let Some(entity_type) = governed_entity_type(&entity_candidate.entity_type) else {
+            tracing::debug!(
+                candidate_fingerprint = %graph_candidate_fingerprint(&[&entity_candidate.name, &entity_candidate.entity_type]),
+                kg_entity_dropped = true,
+                reason = "blank_or_custom_entity_type",
+                "Distillation omitted ungoverned graph entity"
+            );
+            continue;
+        };
+        let entity_key = normalized_graph_name(&entity_candidate.name);
+        if entity_key.is_empty() {
+            tracing::debug!(
+                candidate_fingerprint = %graph_candidate_fingerprint(&[&entity_candidate.name, &entity_candidate.entity_type]),
+                kg_entity_dropped = true,
+                reason = "blank_name",
+                "Distillation omitted ungoverned graph entity"
+            );
+            continue;
+        }
+        if entity_map.contains_key(&entity_key) {
+            continue;
+        }
+
+        match find_entity_by_normalized_name(store, agent_id, &entity_candidate.name).await {
+            Some(id) => {
+                if let Err(error) = store
+                    .bump_entity_mention(&zbot_stores::EntityId::from(id.clone()))
+                    .await
+                {
+                    tracing::warn!(error = %error, "Failed to bump graph entity mention");
+                }
+                entity_map.insert(entity_key, id);
+            }
+            None => {
+                let mut entity = Entity::new(
+                    agent_id.to_string(),
+                    entity_type,
+                    entity_candidate.name.trim().to_string(),
+                );
+                entity.properties = graph_entity_properties(&entity_candidate.properties);
+                match store.upsert_entity(agent_id, entity).await {
+                    Ok(id) => {
+                        entity_map.insert(entity_key, id.0);
+                    }
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        "Failed to store governed graph entity"
+                    ),
+                }
+            }
+        }
+    }
+
+    for relationship_candidate in relationships
+        .iter()
+        .filter_map(|relationship| canonicalize_relationship(relationship, entities))
+    {
+        let Some(relationship_type) =
+            governed_relationship_type(&relationship_candidate.relationship_type)
+        else {
+            outcome.relationships_dropped_ungoverned += 1;
+            tracing::debug!(
+                candidate_fingerprint = %graph_candidate_fingerprint(&[
+                    &relationship_candidate.source,
+                    &relationship_candidate.relationship_type,
+                    &relationship_candidate.target,
+                ]),
+                kg_relationship_dropped = true,
+                reason = "blank_or_custom_relationship_type",
+                "Distillation omitted ungoverned graph relationship"
+            );
+            continue;
+        };
+        let source_id = resolve_relationship_endpoint(
+            store,
+            agent_id,
+            &relationship_candidate.source,
+            &mut entity_map,
+        )
+        .await;
+        let target_id = resolve_relationship_endpoint(
+            store,
+            agent_id,
+            &relationship_candidate.target,
+            &mut entity_map,
+        )
+        .await;
+        let (Some(source_id), Some(target_id)) = (source_id, target_id) else {
+            outcome.relationships_dropped_unresolved += 1;
+            tracing::warn!(
+                candidate_fingerprint = %graph_candidate_fingerprint(&[
+                    &relationship_candidate.source,
+                    &relationship_candidate.relationship_type,
+                    &relationship_candidate.target,
+                ]),
+                kg_relationship_dropped = true,
+                reason = "unresolved_endpoint",
+                "Distillation omitted relationship with an unresolved endpoint"
+            );
+            continue;
+        };
+
+        let relationship = Relationship::new(
+            agent_id.to_string(),
+            source_id,
+            target_id,
+            relationship_type,
+        );
+        match store.upsert_relationship(agent_id, relationship).await {
+            Ok(_) => outcome.relationships_stored += 1,
+            Err(error) => tracing::warn!(error = %error, "Failed to store graph relationship"),
+        }
+    }
+
+    outcome
+}
+
+/// Backend implementations may only provide the trait's default exact matcher,
+/// so normalize the candidate before lookup and verify the returned surface.
+async fn find_entity_by_normalized_name(
+    store: &dyn zbot_stores::KnowledgeGraphStore,
+    agent_id: &str,
+    name: &str,
+) -> Option<String> {
+    let normalized_name = normalized_graph_name(name);
+    if normalized_name.is_empty() {
+        return None;
+    }
+    store
+        .get_entity_by_normalized_name(agent_id, &normalized_name)
+        .await
+        .ok()
+        .flatten()
+        .filter(|entity| normalized_graph_name(&entity.name) == normalized_name)
+        .map(|entity| entity.id)
+}
+
+/// Keep fact persistence independent from graph projection. When graph
+/// governance rejects a candidate, its fact counterpart still routes through
+/// the configured memory store exactly as it did before this projection.
+async fn upsert_distilled_fact(
+    store: Option<&dyn zbot_stores::MemoryFactStore>,
+    fact: &MemoryFact,
+) -> Result<(), String> {
+    let store = store.ok_or_else(|| "no memory store wired".to_string())?;
+    let value = serde_json::to_value(fact).map_err(|error| format!("encode fact: {error}"))?;
+    store.upsert_typed_fact(value, fact.embedding.clone()).await
+}
+
+/// Resolve a relationship endpoint only when it is an extracted candidate or
+/// an existing graph entity. This deliberately never creates an `unknown` stub.
+async fn resolve_relationship_endpoint(
+    store: &dyn zbot_stores::KnowledgeGraphStore,
     agent_id: &str,
     name: &str,
     entity_map: &mut std::collections::HashMap<String, String>,
 ) -> Option<String> {
-    if let Some(id) = entity_map.get(name) {
-        return Some(id.clone());
+    if let Some(id) = resolve_candidate_endpoint(name, entity_map) {
+        return Some(id);
     }
-    if let Ok(Some(existing_id)) = graph.find_entity_by_name(agent_id, name) {
-        entity_map.insert(name.to_string(), existing_id.clone());
-        return Some(existing_id);
-    }
-    let stub = Entity::new(
-        agent_id.to_string(),
-        EntityType::Custom("unknown".to_string()),
-        name.to_string(),
-    );
-    let knowledge = knowledge_graph::types::ExtractedKnowledge {
-        entities: vec![stub],
-        relationships: vec![],
-    };
-    if graph.store_knowledge(agent_id, knowledge).is_err() {
+    let name_key = normalized_graph_name(name);
+    let existing_id = find_entity_by_normalized_name(store, agent_id, name).await?;
+    entity_map.insert(name_key, existing_id.clone());
+    Some(existing_id)
+}
+
+/// Normalize an LLM-produced name before it becomes an in-session graph key.
+fn normalized_graph_name(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// A stable diagnostic identifier for model-derived graph candidates. Never
+/// write the candidate's raw text to logs: a failed governance check is not a
+/// reason to extend the retention of model or tool output.
+fn graph_candidate_fingerprint(parts: &[&str]) -> String {
+    agent_runtime::content_hash(&parts.join("\0"))
+}
+
+/// LLM extraction may describe an entity, but it may not set adapter control
+/// fields. Scope, ontology selection, hierarchy placement, and confidence are
+/// established from trusted runtime/configuration context only.
+fn graph_entity_properties(
+    properties: &std::collections::HashMap<String, serde_json::Value>,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    properties
+        .iter()
+        .filter(|(key, _)| {
+            !crate::invoke::ingest_adapter::GRAPH_CONTROL_PROPERTY_KEYS.contains(&key.as_str())
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn resolve_candidate_endpoint(
+    name: &str,
+    entity_map: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let name_key = normalized_graph_name(name);
+    (!name_key.is_empty())
+        .then(|| entity_map.get(&name_key).cloned())
+        .flatten()
+}
+
+/// Return a built-in entity classification suitable for graph topology.
+/// Custom labels remain in the distilled session evidence but are not graph
+/// nodes because they cannot be governed consistently.
+fn governed_entity_type(raw_type: &str) -> Option<EntityType> {
+    let raw_type = raw_type.trim();
+    if raw_type.is_empty() {
         return None;
     }
-    let Ok(Some(stub_id)) = graph.find_entity_by_name(agent_id, name) else {
+    match EntityType::from_str(raw_type) {
+        EntityType::Custom(_) => None,
+        entity_type => Some(entity_type),
+    }
+}
+
+/// Return a built-in relationship classification suitable for graph topology.
+/// Free-form predicates remain session evidence but do not become graph edges.
+fn governed_relationship_type(raw_type: &str) -> Option<RelationshipType> {
+    let raw_type = raw_type.trim();
+    if raw_type.is_empty() {
         return None;
-    };
-    entity_map.insert(name.to_string(), stub_id.clone());
-    Some(stub_id)
+    }
+    match RelationshipType::from_str(raw_type) {
+        RelationshipType::Custom(_) => None,
+        relationship_type => Some(relationship_type),
+    }
 }
 
 /// Canonicalize a relationship extracted by the LLM — fix common direction
@@ -2249,94 +2273,6 @@ fn default_distillation_prompt() -> String {
 mod tests {
     use super::*;
 
-    // ------------------------------------------------------------------------
-    // resolve_relationship_endpoint — FK survival policy
-    //
-    // Regression for the "India → Oil" failure: relationships that name
-    // an entity only in the relationships block (not in the entities
-    // array) used to be persisted with the literal name as the id, which
-    // violated the FK on `kg_relationships`. The helper must: prefer an
-    // existing entity_map entry, then look up by name in the graph, then
-    // auto-create a stub entity so the edge survives.
-    // ------------------------------------------------------------------------
-    mod resolve_endpoint {
-        use super::*;
-        use gateway_services::VaultPaths;
-        use knowledge_graph::{types::ExtractedKnowledge, Entity, EntityType};
-        use std::collections::HashMap;
-        use std::sync::Arc;
-        use tempfile::tempdir;
-        use zbot_stores_sqlite::kg::storage::GraphStorage;
-        use zbot_stores_sqlite::KnowledgeDatabase;
-
-        fn fresh_graph() -> GraphStorage {
-            let dir = tempdir().unwrap();
-            let paths = Arc::new(VaultPaths::new(dir.keep()));
-            std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-            let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
-            GraphStorage::new(db).unwrap()
-        }
-
-        #[test]
-        fn returns_entity_map_hit_without_touching_graph() {
-            let graph = fresh_graph();
-            let mut map = HashMap::new();
-            map.insert("India".to_string(), "entity-india-id-42".to_string());
-
-            let id = resolve_relationship_endpoint(&graph, "agent-x", "India", &mut map);
-            assert_eq!(id.as_deref(), Some("entity-india-id-42"));
-            // No new map key — hit was a read.
-            assert_eq!(map.len(), 1);
-        }
-
-        #[test]
-        fn resolves_via_graph_find_when_not_in_map() {
-            let graph = fresh_graph();
-            // Seed the graph with an entity from a "prior session".
-            let existing = Entity::new(
-                "agent-x".to_string(),
-                EntityType::Location,
-                "India".to_string(),
-            );
-            let existing_id = existing.id.clone();
-            graph
-                .store_knowledge(
-                    "agent-x",
-                    ExtractedKnowledge {
-                        entities: vec![existing],
-                        relationships: vec![],
-                    },
-                )
-                .unwrap();
-
-            let mut map = HashMap::new();
-            let id = resolve_relationship_endpoint(&graph, "agent-x", "India", &mut map);
-            assert_eq!(
-                id.as_deref(),
-                Some(existing_id.as_str()),
-                "must reuse the pre-existing entity id"
-            );
-            // Cached into the map so subsequent endpoints in the same turn
-            // don't re-query the DB for the same name.
-            assert_eq!(map.get("India"), Some(&existing_id));
-        }
-
-        #[test]
-        fn auto_creates_stub_when_name_is_unknown() {
-            let graph = fresh_graph();
-            let mut map = HashMap::new();
-
-            let id = resolve_relationship_endpoint(&graph, "agent-x", "Oil", &mut map);
-            let id = id.expect("stub should be persisted and resolved");
-            assert!(!id.is_empty());
-            // The stub is persisted — find_entity_by_name must now return it.
-            let looked_up = graph.find_entity_by_name("agent-x", "Oil").unwrap();
-            assert_eq!(looked_up.as_deref(), Some(id.as_str()));
-            // Cached in the map too.
-            assert_eq!(map.get("Oil"), Some(&id));
-        }
-    }
-
     #[test]
     fn test_parse_facts_from_json_array() {
         // Backward compat: plain array of facts
@@ -2526,6 +2462,314 @@ mod tests {
             target: target.to_string(),
             relationship_type: rel.to_string(),
         }
+    }
+
+    #[test]
+    fn governance_rejects_blank_and_custom_entity_types() {
+        assert!(governed_entity_type("").is_none());
+        assert!(governed_entity_type("market_segment").is_none());
+        assert_eq!(
+            governed_entity_type(" organization "),
+            Some(EntityType::Organization)
+        );
+        assert_eq!(
+            governed_entity_type("organization"),
+            Some(EntityType::Organization)
+        );
+    }
+
+    #[test]
+    fn governance_rejects_blank_and_custom_relationship_types() {
+        assert!(governed_relationship_type(" ").is_none());
+        assert!(governed_relationship_type("partneredwith").is_none());
+        assert_eq!(
+            governed_relationship_type("used_by"),
+            None,
+            "passive aliases are canonicalized before governance"
+        );
+        assert_eq!(
+            governed_relationship_type("uses"),
+            Some(RelationshipType::Uses)
+        );
+        assert_eq!(
+            governed_relationship_type(" uses "),
+            Some(RelationshipType::Uses)
+        );
+    }
+
+    #[test]
+    fn normalizes_names_for_in_session_entity_resolution() {
+        assert_eq!(normalized_graph_name("  AgentZero "), "agentzero");
+        assert_eq!(normalized_graph_name("agentzero"), "agentzero");
+    }
+
+    #[test]
+    fn graph_entity_properties_drop_model_control_fields() {
+        let properties = std::collections::HashMap::from([
+            ("display_name".to_string(), serde_json::json!("AgentZero")),
+            ("ward_id".to_string(), serde_json::json!("attacker-ward")),
+            (
+                "ontology_id".to_string(),
+                serde_json::json!("attacker-ontology"),
+            ),
+            (
+                "taxonomy_id".to_string(),
+                serde_json::json!("attacker-taxonomy"),
+            ),
+            ("epistemic_class".to_string(), serde_json::json!("archival")),
+            (
+                "parent_cluster_id".to_string(),
+                serde_json::json!("attacker-parent"),
+            ),
+            ("layer".to_string(), serde_json::json!(99)),
+            ("confidence".to_string(), serde_json::json!(1.0)),
+            (
+                "governance_ontology_ids".to_string(),
+                serde_json::json!(["attacker-ontology"]),
+            ),
+            (
+                "governance_taxonomy_scheme_ids".to_string(),
+                serde_json::json!(["attacker-taxonomy"]),
+            ),
+            (
+                "governance_record_kind".to_string(),
+                serde_json::json!("attacker"),
+            ),
+        ]);
+
+        let sanitized = graph_entity_properties(&properties);
+
+        assert_eq!(
+            sanitized.get("display_name"),
+            Some(&serde_json::json!("AgentZero"))
+        );
+        for key in [
+            "ward_id",
+            "ontology_id",
+            "taxonomy_id",
+            "epistemic_class",
+            "parent_cluster_id",
+            "layer",
+            "confidence",
+            "governance_ontology_ids",
+            "governance_taxonomy_scheme_ids",
+            "governance_record_kind",
+        ] {
+            assert!(
+                !sanitized.contains_key(key),
+                "{key} must be runtime-controlled"
+            );
+        }
+    }
+
+    #[test]
+    fn fingerprints_model_derived_candidates_without_retaining_raw_text() {
+        let fingerprint = graph_candidate_fingerprint(&["secret-like-value", "uses", "target"]);
+        assert_eq!(
+            fingerprint,
+            graph_candidate_fingerprint(&["secret-like-value", "uses", "target"])
+        );
+        assert_ne!(fingerprint, "secret-like-value");
+    }
+
+    #[test]
+    fn unresolved_relationship_endpoint_does_not_create_a_stub() {
+        let mut entities = std::collections::HashMap::new();
+        entities.insert("agentzero".to_string(), "entity-agentzero".to_string());
+
+        assert_eq!(
+            resolve_candidate_endpoint(" AgentZero ", &entities).as_deref(),
+            Some("entity-agentzero")
+        );
+        assert_eq!(resolve_candidate_endpoint("unknown", &entities), None);
+        assert_eq!(entities.len(), 1, "an unresolved endpoint is not inserted");
+    }
+
+    #[tokio::test]
+    async fn graph_projection_routes_only_governed_candidates_through_the_store_trait() {
+        let temp = tempfile::tempdir().expect("temporary vault");
+        let paths = Arc::new(VaultPaths::new(temp.path().to_path_buf()));
+        std::fs::create_dir_all(
+            paths
+                .conversations_db()
+                .parent()
+                .expect("vault database parent"),
+        )
+        .expect("create vault database parent");
+        let db = Arc::new(zbot_stores_sqlite::KnowledgeDatabase::new(paths).expect("database"));
+        let storage = Arc::new(
+            zbot_stores_sqlite::kg::storage::GraphStorage::new(db).expect("graph storage"),
+        );
+        let store: Arc<dyn zbot_stores::KnowledgeGraphStore> =
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(storage));
+        let agent_id = "distillation-governance";
+
+        store
+            .upsert_entity(
+                agent_id,
+                Entity::new(
+                    agent_id.to_string(),
+                    EntityType::Organization,
+                    "Existing".to_string(),
+                ),
+            )
+            .await
+            .expect("seed existing entity");
+
+        let entities = vec![
+            make_entity(" existing ", " organization "),
+            make_entity("Existing", "organization"),
+            make_entity("Tool", "tool"),
+            make_entity("Rejected", "market_segment"),
+        ];
+        let relationships = vec![
+            make_rel("Existing", "uses", "Tool"),
+            make_rel("Missing", "uses", "Tool"),
+            make_rel("Existing", "partneredwith", "Tool"),
+        ];
+
+        let outcome =
+            project_distilled_graph(store.as_ref(), agent_id, &entities, &relationships).await;
+
+        assert_eq!(outcome.relationships_stored, 1);
+        assert_eq!(outcome.relationships_dropped_unresolved, 1);
+        assert_eq!(outcome.relationships_dropped_ungoverned, 1);
+        let existing = store
+            .get_entity_by_name(agent_id, "EXISTING")
+            .await
+            .expect("lookup existing")
+            .expect("existing entity retained");
+        assert_eq!(
+            existing.mention_count, 2,
+            "normalized duplicate reuses the entity"
+        );
+        assert!(
+            store
+                .get_entity_by_name(agent_id, "Rejected")
+                .await
+                .expect("lookup rejected")
+                .is_none(),
+            "custom entity types never enter graph topology"
+        );
+        assert!(
+            store
+                .get_entity_by_name(agent_id, "Missing")
+                .await
+                .expect("lookup unresolved endpoint")
+                .is_none(),
+            "unresolved endpoints never create unknown stubs"
+        );
+        let neighbors = store
+            .get_neighbors(
+                &zbot_stores::EntityId::from(existing.id),
+                zbot_stores::Direction::Outgoing,
+                10,
+            )
+            .await
+            .expect("outgoing relationship");
+        assert_eq!(neighbors.len(), 1);
+        let tool = store
+            .get_entity_by_name(agent_id, "Tool")
+            .await
+            .expect("lookup tool")
+            .expect("governed tool entity");
+        assert_eq!(neighbors[0].entity_id.0, tool.id);
+    }
+
+    #[derive(Default)]
+    struct RecordingMemoryStore {
+        typed_facts: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    #[async_trait::async_trait]
+    impl zbot_stores::MemoryFactStore for RecordingMemoryStore {
+        async fn save_fact(
+            &self,
+            _agent_id: &str,
+            _category: &str,
+            _key: &str,
+            _content: &str,
+            _confidence: f64,
+            _session_id: Option<&str>,
+            _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({"saved": true}))
+        }
+
+        async fn recall_facts(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!([]))
+        }
+
+        async fn search_memory_facts_hybrid(
+            &self,
+            _agent_id: Option<&str>,
+            _query: &str,
+            _mode: &str,
+            _limit: usize,
+            _ward_id: Option<&str>,
+            _query_embedding: Option<&[f32]>,
+            _as_of: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<Vec<serde_json::Value>, String> {
+            Ok(Vec::new())
+        }
+
+        async fn upsert_typed_fact(
+            &self,
+            fact: serde_json::Value,
+            _embedding: Option<Vec<f32>>,
+        ) -> Result<(), String> {
+            self.typed_facts
+                .lock()
+                .expect("typed facts lock")
+                .push(fact);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn distilled_facts_keep_using_the_memory_store_when_graph_projection_filters_candidates()
+    {
+        let store = RecordingMemoryStore::default();
+        let now = chrono::Utc::now().to_rfc3339();
+        let fact = MemoryFact {
+            id: "fact-governance-test".to_string(),
+            session_id: Some("session-governance-test".to_string()),
+            agent_id: "agent-governance-test".to_string(),
+            scope: "agent".to_string(),
+            category: "preference".to_string(),
+            key: "user.preference".to_string(),
+            content: "The user prefers concise answers.".to_string(),
+            confidence: 0.9,
+            mention_count: 1,
+            source_summary: None,
+            embedding: None,
+            ward_id: "__global__".to_string(),
+            contradicted_by: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            expires_at: None,
+            valid_from: Some(now),
+            valid_until: None,
+            superseded_by: None,
+            pinned: false,
+            epistemic_class: Some("current".to_string()),
+            source_episode_id: None,
+            source_ref: None,
+        };
+
+        upsert_distilled_fact(Some(&store), &fact)
+            .await
+            .expect("fact routes through MemoryFactStore");
+
+        let writes = store.typed_facts.lock().expect("typed facts lock");
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0]["id"], fact.id);
+        assert_eq!(writes[0]["content"], fact.content);
     }
 
     #[test]

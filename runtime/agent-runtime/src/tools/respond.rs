@@ -6,6 +6,7 @@
 //! based on the `HookContext` that was set when the agent was invoked.
 
 use agent_primitives::{Tool, ToolContext};
+use agent_tools::guards::planning_gate_awaits_ward;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -98,6 +99,13 @@ impl Tool for RespondTool {
         ctx: Arc<dyn ToolContext>,
         args: Value,
     ) -> agent_primitives::Result<Value> {
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request is awaiting ward(create/use). The system will start planner-agent after ward entry; do not finish the request before planning."
+            }));
+        }
+
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
@@ -212,6 +220,30 @@ mod tests {
             Some("unknown")
         );
         assert_eq!(res.get("message_length").and_then(|v| v.as_u64()), Some(5));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_response_before_planning() {
+        use agent_primitives::CallbackContext;
+
+        let tool = RespondTool::new();
+        let inner = crate::tools::context::ToolContext::new();
+        inner.set_state(
+            agent_tools::guards::PLANNING_GATE_STATE.to_string(),
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan this graph request",
+            ))
+            .unwrap(),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(inner);
+
+        let result = tool
+            .execute(ctx.clone(), json!({"message": "done"}))
+            .await
+            .expect("planning gate returns a redirect");
+
+        assert_eq!(result["status"], "redirect");
+        assert!(ctx.actions().respond.is_none());
     }
 
     #[tokio::test]

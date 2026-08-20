@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use agent_primitives::{AgentError, Result, Tool, ToolContext};
 
-use crate::tools::guards::has_placeholder_specs;
+use crate::tools::guards::{has_placeholder_specs, planning_gate_awaits_ward};
 
 // ============================================================================
 // UPDATE PLAN TOOL
@@ -77,6 +77,13 @@ impl Tool for UpdatePlanTool {
     }
 
     async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request must establish its ward first. The system will start planner-agent after ward(create/use); do not publish a root checklist before then."
+            }));
+        }
+
         if has_placeholder_specs(ctx.as_ref()) {
             return Ok(json!({
                 "status": "redirect",
@@ -181,6 +188,79 @@ impl Tool for UpdatePlanTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::event::EventActions;
+    use agent_primitives::types::Content;
+    use agent_primitives::{CallbackContext, ReadonlyContext};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct GateContext {
+        state: Mutex<HashMap<String, Value>>,
+        content: Content,
+    }
+
+    impl GateContext {
+        fn cold_graph() -> Self {
+            let mut state = HashMap::new();
+            state.insert(
+                crate::tools::guards::PLANNING_GATE_STATE.to_string(),
+                serde_json::to_value(crate::tools::guards::PlanningGate::awaiting_ward(
+                    "Plan this request",
+                ))
+                .unwrap(),
+            );
+            Self {
+                state: Mutex::new(state),
+                content: Content::user(""),
+            }
+        }
+    }
+
+    impl ReadonlyContext for GateContext {
+        fn invocation_id(&self) -> &str {
+            "test"
+        }
+        fn agent_name(&self) -> &str {
+            "root"
+        }
+        fn user_id(&self) -> &str {
+            "test"
+        }
+        fn app_name(&self) -> &str {
+            "test"
+        }
+        fn session_id(&self) -> &str {
+            "test"
+        }
+        fn branch(&self) -> &str {
+            "test"
+        }
+        fn user_content(&self) -> &Content {
+            &self.content
+        }
+    }
+
+    impl CallbackContext for GateContext {
+        fn get_state(&self, key: &str) -> Option<Value> {
+            self.state.lock().ok()?.get(key).cloned()
+        }
+
+        fn set_state(&self, key: String, value: Value) {
+            if let Ok(mut state) = self.state.lock() {
+                state.insert(key, value);
+            }
+        }
+    }
+
+    impl ToolContext for GateContext {
+        fn function_call_id(&self) -> String {
+            "test".to_string()
+        }
+        fn actions(&self) -> EventActions {
+            EventActions::default()
+        }
+        fn set_actions(&self, _actions: EventActions) {}
+    }
 
     #[test]
     fn test_update_plan_schema() {
@@ -188,5 +268,22 @@ mod tests {
         assert_eq!(tool.name(), "update_plan");
         let schema = tool.parameters_schema().unwrap();
         assert!(schema.get("properties").unwrap().get("plan").is_some());
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_root_checklist() {
+        let tool = UpdatePlanTool::new();
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::cold_graph());
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({"plan": [{"step": "Skip planner", "status": "in_progress"}]}),
+            )
+            .await
+            .expect("planning gate returns a redirect");
+
+        assert_eq!(result["status"], "redirect");
+        assert!(ctx.get_state("app:plan").is_none());
     }
 }

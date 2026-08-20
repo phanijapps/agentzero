@@ -192,6 +192,9 @@ async fn load_or_create_specialist_synthesizes_ward_agent() {
             .contains("# --- WARD DOCTRINE: maritime ---"),
         "instructions should contain doctrine header"
     );
+    assert!(agent.instructions.contains("already bound to the ward"));
+    assert!(agent.instructions.contains("call update_plan"));
+    assert!(!agent.instructions.contains("ward(action=\"use\")"));
 }
 
 /// Error path: delegating to a `ward:` id whose directory does not exist

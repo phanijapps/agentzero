@@ -110,7 +110,9 @@ impl EngramKnowledgeGraphStore {
         agent_id: &str,
         mut entity: Entity,
     ) -> StoreResult<EntityId> {
-        entity.agent_id = agent_id.to_string();
+        self.admit_entity_write(agent_id, &mut entity)?;
+        self.sidecar
+            .claim_entity_owners(agent_id, std::iter::once(entity.id.as_str()))?;
         let id = EntityId(entity.id.clone());
         let embedding = entity.name_embedding.clone();
         self.knowledge
@@ -136,7 +138,7 @@ impl EngramKnowledgeGraphStore {
         agent_id: &str,
         mut relationship: Relationship,
     ) -> StoreResult<RelationshipId> {
-        relationship.agent_id = agent_id.to_string();
+        self.admit_relationship_write(agent_id, &mut relationship)?;
         relationship = self.sidecar.canonicalize_relationship(relationship)?;
         // Deduplication merges durable sidecar properties. Apply the current
         // configured selection afterwards so stale or caller-supplied reserved
@@ -158,6 +160,112 @@ impl EngramKnowledgeGraphStore {
             &findings,
         )?;
         Ok(id)
+    }
+
+    /// Enforce the minimal contract that the zbot graph model can express at
+    /// the adapter boundary. This is intentionally before either Engram or the
+    /// compatibility sidecar is mutated, so every public graph-write path gets
+    /// the same protection.
+    fn admit_entity_write(&self, agent_id: &str, entity: &mut Entity) -> StoreResult<()> {
+        validate_agent_id(agent_id)?;
+        validate_record_id("entity", &entity.id)?;
+        validate_name(&entity.name)?;
+        validate_timestamps("entity", entity.first_seen_at, entity.last_seen_at)?;
+        validate_mention_count("entity", entity.mention_count)?;
+
+        entity.entity_type = canonical_builtin_entity_type(&entity.entity_type)?;
+        entity.agent_id = agent_id.to_string();
+        ensure_scope(&self.mapper, &mut entity.properties)?;
+        Ok(())
+    }
+
+    fn admit_relationship_write(
+        &self,
+        agent_id: &str,
+        relationship: &mut Relationship,
+    ) -> StoreResult<()> {
+        self.admit_relationship_shape(agent_id, relationship)?;
+        self.ensure_relationship_endpoints(agent_id, relationship)
+    }
+
+    fn admit_relationship_shape(
+        &self,
+        agent_id: &str,
+        relationship: &mut Relationship,
+    ) -> StoreResult<()> {
+        validate_agent_id(agent_id)?;
+        validate_record_id("relationship", &relationship.id)?;
+        validate_record_id("relationship source entity", &relationship.source_entity_id)?;
+        validate_record_id("relationship target entity", &relationship.target_entity_id)?;
+        if relationship.source_entity_id == relationship.target_entity_id {
+            return Err(StoreError::Invalid(
+                "relationship source and target must differ".to_string(),
+            ));
+        }
+        validate_timestamps(
+            "relationship",
+            relationship.first_seen_at,
+            relationship.last_seen_at,
+        )?;
+        validate_mention_count("relationship", relationship.mention_count)?;
+
+        relationship.relationship_type =
+            canonical_builtin_relationship_type(&relationship.relationship_type)?;
+        relationship.agent_id = agent_id.to_string();
+        ensure_scope(&self.mapper, &mut relationship.properties)?;
+        Ok(())
+    }
+
+    fn ensure_relationship_endpoints_or_batch(
+        &self,
+        agent_id: &str,
+        relationship: &Relationship,
+        batch_entity_ids: &std::collections::HashSet<&str>,
+    ) -> StoreResult<()> {
+        for (role, id) in [
+            ("source", relationship.source_entity_id.as_str()),
+            ("target", relationship.target_entity_id.as_str()),
+        ] {
+            if batch_entity_ids.contains(id) {
+                continue;
+            }
+            let entity = self
+                .sidecar
+                .get_entity(&EntityId(id.to_string()))?
+                .ok_or_else(|| {
+                    StoreError::Invalid(format!("relationship {role} entity does not exist: {id}"))
+                })?;
+            if entity.agent_id != agent_id {
+                return Err(StoreError::Invalid(format!(
+                    "relationship {role} entity belongs to another agent: {id}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_relationship_endpoints(
+        &self,
+        agent_id: &str,
+        relationship: &Relationship,
+    ) -> StoreResult<()> {
+        for (role, id) in [
+            ("source", &relationship.source_entity_id),
+            ("target", &relationship.target_entity_id),
+        ] {
+            let entity = self
+                .sidecar
+                .get_entity(&EntityId(id.clone()))?
+                .ok_or_else(|| {
+                    StoreError::Invalid(format!("relationship {role} entity does not exist: {id}"))
+                })?;
+            if entity.agent_id != agent_id {
+                return Err(StoreError::Invalid(format!(
+                    "relationship {role} entity belongs to a different agent"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Persist the selected policy on the zbot relationship sidecar after
@@ -339,10 +447,31 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
     async fn store_knowledge(
         &self,
         agent_id: &str,
-        knowledge: ExtractedKnowledge,
+        mut knowledge: ExtractedKnowledge,
     ) -> StoreResult<StoreOutcome> {
         let entity_count = knowledge.entities.len() as u64;
         let relationship_count = knowledge.relationships.len() as u64;
+
+        // Preflight the complete batch before the first mutation. In
+        // particular, a rejected custom predicate must not leave its otherwise
+        // valid endpoint entities partially persisted.
+        for entity in &mut knowledge.entities {
+            self.admit_entity_write(agent_id, entity)?;
+        }
+        let batch_entity_ids: std::collections::HashSet<&str> = knowledge
+            .entities
+            .iter()
+            .map(|entity| entity.id.as_str())
+            .collect();
+        for relationship in &mut knowledge.relationships {
+            self.admit_relationship_shape(agent_id, relationship)?;
+            self.ensure_relationship_endpoints_or_batch(agent_id, relationship, &batch_entity_ids)?;
+        }
+        self.sidecar.claim_entity_owners(
+            agent_id,
+            knowledge.entities.iter().map(|entity| entity.id.as_str()),
+        )?;
+
         for entity in knowledge.entities {
             self.upsert_entity_record(agent_id, entity).await?;
         }
@@ -437,6 +566,15 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         limit: usize,
     ) -> StoreResult<Vec<Entity>> {
         self.sidecar.search_entities_by_name(agent_id, query, limit)
+    }
+
+    async fn get_entity_by_normalized_name(
+        &self,
+        agent_id: &str,
+        normalized_name: &str,
+    ) -> StoreResult<Option<Entity>> {
+        self.sidecar
+            .get_entity_by_normalized_name(agent_id, normalized_name)
     }
 
     async fn search_entities_view(
@@ -702,7 +840,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
             agent_id.to_string(),
             source_aggregate.0.clone(),
             target_aggregate.0.clone(),
-            RelationshipType::Custom(relationship_type.to_string()),
+            RelationshipType::RelatedTo,
         );
         relationship.id = format!("inter_{}", Uuid::new_v4());
         relationship
@@ -714,6 +852,10 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         relationship
             .properties
             .insert("is_inter_cluster".to_string(), json!(true));
+        relationship.properties.insert(
+            "inter_cluster_relation_label".to_string(),
+            json!(relationship_type.trim()),
+        );
         relationship
             .properties
             .insert("epistemic_class".to_string(), json!("current"));
@@ -840,6 +982,12 @@ impl KnowledgeGraphSidecar {
                     parent_cluster_id TEXT,
                     compressed_into TEXT
                 );
+                CREATE TABLE IF NOT EXISTS kg_entity_owners (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO kg_entity_owners (id, agent_id)
+                    SELECT id, agent_id FROM kg_entities;
                 CREATE INDEX IF NOT EXISTS idx_kg_entities_agent_type_name
                     ON kg_entities(agent_id, entity_type, name);
                 CREATE INDEX IF NOT EXISTS idx_kg_entities_layer
@@ -926,6 +1074,38 @@ impl KnowledgeGraphSidecar {
         })
     }
 
+    /// Atomically reserve entity IDs for one agent. Bulk callers claim the
+    /// entire batch before any Engram or graph-row mutation.
+    fn claim_entity_owners<'a>(
+        &self,
+        agent_id: &str,
+        entity_ids: impl IntoIterator<Item = &'a str>,
+    ) -> StoreResult<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        for entity_id in entity_ids {
+            transaction
+                .execute(
+                    "INSERT INTO kg_entity_owners (id, agent_id) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING",
+                    params![entity_id, agent_id],
+                )
+                .map_err(to_backend)?;
+            let owner: String = transaction
+                .query_row(
+                    "SELECT agent_id FROM kg_entity_owners WHERE id = ?1",
+                    params![entity_id],
+                    |row| row.get(0),
+                )
+                .map_err(to_backend)?;
+            if owner != agent_id {
+                return Err(StoreError::Invalid(format!(
+                    "entity id belongs to another agent: {entity_id}"
+                )));
+            }
+        }
+        transaction.commit().map_err(to_backend)
+    }
+
     fn store_entity(&self, entity: &Entity, embedding: Option<&[f32]>) -> StoreResult<()> {
         self.store_entity_inner(entity, embedding, true)
     }
@@ -973,7 +1153,6 @@ impl KnowledgeGraphSidecar {
                      embedding_identity_json, layer, parent_cluster_id)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                 ON CONFLICT(id) DO UPDATE SET
-                    agent_id = excluded.agent_id,
                     entity_type = excluded.entity_type,
                     name = excluded.name,
                     first_seen_at = excluded.first_seen_at,
@@ -1351,6 +1530,29 @@ impl KnowledgeGraphSidecar {
         });
         rows.truncate(limit.max(1));
         Ok(rows.into_iter().map(|entry| entry.entity).collect())
+    }
+
+    fn get_entity_by_normalized_name(
+        &self,
+        agent_id: &str,
+        normalized_name: &str,
+    ) -> StoreResult<Option<Entity>> {
+        let connection = self.lock()?;
+        let entity_json = connection
+            .query_row(
+                "SELECT entity_json FROM kg_entities
+                 WHERE agent_id = ?1
+                   AND pruned = 0
+                   AND lower(trim(name)) = lower(trim(?2))
+                 LIMIT 1",
+                params![agent_id, normalized_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(to_backend)?;
+        entity_json
+            .map(|json| serde_json::from_str(&json).map_err(to_backend))
+            .transpose()
     }
 
     fn search_entities_view(
@@ -2377,6 +2579,94 @@ fn ensure_optional_column(
         &format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}"),
         [],
     )?;
+    Ok(())
+}
+
+fn validate_agent_id(agent_id: &str) -> StoreResult<()> {
+    if agent_id.trim().is_empty() {
+        return Err(StoreError::Invalid(
+            "graph write requires a non-empty agent id for scope and provenance".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_record_id(kind: &str, id: &str) -> StoreResult<()> {
+    if id.trim().is_empty() {
+        return Err(StoreError::Invalid(format!("{kind} id must not be blank")));
+    }
+    Ok(())
+}
+
+fn validate_name(name: &str) -> StoreResult<()> {
+    if name.trim().is_empty() {
+        return Err(StoreError::Invalid(
+            "entity name must not be blank".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_timestamps(
+    kind: &str,
+    first_seen_at: chrono::DateTime<Utc>,
+    last_seen_at: chrono::DateTime<Utc>,
+) -> StoreResult<()> {
+    if last_seen_at < first_seen_at {
+        return Err(StoreError::Invalid(format!(
+            "{kind} last_seen_at must not precede first_seen_at"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_mention_count(kind: &str, mention_count: i64) -> StoreResult<()> {
+    if mention_count < 1 {
+        return Err(StoreError::Invalid(format!(
+            "{kind} mention_count must be positive"
+        )));
+    }
+    Ok(())
+}
+
+fn canonical_builtin_entity_type(entity_type: &EntityType) -> StoreResult<EntityType> {
+    let canonical = EntityType::from_str(entity_type.as_str());
+    if matches!(canonical, EntityType::Custom(_)) {
+        return Err(StoreError::Invalid(format!(
+            "entity type must be a built-in ontology class: {}",
+            entity_type.as_str()
+        )));
+    }
+    Ok(canonical)
+}
+
+fn canonical_builtin_relationship_type(
+    relationship_type: &RelationshipType,
+) -> StoreResult<RelationshipType> {
+    let canonical = RelationshipType::from_str(relationship_type.as_str());
+    if matches!(canonical, RelationshipType::Custom(_)) {
+        return Err(StoreError::Invalid(format!(
+            "relationship predicate must be a built-in ontology predicate: {}",
+            relationship_type.as_str()
+        )));
+    }
+    Ok(canonical)
+}
+
+fn ensure_scope(mapper: &ScopeMapper, properties: &mut HashMap<String, Value>) -> StoreResult<()> {
+    let ward_id = match properties.get("ward_id") {
+        Some(Value::String(value)) if !value.trim().is_empty() => value.trim().to_string(),
+        Some(_) => {
+            return Err(StoreError::Invalid(
+                "ward_id must be a non-empty string when supplied".to_string(),
+            ));
+        }
+        None => DEFAULT_WARD_ID.to_string(),
+    };
+    mapper
+        .ward_scope(&ward_id)
+        .map_err(|error| StoreError::Invalid(format!("invalid graph scope: {error}")))?;
+    properties.insert("ward_id".to_string(), json!(ward_id));
     Ok(())
 }
 

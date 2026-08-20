@@ -1186,13 +1186,19 @@ impl ExecutorBuilder {
 
         let mut ward_template_prompt = None;
         if remote_prompt.is_none() {
+            let is_planner = agent.id == "planner-agent";
+            if is_planner && ward_id.is_none() {
+                return Err("planner_template_unavailable".to_string());
+            }
             if let Some(ward) = ward_id {
                 executor_config = executor_config
                     .with_initial_state("ward_id", serde_json::Value::String(ward.to_string()));
 
-                // The template is root-orchestrator context only. Loading failure is
-                // represented in state and never prevents orchestration from starting.
-                if matches!(self.actor_kind, RuntimeActorKind::Root) {
+                // Root and the dedicated planner independently load the selected
+                // ward's canonical normalized snapshot. Ordinary delegates remain
+                // isolated from template authority. Root can surface repair guidance;
+                // planner fails closed because it cannot safely choose paths.
+                if matches!(self.actor_kind, RuntimeActorKind::Root) || is_planner {
                     let root_context_id = uuid::Uuid::now_v7().to_string();
                     let layout = self
                         .ward_usage_service
@@ -1209,6 +1215,9 @@ impl ExecutorBuilder {
                             )
                         })
                         .state(ward, session_id, &root_context_id);
+                    if is_planner && layout.context.is_none() {
+                        return Err("planner_template_unavailable".to_string());
+                    }
                     ward_template_prompt = layout.context;
                     executor_config = executor_config
                         .with_initial_state("ward_template", layout.packet)
@@ -1912,8 +1921,10 @@ pub async fn collect_skills_summary(skill_service: &SkillService) -> Vec<serde_j
 mod tests {
     use super::*;
     use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
+    use agent_primitives::{Tool, ToolContext as ToolContextTrait};
     use agent_runtime::llm::{ChatResponse, LlmError, StreamCallback};
-    use agent_tools::RecallVisibilityScope;
+    use agent_runtime::tools::ToolContext as RuntimeToolContext;
+    use agent_tools::{RecallVisibilityScope, WriteFileTool};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::collections::{BTreeSet, HashMap};
@@ -2274,6 +2285,421 @@ mod tests {
             executor.config().system_instruction.as_deref(),
             Some(agent.instructions.as_str())
         );
+    }
+
+    // STUB: AC1, AC2, AC8, AC9
+    #[tokio::test]
+    async fn planner_executor_receives_selected_template_packet_and_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        gateway_services::create_ward_from_template(&paths, "history-library").expect("ward");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.id = "planner-agent".to_string();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-planner",
+                "session-planner",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("history-library"),
+            )
+            .await
+            .expect("planner executor");
+
+        let packet = executor
+            .config()
+            .initial_state
+            .get("ward_template")
+            .expect("planner template packet");
+        assert_eq!(packet["status"], "available");
+        assert_eq!(packet["session_id"], "session-planner");
+        assert_eq!(packet["ward_id"], "history-library");
+        let instruction = executor.config().system_instruction.as_deref().unwrap();
+        let expected = crate::invoke::ward_layout_adapter::GatewayWardLayoutAccess::new(
+            dir.path().to_path_buf(),
+        )
+        .state(
+            "history-library",
+            "session-planner",
+            packet["root_context_id"].as_str().unwrap(),
+        )
+        .context
+        .expect("expected adapter context");
+        assert_eq!(
+            instruction.strip_prefix(&format!("{}\n\n", agent.instructions)),
+            Some(expected.as_str())
+        );
+        assert!(instruction.contains(packet["digest"].as_str().unwrap()));
+        assert!(instruction.contains("spec.md"));
+        assert!(instruction.contains("plan.md"));
+        assert!(!instruction.contains("apiVersion:"));
+        assert!(!instruction.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    // STUB: AC3, AC7
+    #[tokio::test]
+    async fn planner_refinement_tool_replay_persists_required_roles_only_in_selected_ward() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        for ward in ["history-library", "sibling-library"] {
+            gateway_services::create_ward_from_template(&paths, ward).expect("ward");
+        }
+        let mcp_service = McpService::new(paths.clone());
+        let mut agent = sample_agent();
+        agent.id = "planner-agent".to_string();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-planner",
+                "session-planner",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("history-library"),
+            )
+            .await
+            .expect("planner executor");
+        let ctx: Arc<dyn ToolContextTrait> = Arc::new(RuntimeToolContext::full_with_state(
+            "planner-agent".to_string(),
+            Some("conversation-planner".to_string()),
+            Vec::new(),
+            executor.config().initial_state.clone(),
+        ));
+        let fs: Arc<dyn FileSystemContext> =
+            Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let writer = WriteFileTool::new(fs.clone());
+        for (path, content) in [
+            (
+                ".zbot/specs/discovery-of-india/spec.md",
+                "# Specification\n",
+            ),
+            (".zbot/specs/discovery-of-india/plan.md", "# Plan\n"),
+        ] {
+            writer
+                .execute(
+                    ctx.clone(),
+                    serde_json::json!({"path":path,"content":content}),
+                )
+                .await
+                .expect("planner write");
+        }
+
+        let ward_tool = WardTool::new(
+            fs,
+            None,
+            None,
+            Arc::new(
+                crate::invoke::ward_layout_adapter::GatewayWardLayoutAccess::new(
+                    dir.path().to_path_buf(),
+                ),
+            ),
+        );
+        let lint = ward_tool
+            .execute(
+                ctx,
+                serde_json::json!({"action":"lint","name":"history-library"}),
+            )
+            .await
+            .expect("planner lint");
+        assert_eq!(lint["ok"], true);
+        assert_eq!(lint["data"]["valid"], true);
+
+        let selected = paths
+            .wards_dir()
+            .join("history-library/.zbot/specs/discovery-of-india");
+        assert!(selected.join("spec.md").is_file());
+        assert!(selected.join("plan.md").is_file());
+        assert!(!selected.join("tasks").exists());
+        assert!(!paths
+            .wards_dir()
+            .join("sibling-library/.zbot/specs/discovery-of-india")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn planner_no_persistent_role_replay_remains_ephemeral() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        gateway_services::create_ward_from_template(&paths, "ephemeral-only").expect("ward");
+        std::fs::write(
+            paths.ward_layout_snapshot("ephemeral-only"),
+            r#"apiVersion: zbot.dev/v1alpha1
+kind: WardLayout
+root:
+  kind: directory
+  children:
+    - { id: canonical, match: '{ward}.md', kind: file, format: markdown }
+    - { id: agent-instructions, match: AGENTS.md, kind: file, format: markdown }
+    - { id: log, match: log.md, kind: file, format: markdown }
+extensions: {}
+"#,
+        )
+        .expect("role-free template");
+        let loaded =
+            gateway_services::load_ward_layout(&paths.ward_layout_snapshot("ephemeral-only"))
+                .expect("load role-free template");
+        gateway_services::CompiledWardLayout::compile(&loaded.document)
+            .expect("compile role-free template");
+        let mcp_service = McpService::new(paths.clone());
+        let mut agent = sample_agent();
+        agent.id = "planner-agent".to_string();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-ephemeral",
+                "session-ephemeral",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("ephemeral-only"),
+            )
+            .await
+            .expect("planner executor");
+        let instruction = executor.config().system_instruction.as_deref().unwrap();
+        assert!(!instruction.contains("spec.md"));
+        assert!(!instruction.contains("plan.md"));
+
+        let ctx: Arc<dyn ToolContextTrait> = Arc::new(RuntimeToolContext::full_with_state(
+            "planner-agent".to_string(),
+            Some("conversation-ephemeral".to_string()),
+            Vec::new(),
+            executor.config().initial_state.clone(),
+        ));
+        let fs: Arc<dyn FileSystemContext> =
+            Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let lint = WardTool::new(
+            fs,
+            None,
+            None,
+            Arc::new(
+                crate::invoke::ward_layout_adapter::GatewayWardLayoutAccess::new(
+                    dir.path().to_path_buf(),
+                ),
+            ),
+        )
+        .execute(
+            ctx,
+            serde_json::json!({"action":"lint","name":"ephemeral-only"}),
+        )
+        .await
+        .expect("planner lint");
+        assert_eq!(lint["data"]["valid"], true);
+        assert!(
+            !paths.wards_dir().join("ephemeral-only/.zbot").exists(),
+            "a role-free template must not acquire fallback planning artifacts"
+        );
+    }
+
+    #[tokio::test]
+    async fn planner_missing_plan_role_replay_does_not_invent_a_fallback_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        gateway_services::create_ward_from_template(&paths, "spec-only").expect("ward");
+        std::fs::write(
+            paths.ward_layout_snapshot("spec-only"),
+            r#"apiVersion: zbot.dev/v1alpha1
+kind: WardLayout
+definitions:
+  specification:
+    kind: directory
+    children:
+      - { id: specification, match: spec.md, kind: file, format: markdown }
+root:
+  kind: directory
+  children:
+    - { id: canonical, match: '{ward}.md', kind: file, format: markdown }
+    - { id: agent-instructions, match: AGENTS.md, kind: file, format: markdown }
+    - { id: log, match: log.md, kind: file, format: markdown }
+    - id: zbot
+      match: .zbot
+      kind: directory
+      required: false
+      children:
+        - id: specifications
+          match: specs
+          kind: directory
+          required: false
+          children:
+            - { id: specification-node, match: '*', required: false, repeat: true, $ref: specification }
+extensions: {}
+"#,
+        )
+        .expect("spec-only template");
+        let loaded = gateway_services::load_ward_layout(&paths.ward_layout_snapshot("spec-only"))
+            .expect("load spec-only template");
+        gateway_services::CompiledWardLayout::compile(&loaded.document)
+            .expect("compile spec-only template");
+        let mcp_service = McpService::new(paths.clone());
+        let mut agent = sample_agent();
+        agent.id = "planner-agent".to_string();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-spec-only",
+                "session-spec-only",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("spec-only"),
+            )
+            .await
+            .expect("planner executor");
+        let instruction = executor.config().system_instruction.as_deref().unwrap();
+        assert!(instruction.contains("spec.md"));
+        assert!(!instruction.contains("plan.md"));
+
+        let ctx: Arc<dyn ToolContextTrait> = Arc::new(RuntimeToolContext::full_with_state(
+            "planner-agent".to_string(),
+            Some("conversation-spec-only".to_string()),
+            Vec::new(),
+            executor.config().initial_state.clone(),
+        ));
+        let fs: Arc<dyn FileSystemContext> =
+            Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        WriteFileTool::new(fs.clone())
+            .execute(
+                ctx.clone(),
+                serde_json::json!({
+                    "path":".zbot/specs/discovery-of-india/spec.md",
+                    "content":"# Specification\n"
+                }),
+            )
+            .await
+            .expect("declared spec write");
+        let lint = WardTool::new(
+            fs,
+            None,
+            None,
+            Arc::new(
+                crate::invoke::ward_layout_adapter::GatewayWardLayoutAccess::new(
+                    dir.path().to_path_buf(),
+                ),
+            ),
+        )
+        .execute(ctx, serde_json::json!({"action":"lint","name":"spec-only"}))
+        .await
+        .expect("planner lint");
+        assert_eq!(lint["data"]["valid"], true);
+        let refinement = paths
+            .wards_dir()
+            .join("spec-only/.zbot/specs/discovery-of-india");
+        assert!(refinement.join("spec.md").is_file());
+        assert!(
+            !refinement.join("plan.md").exists(),
+            "the planner must not invent a fallback path for an absent plan role"
+        );
+    }
+
+    // STUB: AC6
+    #[tokio::test]
+    async fn planner_executor_fails_closed_when_selected_ward_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.id = "planner-agent".to_string();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let result = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-planner",
+                "session-planner",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("missing-ward"),
+            )
+            .await;
+        let error = match result {
+            Ok(_) => panic!("planner with a missing selected ward must fail closed"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "planner_template_unavailable");
+    }
+
+    // STUB: AC6
+    #[tokio::test]
+    async fn planner_executor_fails_closed_when_selected_template_is_invalid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
+        gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
+        gateway_services::create_ward_from_template(&paths, "broken").expect("ward");
+        std::fs::write(paths.ward_layout_snapshot("broken"), "not: [valid")
+            .expect("corrupt snapshot");
+        let mcp_service = McpService::new(paths);
+        let mut agent = sample_agent();
+        agent.id = "planner-agent".to_string();
+        agent.mcps.clear();
+        agent.skills.clear();
+
+        let result = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation-planner",
+                "session-planner",
+                &[],
+                &[],
+                None,
+                &mcp_service,
+                Some("broken"),
+            )
+            .await;
+        let error = match result {
+            Ok(_) => panic!("invalid planner template must fail closed"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "planner_template_unavailable");
     }
 
     #[test]

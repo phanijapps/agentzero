@@ -7,7 +7,7 @@ use super::context::{infer_delegation_mode, DelegationContext, DelegationMode, D
 use super::registry::DelegationRegistry;
 use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig};
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
-use execution_state::StateService;
+use execution_state::{SessionWardClaim, StateService};
 use gateway_events::{EventBus, GatewayEvent};
 use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths, SkillService};
 use std::collections::{HashMap, HashSet};
@@ -97,13 +97,16 @@ pub async fn spawn_delegated_agent(
     // compatibility auto-create path from turning an untrusted model target
     // into a capability-bearing specialist.
     let has_dynamic_assignment = request.capability_assignment.is_some();
-    if !validate_dynamic_assignment_target(
-        &agent_service,
-        paths.vault_dir(),
-        &request.child_agent_id,
-        request.capability_assignment.as_ref(),
-    )
-    .await
+    let ward_target_is_valid = !request.child_agent_id.starts_with("ward:")
+        || dynamic_target_exists(&agent_service, paths.vault_dir(), &request.child_agent_id).await;
+    if !ward_target_is_valid
+        || !validate_dynamic_assignment_target(
+            &agent_service,
+            paths.vault_dir(),
+            &request.child_agent_id,
+            request.capability_assignment.as_ref(),
+        )
+        .await
     {
         log_capability_resolution(
             &log_service,
@@ -138,9 +141,26 @@ pub async fn spawn_delegated_agent(
         return Err(error.to_string());
     }
 
-    // Create a child session for subagent isolation
-    let child_session =
+    // A ward-agent target is an authoritative execution workspace. Persist it
+    // on the parent before the child starts, then copy the effective workspace
+    // to the isolated child session. Artifact declarations read their own
+    // session row, so executor-only context is insufficient here.
+    let (parent_ward_id, claimed_ward) = bind_parent_ward_for_delegation(&state_service, request)?;
+    if let Some(ward_id) = claimed_ward {
+        event_bus
+            .publish(GatewayEvent::WardChanged {
+                session_id: request.session_id.clone(),
+                execution_id: request.parent_execution_id.clone(),
+                ward_id,
+            })
+            .await;
+    }
+    let session_ward_id = effective_ward_id(&request.child_agent_id, parent_ward_id);
+
+    // Create a child session for subagent isolation.
+    let mut child_session =
         execution_state::Session::new_child(&request.child_agent_id, &request.session_id);
+    child_session.ward_id = session_ward_id.clone();
     let child_session_id = child_session.id.clone();
 
     if let Err(e) = state_service.create_session_from(&child_session) {
@@ -447,16 +467,6 @@ pub async fn spawn_delegated_agent(
     let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
     let tool_result_context =
         crate::runner::prompt_safe_tool_result_config(&tool_settings, paths.vault_dir());
-
-    // Look up the parent session's ward, then resolve the ward this
-    // delegation actually runs in: a `ward:<name>` target runs in its
-    // own ward; everything else inherits the parent's.
-    let parent_ward_id = state_service
-        .get_session(&request.session_id)
-        .ok()
-        .flatten()
-        .and_then(|s| s.ward_id);
-    let session_ward_id = effective_ward_id(&request.child_agent_id, parent_ward_id);
 
     // Inject ward context so subagent starts with complete knowledge
     if let Some(ref ward_id) = session_ward_id {
@@ -1034,6 +1044,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
 
     let parent_agent = request.parent_agent_id.clone();
     let parent_execution_id = request.parent_execution_id.clone();
+    let parent_conversation_id = request.parent_conversation_id.clone();
     let paths_for_snapshot = paths.clone();
     let session_id_for_snapshot = session_id.clone();
     let child_agent_id_for_block = request.child_agent_id.clone();
@@ -1293,8 +1304,11 @@ fn spawn_execution_task(ctx: SpawnContext) {
                     session_id: &session_id,
                     agent_id: &agent_id,
                     conv_id: &conv_id,
+                    parent_agent_id: &parent_agent,
                     parent_execution_id: &parent_execution_id,
+                    parent_conversation_id: &parent_conversation_id,
                     error: &crash_report,
+                    allow_parent_continuation: true,
                 })
                 .await;
             }
@@ -1523,8 +1537,16 @@ async fn handle_early_spawn_failure(ctx: EarlySpawnFailure<'_>) {
         session_id: &ctx.request.session_id,
         agent_id: &ctx.request.child_agent_id,
         conv_id: ctx.child_conversation_id,
+        parent_agent_id: &ctx.request.parent_agent_id,
         parent_execution_id: &ctx.request.parent_execution_id,
+        parent_conversation_id: &ctx.request.parent_conversation_id,
         error: ctx.error,
+        // Ward entry consumes the invocation-local planning gate before the
+        // child executor is built. If planner construction fails, waking a
+        // continuation would build a fresh ungated root executor. Record the
+        // failure and finish bookkeeping, but require a later user turn to
+        // retry intent/ward selection under a new gate.
+        allow_parent_continuation: ctx.request.child_agent_id != "planner-agent",
     })
     .await;
 }
@@ -1542,8 +1564,11 @@ struct HandleExecutionFailure<'a> {
     session_id: &'a str,
     agent_id: &'a str,
     conv_id: &'a str,
+    parent_agent_id: &'a str,
     parent_execution_id: &'a str,
+    parent_conversation_id: &'a str,
     error: &'a str,
+    allow_parent_continuation: bool,
 }
 
 /// Handle execution failure.
@@ -1558,8 +1583,11 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
         session_id,
         agent_id,
         conv_id,
+        parent_agent_id,
         parent_execution_id,
+        parent_conversation_id,
         error,
+        allow_parent_continuation,
     } = ctx;
     // Messages already streamed to child session during execution
 
@@ -1591,25 +1619,53 @@ async fn handle_execution_failure(ctx: HandleExecutionFailure<'_>) {
 
     // Check if this was the last delegation and continuation is needed
     // (even failures count as completed delegations)
-    match state_service.complete_delegation(session_id) {
-        Ok(true) => {
-            if let Ok(Some(root_exec)) = state_service.get_root_execution(session_id) {
-                event_bus
-                    .publish(GatewayEvent::SessionContinuationReady {
-                        session_id: session_id.to_string(),
-                        root_agent_id: root_exec.agent_id.clone(),
-                        root_execution_id: root_exec.id.clone(),
-                    })
-                    .await;
-                tracing::info!(
-                    session_id = %session_id,
-                    root_execution_id = %root_exec.id,
-                    "All delegations complete (including failed), continuation ready"
-                );
-            }
+    let delegation_completion = state_service.complete_delegation(session_id);
+    if !allow_parent_continuation {
+        if let Err(error) = state_service.clear_continuation(session_id) {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %error,
+                "Failed to clear continuation after planner startup failure"
+            );
         }
-        Ok(false) => {}
-        Err(e) => tracing::warn!("Failed to complete delegation tracking: {}", e),
+        crash_execution(CrashExecution {
+            state_service,
+            log_service,
+            event_bus,
+            execution_id: parent_execution_id,
+            session_id,
+            agent_id: parent_agent_id,
+            conversation_id: parent_conversation_id,
+            error: "planner_startup_failed",
+            crash_session: true,
+        })
+        .await;
+        tracing::warn!(
+            session_id = %session_id,
+            agent_id = %agent_id,
+            "Planner startup failed; parent continuation suppressed to keep planning gate closed"
+        );
+    } else {
+        match delegation_completion {
+            Ok(true) => {
+                if let Ok(Some(root_exec)) = state_service.get_root_execution(session_id) {
+                    event_bus
+                        .publish(GatewayEvent::SessionContinuationReady {
+                            session_id: session_id.to_string(),
+                            root_agent_id: root_exec.agent_id.clone(),
+                            root_execution_id: root_exec.id.clone(),
+                        })
+                        .await;
+                    tracing::info!(
+                        session_id = %session_id,
+                        root_execution_id = %root_exec.id,
+                        "All delegations complete (including failed), continuation ready"
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to complete delegation tracking: {}", e),
+        }
     }
 
     delegation_registry.remove(execution_id);
@@ -1728,6 +1784,29 @@ fn collect_spec_files(dir: &std::path::Path, specs_root: &std::path::Path, out: 
     }
 }
 
+/// Bind a ward-agent delegation to the parent session exactly once. The
+/// returned parent ward remains authoritative when an already-bound session
+/// dispatches a different ward agent; that child still receives its explicit
+/// target through [`effective_ward_id`].
+fn bind_parent_ward_for_delegation(
+    state_service: &StateService<DatabaseManager>,
+    request: &DelegationRequest,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some(ward_id) = request.child_agent_id.strip_prefix("ward:") else {
+        return Ok((
+            state_service
+                .get_session(&request.session_id)?
+                .and_then(|session| session.ward_id),
+            None,
+        ));
+    };
+
+    match state_service.claim_session_ward_if_unset(&request.session_id, ward_id)? {
+        SessionWardClaim::Claimed(ward_id) => Ok((Some(ward_id.clone()), Some(ward_id))),
+        SessionWardClaim::Existing(ward_id) => Ok((Some(ward_id), None)),
+    }
+}
+
 /// The ward directory a delegated agent should operate in. A `ward:<name>`
 /// delegation always runs in its own ward, regardless of the parent's
 /// active ward; any other agent inherits the parent session's ward.
@@ -1837,6 +1916,51 @@ mod tests {
         assert_eq!(
             effective_ward_id("ward:maritime", None),
             Some("maritime".to_string())
+        );
+    }
+
+    #[test]
+    fn ward_delegation_claims_parent_and_propagates_its_workspace_to_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let state = StateService::new(Arc::new(DatabaseManager::new(paths).expect("state db")));
+        let (parent, execution) = state.create_session("root").expect("parent session");
+        let request = DelegationRequest {
+            parent_agent_id: "root".to_string(),
+            session_id: parent.id.clone(),
+            parent_execution_id: execution.id,
+            parent_conversation_id: parent.id.clone(),
+            child_agent_id: "ward:software-delivery-optimization".to_string(),
+            child_execution_id: "exec-ward-child".to_string(),
+            task: "work in the ward".to_string(),
+            mode: None,
+            context: None,
+            max_iterations: None,
+            output_schema: None,
+            skills: Vec::new(),
+            capability_assignment: None,
+            planning_capability_catalog: None,
+            complexity: None,
+            parallel: false,
+        };
+
+        let (parent_ward, claimed) =
+            bind_parent_ward_for_delegation(&state, &request).expect("bind ward");
+        let child_ward = effective_ward_id(&request.child_agent_id, parent_ward);
+
+        assert_eq!(claimed.as_deref(), Some("software-delivery-optimization"));
+        assert_eq!(
+            child_ward.as_deref(),
+            Some("software-delivery-optimization")
+        );
+        assert_eq!(
+            state
+                .get_session(&parent.id)
+                .expect("read parent")
+                .and_then(|session| session.ward_id)
+                .as_deref(),
+            Some("software-delivery-optimization")
         );
     }
 
@@ -2158,7 +2282,7 @@ mod tests {
 
         let error = spawn_delegated_agent(
             &broken_request,
-            event_bus,
+            event_bus.clone(),
             agent_service,
             provider_service,
             mcp_service,
@@ -2168,9 +2292,9 @@ mod tests {
             session_meta,
             checkpoints,
             handles,
-            delegation_registry,
+            delegation_registry.clone(),
             delegation_tx,
-            log_service,
+            log_service.clone(),
             state_service.clone(),
             None,
             None,
@@ -2183,7 +2307,7 @@ mod tests {
             None,
             None,
             steering_registry,
-            agent_result_bus,
+            agent_result_bus.clone(),
         )
         .await
         .expect_err("missing provider must fail spawn");
@@ -2224,6 +2348,96 @@ mod tests {
             .replay(&session.id, None, 10)
             .expect("both parent callbacks replay");
         assert_eq!(callbacks.len(), 2);
+
+        // Reproduce the narrow race after Ward entry has transitioned the
+        // planning gate but before the planner executor finishes building.
+        // A missing/corrupt template at this point must report the failed
+        // child without waking an ungated root continuation.
+        let planner_execution_id = "exec-planner-template-race";
+        state_service
+            .create_delegated_execution_with_id(
+                planner_execution_id,
+                &session.id,
+                "planner-agent",
+                &root_execution.id,
+                execution_state::DelegationType::Sequential,
+                "persist the ward plan",
+            )
+            .expect("pre-created planner execution");
+        state_service
+            .register_delegation(&session.id)
+            .expect("planner pending delegation");
+        let planner_request = DelegationRequest {
+            child_agent_id: "planner-agent".to_string(),
+            child_execution_id: planner_execution_id.to_string(),
+            task: "persist the ward plan".to_string(),
+            capability_assignment: None,
+            ..request
+        };
+        let mut planner_lifecycle_events = event_bus.subscribe_all();
+
+        handle_early_spawn_failure(EarlySpawnFailure {
+            request: &planner_request,
+            child_conversation_id: "planner-template-race-conversation",
+            child_session_id: None,
+            error: "planner_template_unavailable",
+            messages: messages.as_ref(),
+            state_service: &state_service,
+            log_service: &log_service,
+            event_bus: &event_bus,
+            delegation_registry: &delegation_registry,
+            agent_result_bus: &agent_result_bus,
+        })
+        .await;
+
+        let parent_after_planner_failure = state_service
+            .get_session(&session.id)
+            .expect("read parent after planner failure")
+            .expect("parent remains after planner failure");
+        assert_eq!(parent_after_planner_failure.pending_delegations, 0);
+        assert_eq!(
+            parent_after_planner_failure.status,
+            execution_state::SessionStatus::Crashed,
+            "planner startup fail-close must terminate the paused root session"
+        );
+        assert!(
+            !parent_after_planner_failure.continuation_needed,
+            "failed planner construction must not release an ungated continuation"
+        );
+        let root_after_planner_failure = state_service
+            .get_execution(&root_execution.id)
+            .expect("read root after planner failure")
+            .expect("root remains auditable after planner failure");
+        assert_eq!(
+            root_after_planner_failure.status,
+            execution_state::ExecutionStatus::Crashed,
+            "suppressed continuation must not strand a running root execution"
+        );
+        let callbacks = messages
+            .replay(&session.id, None, 10)
+            .expect("planner failure callback replay");
+        assert_eq!(callbacks.len(), 3);
+        assert!(callbacks[2]
+            .content
+            .contains("planner_template_unavailable"));
+        let mut saw_bounded_root_error = false;
+        while let Ok(event) = planner_lifecycle_events.try_recv() {
+            if matches!(
+                event,
+                GatewayEvent::Error {
+                    ref execution_id,
+                    ref message,
+                    ..
+                } if execution_id.as_deref() == Some(root_execution.id.as_str())
+                    && message == "planner_startup_failed"
+            ) {
+                saw_bounded_root_error = true;
+            }
+        }
+        assert!(
+            saw_bounded_root_error,
+            "planner startup fail-close must publish the bounded root lifecycle error"
+        );
     }
 
     #[test]

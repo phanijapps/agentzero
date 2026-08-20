@@ -9,6 +9,10 @@ How the code is *currently* organized. Not why (that's in
   Read this first.
 - [`security.md`](security.md) — data-root confinement, dependency provenance,
   and diagnostics controls for adapter and migration boundaries.
+- [`engram-code-graph-indexing.md`](engram-code-graph-indexing.md) — what to
+  index as Engram code-graph topology, retrieval evidence, or neither.
+- [`engram-graph-noise-audit.md`](engram-graph-noise-audit.md) — read-only
+  audit of vault graph noise and the separate live-MCP scope issue.
 - `<subsystem>.md` — one file per non-trivial subsystem (add as the repo
   grows). Each describes the structure, the entry points, and links to
   the ADRs that explain why.

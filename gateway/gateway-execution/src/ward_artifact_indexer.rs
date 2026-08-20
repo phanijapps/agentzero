@@ -37,6 +37,7 @@ pub struct IndexOptions {
 /// logged as warnings — indexing is best-effort, never crashes the pipeline.
 pub async fn index_ward(
     ward_path: &Path,
+    ward_id: &str,
     session_id: &str,
     agent_id: &str,
     episode_store: &Arc<dyn KgEpisodeStore>,
@@ -44,6 +45,7 @@ pub async fn index_ward(
 ) -> usize {
     index_ward_with_options(
         ward_path,
+        ward_id,
         session_id,
         agent_id,
         episode_store,
@@ -56,6 +58,7 @@ pub async fn index_ward(
 /// Index every structured file in the ward directory with explicit options.
 pub async fn index_ward_with_options(
     ward_path: &Path,
+    ward_id: &str,
     session_id: &str,
     agent_id: &str,
     episode_store: &Arc<dyn KgEpisodeStore>,
@@ -68,6 +71,7 @@ pub async fn index_ward_with_options(
     for file_path in files {
         match index_one_file(
             &file_path,
+            ward_id,
             session_id,
             agent_id,
             episode_store,
@@ -98,6 +102,13 @@ pub async fn index_ward_with_options(
 /// skipping common noise directories.
 fn collect_structured_files(ward_path: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
+    if std::fs::symlink_metadata(ward_path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        tracing::warn!(path = ?ward_path, "Skipping symlinked or unreadable Ward root");
+        return files;
+    }
     if let Err(e) = walk(ward_path, &mut files) {
         tracing::warn!(path = ?ward_path, error = %e, "Ward walk failed");
     }
@@ -111,7 +122,11 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             if should_skip_dir(&path) {
                 continue;
             }
@@ -140,6 +155,7 @@ fn is_structured_file(path: &Path) -> bool {
 /// Index a single file. Returns the number of entities created.
 async fn index_one_file(
     file_path: &Path,
+    ward_id: &str,
     session_id: &str,
     agent_id: &str,
     episode_store: &Arc<dyn KgEpisodeStore>,
@@ -207,6 +223,7 @@ async fn index_one_file(
 
     let count = all_entities.len();
     if count > 0 {
+        apply_trusted_ward_scope(&mut all_entities, &mut all_rels, ward_id);
         let knowledge = zbot_stores::ExtractedKnowledge {
             entities: all_entities,
             relationships: all_rels,
@@ -218,6 +235,30 @@ async fn index_one_file(
     }
 
     Ok(count)
+}
+
+/// Remove artifact-authored scope/governance selectors and apply the Ward
+/// selected by the host execution context to every graph record.
+fn apply_trusted_ward_scope(
+    entities: &mut [Entity],
+    relationships: &mut [Relationship],
+    ward_id: &str,
+) {
+    let ward_id = ward_id.trim();
+    for properties in entities
+        .iter_mut()
+        .map(|entity| &mut entity.properties)
+        .chain(
+            relationships
+                .iter_mut()
+                .map(|relationship| &mut relationship.properties),
+        )
+    {
+        properties.retain(|key, _| {
+            !crate::invoke::ingest_adapter::GRAPH_CONTROL_PROPERTY_KEYS.contains(&key.as_str())
+        });
+        properties.insert("ward_id".to_string(), Value::String(ward_id.to_string()));
+    }
 }
 
 /// Hash file content for dedup.
@@ -616,6 +657,9 @@ fn object_iter_for_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gateway_services::VaultPaths;
+    use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
+    use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
 
     #[test]
     fn detect_named_object_array() {
@@ -771,5 +815,139 @@ mod tests {
         assert!(kinds.iter().any(|k| k.contains("MemberOf")));
         assert!(kinds.iter().any(|k| k.contains("HeldRole")));
         assert!(kinds.iter().any(|k| k.contains("BornIn")));
+    }
+
+    #[test]
+    fn artifact_scope_uses_host_ward_and_drops_authored_governance_controls() {
+        let mut entity = Entity::new(
+            "root".to_string(),
+            EntityType::Concept,
+            "Scoped entity".to_string(),
+        );
+        entity.properties.insert(
+            "ward_id".to_string(),
+            Value::String("other-ward".to_string()),
+        );
+        entity.properties.insert(
+            "governance_ontology_ids".to_string(),
+            serde_json::json!(["attacker-ontology"]),
+        );
+        entity
+            .properties
+            .insert("description".to_string(), Value::String("kept".to_string()));
+        let mut relationship = Relationship::new(
+            "root".to_string(),
+            entity.id.clone(),
+            "target".to_string(),
+            knowledge_graph::RelationshipType::RelatedTo,
+        );
+        relationship.properties.insert(
+            "ward_id".to_string(),
+            Value::String("__global__".to_string()),
+        );
+        relationship.properties.insert(
+            "governance_record_kind".to_string(),
+            Value::String("attacker".to_string()),
+        );
+
+        apply_trusted_ward_scope(
+            std::slice::from_mut(&mut entity),
+            std::slice::from_mut(&mut relationship),
+            "trusted-ward",
+        );
+
+        assert_eq!(
+            entity.properties.get("ward_id"),
+            Some(&Value::String("trusted-ward".to_string()))
+        );
+        assert!(!entity.properties.contains_key("governance_ontology_ids"));
+        assert_eq!(
+            entity.properties.get("description"),
+            Some(&Value::String("kept".to_string()))
+        );
+        assert_eq!(
+            relationship.properties.get("ward_id"),
+            Some(&Value::String("trusted-ward".to_string()))
+        );
+        assert!(!relationship
+            .properties
+            .contains_key("governance_record_kind"));
+    }
+
+    #[tokio::test]
+    async fn indexing_persists_only_host_selected_ward_scope() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ward_path = tmp.path().join("wards").join("trusted-ward");
+        std::fs::create_dir_all(&ward_path).expect("create ward");
+        std::fs::write(
+            ward_path.join("people.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "name": "Ada Lovelace",
+                "organization": "Analytical Engines",
+                "role": "Mathematician",
+                "ward_id": "__global__",
+                "governance_ontology_ids": ["attacker-ontology"],
+                "governance_record_kind": "attacker"
+            }]))
+            .expect("serialize fixture"),
+        )
+        .expect("write artifact");
+
+        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
+        let episode_repo = Arc::new(KgEpisodeRepository::new(db.clone()));
+        let episode_store: Arc<dyn KgEpisodeStore> =
+            Arc::new(GatewayKgEpisodeStore::new(episode_repo));
+        let engram = Arc::new(
+            EngramKnowledgeGraphStore::open(AdapterConfig::engram_for_data_root(
+                tmp.path(),
+                "engram-artifact-test.db",
+            ))
+            .expect("Engram graph"),
+        );
+        let kg_store: Arc<dyn KnowledgeGraphStore> = engram.clone();
+
+        let created = index_ward_with_options(
+            &ward_path,
+            "trusted-ward",
+            "sess-1",
+            "root",
+            &episode_store,
+            &kg_store,
+            IndexOptions::default(),
+        )
+        .await;
+
+        assert!(created >= 2, "primary and related organization are indexed");
+        let ada = engram
+            .get_entity_by_name("root", "Ada Lovelace")
+            .await
+            .expect("query entity")
+            .expect("Ada persisted");
+        assert_eq!(
+            ada.properties.get("ward_id"),
+            Some(&Value::String("trusted-ward".to_string()))
+        );
+        assert_eq!(
+            ada.properties.get("role"),
+            Some(&Value::String("Mathematician".to_string()))
+        );
+        assert!(!ada.properties.contains_key("governance_ontology_ids"));
+        assert!(!ada.properties.contains_key("governance_record_kind"));
+
+        let relationships = engram
+            .list_relationships("root", None, 10, 0)
+            .await
+            .expect("relationships");
+        assert_eq!(relationships.len(), 2);
+        for relationship in relationships {
+            assert_eq!(
+                relationship.properties.get("ward_id"),
+                Some(&Value::String("trusted-ward".to_string()))
+            );
+            assert!(!relationship
+                .properties
+                .contains_key("governance_record_kind"));
+        }
     }
 }

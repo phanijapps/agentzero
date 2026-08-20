@@ -1701,6 +1701,18 @@ impl AgentExecutor {
         tool_name: &str,
         arguments: &Value,
     ) -> Result<ToolExecutionResult, String> {
+        if agent_tools::guards::planning_gate_blocks_tool(shared_ctx.as_ref(), tool_name, arguments)
+        {
+            return Ok(ToolExecutionResult {
+                output: json!({
+                    "status": "redirect",
+                    "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call MCP tools or other tools yet."
+                })
+                .to_string(),
+                actions: EventActions::default(),
+            });
+        }
+
         // --- Replay intercept ---------------------------------------------------
         // When ZBOT_REPLAY_DIR is set, look up a recorded result and return it
         // instead of running the real tool. Strict mode (default) panics on miss;

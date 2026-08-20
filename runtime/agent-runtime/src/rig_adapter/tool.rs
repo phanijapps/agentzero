@@ -146,6 +146,18 @@ impl RigToolAdapter {
                 Err(e) => return Err(ToolError::JsonError(e)),
             };
 
+            if agent_tools::guards::planning_gate_blocks_tool(
+                ctx.as_ref(),
+                inner.name(),
+                &args_value,
+            ) {
+                return Ok(json!({
+                    "status": "redirect",
+                    "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call other tools yet."
+                })
+                .to_string());
+            }
+
             let result = inner
                 .execute(ctx, args_value)
                 .await
@@ -322,6 +334,36 @@ mod tests {
         let schema_str = def.parameters.to_string();
         assert!(!schema_str.contains("sk-secret-never-for-model"));
         assert!(!schema_str.contains("auth_token"));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_blocks_rig_tool_dispatch_before_execution() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let adapter = RigToolAdapter::new(Arc::new(RecordingTool {
+            name: "shell".to_string(),
+            description: "mutates the workspace".to_string(),
+            schema: None,
+            seen: seen.clone(),
+        }));
+        let ctx = shared_context_with_secret();
+        ctx.set_state(
+            agent_tools::guards::PLANNING_GATE_STATE.to_string(),
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan this graph request",
+            ))
+            .unwrap(),
+        );
+        let mut extensions = ToolCallExtensions::new();
+        extensions.insert::<SharedToolContext>(ctx);
+
+        let result = adapter
+            .call_with_extensions("{}".to_string(), &extensions)
+            .await
+            .expect("gate returns a redirect");
+
+        assert!(result.contains("redirect"));
+        assert!(result.contains("planner-agent"));
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

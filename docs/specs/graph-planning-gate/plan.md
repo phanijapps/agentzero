@@ -1,7 +1,7 @@
 # Plan: Graph Planning Gate
 
 - **Spec:** [`spec.md`](spec.md)
-- **Status:** Complete
+- **Status:** Done
 
 > **Plan contract:** this is the implementation strategy. Unlike the spec, this
 > document is allowed to change as implementation reveals new facts.

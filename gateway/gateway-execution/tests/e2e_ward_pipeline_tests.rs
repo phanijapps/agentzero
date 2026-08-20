@@ -41,6 +41,32 @@ fn planning_templates_are_agent_aware_template_directed_and_lint_is_explicit() {
     }
 }
 
+// STUB: AC3, AC4, AC5, AC8
+#[test]
+fn planner_contract_requires_declared_refinement_artifacts_before_returning_steps() {
+    let composer = include_str!("../../templates/skills/plan-composer/SKILL.md");
+    let planner = include_str!("../../templates/agents/planner-agent.md");
+    let spec_builder = include_str!("../../templates/skills/spec-builder/SKILL.md");
+
+    for instructions in [composer, planner, spec_builder] {
+        assert!(instructions.contains("concrete refinement slug"));
+        assert!(instructions.contains("matching declared"));
+        assert!(instructions.contains("before returning execution steps"));
+        assert!(instructions.contains("template digest"));
+    }
+    assert!(planner.contains("successful ward lint"));
+    assert!(planner.contains("required specification and plan"));
+    assert!(planner.contains("optional repeatable task"));
+    assert!(planner.contains("never create placeholder tasks"));
+    assert!(spec_builder.contains("does not need to say spec"));
+    assert!(composer.contains("no task index"));
+    for instructions in [composer, planner, spec_builder] {
+        assert!(instructions.contains("role_not_declared"));
+        assert!(instructions.contains("absent"));
+        assert!(instructions.contains("Never invent a fallback"));
+    }
+}
+
 // ============================================================================
 // 1. WARD SCAFFOLDING — SCOPED TO RECOMMENDED SKILLS
 // ============================================================================

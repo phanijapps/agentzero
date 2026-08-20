@@ -722,9 +722,17 @@ the live memory provider`
   `cargo clippy -p gateway --all-targets --locked -- -D warnings`,
   `cargo clippy -p gateway-memory --all-targets --locked -- -D warnings`,
   `cargo test -p zbot-engram-adapter --locked`.
-- Manual QA: fresh DB smoke covers chat, memory/knowledge activity,
-  sleep-cycle cleanup, reload, and UI tabs. Verifies AC19.
-  status: deferred to `docs/backlog.md#engram-fresh-db-manual-smoke`.
+- Manual QA: fresh DB smoke requires a root-agent turn, memory write/recall,
+  knowledge-graph activity, AgentZero-owned sleep-cycle cleanup, reload, and
+  route rendering. Partial functional evidence is recorded; final acceptance
+  remains deferred pending the outstanding graph/sleep evidence and
+  instruction-trace redaction.
+  recorded: 2026-08-06 isolated-vault run started the Engram provider,
+  completed a root-agent turn, wrote/recalled a memory fact, completed an
+  on-demand consolidation cycle, reloaded the persisted session, and rendered
+  the Memory, Graph, and Observatory routes. Knowledge-graph activity and an
+  AgentZero-owned sleep-cycle cleanup remain to be exercised. The temporary
+  vault was removed after verification; no private runtime content was retained.
 
 **Approach:**
 
@@ -758,8 +766,9 @@ remaining only at the allowed non-runtime or non-memory SQLite points.
   legacy store crate compatibility.
 - **Infrastructure:** no new external service; first provider uses local SQLite
   databases under the configured zbot data directory.
-- **External-system integration:** local Engram checkout is used during
-  development; a pinned upstream source is a later dependency decision.
+- **External-system integration:** Engram tracks the sanctioned upstream `main`
+  Git branch. The committed lockfile records the exact resolved revision for
+  each build and release.
 - **Deployment sequencing:** bootstrap first, parity fixtures second, feature
   mapping third, migration tooling fourth, provider selection fifth, cleanup
   last.
@@ -772,8 +781,9 @@ remaining only at the allowed non-runtime or non-memory SQLite points.
   than generic memory-framework behavior.
 - Workers could still ask for unsupported Engram retrieval/ranking ports;
   capability gates must continue to fail closed.
-- Local path dependencies are acceptable for this implementation slice but need
-  a pinned source decision before release/publish.
+- Local path dependencies are acceptable only as a local implementation waiver;
+  release/publish uses the sanctioned upstream `main` Git dependency plus the
+  committed lockfile revision.
 
 ## Changelog
 
@@ -824,3 +834,11 @@ remaining only at the allowed non-runtime or non-memory SQLite points.
   with path-free governance evidence: selected ontology IDs, taxonomy scheme
   IDs, validation mode, unclassified policy, SKOS expansion limits, and
   definition-content fingerprints now participate in dry-run/apply matching.
+- 2026-08-06: accepted the upstream `main` Git dependency policy; the lockfile
+  records each build's resolved revision. Recorded functional evidence from an
+  isolated fresh-vault smoke: provider startup, root-agent turn, memory
+  write/recall, on-demand consolidation, restart/session reload, and Memory,
+  Graph, and Observatory route rendering. AC19 remains deferred until
+  knowledge-graph activity and an AgentZero-owned sleep-cycle cleanup are
+  exercised and instruction fields are redacted from persisted traces. Separate
+  backlog items cover redaction and the fresh CLI deep-mode startup failure.

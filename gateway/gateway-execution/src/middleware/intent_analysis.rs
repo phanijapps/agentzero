@@ -267,6 +267,30 @@ pub fn format_intent_injection(
              relevant skills as needed, then call `respond` when the answer is ready.\n",
         );
 
+        // Soft ward note (fast-path-ward-note spec): the classifier's
+        // ward_recommendation used to be silently discarded here, instructing
+        // the agent away from the very ward it identified. When an EXISTING
+        // ward covers the domain, producing work (files, memories) should be
+        // stored in it — without promoting the task into ward-agent routing
+        // or planner orchestration. Read-only answers may skip the ward.
+        if analysis.ward_recommendation.action == WardAction::UseExisting
+            && analysis.ward_recommendation.reason != TRIVIAL_WARD_REASON
+        {
+            let ward = analysis.ward_recommendation.ward_name.as_str();
+            out.push_str(&format!(
+                "\n**Ward note:** This task's domain matches the existing `{ward}` ward. \
+                 Calling `ward(action=\"use\", name=\"{ward}\")` is the one exception to \
+                 that prohibition: if you will create files or write memories, call it \
+                 first so the work is stored in the ward; a purely read-only answer may \
+                 skip it.\n"
+            ));
+            if let Some(ref sub) = analysis.ward_recommendation.subdirectory {
+                out.push_str(&format!(
+                    "  Place task-specific work under subdirectory `{sub}/` within that ward.\n"
+                ));
+            }
+        }
+
         if !analysis.recommended_skills.is_empty() || !analysis.recommended_agents.is_empty() {
             out.push_str("\n**Available Resources:**\n");
             for skill in &analysis.recommended_skills {
@@ -586,6 +610,13 @@ fn is_simple_message(message: &str) -> bool {
     false
 }
 
+/// Reason marker on the trivial-message placeholder analysis. The fast-path
+/// ward note must not render for it: no classifier ran, so "domain matches
+/// the `general` ward" would be a fabricated claim on the greeting path.
+/// `fallback_analysis_from_semantic` overwrites the recommendation (and this
+/// reason) with real semantic matches, so evidence-based notes still render.
+const TRIVIAL_WARD_REASON: &str = "Simple request — no ward needed";
+
 /// Build a default "simple" intent analysis for trivial messages.
 fn simple_analysis(message: &str) -> IntentAnalysis {
     IntentAnalysis {
@@ -599,7 +630,7 @@ fn simple_analysis(message: &str) -> IntentAnalysis {
             ward_name: "general".to_string(),
             subdirectory: None,
             structure: std::collections::HashMap::new(),
-            reason: "Simple request — no ward needed".to_string(),
+            reason: TRIVIAL_WARD_REASON.to_string(),
         },
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Simple,
@@ -651,6 +682,10 @@ mod fallback_analysis_tests {
         );
         assert_eq!(a.ward_recommendation.action, WardAction::UseExisting);
         assert_eq!(a.ward_recommendation.ward_name, "financial-analysis");
+        // A real semantic match must not keep the trivial-placeholder reason:
+        // the fast-path ward note suppresses on TRIVIAL_WARD_REASON, so a
+        // reason-regression here would silently drop evidence-based notes.
+        assert_ne!(a.ward_recommendation.reason, TRIVIAL_WARD_REASON);
     }
 
     #[test]
@@ -1388,6 +1423,114 @@ mod tests {
         assert!(analysis.execution_strategy.graph.is_none());
         // rewritten_prompt defaults to empty when not present
         assert!(analysis.rewritten_prompt.is_empty());
+    }
+
+    fn simple_analysis_with_ward(action: &str, ward: &str, subdir: Option<&str>) -> IntentAnalysis {
+        let json = json!({
+            "primary_intent": "analyze-stock",
+            "hidden_intents": [],
+            "recommended_skills": [],
+            "recommended_agents": [],
+            "ward_recommendation": {
+                "action": action, "ward_name": ward,
+                "subdirectory": subdir, "reason": "existing ward covers this domain",
+                "structure": {}
+            },
+            "execution_strategy": {
+                "approach": "simple",
+                "explanation": "Root can answer directly"
+            }
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn fast_path_with_existing_ward_renders_soft_ward_note() {
+        let analysis = simple_analysis_with_ward(
+            "use_existing",
+            "financial-analysis",
+            Some("aapl-valuation-comparison"),
+        );
+        let out = format_intent_injection(&analysis, None, Some("Analyze AAPL vs peers"));
+
+        assert!(
+            out.contains("ward(action=\"use\", name=\"financial-analysis\")"),
+            "note must give the exact ward call: {out}"
+        );
+        assert!(
+            out.contains("aapl-valuation-comparison"),
+            "subdirectory must be named when present"
+        );
+        assert!(
+            out.contains("files or write memories"),
+            "note must scope the exception to producing work"
+        );
+    }
+
+    #[test]
+    fn trivial_placeholder_suppresses_the_ward_note() {
+        // The trivial-message placeholder (hello/thanks) claims UseExisting
+        // "general" without any classification — the note must not render a
+        // fabricated domain match. Real classifier and semantic-fallback
+        // analyses carry their own reasons and do render it.
+        let mut analysis = simple_analysis_with_ward("use_existing", "general", None);
+        analysis.ward_recommendation.reason = TRIVIAL_WARD_REASON.to_string();
+        let out = format_intent_injection(&analysis, None, Some("hello"));
+
+        assert!(
+            !out.contains("Ward note:"),
+            "no fabricated domain match on the greeting path: {out}"
+        );
+    }
+
+    #[test]
+    fn fast_path_without_existing_ward_is_unchanged() {
+        let analysis = simple_analysis_with_ward("create_new", "brand-new-domain", None);
+        let out = format_intent_injection(&analysis, None, Some("quick question"));
+
+        assert!(
+            !out.contains("ward(action=\"use\""),
+            "no ward note without an existing ward: {out}"
+        );
+        assert!(
+            out.contains("Do NOT call `ward`"),
+            "the prohibition stands for simple tasks"
+        );
+    }
+
+    #[test]
+    fn graph_injections_are_unchanged_by_the_ward_note() {
+        let json = json!({
+            "primary_intent": "build-report",
+            "hidden_intents": [],
+            "recommended_skills": [],
+            "recommended_agents": [],
+            "ward_recommendation": {
+                "action": "use_existing", "ward_name": "financial-analysis",
+                "subdirectory": null, "reason": "domain match", "structure": {}
+            },
+            "execution_strategy": {
+                "approach": "graph",
+                "graph": {
+                    "nodes": [{"id": "A", "task": "do it", "agent": "root", "skills": []}],
+                    "edges": [{"from": "A", "to": "END"}],
+                    "mermaid": "graph TD\nA-->END",
+                    "max_cycles": 2
+                },
+                "explanation": "needs orchestration"
+            }
+        });
+        let analysis: IntentAnalysis = serde_json::from_value(json).unwrap();
+        let out = format_intent_injection(&analysis, None, Some("build the report"));
+
+        assert!(
+            out.contains("delegate_to_agent(agent_id=\"ward:financial-analysis\""),
+            "graph warm path still delegates to the ward-agent"
+        );
+        assert!(
+            !out.contains("files or write memories"),
+            "the soft note is fast-path only"
+        );
     }
 
     /// Old logs with rewritten_prompt, structure, mermaid still deserialize (backward compat).
@@ -2698,7 +2841,11 @@ mod tests {
         assert!(injection.contains("**Fast path:**"));
         assert!(!injection.contains("delegate_to_agent(agent_id=\"ward:travel-planning\""));
         assert!(!injection.contains("delegate_to_agent(agent_id=\"planner-agent\""));
-        assert!(!injection.contains("ward(action="));
+        // Fast path is never promoted into the graph-path hard mandate…
+        assert!(!injection.contains("**Required workspace:**"));
+        // …but the soft ward note (fast-path-ward-note spec) does name the
+        // existing ward for producing work.
+        assert!(injection.contains("ward(action=\"use\", name=\"travel-planning\")"));
         assert!(!injection.contains("Recommended action: run_procedure"));
     }
 

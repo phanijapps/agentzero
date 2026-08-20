@@ -47,7 +47,8 @@ impl Tool for PresentSurfaceTool {
          MetricCard(value_path, optional label/detail_path); \
          ProgressBar(value_path, optional label/max); StatusBadge(value_path, optional label); \
          Callout(message_path, optional tone); KeyValueList(items_path); \
-         DataTable(rows_path, optional columns); Timeline(items_path); \
+         DataTable(rows_path, optional columns — an array of plain string field keys \
+         into each row, e.g. [\"trailingPE\"], never objects); Timeline(items_path); \
          LineChart/BarChart(data_path, x_key, series), where data_path is a JSON \
          pointer such as /points and series is an array of field-name strings such \
          as [\"value\"]; PieChart(data_path, name_key, value_key). \
@@ -99,7 +100,7 @@ impl Tool for PresentSurfaceTool {
                             },
                             "props": {
                                 "type": "object",
-                                "description": "Component-specific declarative props only. Paths are JSON pointers into data."
+                                "description": "Component-specific declarative props only. Paths are JSON pointers into data. Field-key arrays (DataTable columns, chart series) are arrays of plain strings, never objects."
                             }
                         }
                     }
@@ -172,7 +173,7 @@ impl Tool for PresentSurfaceTool {
         };
         ZbotWorkSurfaceCatalog
             .validate(&surface)
-            .map_err(redacted_validation_error)?;
+            .map_err(surface_validation_error)?;
 
         if update {
             Ok(json!({
@@ -192,29 +193,79 @@ fn tool_error(message: &str) -> AgentError {
     AgentError::Tool(message.to_owned())
 }
 
-fn redacted_validation_error(error: SurfaceValidationError) -> AgentError {
-    let message = match error {
-        SurfaceValidationError::UnsupportedCatalog(_) => "unsupported surface catalog",
-        SurfaceValidationError::InvalidSurfaceId => "invalid surface identifier",
-        SurfaceValidationError::TooManyComponents => "too many surface components",
-        SurfaceValidationError::PayloadTooLarge => "surface payload is too large",
-        SurfaceValidationError::InvalidComponentId(_) => {
-            "invalid or duplicate component identifier"
-        }
-        SurfaceValidationError::UnsupportedProperty { .. } => "unsupported component property",
-        SurfaceValidationError::InvalidBinding { .. } => "invalid component data binding",
-        SurfaceValidationError::MissingProperty { .. } => "missing required component property",
-        SurfaceValidationError::InvalidProperty { .. } => "invalid component property",
-        SurfaceValidationError::BoundCollectionTooLarge { .. } => {
-            "bound component collection is too large"
-        }
-        SurfaceValidationError::TooManyColumns => "table has too many columns",
-        SurfaceValidationError::TooManySeries => "chart has too many series",
-        SurfaceValidationError::TooManySlices => "pie chart has too many slices",
-        SurfaceValidationError::FieldKeyTooLong { .. } => "component field key is invalid",
-        SurfaceValidationError::RenderedStringTooLong => "rendered surface string is too long",
-        SurfaceValidationError::SurfaceValueTooDeep => "surface data is nested too deeply",
-        SurfaceValidationError::InvalidActionReference => "surface action reference is invalid",
-    };
-    tool_error(message)
+/// Surface a validation failure with the detail the model needs to correct
+/// its next call. Every `SurfaceValidationError` Display string names only
+/// structural identifiers (component type, property name, catalog, id) —
+/// property VALUES never appear, so the thiserror rendering is safe to pass
+/// through verbatim. `InvalidComponentId` echoes a caller-authored id, not
+/// data; its length is bounded by the 64 KiB surface payload gate that runs
+/// before the id check. The previous generic strings ("invalid component
+/// property") hid the target and produced five identical failed retries
+/// (session sess-a0788ab4).
+fn surface_validation_error(error: SurfaceValidationError) -> AgentError {
+    tool_error(&error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_runtime::tools::context::ToolContext as ConcreteCtx;
+
+    fn test_ctx() -> Arc<dyn ToolContext> {
+        Arc::new(ConcreteCtx::full_with_state(
+            "root".into(),
+            Some("c1".into()),
+            vec![],
+            Default::default(),
+        ))
+    }
+
+    /// The exact shape the model sent five times in session sess-a0788ab4:
+    /// DataTable columns as {key,label,format} objects instead of string keys.
+    fn incident_payload() -> Value {
+        json!({
+            "surface_id": "valuation",
+            "components": [{
+                "id": "valuation-table",
+                "type": "DataTable",
+                "props": {
+                    "title": "GOOGL vs Peers",
+                    "rows_path": "/rows",
+                    "columns": [
+                        {"key": "ticker", "label": "Ticker", "format": ".1f"}
+                    ]
+                }
+            }],
+            "data": {"rows": [{"ticker": "GOOGL"}]}
+        })
+    }
+
+    #[tokio::test]
+    async fn column_objects_error_names_component_and_property() {
+        let result = PresentSurfaceTool::new()
+            .execute(test_ctx(), incident_payload())
+            .await;
+        let message = format!("{}", result.expect_err("column objects must reject"));
+        assert!(
+            message.contains("DataTable") && message.contains("columns"),
+            "error must name component and property so the model can correct the next call: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn errors_never_carry_property_values() {
+        // A title VALUE over the 128-char limit with a sentinel: the error
+        // must name the property but never echo the value.
+        const SENTINEL: &str = "SENTINEL-VALUE-MUST-NOT-LEAK";
+        let mut payload = incident_payload();
+        payload["components"][0]["props"]["title"] =
+            json!(format!("{SENTINEL}{}", "x".repeat(200)));
+        let result = PresentSurfaceTool::new().execute(test_ctx(), payload).await;
+        let message = format!("{}", result.expect_err("oversized title must reject"));
+        assert!(message.contains("title"), "names the property: {message}");
+        assert!(
+            !message.contains(SENTINEL),
+            "property values must never surface in errors: {message}"
+        );
+    }
 }

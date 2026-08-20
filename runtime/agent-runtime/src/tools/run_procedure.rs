@@ -268,7 +268,9 @@ impl Tool for RunProcedureTool {
                     tracing::warn!(error = %error, "increment_failure failed");
                 }
                 return Err(AgentError::Tool(format!(
-                    "run_procedure '{}' step {i} is a legacy task template, not executable tool args",
+                    "run_procedure '{}' step {i} is a legacy task template, not executable tool args. \
+                     This stored procedure is permanently non-executable — do not retry it; \
+                     do the task directly instead",
                     proc.name
                 )));
             }
@@ -602,6 +604,40 @@ mod tests {
         let err_msg = res.unwrap_err().to_string();
         assert!(err_msg.contains("not a registered tool"), "got: {err_msg}");
         assert!(store.failure_was_incremented("p3").await);
+    }
+
+    #[tokio::test]
+    async fn legacy_template_step_error_tells_the_model_to_abandon() {
+        let registry = Arc::new(ToolRegistry::new()); // empty registry
+
+        // Session sess-a0788ab4: a stored procedure whose steps carry
+        // task_template prose instead of executable tool args. The model
+        // retried it because the old error never said it was permanent.
+        let steps_json = serde_json::to_string(&vec![
+            json!({"action": "shell", "args": {}, "binds": [], "task_template": "Analyze {ticker}"}),
+        ])
+        .unwrap();
+        let store = Arc::new(InMemoryProcedureStore::with_one(test_procedure(
+            "p4",
+            "equity_peer_valuation_analysis",
+            &steps_json,
+        )));
+
+        let tool = RunProcedureTool::new(registry, store.clone());
+        let res = tool
+            .execute(
+                test_ctx(),
+                json!({"name": "equity_peer_valuation_analysis"}),
+            )
+            .await;
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("legacy task template"), "got: {err_msg}");
+        assert!(
+            err_msg.contains("do not retry"),
+            "error must steer the model away from a permanently broken procedure: {err_msg}"
+        );
+        assert!(store.failure_was_incremented("p4").await);
     }
 
     #[tokio::test]

@@ -193,11 +193,14 @@ describe("snapshotSession — completed session", () => {
       components: [],
       data: {},
     };
-    listSavedSessionSurfaces.mockResolvedValueOnce({ success: true, data: [saved] });
+    listSavedSessionSurfaces.mockResolvedValueOnce({
+      success: true,
+      data: [{ execution_id: "exec-1", surface: saved }],
+    });
 
     const snapshot = await snapshotSession(makeTransport(), SESSION_ID);
 
-    expect(snapshot?.surfaces).toEqual([saved]);
+    expect(snapshot?.surfaces).toEqual([{ execution_id: "exec-1", surface: saved }]);
     expect(listSavedSessionSurfaces).toHaveBeenCalledWith(SESSION_ID);
   });
 

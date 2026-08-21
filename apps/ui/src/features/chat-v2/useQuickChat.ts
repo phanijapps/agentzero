@@ -5,6 +5,7 @@ import type {
   Artifact,
   ConversationEvent,
   SessionMessage,
+  SavedSurface,
   WorkSurface,
 } from "@/services/transport/types";
 import { randomId } from "@/shared/utils/randomId";
@@ -109,7 +110,7 @@ async function bootstrapChatSession(
   conversationId: string;
   messages: QuickChatMessage[];
   artifacts: QuickChatArtifactRef[];
-  surfaces: WorkSurface[];
+  surfaces: SavedSurface[];
 } | null> {
   const init = await transport.initChatSession();
   if (!init.success || !init.data) return null;
@@ -171,7 +172,7 @@ function makeEventHandler(
 export function useQuickChat() {
   const [state, dispatch] = useReducer(reduceQuickChat, EMPTY_QUICK_CHAT_STATE);
   const { state: pillState, sink: pillSink } = useStatusPill();
-  const [surfaces, setSurfaces] = useState<WorkSurface[]>([]);
+  const [surfaces, setSurfaces] = useState<SavedSurface[]>([]);
 
   // Bootstrap idempotency guard. Set AFTER the async work resolves, not
   // before, so StrictMode's synthetic unmount doesn't leave us in a "bootstrap
@@ -211,11 +212,18 @@ export function useQuickChat() {
     if (!convId || subscribedConvIdRef.current === convId) return;
     subscribedConvIdRef.current = convId;
     const onEvent = makeEventHandler(pillSink, dispatch, (event) => {
-      const raw = event as unknown as { surface?: WorkSurface; surface_id?: string };
+      const raw = event as unknown as { surface?: WorkSurface; surface_id?: string; execution_id?: string };
       if (event.type === "surface_deleted" && raw.surface_id) {
-        setSurfaces(current => current.filter(item => item.surface_id !== raw.surface_id));
+        setSurfaces(current => current.filter(item => item.surface.surface_id !== raw.surface_id));
       } else if (raw.surface) {
-        setSurfaces(current => [...current.filter(item => item.surface_id !== raw.surface!.surface_id), raw.surface!]);
+        const next: SavedSurface = {
+          execution_id: typeof raw.execution_id === "string" ? raw.execution_id : "",
+          surface: raw.surface,
+        };
+        setSurfaces(current => [
+          ...current.filter(item => item.surface.surface_id !== next.surface.surface_id),
+          next,
+        ]);
       }
     });
     const unsubscribe = Promise.resolve().then(async () => {

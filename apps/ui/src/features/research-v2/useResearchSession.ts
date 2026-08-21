@@ -5,6 +5,7 @@ import type {
   Artifact,
   ConversationEvent,
   UnsubscribeFn,
+  SavedSurface,
   WorkSurface,
 } from "@/services/transport/types";
 import { randomId } from "@/shared/utils/randomId";
@@ -124,13 +125,28 @@ function makeEventHandler(ctx: EventHandlerCtx) {
 
 function updateSurfaces(
   event: ConversationEvent,
-  setSurfaces: (value: WorkSurface[] | ((current: WorkSurface[]) => WorkSurface[])) => void,
+  setSurfaces: (
+    value: SavedSurface[] | ((current: SavedSurface[]) => SavedSurface[]),
+  ) => void,
 ) {
-  const raw = event as unknown as { surface?: WorkSurface; surface_id?: string };
+  // The wire event carries the execution that produced the surface — keep
+  // the pair so the timeline can interleave surfaces under their turn.
+  const raw = event as unknown as {
+    surface?: WorkSurface;
+    surface_id?: string;
+    execution_id?: string;
+  };
   if (event.type === "surface_deleted" && raw.surface_id) {
-    setSurfaces(current => current.filter(item => item.surface_id !== raw.surface_id));
+    setSurfaces(current => current.filter(item => item.surface.surface_id !== raw.surface_id));
   } else if (raw.surface) {
-    setSurfaces(current => [...current.filter(item => item.surface_id !== raw.surface!.surface_id), raw.surface!]);
+    const next: SavedSurface = {
+      execution_id: typeof raw.execution_id === "string" ? raw.execution_id : "",
+      surface: raw.surface,
+    };
+    setSurfaces(current => [
+      ...current.filter(item => item.surface.surface_id !== next.surface.surface_id),
+      next,
+    ]);
   }
 }
 
@@ -247,7 +263,7 @@ async function hydrateFromSnapshot(
   dispatch: Dispatch<ResearchAction>,
   latestArtifactsRef: { current: Artifact[] },
   canApply: () => boolean = () => true,
-  onSavedSurfaces?: (surfaces: WorkSurface[]) => void,
+  onSavedSurfaces?: (surfaces: SavedSurface[]) => void,
 ): Promise<void> {
   const transport = await getTransport();
   const snap = await snapshotSession(transport, sessionId);
@@ -372,7 +388,7 @@ export function useResearchSession() {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(reduceResearch, EMPTY_RESEARCH_STATE);
   const [wardVaultRevision, setWardVaultRevision] = useState(0);
-  const [surfaces, setSurfaces] = useState<WorkSurface[]>([]);
+  const [surfaces, setSurfaces] = useState<SavedSurface[]>([]);
   const { state: pillState, sink: pillSink } = useStatusPill();
 
   const hydratedForSessionRef = useRef<string | null>(null); // one-shot hydration guard (StrictMode)

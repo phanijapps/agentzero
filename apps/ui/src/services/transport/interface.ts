@@ -38,7 +38,7 @@ import type {
   ExecutionSettings,
   PresentationSettings,
   ClearSavedSurfacesResponse,
-  WorkSurface,
+  SavedSurface,
   LogSession,
   SessionDetail,
   LogFilter,
@@ -312,7 +312,7 @@ export interface Transport {
   updatePresentationSettings(settings: PresentationSettings): Promise<TransportResult<PresentationSettings & { restartRequired: false }>>;
 
   /** Restore the validated saved surfaces for one session. */
-  listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<WorkSurface[]>>;
+  listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<SavedSurface[]>>;
 
   /** Irreversibly clear every saved surface descriptor. */
   clearSavedSurfaces(): Promise<TransportResult<ClearSavedSurfacesResponse>>;

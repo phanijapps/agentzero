@@ -11,7 +11,7 @@
 // Clicking a chip in the strip opens ArtifactSlideOut (shared with chat).
 // =============================================================================
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, Menu, PanelLeftOpen, Plus, Square } from "lucide-react";
 import { toast } from "sonner";
@@ -37,7 +37,7 @@ import { WardVaultExplorer } from "../vault/WardVaultExplorer";
 import { VaultFileSlideOut } from "../vault/VaultFileSlideOut";
 import { A2uiSurfaceRenderer } from "../surfaces/A2uiSurfaceRenderer";
 import { useVaultFilePreview } from "../vault/useVaultFilePreview";
-import type { WorkSurface } from "@/services/transport/types";
+import type { SavedSurface } from "@/services/transport/types";
 import { GOAL_ARTIFACT_LIST_OPTIONS, selectGoalArtifacts } from "./artifact-poll";
 import "./research.css";
 
@@ -266,7 +266,7 @@ function EmptyHero({ onSend }: EmptyHeroProps) {
 
 interface MainColumnProps {
   state: ResearchSessionState;
-  surfaces: WorkSurface[];
+  surfaces: SavedSurface[];
   onSend: (message: string, attachments: UploadedFileShim[]) => void;
   showSubagents: boolean;
 }
@@ -276,12 +276,39 @@ function MainColumn({ state, surfaces, onSend, showSubagents }: MainColumnProps)
 
   if (!hasContent) return <EmptyHero onSend={onSend} />;
 
+  // Interleave: each surface renders directly under the turn (execution)
+  // that produced it; orphaned surfaces (no matching turn, e.g. turn
+  // pruned from the tape) render after the last turn.
+  // Live turns key by execution id; snapshot turns carry `executionId`
+  // separately (their `id` is message-derived). Match against both.
+  const turnExecIds = new Set(
+    state.turns.map((turn) => turn.executionId ?? turn.id),
+  );
+  const orphaned: typeof surfaces = [];
+  for (const item of surfaces ?? []) {
+    if (!item.execution_id || !turnExecIds.has(item.execution_id)) {
+      orphaned.push(item);
+    }
+  }
+
   return (
     <>
       {state.turns.map((turn) => (
-        <SessionTurnBlock key={turn.id} turn={turn} showSubagents={showSubagents} />
+        <Fragment key={turn.id}>
+          <SessionTurnBlock turn={turn} showSubagents={showSubagents} />
+          {(surfaces ?? [])
+            .filter(
+              (item) =>
+                item.execution_id === (turn.executionId ?? turn.id),
+            )
+            .map((item) => (
+              <A2uiSurfaceRenderer key={item.surface.surface_id} surface={item.surface} />
+            ))}
+        </Fragment>
       ))}
-      {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
+      {orphaned.map((item) => (
+        <A2uiSurfaceRenderer key={item.surface.surface_id} surface={item.surface} />
+      ))}
     </>
   );
 }

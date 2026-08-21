@@ -461,7 +461,7 @@ fn test_intent_injection_no_sdlc_for_simple() {
         "Simple approach should not render an executable delegation example"
     );
     assert!(
-        !injection.contains("ward(action="),
+        !injection.contains("**Required workspace:**"),
         "Simple approach should not force ward entry"
     );
 }

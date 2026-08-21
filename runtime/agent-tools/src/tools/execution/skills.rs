@@ -209,10 +209,9 @@ impl Tool for LoadSkillTool {
 
     async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
         if has_placeholder_specs(ctx.as_ref()) {
-            return Ok(json!({
-                "status": "redirect",
-                "message": "Placeholder specs exist in your ward's specs/ folder. Delegate to a planning subagent to fill them first. Skills needed are listed in each spec file."
-            }));
+            return Ok(crate::tools::guards::placeholder_specs_redirect(
+                "Delegate to a planning subagent to fill them; the skills each spec needs are listed in the spec file.",
+            ));
         }
 
         // Check if loading main skill file or specific file

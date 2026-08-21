@@ -85,10 +85,9 @@ impl Tool for UpdatePlanTool {
         }
 
         if has_placeholder_specs(ctx.as_ref()) {
-            return Ok(json!({
-                "status": "redirect",
-                "message": "Placeholder specs exist in your ward's specs/ folder. Delegate to a planning subagent to fill them instead of creating your own plan."
-            }));
+            return Ok(crate::tools::guards::placeholder_specs_redirect(
+                "Delegate to a planning subagent to fill them instead of writing your own plan.",
+            ));
         }
 
         // Check for error markers from truncated/malformed tool calls

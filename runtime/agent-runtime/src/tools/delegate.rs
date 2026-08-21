@@ -284,10 +284,9 @@ impl Tool for DelegateTool {
                 || task_lower.contains("plan, not execute")
                 || task_lower.contains("fill") && task_lower.contains("spec");
             if !is_planning_task {
-                return Ok(json!({
-                    "status": "redirect",
-                    "message": "Placeholder specs exist in the ward. Delegate to a planning subagent (code-agent) to fill them first. Do not delegate ad-hoc tasks."
-                }));
+                return Ok(agent_tools::guards::placeholder_specs_redirect(
+                    "Delegate to a planning subagent to fill them; do not run ad-hoc tasks.",
+                ));
             }
         }
 

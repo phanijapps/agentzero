@@ -174,6 +174,22 @@ fn dir_has_placeholder_spec(dir: &std::path::Path) -> bool {
 // solution-agent's core responsibility. Root is no longer the exclusive
 // writer of ward doctrine; any agent the plan assigns Step 0 to is.
 
+/// Canonical placeholder-specs redirect envelope (ward-slim P5).
+///
+/// One core message for every enforcement site (delegate, load_skill,
+/// update_plan) — the site passes only its action-specific tail. The same
+/// unification the cold-graph redirect got in P2; three drifted copies of
+/// this text were the divergence it replaces.
+#[must_use]
+pub fn placeholder_specs_redirect(instead: &str) -> serde_json::Value {
+    serde_json::json!({
+        "status": "redirect",
+        "message": format!(
+            "This ward has placeholder specs — planning is not finished. {instead}"
+        )
+    })
+}
+
 /// Canonical cold-graph redirect envelope.
 ///
 /// Single source for every enforcement site (rig_adapter MCP dispatch,
@@ -190,6 +206,18 @@ pub fn cold_graph_redirect() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_specs_redirect_core_is_canonical() {
+        let envelope = placeholder_specs_redirect("Do X instead.");
+        assert_eq!(envelope["status"], "redirect");
+        let message = envelope["message"].as_str().expect("message is a string");
+        assert!(
+            message.starts_with("This ward has placeholder specs — planning is not finished."),
+            "core must be identical at every site: {message}"
+        );
+        assert!(message.ends_with("Do X instead."));
+    }
 
     #[test]
     fn cold_graph_redirect_envelope_is_canonical() {

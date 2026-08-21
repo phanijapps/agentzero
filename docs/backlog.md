@@ -71,14 +71,6 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   schema via a `visible_actions` set on `WardTool`. Unblocked — P3 landed
   (#254); nothing blocks it technically.
 
-## ward-slim-p5-gate-vocabulary
-
-- **Ward Slim P5:** Placeholder-specs gate (`app:has_placeholder_specs`,
-  delegate.rs) adopts the shared redirect-envelope helper from P2's
-  `guards.rs`. State keys stay separate (invocation-local vs
-  ward-persistent) — only the message format unifies. Blocked on nothing;
-  smallest of the three. Unblocked by picking it up.
-
 ## a2a-external-conformance
 
 - **A2A Federation and Discovery AC17:** Run the official A2A CLI/TCK and a

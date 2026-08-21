@@ -53,6 +53,35 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   rejected by providers. Unblocked by an encoder pass over message content
   before `build_request_body`, with serialization tests pinning the dialect.
 
+## ward-slim-p3-prompt-dedup
+
+- **Ward Slim P3:** Deduplicate the planner when-to-use teaching: merge
+  `<first_actions>` + `<fast_path_override>` into one compact task-entry
+  block, cut the planner if/else line in `planning_autonomy.md`, and trim the
+  "Do NOT delegate" lines from the intent injection (the gate already blocks
+  those tools mechanically). Blocked on the orchestrator-context high-stakes
+  rule: requires a live multi-step session (research + coding ward) proving
+  ward → planner → step execution still flows before any prompt lands.
+  Unblocked by running that session against a build with the slimmed payload
+  (P1+P2) and recording the trace.
+
+## ward-slim-p4-audience-split
+
+- **Ward Slim P4:** Split the ward tool surface by audience — root registers
+  with `use/create/list/info/search` only; `lint/dry_run/create_concept`
+  (planner-internal template operations) hidden from root's description and
+  schema via a `visible_actions` set on `WardTool`. Blocked on nothing
+  technical; sequenced after P3 so the prompt and tool surfaces change in
+  one review window. Unblocked by P3 landing.
+
+## ward-slim-p5-gate-vocabulary
+
+- **Ward Slim P5:** Placeholder-specs gate (`app:has_placeholder_specs`,
+  delegate.rs) adopts the shared redirect-envelope helper from P2's
+  `guards.rs`. State keys stay separate (invocation-local vs
+  ward-persistent) — only the message format unifies. Blocked on nothing;
+  smallest of the three. Unblocked by picking it up.
+
 ## a2a-external-conformance
 
 - **A2A Federation and Discovery AC17:** Run the official A2A CLI/TCK and a

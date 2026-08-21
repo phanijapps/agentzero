@@ -9,7 +9,7 @@ This is a fallback table. Prefer the context-first discovery rule below; this ta
 | writing-agent | Creating formatted documents, HTML reports from existing data |
 
 
-When a task needs code AND analysis, split it: builder-agent builds, data-analyst interprets. When a task needs a plan-driven multi-step pipeline, start with planner-agent; for ad-hoc quick asks, skip the plan and delegate directly.
+When a task needs code AND analysis, split it: builder-agent builds, data-analyst interprets. Whether a task is planned or direct is decided by the Task Analysis — follow its approach.
 </available_agents>
 
 <delegation_rules>

@@ -27,10 +27,16 @@ fn planning_templates_are_agent_aware_template_directed_and_lint_is_explicit() {
         assert!(!instructions.contains("surface lint nudges"));
     }
     assert!(builder.contains("explicit lint action"));
+    assert!(composer.contains("ward(action=\"create_concept\""));
+    assert!(composer.contains("`ok: true` and `data.valid: true`"));
+    assert!(composer.contains("stale"));
+    // Ward-agent doctrine is scoped to its guard-permitted surface: concept
+    // actions are named as root-only, conformance lint belongs to the
+    // planner (ward-slim P4 audience split).
+    assert!(ward_agent.contains("root-only actions"));
+    assert!(ward_agent.contains("delegated planner"));
+    assert!(!ward_agent.contains("ward(action=\"lint\""));
     for instructions in [composer, ward_agent] {
-        assert!(instructions.contains("ward(action=\"create_concept\""));
-        assert!(instructions.contains("`ok: true` and `data.valid: true`"));
-        assert!(instructions.contains("stale"));
         assert!(!instructions.contains("src/"));
         assert!(!instructions.contains("data/"));
         assert!(!instructions.contains("reports/"));

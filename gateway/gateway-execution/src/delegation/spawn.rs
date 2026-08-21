@@ -529,6 +529,10 @@ pub async fn spawn_delegated_agent(
     let mut builder = ExecutorBuilder::new(paths.vault_dir().clone(), tool_settings)
         .with_model_registry(model_registry)
         .with_actor_kind(actor_kind)
+        // ward-slim P4: the planner's ward surface is lifecycle + lint
+        // (validate_template_context grants it read-only post-write lint);
+        // every other delegated actor is lifecycle-only.
+        .with_ward_audience(ward_audience_for_child(&request.child_agent_id))
         .with_initial_state(
             "execution_id",
             serde_json::Value::String(execution_id.clone()),
@@ -830,6 +834,18 @@ fn capability_assignment_origin(mode: DelegationMode) -> &'static str {
         "planner"
     } else {
         "dynamic"
+    }
+}
+
+/// Ward-tool action audience for a delegated child (ward-slim P4):
+/// the planner keeps read-only post-write `lint`; every other delegated
+/// actor is lifecycle-only — matching what `validate_template_context`
+/// permits.
+fn ward_audience_for_child(child_agent_id: &str) -> agent_tools::WardAudience {
+    if child_agent_id == "planner-agent" {
+        agent_tools::WardAudience::Planner
+    } else {
+        agent_tools::WardAudience::Subagent
     }
 }
 
@@ -2020,6 +2036,24 @@ mod tests {
             capability_assignment_origin(DelegationMode::WardBackedBuild),
             "dynamic"
         );
+    }
+
+    /// ward-slim P4: the spawned planner keeps read-only lint; every other
+    /// delegated child is lifecycle-only. Pins the spawn wiring — deleting
+    /// the audience line at the builder fails this test.
+    #[test]
+    fn ward_audience_for_delegated_children() {
+        assert_eq!(
+            ward_audience_for_child("planner-agent"),
+            agent_tools::WardAudience::Planner
+        );
+        for other in ["builder-agent", "ward:financial-analysis", "web-researcher"] {
+            assert_eq!(
+                ward_audience_for_child(other),
+                agent_tools::WardAudience::Subagent,
+                "{other} must be lifecycle-only"
+            );
+        }
     }
 
     #[test]

@@ -47,6 +47,18 @@ the generic string "invalid component property".
   state was not observed at runtime; the AC1 assertion is structurally red
   against the previous generic-string mapping.
 
+- [x] AC5 — fast-path ward note is a first-action mandate (live evidence:
+  soft guidance ignored in sess-a0788ab4 [late entry] and sess-a006af36
+  [no entry at all]; the wording now mirrors the graph path's proven
+  "Your FIRST tool call must be ward(…)" family). Trivial-placeholder
+  suppression unchanged.
+- [x] AC6 — status-pill error state recovers on a successful tool result:
+  successes emit a `tool_ok` pill event; the reducer clears the sticky
+  error to "Recovered — continuing" (live evidence: sess-a006af36 showed
+  "Tool error" at the top after the model had already corrected and
+  succeeded — successes previously emitted no pill event at all).
+  Stickiness against tool_call/respond/agent_completed is preserved.
+
 ## Boundaries
 
 ### Never do

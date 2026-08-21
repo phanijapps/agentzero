@@ -99,6 +99,28 @@ describe("reducePillState", () => {
     expect(s.suffix.endsWith("…")).toBe(true);
   });
 
+  it("a successful tool result recovers the sticky error state (retried-and-fixed)", () => {
+    // Live bug (sess-a006af36): present_surface errored once, the model
+    // corrected and succeeded — but successes emitted no pill event, so
+    // "Tool error" stuck at the top for the rest of the session.
+    const s1 = reducePillState(EMPTY_PILL, {
+      kind: "error",
+      message: "invalid property tone",
+      source: "tool",
+      tool: "present_surface",
+    });
+    expect(s1.category).toBe("error");
+    const s2 = reducePillState(s1, { kind: "tool_ok", tool: "present_surface" });
+    expect(s2.category).toBe("neutral");
+    expect(s2.narration).toBe("Recovered — continuing");
+  });
+
+  it("tool_ok is invisible outside the error state (no done-flicker)", () => {
+    const s1 = reducePillState(EMPTY_PILL, { kind: "agent_started", agent_id: "root" });
+    const s2 = reducePillState(s1, { kind: "tool_ok", tool: "shell" });
+    expect(s2).toBe(s1);
+  });
+
   it("agent_started clears a sticky error state back to Thinking…/neutral", () => {
     const s1 = reducePillState(EMPTY_PILL, { kind: "error", message: "boom", source: "llm" });
     expect(s1.category).toBe("error");

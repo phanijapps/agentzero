@@ -278,11 +278,11 @@ pub fn format_intent_injection(
         {
             let ward = analysis.ward_recommendation.ward_name.as_str();
             out.push_str(&format!(
-                "\n**Ward note:** This task's domain matches the existing `{ward}` ward. \
-                 Calling `ward(action=\"use\", name=\"{ward}\")` is the one exception to \
-                 that prohibition: if you will create files or write memories, call it \
-                 first so the work is stored in the ward; a purely read-only answer may \
-                 skip it.\n"
+                "\n**Ward note:** This task belongs to the existing `{ward}` ward. Your FIRST \
+                 tool call must be `ward(action=\"use\", name=\"{ward}\")` — enter the ward \
+                 before any other tool so files, memories, and outputs are stored in it. \
+                 This is the one exception to the `ward` prohibition above; after entering \
+                 the ward, continue on the fast path and answer directly.\n"
             ));
             if let Some(ref sub) = analysis.ward_recommendation.subdirectory {
                 out.push_str(&format!(
@@ -1462,8 +1462,8 @@ mod tests {
             "subdirectory must be named when present"
         );
         assert!(
-            out.contains("files or write memories"),
-            "note must scope the exception to producing work"
+            out.contains("FIRST tool call must be"),
+            "soft guidance failed twice in live sessions — the note must mandate entry: {out}"
         );
     }
 

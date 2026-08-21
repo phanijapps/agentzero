@@ -12,12 +12,13 @@ open = [
   # Fresh-vault tracing exposed LLM system-instruction fields at info level; redact instruction/prompt fields from persisted traces before they can contain user-private configuration.
   { slug = "llm-instruction-log-redaction", source = "spec/engram-memory-engine-cutover AC19 smoke" },
   { slug = "p4-react-router-830", source = "spec/p4-tech-debt" },
+  # Ward slim P3 leftover: plan_attention's "re-delegate to planner-agent to regenerate" line contradicts the warm route; scope it to cold/planned work (high-stakes block, own live gate).
+  { slug = "ward-slim-p3-plan-attention-warm-scope", source = "spec/ward-slim-p3 Deferred" },
   # multimodal_analyze file inputs fast-fail; real document analysis needs per-provider file dialects (OpenAI input_file, GLM file_url) behind an encoder.
   { slug = "multimodal-provider-file-dialects", source = "spec/multimodal-url-fetch AC2" },
   # Main-path ChatMessage serializes multimodal parts in a homegrown dialect ({"type":"image","source":...}), not OpenAI image_url; latent until multimodal flows through the main LLM call.
   { slug = "main-path-multimodal-dialect", source = "spec/multimodal-url-fetch Deferred" },
-  # Ward slim P3: merge first_actions+fast_path_override, cut planning_autonomy planner if/else, trim intent injection — needs a live multi-step session per the orchestrator-context high-stakes rule.
-  { slug = "ward-slim-p3-prompt-dedup", source = "spec/ward-slim Deferred" },
+  # Ward slim P3 prompt-dedup shipped in #254 — slug removed on ship.
   # Ward slim P4: root sees use/create/list/info/search only; lint/dry_run/create_concept filtered from root's registration.
   { slug = "ward-slim-p4-audience-split", source = "spec/ward-slim Deferred" },
   # Ward slim P5: placeholder-specs gate adopts the shared redirect envelope; vocabulary unified, state keys stay separate.

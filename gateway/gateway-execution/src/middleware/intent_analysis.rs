@@ -261,9 +261,10 @@ pub fn format_intent_injection(
             "\n**Fast path:** This is a simple one-shot task. The task analysis \
              overrides the generic first-turn orchestration shard for this request. \
              Work in the root execution and answer directly.\n\
-             Do NOT call `ward`, `delegate_to_agent`, `planner-agent`, `wait_agent`, \
+             Do NOT call `delegate_to_agent`, `planner-agent`, `wait_agent`, \
              `run_procedure`, or read `specs/plan.md` unless the user explicitly asks \
-             for multi-agent/spec/build work. Use memory, graph, direct tools, and \
+             for multi-agent/spec/build work (ward entry is governed by the Ward note \
+             below when one is shown). Use memory, graph, direct tools, and \
              relevant skills as needed, then call `respond` when the answer is ready.\n",
         );
 
@@ -278,11 +279,10 @@ pub fn format_intent_injection(
         {
             let ward = analysis.ward_recommendation.ward_name.as_str();
             out.push_str(&format!(
-                "\n**Ward note:** This task's domain matches the existing `{ward}` ward. \
-                 Calling `ward(action=\"use\", name=\"{ward}\")` is the one exception to \
-                 that prohibition: if you will create files or write memories, call it \
-                 first so the work is stored in the ward; a purely read-only answer may \
-                 skip it.\n"
+                "\n**Ward note:** This task belongs to the existing `{ward}` ward. Your FIRST \
+                 tool call must be `ward(action=\"use\", name=\"{ward}\")` — enter the ward \
+                 before any other tool so files, memories, and outputs are stored in it. \
+                 After entering the ward, continue on the fast path and answer directly.\n"
             ));
             if let Some(ref sub) = analysis.ward_recommendation.subdirectory {
                 out.push_str(&format!(
@@ -408,8 +408,8 @@ pub fn format_intent_injection(
 
         out.push_str(&format!(
             "\n**Approach:** Complex task requiring multi-step execution.\n\
-             \n**First step:** Establish the required workspace. The system then starts `planner-agent` with the full intent context.\n\
-             Do NOT delegate to a worker, planner, or ward-agent manually and do NOT create a root checklist before that transition.\n\
+             \n**First step:** Establish the required workspace — it must be your first tool call \
+             (the system blocks everything else until then and starts `planner-agent` automatically).\n\
              The planner will read the ward, check existing code and specs, and return a structured execution plan.\n\
              Then read every step briefing and execute it by delegating to its assigned agent with `mode=\"step_executor\"`. Pass each briefing's exact `## Skills` and `## MCPs` canonical IDs as the `skills` and `mcps` arguments to `delegate_to_agent`; an explicit `none` means pass an empty list.\n\
              \nPlanner context:\n{}\n",
@@ -1462,8 +1462,8 @@ mod tests {
             "subdirectory must be named when present"
         );
         assert!(
-            out.contains("files or write memories"),
-            "note must scope the exception to producing work"
+            out.contains("FIRST tool call must be"),
+            "soft guidance failed twice in live sessions — the note must mandate entry: {out}"
         );
     }
 
@@ -1493,8 +1493,14 @@ mod tests {
             "no ward note without an existing ward: {out}"
         );
         assert!(
-            out.contains("Do NOT call `ward`"),
-            "the prohibition stands for simple tasks"
+            out.contains("Do NOT call `delegate_to_agent`"),
+            "the delegation prohibition stands for simple tasks"
+        );
+        // P3: ward is no longer in the blanket prohibition — the Ward note
+        // owns ward guidance on this path (no contradiction between the two).
+        assert!(
+            !out.contains("Do NOT call `ward`"),
+            "ward must not be blanket-prohibited on the fast path: {out}"
         );
     }
 

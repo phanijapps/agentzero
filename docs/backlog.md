@@ -53,26 +53,23 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   rejected by providers. Unblocked by an encoder pass over message content
   before `build_request_body`, with serialization tests pinning the dialect.
 
-## ward-slim-p3-prompt-dedup
+## ward-slim-p3-plan-attention-warm-scope
 
-- **Ward Slim P3:** Deduplicate the planner when-to-use teaching: merge
-  `<first_actions>` + `<fast_path_override>` into one compact task-entry
-  block, cut the planner if/else line in `planning_autonomy.md`, and trim the
-  "Do NOT delegate" lines from the intent injection (the gate already blocks
-  those tools mechanically). Blocked on the orchestrator-context high-stakes
-  rule: requires a live multi-step session (research + coding ward) proving
-  ward → planner → step execution still flows before any prompt lands.
-  Unblocked by running that session against a build with the slimmed payload
-  (P1+P2) and recording the trace.
+- **Ward Slim P3 deferred:** `<plan_attention>` tells root to "re-delegate
+  to planner-agent to regenerate" an unavailable session plan — correct for
+  cold/planned work, contradicting the warm route's "Do NOT delegate to
+  planner-agent". Blocked on the orchestrator-context high-stakes rule
+  (plan/goal delivery changes need their own live multi-step verification);
+  unblocked by scoping the line to graph-planned work and re-running both
+  live flows.
 
 ## ward-slim-p4-audience-split
 
 - **Ward Slim P4:** Split the ward tool surface by audience — root registers
   with `use/create/list/info/search` only; `lint/dry_run/create_concept`
   (planner-internal template operations) hidden from root's description and
-  schema via a `visible_actions` set on `WardTool`. Blocked on nothing
-  technical; sequenced after P3 so the prompt and tool surfaces change in
-  one review window. Unblocked by P3 landing.
+  schema via a `visible_actions` set on `WardTool`. Unblocked — P3 landed
+  (#254); nothing blocks it technically.
 
 ## ward-slim-p5-gate-vocabulary
 

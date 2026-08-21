@@ -249,13 +249,18 @@ describe("mapGatewayEventToPillEvent", () => {
     ).toEqual({ kind: "error", message: "file not found", source: "tool", tool: "read_file" });
   });
 
-  it("tool_result without error returns null (no pill event)", () => {
+  it("successful tool_result maps to the pill recovery signal", () => {
     expect(mapGatewayEventToPillEvent({ type: "tool_result", tool_name: "read_file", result: "ok" } as any))
-      .toBeNull();
+      .toEqual({ kind: "tool_ok", tool: "read_file" });
   });
 
-  it("tool_result with empty-string error returns null", () => {
+  it("tool_result with empty-string error maps to the recovery signal", () => {
     expect(mapGatewayEventToPillEvent({ type: "tool_result", tool_name: "read_file", error: "" } as any))
+      .toEqual({ kind: "tool_ok", tool: "read_file" });
+  });
+
+  it("successful tool_result without a tool name returns null", () => {
+    expect(mapGatewayEventToPillEvent({ type: "tool_result", result: "ok" } as any))
       .toBeNull();
   });
 });

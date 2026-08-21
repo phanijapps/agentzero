@@ -244,13 +244,17 @@ function mapPillToolCall(e: Record<string, unknown>): PillEvent | null {
 }
 
 function mapPillToolResult(e: Record<string, unknown>): PillEvent | null {
-  // Pill only cares about tool results that *failed* — surface the error so
-  // the user sees it without opening the logs.
-  const err = e["error"];
-  if (typeof err !== "string" || err.length === 0) return null;
   const toolRaw = e["tool_name"] ?? e["tool"];
   const tool = typeof toolRaw === "string" ? toolRaw : undefined;
-  return { kind: "error", message: err, source: "tool", tool };
+  // Failed results surface the error so the user sees it without opening the
+  // logs; successful results emit the recovery signal that un-sticks the
+  // pill's sticky error state (a retried-and-fixed call must not leave
+  // "Tool error" on screen for the rest of the session).
+  const err = e["error"];
+  if (typeof err === "string" && err.length > 0) {
+    return { kind: "error", message: err, source: "tool", tool };
+  }
+  return tool ? { kind: "tool_ok", tool } : null;
 }
 
 function mapPillError(e: Record<string, unknown>): PillEvent {

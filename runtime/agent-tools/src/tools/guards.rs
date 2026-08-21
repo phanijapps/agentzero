@@ -173,3 +173,30 @@ fn dir_has_placeholder_spec(dir: &std::path::Path) -> bool {
 // delegated subagent. Blocking subagent writes to AGENTS.md would block
 // solution-agent's core responsibility. Root is no longer the exclusive
 // writer of ward doctrine; any agent the plan assigns Step 0 to is.
+
+/// Canonical cold-graph redirect envelope.
+///
+/// Single source for every enforcement site (rig_adapter MCP dispatch,
+/// builtin executor dispatch). Both sites must render exactly this — a
+/// second literal copy is how the two drifted messages happened.
+#[must_use]
+pub fn cold_graph_redirect() -> serde_json::Value {
+    serde_json::json!({
+        "status": "redirect",
+        "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call MCP tools or other tools yet."
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cold_graph_redirect_envelope_is_canonical() {
+        let envelope = cold_graph_redirect();
+        assert_eq!(envelope["status"], "redirect");
+        let message = envelope["message"].as_str().expect("message is a string");
+        assert!(message.contains("ward(action: \"create\" or \"use\")"));
+        assert!(message.ends_with("do not call MCP tools or other tools yet."));
+    }
+}

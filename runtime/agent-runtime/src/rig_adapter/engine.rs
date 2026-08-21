@@ -1334,7 +1334,7 @@ mod tests {
                 Ok(serde_json::json!({
                     "__ward_changed__": true,
                     "ward_id": "new-ward",
-                    "planner_started": true
+                    "planner": "started"
                 }))
             }
         }

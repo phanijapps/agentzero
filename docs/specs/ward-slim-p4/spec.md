@@ -34,9 +34,8 @@ the guards remain the enforcement layer; this change is declaration-only.
   subagent: lifecycle only).
 - [x] AC2 — executor registration derives the audience from the actor
   (Root → root set; others → lifecycle-only) with an explicit override for
-  the delegated planner spawn (`ward_audience_for_child`, discriminator
-  `child_agent_id == "planner-agent"` as at spawn.rs:267/326/852; pinned by
-  a spawn-side unit test).
+  the delegated planner spawn (see `ward_audience_for_child` in
+  `delegation/spawn.rs`; pinned by a spawn-side unit test).
 - [x] AC3 — `execute()` behavior is unchanged for every action on every
   instance (guards still gate template actions; a hallucinated root
   `lint` call still runs the same code path).
@@ -46,10 +45,9 @@ the guards remain the enforcement layer; this change is declaration-only.
 - [x] AC5 — live smoke on the rebuilt daemon: fast-path run still enters
   the ward first (`ward → … → respond`), planner path unaffected (covered
   by e2e + the graph gate tests). Smoke of record: 2026-08-21, WS probe
-  "Compare Microsoft and Apple…" — first tool `ward`, `present_surface` ok,
-  surface created, `respond` (daemon build 13:36; pre-review-audience build
-  — the corrected audiences change only the declaration, re-verified by
-  gates).
+  "Compare Nvidia and AMD…" on the corrected-audience daemon build (14:11)
+  — first tool `ward`, `run_procedure`/`shell` work, `present_surface` ok,
+  surface created, `respond`.
 
 ## Boundaries
 

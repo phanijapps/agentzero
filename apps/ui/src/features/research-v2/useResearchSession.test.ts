@@ -397,8 +397,8 @@ describe("useResearchSession — subscription ordering (R14a)", () => {
     });
 
     expect(result.current.surfaces).toHaveLength(1);
-    expect(result.current.surfaces[0].surface_id).toBe("automatic-summary");
-    expect(result.current.surfaces[0].data).toEqual({ value: 84 });
+    expect(result.current.surfaces[0].surface.surface_id).toBe("automatic-summary");
+    expect(result.current.surfaces[0].surface.data).toEqual({ value: 84 });
   });
 
   it("hydrate + sendMessage: subscribe fires with a fresh convId; invoke carries the sessionId", async () => {

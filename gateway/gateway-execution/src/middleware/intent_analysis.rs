@@ -260,12 +260,9 @@ pub fn format_intent_injection(
         out.push_str(
             "\n**Fast path:** This is a simple one-shot task. The task analysis \
              overrides the generic first-turn orchestration shard for this request. \
-             Work in the root execution and answer directly.\n\
-             Do NOT call `delegate_to_agent`, `planner-agent`, `wait_agent`, \
-             `run_procedure`, or read `specs/plan.md` unless the user explicitly asks \
-             for multi-agent/spec/build work (ward entry is governed by the Ward note \
-             below when one is shown). Use memory, graph, direct tools, and \
-             relevant skills as needed, then call `respond` when the answer is ready.\n",
+             Work in the root execution — use memory, graph, direct tools, agents, \
+             and relevant skills as the task requires, then call `respond` when the \
+             answer is ready.\n",
         );
 
         // Soft ward note (fast-path-ward-note spec): the classifier's
@@ -281,8 +278,7 @@ pub fn format_intent_injection(
             out.push_str(&format!(
                 "\n**Ward note:** This task belongs to the existing `{ward}` ward. Your FIRST \
                  tool call must be `ward(action=\"use\", name=\"{ward}\")` — enter the ward \
-                 before any other tool so files, memories, and outputs are stored in it. \
-                 After entering the ward, continue on the fast path and answer directly.\n"
+                 before any other tool so files, memories, and outputs are stored in it.\n"
             ));
             if let Some(ref sub) = analysis.ward_recommendation.subdirectory {
                 out.push_str(&format!(
@@ -1492,15 +1488,15 @@ mod tests {
             !out.contains("ward(action=\"use\""),
             "no ward note without an existing ward: {out}"
         );
+        // Routing freedom: the fast path names no tool prohibitions at all.
+        // July-2026 live evidence (sess-32700e4a): simple-mode research
+        // worked precisely because the model was free to delegate to
+        // research-agent; the Do-NOT list (added 2026-07-07, doubled down
+        // by the ward-note tail in #252/#253) regressed it into
+        // memory-only answers (sess-216d100a).
         assert!(
-            out.contains("Do NOT call `delegate_to_agent`"),
-            "the delegation prohibition stands for simple tasks"
-        );
-        // P3: ward is no longer in the blanket prohibition — the Ward note
-        // owns ward guidance on this path (no contradiction between the two).
-        assert!(
-            !out.contains("Do NOT call `ward`"),
-            "ward must not be blanket-prohibited on the fast path: {out}"
+            !out.contains("Do NOT call"),
+            "the fast path must not prohibit tools or delegation: {out}"
         );
     }
 

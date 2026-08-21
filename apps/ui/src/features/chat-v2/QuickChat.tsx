@@ -177,7 +177,7 @@ export function QuickChat() {
         <div className="quick-chat__scroll">
           <div className="quick-chat__messages">
             {state.messages.map((m) => <MessageRow key={m.id} message={m} />)}
-            {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
+            {(surfaces ?? []).map(item => <A2uiSurfaceRenderer key={item.surface.surface_id} surface={item.surface} />)}
             {hasArtifacts && (
               <section className="quick-chat__deliverables" aria-labelledby="quick-chat-deliverables-heading">
                 <div className="quick-chat__deliverables-heading">

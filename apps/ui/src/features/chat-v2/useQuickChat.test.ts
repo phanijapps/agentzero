@@ -242,7 +242,7 @@ describe("useQuickChat — WS subscription lifecycle", () => {
     });
 
     expect(result.current.surfaces).toEqual([
-      expect.objectContaining({ surface_id: "surface-1", data: { value: 2 } }),
+      expect.objectContaining({ surface: expect.objectContaining({ surface_id: "surface-1", data: { value: 2 } }) }),
     ]);
   });
 });

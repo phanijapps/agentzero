@@ -44,7 +44,7 @@ import type {
   PresentationSettings,
   PresentationSettingsResponse,
   ClearSavedSurfacesResponse,
-  WorkSurface,
+  SavedSurface,
   LogSession,
   SessionDetail,
   LogFilter,
@@ -461,8 +461,8 @@ export class HttpTransport implements Transport {
     return { success: false, error: result.error || result.data?.error || "Failed to update presentation settings" };
   }
 
-  async listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<WorkSurface[]>> {
-    return this.get<WorkSurface[]>(`/api/sessions/${encodeURIComponent(sessionId)}/surfaces`);
+  async listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<SavedSurface[]>> {
+    return this.get<SavedSurface[]>(`/api/sessions/${encodeURIComponent(sessionId)}/surfaces`);
   }
 
   async clearSavedSurfaces(): Promise<TransportResult<ClearSavedSurfacesResponse>> {

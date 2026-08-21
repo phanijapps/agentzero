@@ -686,6 +686,13 @@ export interface WorkSurface {
   data: Record<string, unknown>;
 }
 
+/** Saved surface paired with the execution that produced it — the research
+ * timeline interleaves surfaces under their turn (execution id). */
+export interface SavedSurface {
+  execution_id: string;
+  surface: WorkSurface;
+}
+
 export interface SurfaceCreatedEvent extends StreamEvent {
   type: "surface_created";
   session_id: string;

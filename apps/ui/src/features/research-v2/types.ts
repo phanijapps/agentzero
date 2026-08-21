@@ -89,6 +89,9 @@ export type ResearchStatus = "idle" | "running" | "complete" | "stopped" | "erro
 export interface SessionTurn {
   /** Stable id derived from the user message id. */
   id: string;
+  /** Execution id that owns this turn (root execution); surfaces attach
+   * here in the timeline. Null when unknown (legacy snapshots). */
+  executionId?: string;
   /** 0..N-1 chronological. */
   index: number;
   /** The user message that opens this turn. */

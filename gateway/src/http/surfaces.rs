@@ -21,11 +21,19 @@ use crate::state::AppState;
 use super::autonomy::{AutonomyDetailResponse, ErrorResponse};
 use super::{HttpErrorResponse, SameOrigin};
 
+/// Saved surface with the execution that produced it — the UI interleaves
+/// surfaces into the chat timeline under their turn (execution id).
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct SavedSurfaceResponse {
+    pub execution_id: String,
+    pub surface: WorkSurface,
+}
+
 pub async fn list_saved_session_surfaces(
     State(state): State<AppState>,
     _origin: SameOrigin,
     Path(session_id): Path<String>,
-) -> Result<Json<Vec<WorkSurface>>, (StatusCode, Json<HttpErrorResponse>)> {
+) -> Result<Json<Vec<SavedSurfaceResponse>>, (StatusCode, Json<HttpErrorResponse>)> {
     if session_id.is_empty() || session_id.len() > 128 {
         return Err(bad_request("invalid session id"));
     }
@@ -39,7 +47,7 @@ pub async fn list_saved_session_surfaces(
     Ok(Json(decode_saved_surfaces(records)))
 }
 
-fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<WorkSurface> {
+fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<SavedSurfaceResponse> {
     let mut surfaces = Vec::with_capacity(records.len());
     for record in records {
         if record.surface_json.len() > MAX_SURFACE_BYTES {
@@ -58,7 +66,10 @@ fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<WorkSurface>
                     && ZbotWorkSurfaceCatalog.validate(&surface).is_ok()
                     && is_persistable_surface(&surface) =>
             {
-                surfaces.push(surface);
+                surfaces.push(SavedSurfaceResponse {
+                    execution_id: record.execution_id,
+                    surface,
+                });
             }
             _ => tracing::warn!(
                 event = "saved_surface_rejected",
@@ -260,6 +271,14 @@ mod tests {
             oversized,
         ]);
 
-        assert_eq!(decoded, vec![display]);
+        // Pair shape: the persisted execution id rides with the surface so
+        // the UI can interleave surfaces under their producing turn.
+        assert_eq!(
+            decoded,
+            vec![SavedSurfaceResponse {
+                execution_id: "exec-1".to_owned(),
+                surface: display,
+            }]
+        );
     }
 }

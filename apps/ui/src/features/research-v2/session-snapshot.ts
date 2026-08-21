@@ -27,7 +27,7 @@ import type {
   Artifact,
   LogSession,
   SessionMessage,
-  WorkSurface,
+  SavedSurface,
 } from "@/services/transport/types";
 import type {
   AgentTurn,
@@ -83,7 +83,7 @@ export interface ResearchSnapshot {
   intentAnalyzing: boolean;
   /** Recorded primary intent, when the session completed intent analysis. */
   intentClassification: string | null;
-  surfaces: WorkSurface[];
+  surfaces: SavedSurface[];
 }
 
 /**

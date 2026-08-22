@@ -5,7 +5,7 @@
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::EventBus;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -50,6 +50,11 @@ pub struct StreamContext {
     /// Surface ids created during this execution. Keeps projections additive:
     /// the first descriptor creates, later descriptors update.
     pub surface_ids: Arc<Mutex<HashSet<String>>>,
+    /// Pending `write_file` calls into the ward's `outputs/` (the deliverable
+    /// convention), keyed by tool-call id. On success the processor declares
+    /// each as a goal artifact — so deliverables stay visible even when the
+    /// model's respond omits them (sess-22816ad4 variance).
+    pub output_write_calls: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl StreamContext {
@@ -79,6 +84,7 @@ impl StreamContext {
             vault_dir,
             recommended_skills: Vec::new(),
             surface_ids: Arc::new(Mutex::new(HashSet::new())),
+            output_write_calls: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

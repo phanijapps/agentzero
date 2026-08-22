@@ -116,10 +116,22 @@ impl Tool for RespondTool {
             .and_then(|v| v.as_str())
             .unwrap_or("text");
 
-        let artifacts: Vec<agent_primitives::event::ArtifactDeclaration> = args
+        let mut artifacts: Vec<agent_primitives::event::ArtifactDeclaration> = args
             .get("artifacts")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
+        // Artifacts listed in the final response ARE the goal's deliverables
+        // — the declaration's serde default (false) hid them from the
+        // research artifact strip whenever the model omitted the flag
+        // (sess-c71656d7: the chart page was built, declared, and filtered).
+        // Absent key → goal artifact; an explicit false is honored.
+        if let Some(raw) = args.get("artifacts").and_then(|v| v.as_array()) {
+            for (artifact, raw_decl) in artifacts.iter_mut().zip(raw) {
+                if raw_decl.get("is_goal_artifact").is_none() {
+                    artifact.is_goal_artifact = true;
+                }
+            }
+        }
 
         // Get hook context from state
         let hook_context = ctx.get_state("hook_context");
@@ -244,6 +256,44 @@ mod tests {
 
         assert_eq!(result["status"], "redirect");
         assert!(ctx.actions().respond.is_none());
+    }
+
+    /// Absent `is_goal_artifact` in a respond declaration means goal
+    /// artifact — the final answer's deliverables (sess-c71656d7: the chart
+    /// page was built, declared, and hidden by the false serde default).
+    #[tokio::test]
+    async fn respond_artifacts_default_to_goal_artifacts() {
+        let tool = RespondTool::new();
+        let inner = crate::tools::context::ToolContext::full(
+            "agent".to_string(),
+            Some("conv-1".to_string()),
+            vec![],
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(inner);
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({
+                    "message": "done",
+                    "artifacts": [
+                        {"path": "outputs/chart.html", "label": "Chart page"},
+                        {"path": "tmp/work.json", "label": "Working data", "is_goal_artifact": false}
+                    ]
+                }),
+            )
+            .await
+            .expect("respond succeeds");
+
+        let actions = ctx.actions();
+        let respond_action = actions.respond.expect("respond action");
+        let declared: &[agent_primitives::event::ArtifactDeclaration] = &respond_action.artifacts;
+        assert!(
+            declared[0].is_goal_artifact,
+            "absent flag must default to goal artifact"
+        );
+        assert!(!declared[1].is_goal_artifact, "explicit false honored");
+        let _ = result;
     }
 
     #[tokio::test]

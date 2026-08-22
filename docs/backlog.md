@@ -53,17 +53,6 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   rejected by providers. Unblocked by an encoder pass over message content
   before `build_request_body`, with serialization tests pinning the dialect.
 
-## ward-slim-p3-plan-attention-warm-scope
-
-- **Ward Slim P3 deferred:** `<plan_attention>` tells root to "re-delegate
-  to planner-agent to regenerate" an unavailable session plan — correct for
-  cold/planned work, contradicting the warm route's "Do NOT delegate to
-  planner-agent". Blocked on the orchestrator-context high-stakes rule
-  (plan/goal delivery changes need their own live multi-step verification);
-  unblocked by scoping the line to graph-planned work and re-running both
-  live flows.
-
-
 ## a2a-external-conformance
 
 - **A2A Federation and Discovery AC17:** Run the official A2A CLI/TCK and a

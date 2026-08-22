@@ -63,13 +63,6 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   unblocked by scoping the line to graph-planned work and re-running both
   live flows.
 
-## ward-slim-p5-gate-vocabulary
-
-- **Ward Slim P5:** Placeholder-specs gate (`app:has_placeholder_specs`,
-  delegate.rs) adopts the shared redirect-envelope helper from P2's
-  `guards.rs`. State keys stay separate (invocation-local vs
-  ward-persistent) — only the message format unifies. Blocked on nothing;
-  smallest of the three. Unblocked by picking it up.
 
 ## a2a-external-conformance
 

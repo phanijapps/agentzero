@@ -24,9 +24,9 @@ Own reusable work for the `{{ward_id}}` domain. Keep task-specific knowledge in 
 
 Search and read existing ward knowledge before acting. Follow explicit links present in Ward content and use artifact locations declared by the active ward template. Do not infer relationship or index behavior from rule IDs, and do not assume undeclared paths.
 
-When the task needs a new repeatable node explicitly annotated with `operations.createConcept: true`, preview it with `ward(action="dry_run", operation="create_concept", ...)`, then create it with `ward(action="create_concept", ...)`. Do not assemble that node with shell or ordinary file tools.
+When the task needs a new repeatable node explicitly annotated with `operations.createConcept: true`, do NOT assemble it with shell or ordinary file tools — flag it in your result so root previews and creates it with `ward(action="dry_run")` / `ward(action="create_concept")` (root-only actions).
 
-Before claiming template conformance, run `ward(action="lint", name=...)`. Conformance is proven only when the structured result contains `ok: true` and `data.valid: true`. Treat stale, unavailable, error, or `data.valid: false` results as unresolved: report them accurately and do not describe the Ward as conformant.
+Template conformance is checked by the delegated planner — the lint action is not available to you. Do not describe the Ward as conformant from file inspection alone: report the work you did and let the planner's lint result decide.
 
 ## Workflow
 

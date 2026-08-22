@@ -19,8 +19,7 @@ open = [
   # Main-path ChatMessage serializes multimodal parts in a homegrown dialect ({"type":"image","source":...}), not OpenAI image_url; latent until multimodal flows through the main LLM call.
   { slug = "main-path-multimodal-dialect", source = "spec/multimodal-url-fetch Deferred" },
   # Ward slim P3 prompt-dedup shipped in #254 — slug removed on ship.
-  # Ward slim P4: root sees use/create/list/info/search only; lint/dry_run/create_concept filtered from root's registration.
-  { slug = "ward-slim-p4-audience-split", source = "spec/ward-slim Deferred" },
+  # Ward slim P4 audience split shipped — slug removed on ship.
   # Ward slim P5: placeholder-specs gate adopts the shared redirect envelope; vocabulary unified, state keys stay separate.
   { slug = "ward-slim-p5-gate-vocabulary", source = "spec/ward-slim Deferred" },
 ]

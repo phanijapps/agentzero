@@ -65,16 +65,39 @@ pub struct WardLayoutState {
     pub packet: Value,
 }
 
+/// Which actions the model-facing surface (description + schema) advertises,
+/// mirroring what `validate_template_context` actually permits per actor:
+/// `lint` is the delegated planner's post-write check; `dry_run`/
+/// `create_concept` are root-only (plan-composer drives them from root-owned
+/// setup steps); ward agents and other subagents hold no template actions.
+/// Declaration-only: `execute()` handles every action on every instance —
+/// enforcement stays with `validate_template_context`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WardAudience {
+    /// Every action (back-compat `new()`; direct tests).
+    Full,
+    /// Root: lifecycle + search + `dry_run`/`create_concept`, no `lint`
+    /// (the planner owns conformance checking).
+    Root,
+    /// Delegated planner: lifecycle + search + `lint`.
+    Planner,
+    /// Ward agents and other subagents: lifecycle + search only.
+    Subagent,
+}
+
+impl WardAudience {
+    fn show_lint(self) -> bool {
+        matches!(self, Self::Full | Self::Planner)
+    }
+    fn show_concept_actions(self) -> bool {
+        matches!(self, Self::Full | Self::Root)
+    }
+}
+
 /// Tool for managing wards (named project directories).
 ///
 /// Wards are persistent, agent-named project directories under `vault/wards/`.
 /// The agent autonomously creates and switches between wards.
-///
-/// Actions:
-/// - `use`: Switch to a ward (creates if needed), returns file listing
-/// - `create`: Alias for `use` (semantically clearer for new wards)
-/// - `list`: List all wards with descriptions
-/// - `info`: Detailed info about a specific ward
 pub struct WardTool {
     fs: Arc<dyn FileSystemContext>,
     fact_store: Option<Arc<dyn MemoryFactStore>>,
@@ -83,6 +106,7 @@ pub struct WardTool {
     /// valid no-op (tests, minimal configurations).
     ward_usage: Option<Arc<dyn WardUsageAccess>>,
     ward_layout: Arc<dyn WardLayoutAccess>,
+    audience: WardAudience,
 }
 
 impl WardTool {
@@ -102,7 +126,8 @@ impl WardTool {
     }
 
     /// Create a new WardTool with file system context, optional fact store,
-    /// and optional ward-usage observer.
+    /// and optional ward-usage observer. Full action surface (back-compat;
+    /// production registrations pick an audience explicitly).
     #[must_use]
     pub fn new(
         fs: Arc<dyn FileSystemContext>,
@@ -110,11 +135,72 @@ impl WardTool {
         ward_usage: Option<Arc<dyn WardUsageAccess>>,
         ward_layout: Arc<dyn WardLayoutAccess>,
     ) -> Self {
+        Self::with_audience(fs, fact_store, ward_usage, ward_layout, WardAudience::Full)
+    }
+
+    /// Root audience: lifecycle + search + `dry_run`/`create_concept`
+    /// (root is their only legal executor — plan-composer drives them from
+    /// root-owned setup steps). `lint` stays hidden: the planner owns
+    /// conformance checking.
+    #[must_use]
+    pub fn for_root(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+    ) -> Self {
+        Self::with_audience(fs, fact_store, ward_usage, ward_layout, WardAudience::Root)
+    }
+
+    /// Delegated-planner audience: lifecycle + search + `lint`.
+    #[must_use]
+    pub fn for_planner(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+    ) -> Self {
+        Self::with_audience(
+            fs,
+            fact_store,
+            ward_usage,
+            ward_layout,
+            WardAudience::Planner,
+        )
+    }
+
+    /// Ward-agent / ordinary-subagent audience: lifecycle + search only —
+    /// `validate_template_context` rejects every template action for them.
+    #[must_use]
+    pub fn for_subagent(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+    ) -> Self {
+        Self::with_audience(
+            fs,
+            fact_store,
+            ward_usage,
+            ward_layout,
+            WardAudience::Subagent,
+        )
+    }
+
+    #[must_use]
+    fn with_audience(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+        audience: WardAudience,
+    ) -> Self {
         Self {
             fs,
             fact_store,
             ward_usage,
             ward_layout,
+            audience,
         }
     }
 
@@ -949,6 +1035,57 @@ fn markdown_metadata(content: &str, path: &std::path::Path) -> (String, Vec<Stri
     (title, tags)
 }
 
+/// Tool descriptions per audience — plain literals so `description()` keeps
+/// its `&'str` signature. Bodies differ only in the action-list tail.
+const WARD_DESC_FULL: &str = concat!(
+    "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.",
+    "\n\
+             - lint: Check the active ward against its ward-conf.yaml snapshot.",
+    "\n\
+             - dry_run: Preview a template-directed create_concept operation.\n\
+             - create_concept: Create the concept node annotated by the active template."
+);
+const WARD_DESC_ROOT: &str = concat!(
+    "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.",
+    "\n\
+             - dry_run: Preview a template-directed create_concept operation.\n\
+             - create_concept: Create the concept node annotated by the active template."
+);
+const WARD_DESC_PLANNER: &str = concat!(
+    "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.",
+    "\n\
+             - lint: Check the active ward against its ward-conf.yaml snapshot."
+);
+const WARD_DESC_SUBAGENT: &str = "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.";
+
 #[async_trait]
 impl Tool for WardTool {
     fn name(&self) -> &str {
@@ -956,17 +1093,12 @@ impl Tool for WardTool {
     }
 
     fn description(&self) -> &str {
-        "Manage code wards (named project directories). Wards persist across sessions.\n\
-         Arguments are action-specific; unknown fields are rejected.\n\
-         Actions:\n\
-         - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
-         - create: Alias for use. Creates and switches to a new ward.\n\
-         - list: List all wards with descriptions.\n\
-         - info: Detailed info about a specific ward.\n\
-         - search: Search Markdown in the active ward by text and exact tags.\n\
-         - lint: Check the active ward against its ward-conf.yaml snapshot.\n\
-         - dry_run: Preview a template-directed create_concept operation.\n\
-         - create_concept: Create the concept node annotated by the active template."
+        match self.audience {
+            WardAudience::Full => WARD_DESC_FULL,
+            WardAudience::Root => WARD_DESC_ROOT,
+            WardAudience::Planner => WARD_DESC_PLANNER,
+            WardAudience::Subagent => WARD_DESC_SUBAGENT,
+        }
     }
 
     fn parameters_schema(&self) -> Option<Value> {
@@ -978,30 +1110,37 @@ impl Tool for WardTool {
                 "additionalProperties": false
             })
         };
-        Some(json!({"oneOf": [
-            named(json!({"enum": ["use", "info", "lint"]})),
-            {"type":"object","properties":{
+        let mut branches = vec![
+            named(json!({"enum": if self.audience.show_lint() {
+                vec!["use", "info", "lint"]
+            } else {
+                vec!["use", "info"]
+            }})),
+            json!({"type":"object","properties":{
                 "action":{"const":"create"},
                 "name":{"type":"string"},
                 "archetype":{"enum":["generic","coding","documentation","journal","ebook","research","news"]}
-            },"required":["action","name"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"const":"list"}},"required":["action"],"additionalProperties":false},
-            {"type":"object","properties":{
+            },"required":["action","name"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"action":{"const":"list"}},"required":["action"],"additionalProperties":false}),
+            json!({"type":"object","properties":{
                 "action":{"const":"search"}, "name":{"type":"string"},
                 "query":{"type":"string","maxLength":256},
                 "tags":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":64}},
                 "limit":{"type":"integer","minimum":1,"maximum":50}
-            },"required":["action","name"],"additionalProperties":false},
-            {"type":"object","properties":{
+            },"required":["action","name"],"additionalProperties":false}),
+        ];
+        if self.audience.show_concept_actions() {
+            branches.push(json!({"type":"object","properties":{
                 "action":{"const":"dry_run"}, "name":{"type":"string"},
                 "operation":{"const":"create_concept"},
                 "components":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","maxLength":64}}
-            },"required":["action","name","operation","components"],"additionalProperties":false},
-            {"type":"object","properties":{
+            },"required":["action","name","operation","components"],"additionalProperties":false}));
+            branches.push(json!({"type":"object","properties":{
                 "action":{"const":"create_concept"}, "name":{"type":"string"},
                 "components":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","maxLength":64}}
-            },"required":["action","name","components"],"additionalProperties":false}
-        ]}))
+            },"required":["action","name","components"],"additionalProperties":false}));
+        }
+        Some(json!({"oneOf": branches}))
     }
 
     fn permissions(&self) -> ToolPermissions {
@@ -1816,6 +1955,157 @@ mod tests {
         let content = tool.read_agents_md(dir.path());
         assert!(content.is_some());
         assert!(content.unwrap().contains("# My Project"));
+    }
+
+    #[test]
+    fn root_surface_keeps_concept_actions_drops_lint() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::for_root(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for present in [
+            "use:",
+            "create:",
+            "list:",
+            "info:",
+            "search:",
+            "dry_run:",
+            "create_concept:",
+        ] {
+            assert!(
+                description.contains(present),
+                "root surface missing {present}"
+            );
+        }
+        assert!(
+            !description.contains("lint"),
+            "root surface must not advertise lint — the planner owns conformance"
+        );
+
+        let schema = tool.parameters_schema().expect("schema").to_string();
+        assert!(
+            schema.contains("create_concept"),
+            "root keeps concept actions"
+        );
+        assert!(!schema.contains("lint"));
+        let branches = tool.parameters_schema().unwrap()["oneOf"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(
+            branches, 6,
+            "root: named(use/info), create, list, search, dry_run, create_concept"
+        );
+    }
+
+    #[test]
+    fn planner_surface_keeps_lint_drops_concept_actions() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::for_planner(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for present in ["use:", "create:", "list:", "info:", "search:", "lint:"] {
+            assert!(
+                description.contains(present),
+                "planner surface missing {present}"
+            );
+        }
+        for hidden in ["dry_run", "create_concept"] {
+            assert!(
+                !description.contains(hidden),
+                "planner surface must not advertise {hidden} — guard rejects it (root_required)"
+            );
+        }
+        let schema = tool.parameters_schema().expect("schema").to_string();
+        assert!(schema.contains("lint"));
+        assert!(!schema.contains("create_concept"));
+    }
+
+    #[test]
+    fn subagent_surface_is_lifecycle_only() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::for_subagent(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for lifecycle in ["use:", "create:", "list:", "info:", "search:"] {
+            assert!(description.contains(lifecycle));
+        }
+        for template in ["lint", "dry_run", "create_concept"] {
+            assert!(
+                !description.contains(template),
+                "subagent surface must not advertise {template}"
+            );
+        }
+        let branches = tool.parameters_schema().unwrap()["oneOf"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(
+            branches, 4,
+            "subagent: named(use/info), create, list, search"
+        );
+    }
+
+    #[test]
+    fn full_surface_lists_all_actions() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for action in [
+            "use:",
+            "create:",
+            "list:",
+            "info:",
+            "search:",
+            "lint:",
+            "dry_run:",
+            "create_concept:",
+        ] {
+            assert!(
+                description.contains(action),
+                "full surface missing {action}"
+            );
+        }
+        let branches = tool.parameters_schema().unwrap()["oneOf"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(branches, 6, "full schema keeps all six branches");
+        assert!(
+            tool.parameters_schema()
+                .unwrap()
+                .to_string()
+                .contains("lint")
+        );
     }
 
     #[test]

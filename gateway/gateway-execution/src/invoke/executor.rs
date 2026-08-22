@@ -818,6 +818,12 @@ pub struct ExecutorBuilder {
     rate_limiter: Option<Arc<agent_runtime::ProviderRateLimiter>>,
     model_registry: Option<Arc<ModelRegistry>>,
     actor_kind: RuntimeActorKind,
+    /// Ward-tool action audience override. `None` derives from the actor:
+    /// root gets lifecycle+concept actions, every other actor gets
+    /// lifecycle only. The delegated planner spawn overrides to Planner
+    /// (lifecycle + `lint`) — ward-slim P4 mirrors what
+    /// `validate_template_context` permits per actor.
+    ward_audience_override: Option<agent_tools::WardAudience>,
     subagent_non_streaming: bool,
     /// Trait-routed kg store for the `graph_query` tool.
     kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
@@ -855,6 +861,7 @@ impl ExecutorBuilder {
             rate_limiter: None,
             model_registry: None,
             actor_kind: RuntimeActorKind::Root,
+            ward_audience_override: None,
             subagent_non_streaming: true,
             kg_store: None,
             ingestion_adapter: None,
@@ -953,6 +960,14 @@ impl ExecutorBuilder {
     /// Set a specific subagent role for ordinary delegated agents.
     pub fn with_subagent_role(mut self, role: SubagentRole) -> Self {
         self.actor_kind = RuntimeActorKind::from(role);
+        self
+    }
+
+    /// Override the ward tool's action audience (e.g. the delegated
+    /// planner registers with `WardAudience::Planner`).
+    #[must_use]
+    pub fn with_ward_audience(mut self, audience: agent_tools::WardAudience) -> Self {
+        self.ward_audience_override = Some(audience);
         self
     }
 
@@ -1572,12 +1587,35 @@ impl ExecutorBuilder {
             &mut tool_registry,
             actor,
             &[ToolCapability::WardRead, ToolCapability::WardWrite],
-            Arc::new(WardTool::new(
-                fs_context.clone(),
-                self.fact_store.clone(),
-                self.ward_usage.clone(),
-                ward_layout,
-            )),
+            Arc::new({
+                let audience = self.ward_audience_override.unwrap_or(
+                    if matches!(actor, RuntimeActorKind::Root) {
+                        agent_tools::WardAudience::Root
+                    } else {
+                        agent_tools::WardAudience::Subagent
+                    },
+                );
+                match audience {
+                    agent_tools::WardAudience::Root => WardTool::for_root(
+                        fs_context.clone(),
+                        self.fact_store.clone(),
+                        self.ward_usage.clone(),
+                        ward_layout,
+                    ),
+                    agent_tools::WardAudience::Planner => WardTool::for_planner(
+                        fs_context.clone(),
+                        self.fact_store.clone(),
+                        self.ward_usage.clone(),
+                        ward_layout,
+                    ),
+                    _ => WardTool::for_subagent(
+                        fs_context.clone(),
+                        self.fact_store.clone(),
+                        self.ward_usage.clone(),
+                        ward_layout,
+                    ),
+                }
+            }),
         );
         register_if_allowed(
             &mut tool_registry,
@@ -4228,6 +4266,54 @@ extensions: {}
             planner.contains("lookup_capabilities"),
             "a host-attached planner catalog enables lookup"
         );
+    }
+
+    /// ward-slim P4: the ward surface mirrors what the guard permits per
+    /// actor — root keeps its concept actions and drops lint; the planner
+    /// override keeps lint and drops concept actions; other actors are
+    /// lifecycle-only.
+    #[test]
+    fn ward_tool_audience_splits_by_actor_and_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let root_fs = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let root_registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::Root)
+            .build_tool_registry(root_fs);
+        let root_ward = root_registry.find("ward").expect("ward registered");
+        let root_schema = root_ward.parameters_schema().unwrap().to_string();
+        assert!(
+            root_schema.contains("create_concept"),
+            "root keeps concept actions"
+        );
+        assert!(!root_schema.contains("lint"), "root drops lint");
+
+        let planner_fs = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let planner_registry =
+            ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+                .with_actor_kind(RuntimeActorKind::DelegatedExecutor)
+                .with_ward_audience(agent_tools::WardAudience::Planner)
+                .build_tool_registry(planner_fs);
+        let planner_ward = planner_registry.find("ward").expect("ward registered");
+        let planner_schema = planner_ward.parameters_schema().unwrap().to_string();
+        assert!(planner_schema.contains("lint"), "planner keeps lint");
+        assert!(
+            !planner_schema.contains("create_concept"),
+            "planner drops concept actions (guard rejects them)"
+        );
+
+        let sub_fs = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
+        let sub_registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .with_actor_kind(RuntimeActorKind::WardAgent)
+            .build_tool_registry(sub_fs);
+        let sub_ward = sub_registry.find("ward").expect("ward registered");
+        let sub_schema = sub_ward.parameters_schema().unwrap().to_string();
+        for template in ["lint", "dry_run", "create_concept"] {
+            assert!(
+                !sub_schema.contains(template),
+                "ward-agent must not see {template}"
+            );
+        }
     }
 
     #[test]

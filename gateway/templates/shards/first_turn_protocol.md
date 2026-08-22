@@ -29,8 +29,9 @@ For graph tasks, read the current session plan on EVERY continuation. Persisted
 plan/task paths are optional and exist only when declared in the Active Ward Template.
 The session plan is the source of truth for what's done and what's next **for
 the request that produced it**. It is NOT the source of truth for whether the
-session is over. If the plan is unavailable, re-delegate to planner-agent to
-regenerate it. If all steps are completed and the user has sent a new message,
+session is over. If the plan is unavailable, follow the current Task
+Analysis's route — only planner-routed work regenerates it via planner-agent.
+If all steps are completed and the user has sent a new message,
 the plan is STALE—see `<new_user_request_after_completion>`.
 </plan_attention>
 

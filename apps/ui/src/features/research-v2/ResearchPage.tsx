@@ -279,16 +279,31 @@ function MainColumn({ state, surfaces, onSend, showSubagents }: MainColumnProps)
   // Interleave: each surface renders directly under the turn (execution)
   // that produced it; orphaned surfaces (no matching turn, e.g. turn
   // pruned from the tape) render after the last turn.
-  // Live turns key by execution id; snapshot turns carry `executionId`
-  // separately (their `id` is message-derived). Match against both.
-  const turnExecIds = new Set(
-    state.turns.map((turn) => turn.executionId ?? turn.id),
-  );
+  // Ownership maps: live turns key by execution id; snapshot turns carry
+  // `executionId` separately (their `id` is message-derived). Subagent
+  // turns are nested — a surface created by a ward-agent matches its
+  // subagent turn by session id (snapshot) or execution id (live) and
+  // renders under that subagent's PARENT root turn.
+  const ownerTurnId = new Map<string, string>();
+  for (const turn of state.turns) {
+    const topKey = turn.executionId ?? turn.id;
+    ownerTurnId.set(topKey, turn.id);
+    for (const sub of turn.subagents ?? []) {
+      ownerTurnId.set(sub.id, turn.id);
+    }
+  }
+  const owningTurnOf = (item: SavedSurface): string | null => {
+    if (item.execution_id && ownerTurnId.has(item.execution_id)) {
+      return ownerTurnId.get(item.execution_id)!;
+    }
+    if (item.session_id && ownerTurnId.has(item.session_id)) {
+      return ownerTurnId.get(item.session_id)!;
+    }
+    return null;
+  };
   const orphaned: typeof surfaces = [];
   for (const item of surfaces ?? []) {
-    if (!item.execution_id || !turnExecIds.has(item.execution_id)) {
-      orphaned.push(item);
-    }
+    if (!owningTurnOf(item)) orphaned.push(item);
   }
 
   return (
@@ -297,10 +312,7 @@ function MainColumn({ state, surfaces, onSend, showSubagents }: MainColumnProps)
         <Fragment key={turn.id}>
           <SessionTurnBlock turn={turn} showSubagents={showSubagents} />
           {(surfaces ?? [])
-            .filter(
-              (item) =>
-                item.execution_id === (turn.executionId ?? turn.id),
-            )
+            .filter((item) => owningTurnOf(item) === turn.id)
             .map((item) => (
               <A2uiSurfaceRenderer key={item.surface.surface_id} surface={item.surface} />
             ))}

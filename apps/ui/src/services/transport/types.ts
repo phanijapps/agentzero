@@ -690,6 +690,9 @@ export interface WorkSurface {
  * timeline interleaves surfaces under their turn (execution id). */
 export interface SavedSurface {
   execution_id: string;
+  /** Session the surface was persisted under (the creating agent's
+   * session — child session for subagent-created surfaces). */
+  session_id?: string;
   surface: WorkSurface;
 }
 

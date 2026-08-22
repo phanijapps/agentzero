@@ -63,13 +63,6 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   unblocked by scoping the line to graph-planned work and re-running both
   live flows.
 
-## ward-slim-p4-audience-split
-
-- **Ward Slim P4:** Split the ward tool surface by audience — root registers
-  with `use/create/list/info/search` only; `lint/dry_run/create_concept`
-  (planner-internal template operations) hidden from root's description and
-  schema via a `visible_actions` set on `WardTool`. Unblocked — P3 landed
-  (#254); nothing blocks it technically.
 
 ## a2a-external-conformance
 

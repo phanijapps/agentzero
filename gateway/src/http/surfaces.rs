@@ -26,6 +26,10 @@ use super::{HttpErrorResponse, SameOrigin};
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct SavedSurfaceResponse {
     pub execution_id: String,
+    /// Session the surface was persisted under — the ward-agent's child
+    /// session for subagent-created surfaces. The UI matches subagent turns
+    /// by session id (snapshot) or execution id (live), so both keys ride.
+    pub session_id: String,
     pub surface: WorkSurface,
 }
 
@@ -68,6 +72,7 @@ fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<SavedSurface
             {
                 surfaces.push(SavedSurfaceResponse {
                     execution_id: record.execution_id,
+                    session_id: record.session_id,
                     surface,
                 });
             }
@@ -277,6 +282,7 @@ mod tests {
             decoded,
             vec![SavedSurfaceResponse {
                 execution_id: "exec-1".to_owned(),
+                session_id: "sess-1".to_owned(),
                 surface: display,
             }]
         );

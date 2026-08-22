@@ -212,12 +212,13 @@ export function useQuickChat() {
     if (!convId || subscribedConvIdRef.current === convId) return;
     subscribedConvIdRef.current = convId;
     const onEvent = makeEventHandler(pillSink, dispatch, (event) => {
-      const raw = event as unknown as { surface?: WorkSurface; surface_id?: string; execution_id?: string };
+      const raw = event as unknown as { surface?: WorkSurface; surface_id?: string; execution_id?: string; session_id?: string };
       if (event.type === "surface_deleted" && raw.surface_id) {
         setSurfaces(current => current.filter(item => item.surface.surface_id !== raw.surface_id));
       } else if (raw.surface) {
         const next: SavedSurface = {
           execution_id: typeof raw.execution_id === "string" ? raw.execution_id : "",
+          session_id: typeof raw.session_id === "string" ? raw.session_id : undefined,
           surface: raw.surface,
         };
         setSurfaces(current => [

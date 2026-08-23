@@ -143,6 +143,9 @@ function updateSurfaces(
     const next: SavedSurface = {
       execution_id: typeof raw.execution_id === "string" ? raw.execution_id : "",
       session_id: typeof raw.session_id === "string" ? raw.session_id : undefined,
+      // Live arrival time attributes the surface to the turn now running —
+      // root executions span turns, so the id keys alone cannot.
+      created_at: new Date().toISOString(),
       surface: raw.surface,
     };
     setSurfaces(current => [

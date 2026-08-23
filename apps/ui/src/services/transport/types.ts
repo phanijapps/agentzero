@@ -693,6 +693,10 @@ export interface SavedSurface {
   /** Session the surface was persisted under (the creating agent's
    * session — child session for subagent-created surfaces). */
   session_id?: string;
+  /** ISO timestamp of creation. Root executions span multiple user turns,
+   * so the timeline places surfaces by time window, falling back to the id
+   * keys for legacy rows without it. */
+  created_at?: string;
   surface: WorkSurface;
 }
 

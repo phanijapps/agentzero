@@ -61,6 +61,7 @@ vi.mock("../chat/ArtifactSlideOut", () => ({
 
 interface MockResearchHook {
   state: ResearchSessionState;
+  surfaces?: import("@/services/transport/types").SavedSurface[];
   pillState: PillState;
   wardVaultRevision: number;
   sendMessage: ReturnType<typeof vi.fn>;
@@ -115,6 +116,7 @@ function makeIdleResearch(): MockResearchHook {
   };
   return {
     state,
+    surfaces: [],
     pillState,
     wardVaultRevision: 0,
     sendMessage: vi.fn(),
@@ -152,6 +154,81 @@ function renderPage() {
     </MemoryRouter>
   );
 }
+
+describe("surface timeline attribution", () => {
+  function turn(id: string, userText: string, createdAt: string, executionId?: string) {
+    return {
+      id,
+      index: 0,
+      executionId,
+      userMessage: { id, content: userText, createdAt },
+      subagents: [],
+      assistantText: `answer ${id}`,
+      assistantStreaming: "",
+      timeline: [],
+      startedAt: createdAt,
+      endedAt: null,
+      durationMs: null,
+      status: "completed" as const,
+    };
+  }
+  function surface(surfaceId: string, title: string, createdAt?: string, executionId = "exec-root") {
+    return {
+      execution_id: executionId,
+      session_id: "sess-1",
+      created_at: createdAt,
+      surface: {
+        surface_id: surfaceId,
+        catalog_id: "zbot/work-surface/v1" as const,
+        components: [{ id: "c1", type: "Callout" as const, props: { message_path: "/m" } }],
+        data: { m: title },
+      },
+    };
+  }
+
+  it("places surfaces by time window when one root execution spans turns", () => {
+    // sess-fe38cfc3 shape: both turns share the root exec id (continuations),
+    // surfaces created an hour apart must land under their own turns.
+    researchRef.current = {
+      ...makeIdleResearch(),
+      state: {
+        ...makeIdleResearch().state,
+        sessionId: "sess-1",
+        turns: [
+          turn("turn-1", "analyze the paper", "2026-08-23T19:06:34Z", "exec-root"),
+          turn("turn-2", "give me an example", "2026-08-23T20:10:02Z", "exec-root"),
+        ],
+      },
+      surfaces: [
+        surface("repo0", "Repo0 overview", "2026-08-23T19:12:10Z"),
+        surface("ebikes", "Ebike example", "2026-08-23T20:13:04Z"),
+      ],
+    };
+    renderPage();
+    // The DOM order must be: turn1, surface1, turn2, surface2.
+    const col = document.querySelector(".research-page__column")!;
+    const classes = [...col.children].map((c) => c.className.toString());
+    expect(classes).toEqual(["session-turn", "a2ui-surface", "session-turn", "a2ui-surface"]);
+  });
+
+  it("falls back to execution-id matching for legacy rows without created_at", () => {
+    researchRef.current = {
+      ...makeIdleResearch(),
+      state: {
+        ...makeIdleResearch().state,
+        sessionId: "sess-1",
+        turns: [
+          turn("turn-1", "first ask", "2026-08-23T19:00:00Z", "exec-a"),
+          turn("turn-2", "second ask", "2026-08-23T20:00:00Z", "exec-b"),
+        ],
+      },
+      surfaces: [surface("legacy", "Legacy surface", undefined, "exec-b")],
+    };
+    renderPage();
+    const col = document.querySelector(".research-page__column")!;
+    expect(col.textContent).toContain("Legacy surface");
+  });
+});
 
 describe("<ResearchPage>", () => {
   beforeEach(() => {

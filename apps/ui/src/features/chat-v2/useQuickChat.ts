@@ -219,6 +219,7 @@ export function useQuickChat() {
         const next: SavedSurface = {
           execution_id: typeof raw.execution_id === "string" ? raw.execution_id : "",
           session_id: typeof raw.session_id === "string" ? raw.session_id : undefined,
+          created_at: new Date().toISOString(),
           surface: raw.surface,
         };
         setSurfaces(current => [

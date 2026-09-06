@@ -2,7 +2,7 @@
 
 ## Status
 
-T1 is complete; T2 is in progress. These are feasibility results, **not** a completed cutover or
+T1 and T2 gates are complete; T3 is in progress. These are incremental results, **not** a completed cutover or
 proof of production parity. The accepted starting commit is `e38e8003` on
 `feat/rig-only-execution`; its working tree was clean before this slice.
 
@@ -216,6 +216,47 @@ final feature-selection scans and native lifecycle probes subsequently passed
   by this migration; no new ignore or blanket suppression was added.
 
 ## Review disposition
+
+### T2 execution record
+
+- Owned change: shared config/hooks/errors move to `engine/{config,hooks,error}`;
+  the old facade implementation moves into `executor.rs`, leaving the facade
+  and Rig adapter independent of that module. Required contract tests move with
+  their types; loop internals remain untouched for later parity/deletion.
+- Direct construction: `PreparedExecution` carries resolved inputs only (no
+  model/tool loop); Rig's factory consumes them without constructing the old
+  executor. The intermediate selector creates the old implementation only in
+  its existing branches until T9. Recall/steering setup and registry identities
+  are retained in prepared inputs, not reconstructed after selection.
+- Done evidence: full runtime tests, gateway construction tests, workspace
+  check and real daemon/mock/UI smoke. The pure extraction passed 434 runtime
+  tests with 2 existing ignores before direct construction integration.
+- Not changing: default routing, MCP production dispatch, context policy or
+  durable terminal handling in this slice. These remain T3–T9 responsibilities.
+- Declined: a renamed executor loop or gateway service locator; neither is
+  needed to carry construction inputs. The extraction is moved code, not
+  retired execution behavior. The daemon smoke uses an isolated fresh vault.
+- Smoke-discovered parity repair: the rebuilt Rig daemon rendered `4` but
+  issued two model requests for the one-request `simple-qa` fixture, then showed
+  an LLM error. The production factory regression independently reproduced the
+  extra request. Stop polling after a successful respond action (not merely
+  the tool name); preserve Done for respond and omit it for delegation yield.
+  This bounded terminal-boundary repair is pulled forward from T5 to make the
+  direct-construction smoke truthful. The strict replay assertion is retained.
+- The repaired factory tests prove successful respond uses one provider call,
+  preserves usage and emits one Done; denied respond permits recovery. All
+  44 Rig tests pass. Runtime/gateway Clippy with `-D warnings` passes.
+- Rebuilt daemon Mode Full: `ZBOT_ENGINE=rig ./node_modules/.bin/playwright test full-mode/simple-qa.full.spec.ts --reporter=line`
+  from `e2e/playwright` **passed** (9.1 seconds), including zero replay drift,
+  persisted answer `4` on a fresh document and no LLM-error banner. The fresh
+  document must restore the harness gateway query parameters after SPA routing;
+  the initial plain reload reached Vite's default backend, not the isolated daemon.
+- One full parallel runtime run hit an unchanged tracing-capture assertion;
+  the isolated test and full serial binary pass (436 passed, 2 existing ignores
+  before the two terminal-boundary tests). No assertion was removed or weakened.
+- Final T2 `cargo test -p agent-runtime --lib --locked --offline -- --test-threads=1`:
+  438 passed, 2 existing ignores. The wave advanced after the runtime, gateway,
+  Clippy, formatting/boundary and rebuilt full-mode gates passed.
 
 Bounded independent review returned **Clean — ready to commit**. Its initial
 documentation concern was resolved by explicitly distinguishing the original

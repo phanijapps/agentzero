@@ -2,11 +2,8 @@
 //!
 //! Drives a Rig [`Agent`](rig::agent::Agent) built from a [`RigAgentConfig`],
 //! a [`CompletionModel`], and a set of bridged [`ToolDyn`] tools, and maps its
-//! multi-turn stream onto AgentZero [`StreamEvent`]s. The existing
-//! [`AgentExecutor`](crate::executor::AgentExecutor) stays the live engine;
-//! `RigAgentEngine` is the T7 path that will replace it once parity is proven
-//! (T11). It is generic over the model so a stub model can drive it in tests
-//! without the LLM-client bridge (which lands as a separate T7a step).
+//! multi-turn stream onto AgentZero [`StreamEvent`]s. It is generic over the
+//! model so contract tests can drive it without the production provider bridge.
 //!
 //! ## Status (T7)
 //!
@@ -19,9 +16,8 @@
 //! OpenAI-compatible `LlmClient`.
 //!
 //! Still deferred (see TODOs):
-//! - token-usage accounting through the bridge (`TokenUpdate`);
 //! - the raw/context/persisted/UI result distinction on `ToolResult`
-//!   (currently the model-visible text only) and tool-role history conversion.
+//!   (currently the model-visible text only).
 //!
 //! T7c is wired: [`RigExecutionHook`] surfaces `before_tool_call`
 //! (`Block`→`Flow::Skip`) and `after_tool_call` (→`Flow::RewriteResult`), and
@@ -44,8 +40,8 @@ use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingCha
 use rig::tool::{ToolCallExtensions, ToolDyn};
 use serde_json::Value;
 
+use crate::engine::{AfterToolCallHook, BeforeToolCallHook, ExecutorError, ToolCallDecision};
 use crate::engine::{AgentEngine, StreamEventSink};
-use crate::executor::{AfterToolCallHook, BeforeToolCallHook, ExecutorError, ToolCallDecision};
 use crate::rig_adapter::{RigAgentConfig, SharedToolContext};
 use crate::types::events::current_timestamp;
 use crate::types::{ChatMessage, StreamEvent};
@@ -180,6 +176,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         let mut total_output: u64 = 0;
         let mut tool_names_by_call_id = HashMap::new();
         let mut stopped_for_delegation = false;
+        let mut responded = false;
         while let Some(item) = stream.next().await {
             if let Some(flag) = &stop_flag {
                 if flag.load(Ordering::Acquire) {
@@ -265,6 +262,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                             });
                         }
                         if let Some(respond) = actions.respond {
+                            responded = true;
                             on_event(StreamEvent::ActionRespond {
                                 timestamp: current_timestamp(),
                                 message: respond.message,
@@ -397,10 +395,10 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 _ => {}
             }
 
-            // A sequential delegation transfers control to the child. Stop
-            // polling Rig immediately so later tool calls from the same model
-            // turn cannot run before the continuation resumes the root.
-            if stopped_for_delegation {
+            // Delegation yields to the child; a successful respond completes
+            // this execution. Neither permits another model or tool call.
+            // A denied/failed respond has no action and remains recoverable.
+            if stopped_for_delegation || responded {
                 break;
             }
         }

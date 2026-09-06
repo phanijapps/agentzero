@@ -116,12 +116,12 @@ pub use context::{
     DroppedContextCandidate,
 };
 pub use context_management::{prepare_tool_result_for_context, ToolResultContextConfig};
-pub use engine::{AgentEngine, BoxedAgentEngine, StreamEventSink};
-pub use executor::{
-    create_executor, AfterToolCallHook, AgentExecutor, BeforeToolCallHook, ExecutorConfig,
-    ExecutorError, RecallHook, RecallHookResult, ToolCallDecision, ToolExecutionMode,
-    TransformContextHook,
+pub use engine::{
+    AfterToolCallHook, AgentEngine, BeforeToolCallHook, BoxedAgentEngine, ExecutorConfig,
+    ExecutorError, PreparedExecution, RecallHook, RecallHookResult, StreamEventSink,
+    ToolCallDecision, ToolExecutionMode, TransformContextHook,
 };
+pub use executor::{create_executor, AgentExecutor};
 pub use rig_adapter::{CompletionClient, RigAgentConfig, RigConfigError, RigModelConfig};
 
 pub use steering::{

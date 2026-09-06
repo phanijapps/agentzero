@@ -18,9 +18,6 @@
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,7 +30,6 @@ use crate::mcp::McpManager;
 use crate::middleware::token_counter::estimate_total_tokens;
 use crate::middleware::traits::MiddlewareContext;
 use crate::middleware::MiddlewarePipeline;
-use crate::rig_adapter::RigAgentConfig;
 use crate::tools::context::ToolContext;
 use crate::tools::ToolRegistry;
 use crate::types::{ChatMessage, StreamEvent, ToolCall};
@@ -45,33 +41,10 @@ use agent_primitives::ToolContext as ZeroToolContext;
 // MID-SESSION RECALL HOOK
 // ============================================================================
 
-/// Result returned by the mid-session recall hook.
-///
-/// Contains novel facts formatted as a system message and the keys of those
-/// facts so the caller can track already-injected keys.
-#[derive(Debug, Clone)]
-pub struct RecallHookResult {
-    /// Formatted system message to inject (empty if nothing novel)
-    pub system_message: String,
-    /// Keys of the facts that were included (for dedup tracking)
-    pub fact_keys: Vec<String>,
-}
-
-/// A callback invoked by the executor every N turns to refresh memory recall.
-///
-/// The hook receives:
-/// - `latest_user_message`: the most recent user message for query context
-/// - `already_injected_keys`: keys of facts already injected in this session
-///
-/// Returns a `RecallHookResult` with a formatted message and new keys.
-pub type RecallHook = Box<
-    dyn Fn(
-            &str,
-            &HashSet<String>,
-        ) -> Pin<Box<dyn Future<Output = Result<RecallHookResult, String>> + Send>>
-        + Send
-        + Sync,
->;
+pub use crate::engine::{
+    AfterToolCallHook, BeforeToolCallHook, ExecutorConfig, ExecutorError, RecallHook,
+    RecallHookResult, ToolCallDecision, ToolExecutionMode, TransformContextHook,
+};
 
 /// Result from tool execution including any actions set by the tool
 struct ToolExecutionResult {
@@ -171,262 +144,9 @@ fn contains_persisted_peer_result(messages: &[ChatMessage]) -> bool {
 // EXECUTOR CONFIGURATION
 // ============================================================================
 
-/// Configuration for agent executor
-#[derive(Clone)]
-pub struct ExecutorConfig {
-    /// Agent identifier
-    pub agent_id: String,
-
-    /// Provider identifier
-    pub provider_id: String,
-
-    /// Model to use
-    pub model: String,
-
-    /// Temperature for generation (0.0 - 1.0)
-    pub temperature: f64,
-
-    /// Maximum tokens to generate
-    pub max_tokens: u32,
-
-    /// Enable reasoning/thinking
-    pub thinking_enabled: bool,
-
-    /// System instruction
-    pub system_instruction: Option<String>,
-
-    /// Enable tools
-    pub tools_enabled: bool,
-
-    /// Registered tools that remain executable internally but are not offered
-    /// in the model-visible tool schema.
-    pub model_hidden_tools: HashSet<String>,
-
-    /// MCP servers to use
-    pub mcps: Vec<String>,
-
-    /// Skills to use
-    pub skills: Vec<String>,
-
-    /// Conversation ID for scoping
-    pub conversation_id: Option<String>,
-
-    /// Initial state to inject into tool context.
-    /// This allows passing hook context, delegation context, etc.
-    #[allow(dead_code)]
-    pub initial_state: std::collections::HashMap<String, Value>,
-
-    /// Maximum characters for a tool result in context (default: 30000 chars ≈ 7500 tokens).
-    /// Results exceeding this are truncated to head + tail with a notice.
-    /// Set to 0 to disable truncation.
-    pub max_tool_result_chars: usize,
-
-    /// Offload large tool results to filesystem instead of keeping in context.
-    pub offload_large_results: bool,
-
-    /// Character threshold for offloading (default: 20000 chars ≈ 5000 tokens).
-    pub offload_threshold_chars: usize,
-
-    /// Directory to save offloaded tool results.
-    pub offload_dir: Option<std::path::PathBuf>,
-
-    /// Maximum LLM loop iterations before checking for progress (default: 50).
-    /// Kept for diagnostics — no longer a hard stop. Set to 0 to disable diagnostics.
-    pub max_iterations: u32,
-
-    /// Maximum times auto-extension can be granted (default: 3, so 50 + 3*25 = 125 max).
-    /// Legacy field — iteration limits are now advisory.
-    pub max_extensions: u32,
-
-    /// Additional iterations granted per auto-extension (default: 25).
-    /// Legacy field — iteration limits are now advisory.
-    pub extension_size: u32,
-
-    /// Context window size for the model in tokens.
-    /// Set to 0 to disable context-budget warnings.
-    pub context_window_tokens: u64,
-
-    /// Percentage of context window at which to inject a context memory flush warning.
-    /// Default: 80. Chat mode sets this to 70 so the nudge fires before the middleware prunes.
-    pub compaction_warn_pct: u64,
-
-    /// Soft turn budget: inject a "wrap up" nudge after this many tool-calling iterations.
-    /// Set to 0 to disable.
-    pub turn_budget: u32,
-
-    /// Hard turn limit: forcibly stop execution after this many iterations.
-    /// Set to 0 to disable.
-    pub max_turns: u32,
-
-    /// Hook called before each tool execution. Can block the call.
-    /// Default: None (all tools allowed).
-    pub before_tool_call: Option<BeforeToolCallHook>,
-
-    /// Hook called after each tool execution. Can transform the result.
-    /// Default: None (results passed through unchanged).
-    pub after_tool_call: Option<AfterToolCallHook>,
-
-    /// Tool execution mode: parallel (default) or sequential.
-    pub tool_execution_mode: ToolExecutionMode,
-
-    /// Hook called before every LLM call to transform the message context.
-    /// Default: None (messages passed through unchanged).
-    pub transform_context: Option<TransformContextHook>,
-
-    /// Task complexity level: "S", "M", "L", "XL".
-    /// When set, applies complexity-based iteration budgets:
-    /// S=15, M=30, L=50, XL=100.
-    pub complexity: Option<String>,
-
-    /// When true, only the first tool call per LLM response is executed.
-    /// Extra tool calls are dropped with a log message.
-    /// Default: false. Set true for orchestrator agents (root).
-    pub single_action_mode: bool,
-
-    /// Rig-facing config resolved from current AgentZero settings.
-    pub rig_agent_config: Option<RigAgentConfig>,
-}
-
-impl ExecutorConfig {
-    /// Create a new executor config
-    #[must_use]
-    pub fn new(agent_id: String, provider_id: String, model: String) -> Self {
-        Self {
-            agent_id,
-            provider_id,
-            model,
-            temperature: 0.7,
-            max_tokens: 8192,
-            thinking_enabled: false,
-            system_instruction: None,
-            tools_enabled: true,
-            model_hidden_tools: HashSet::new(),
-            mcps: Vec::new(),
-            skills: Vec::new(),
-            conversation_id: None,
-            initial_state: std::collections::HashMap::new(),
-            max_tool_result_chars: 30_000, // ~7500 tokens
-            offload_large_results: false,
-            offload_threshold_chars: 20_000, // ~5000 tokens
-            offload_dir: None,
-            max_iterations: 50,
-            max_extensions: 3,
-            extension_size: 25,
-            context_window_tokens: 128_000, // Default to 128K context
-            compaction_warn_pct: 80,        // Warn at 80% by default
-            turn_budget: 25,                // Soft nudge at 25 turns
-            max_turns: 50,                  // Hard stop at 50 turns
-            before_tool_call: None,
-            after_tool_call: None,
-            tool_execution_mode: ToolExecutionMode::default(),
-            transform_context: None,
-            complexity: None,
-            single_action_mode: false,
-            rig_agent_config: None,
-        }
-    }
-
-    /// Add initial state that will be injected into tool context
-    #[must_use]
-    pub fn with_initial_state(mut self, key: impl Into<String>, value: Value) -> Self {
-        self.initial_state.insert(key.into(), value);
-        self
-    }
-
-    /// Hide registered tools from model-visible schemas while preserving
-    /// executor-internal dispatch for procedures, hooks, and compatibility.
-    #[must_use]
-    pub fn with_model_hidden_tools<I, S>(mut self, tool_names: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.model_hidden_tools = tool_names.into_iter().map(Into::into).collect();
-        self
-    }
-}
-
-impl fmt::Debug for ExecutorConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ExecutorConfig")
-            .field("agent_id", &self.agent_id)
-            .field("provider_id", &self.provider_id)
-            .field("model", &self.model)
-            .field("temperature", &self.temperature)
-            .field("max_tokens", &self.max_tokens)
-            .field("thinking_enabled", &self.thinking_enabled)
-            .field("system_instruction", &self.system_instruction)
-            .field("tools_enabled", &self.tools_enabled)
-            .field("model_hidden_tools", &self.model_hidden_tools)
-            .field("mcps", &self.mcps)
-            .field("skills", &self.skills)
-            .field("conversation_id", &self.conversation_id)
-            .field("initial_state", &self.initial_state)
-            .field("max_tool_result_chars", &self.max_tool_result_chars)
-            .field("offload_large_results", &self.offload_large_results)
-            .field("offload_threshold_chars", &self.offload_threshold_chars)
-            .field("offload_dir", &self.offload_dir)
-            .field("max_iterations", &self.max_iterations)
-            .field("max_extensions", &self.max_extensions)
-            .field("extension_size", &self.extension_size)
-            .field("context_window_tokens", &self.context_window_tokens)
-            .field("compaction_warn_pct", &self.compaction_warn_pct)
-            .field("turn_budget", &self.turn_budget)
-            .field("max_turns", &self.max_turns)
-            .field(
-                "before_tool_call",
-                &self.before_tool_call.as_ref().map(|_| "<hook>"),
-            )
-            .field(
-                "after_tool_call",
-                &self.after_tool_call.as_ref().map(|_| "<hook>"),
-            )
-            .field("tool_execution_mode", &self.tool_execution_mode)
-            .field(
-                "transform_context",
-                &self.transform_context.as_ref().map(|_| "<hook>"),
-            )
-            .field("complexity", &self.complexity)
-            .field("single_action_mode", &self.single_action_mode)
-            .field("rig_agent_config", &self.rig_agent_config)
-            .finish()
-    }
-}
-
 // ============================================================================
 // TOOL HOOK TYPES
 // ============================================================================
-
-/// Decision from beforeToolCall hook.
-#[derive(Debug, Clone)]
-pub enum ToolCallDecision {
-    /// Allow the tool call to proceed.
-    Allow,
-    /// Block the tool call. The reason is returned to the LLM as the tool result.
-    Block { reason: String },
-}
-
-/// Tool execution mode.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum ToolExecutionMode {
-    /// Execute all tools concurrently (current behavior).
-    #[default]
-    Parallel,
-    /// Execute tools one at a time, in order.
-    Sequential,
-}
-
-/// Type alias for beforeToolCall hook.
-/// Receives (`tool_name`, args). Returns Allow or Block.
-pub type BeforeToolCallHook = Arc<dyn Fn(&str, &Value) -> ToolCallDecision + Send + Sync>;
-
-/// Type alias for afterToolCall hook.
-/// Receives (`tool_name`, args, result, succeeded). Returns optional replacement result.
-pub type AfterToolCallHook = Arc<dyn Fn(&str, &Value, &str, bool) -> Option<String> + Send + Sync>;
-
-/// Type alias for transformContext hook.
-/// Called before every LLM call. Can modify the message list in place.
-pub type TransformContextHook = Arc<dyn Fn(&mut Vec<ChatMessage>) + Send + Sync>;
 
 // ============================================================================
 // AGENT EXECUTOR
@@ -452,6 +172,25 @@ pub struct AgentExecutor {
 }
 
 impl AgentExecutor {
+    /// Temporary old-engine construction boundary while Rig parity is completed.
+    pub fn from_prepared(prepared: crate::engine::PreparedExecution) -> Self {
+        let (recall_hook, recall_every_n_turns, recall_initial_keys) = match prepared.recall {
+            Some((hook, turns, keys)) => (Some(Arc::new(hook)), turns, keys),
+            None => (None, 0, HashSet::new()),
+        };
+        Self {
+            config: prepared.config,
+            llm_client: prepared.llm_client,
+            tool_registry: prepared.tool_registry,
+            mcp_manager: prepared.mcp_manager,
+            middleware_pipeline: prepared.middleware_pipeline,
+            recall_hook,
+            recall_every_n_turns,
+            recall_initial_keys,
+            steering_queue: prepared.steering_queue.map(std::sync::Mutex::new),
+        }
+    }
+
     /// Create a new agent executor
     ///
     /// # Arguments
@@ -1997,48 +1736,43 @@ fn normalize_tool_name(name: &str) -> String {
 
 use crate::progress::ProgressTracker;
 
-/// Executor errors
-#[derive(Debug, thiserror::Error)]
-pub enum ExecutorError {
-    /// Maximum iterations reached with no progress detected.
-    #[error("Maximum iterations reached")]
-    MaxIterationsReached,
+#[async_trait::async_trait]
+impl crate::engine::AgentEngine for AgentExecutor {
+    async fn execute_stream(
+        &self,
+        user_message: &str,
+        history: &[ChatMessage],
+        mut on_event: &mut crate::engine::StreamEventSink<'_>,
+    ) -> Result<(), ExecutorError> {
+        AgentExecutor::execute_stream(self, user_message, history, &mut on_event).await
+    }
 
-    /// Cooperative stop — caller signaled the executor to stop via the
-    /// optional `stop_flag` parameter on `execute_stream`. Distinct from
-    /// `LlmError` so callers can short-circuit cleanup paths instead of
-    /// treating it as a real failure.
-    #[error("Execution stopped by caller")]
-    Stopped,
+    async fn execute_stream_with_stop_flag(
+        &self,
+        user_message: &str,
+        history: &[ChatMessage],
+        stop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+        on_event: &mut crate::engine::StreamEventSink<'_>,
+    ) -> Result<(), ExecutorError> {
+        AgentExecutor::execute_stream_with_stop_flag(
+            self,
+            user_message,
+            history,
+            stop_flag,
+            |event| {
+                on_event(event);
+            },
+        )
+        .await
+    }
 
-    /// Maximum iterations reached but agent needs user intervention.
-    #[error("Max iterations reached after {iterations_used} iterations: {reason}")]
-    MaxIterationsNeedsIntervention {
-        /// Total iterations consumed
-        iterations_used: u32,
-        /// Diagnosis of why the agent stopped
-        reason: String,
-    },
-
-    /// LLM API error.
-    #[error("LLM error: {0}")]
-    LlmError(String),
-
-    /// Tool execution error.
-    #[error("Tool error: {0}")]
-    ToolError(String),
-
-    /// MCP server error.
-    #[error("MCP error: {0}")]
-    McpError(String),
-
-    /// Configuration error.
-    #[error("Configuration error: {0}")]
-    ConfigError(String),
-
-    /// Middleware pipeline error.
-    #[error("Middleware error: {0}")]
-    MiddlewareError(String),
+    async fn execute(
+        &self,
+        user_message: &str,
+        history: &[ChatMessage],
+    ) -> Result<String, ExecutorError> {
+        AgentExecutor::execute(self, user_message, history).await
+    }
 }
 
 /// Factory function to create an executor
@@ -2367,59 +2101,6 @@ mod executor_helper_coverage_tests {
         assert!(v.get("properties").unwrap().get("x").is_some());
     }
 
-    // ------------- ExecutorError display -------------
-    #[test]
-    fn executor_error_messages() {
-        assert_eq!(
-            format!("{}", ExecutorError::MaxIterationsReached),
-            "Maximum iterations reached"
-        );
-        assert_eq!(
-            format!("{}", ExecutorError::Stopped),
-            "Execution stopped by caller"
-        );
-        let with_intervention = ExecutorError::MaxIterationsNeedsIntervention {
-            iterations_used: 5,
-            reason: "stuck".to_string(),
-        };
-        let s = format!("{with_intervention}");
-        assert!(s.contains("5"));
-        assert!(s.contains("stuck"));
-        assert!(format!("{}", ExecutorError::LlmError("e".into())).contains("LLM"));
-        assert!(format!("{}", ExecutorError::ToolError("e".into())).contains("Tool"));
-        assert!(format!("{}", ExecutorError::McpError("e".into())).contains("MCP"));
-        assert!(format!("{}", ExecutorError::ConfigError("e".into())).contains("Configuration"));
-        assert!(format!("{}", ExecutorError::MiddlewareError("e".into())).contains("Middleware"));
-    }
-
-    // ------------- ExecutorConfig builder + Debug -------------
-    #[test]
-    fn config_with_initial_state_records_value() {
-        let cfg = ExecutorConfig::new("a".into(), "p".into(), "m".into())
-            .with_initial_state("k", json!("v"))
-            .with_initial_state("k2", json!(42));
-        assert_eq!(cfg.initial_state.get("k").unwrap(), "v");
-        assert_eq!(cfg.initial_state.get("k2").unwrap(), 42);
-    }
-
-    #[test]
-    fn config_debug_renders_hooks_as_placeholders() {
-        let mut cfg = ExecutorConfig::new("a".into(), "p".into(), "m".into());
-        cfg.before_tool_call = Some(Arc::new(|_, _| ToolCallDecision::Allow));
-        cfg.after_tool_call = Some(Arc::new(|_, _, _, _| None));
-        cfg.transform_context = Some(Arc::new(|_| {}));
-        let s = format!("{cfg:?}");
-        assert!(s.contains("<hook>"));
-        assert!(s.contains("agent_id"));
-    }
-
-    #[test]
-    fn tool_execution_mode_default_parallel() {
-        assert_eq!(ToolExecutionMode::default(), ToolExecutionMode::Parallel);
-    }
-
-    // ------------- AgentExecutor builder methods -------------
-
     /// Trivial Llm client that fails on any call.
     struct InertLlm;
 
@@ -2520,6 +2201,57 @@ mod executor_helper_coverage_tests {
         let mut exec = make_inert_executor();
         let _handle = exec.enable_steering();
         // Sending via handle should not panic; the queue is owned by the executor.
+    }
+
+    #[tokio::test]
+    async fn prepared_inputs_preserve_old_engine_session_setup() {
+        let original = make_inert_executor();
+        let mut prepared = crate::engine::PreparedExecution::new(
+            original.config.clone(),
+            original.llm_client.clone(),
+            original.tool_registry.clone(),
+            original.mcp_manager.clone(),
+            original.middleware_pipeline.clone(),
+        );
+        prepared.set_recall_hook(
+            Box::new(|_, _| {
+                Box::pin(async {
+                    Ok(RecallHookResult {
+                        system_message: "recalled".into(),
+                        fact_keys: vec!["fresh".into()],
+                    })
+                })
+            }),
+            3,
+            HashSet::from(["seed".into()]),
+        );
+        let handle = prepared.enable_steering();
+        let executor = AgentExecutor::from_prepared(prepared);
+        handle.send_system("queued before execution").unwrap();
+        let messages = executor
+            .steering_queue
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .drain();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "queued before execution");
+        let recall = executor.recall_hook.as_ref().unwrap()("query", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(recall.system_message, "recalled");
+        assert_eq!(executor.recall_every_n_turns, 3);
+        assert!(executor.recall_initial_keys.contains("seed"));
+        assert!(Arc::ptr_eq(&executor.mcp_manager, &original.mcp_manager));
+        assert!(Arc::ptr_eq(
+            &executor.middleware_pipeline,
+            &original.middleware_pipeline
+        ));
+        assert!(Arc::ptr_eq(
+            &executor.tool_registry,
+            &original.tool_registry
+        ));
     }
 
     #[test]

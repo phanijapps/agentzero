@@ -8,9 +8,9 @@ use agent_runtime::{
     ContextCapabilityHealth, ContextCapabilityKind, ContextCostHint, ContextEditingConfig,
     ContextEditingMiddleware, ContextLatencyHint, ContextRiskLevel, ContextSideEffects,
     DelegateTool, ExecutorConfig, KeepPolicy, LlmClient, LlmConfig, McpManager, MiddlewarePipeline,
-    OpenAiClient, PlanBlockMiddleware, RespondTool, RetryPolicy, RetryingLlmClient, RigAgentConfig,
-    RigModelConfig, SummarizationConfig, SummarizationMiddleware, ToolCallDecision, ToolRegistry,
-    TriggerCondition,
+    OpenAiClient, PlanBlockMiddleware, PreparedExecution, RespondTool, RetryPolicy,
+    RetryingLlmClient, RigAgentConfig, RigModelConfig, SummarizationConfig,
+    SummarizationMiddleware, ToolCallDecision, ToolRegistry, TriggerCondition,
 };
 use agent_tools::{
     ConnectorInvokeTool,
@@ -84,7 +84,7 @@ pub fn build_rig_agent_config(
     )
 }
 
-/// Select the execution engine for a built [`AgentExecutor`].
+/// Select the execution engine from prepared session inputs.
 ///
 /// Default: the legacy [`AgentExecutor`] (boxed). When `ZBOT_ENGINE=rig` is
 /// set, a [`RigAgentConfig`] was resolved, and **no MCP servers are
@@ -95,12 +95,11 @@ pub fn build_rig_agent_config(
 /// # Current limitations of the Rig path (live A/B validation only)
 /// - No middleware/compaction (long conversations can overflow the context
 ///   window); live context control is not yet wired into the Rig loop.
-/// - No token-usage events.
 /// - No mid-session recall or steering hooks.
 /// - MCP is intentionally unsupported here (falls back to legacy) until the MCP
 ///   lifecycle is bridged — `McpManager` has no `Drop` cleanup, so routing an
 ///   MCP-bearing session through Rig would orphan the subprocesses.
-pub fn select_engine(executor: AgentExecutor) -> BoxedAgentEngine {
+pub fn select_engine(executor: PreparedExecution) -> BoxedAgentEngine {
     let use_rig = std::env::var("ZBOT_ENGINE")
         .map(|v| v.eq_ignore_ascii_case("rig"))
         .unwrap_or(false);
@@ -109,14 +108,9 @@ pub fn select_engine(executor: AgentExecutor) -> BoxedAgentEngine {
 
 /// Pure routing core of [`select_engine`], testable without touching the
 /// process environment.
-fn select_engine_with(executor: AgentExecutor, use_rig: bool) -> BoxedAgentEngine {
-    use agent_runtime::rig_adapter::engine::RigAgentEngine;
-    use agent_runtime::rig_adapter::model::LlmCompletionModel;
-    use agent_runtime::rig_adapter::RigToolAdapter;
-    use agent_runtime::tools::ToolContext;
-
+fn select_engine_with(executor: PreparedExecution, use_rig: bool) -> BoxedAgentEngine {
     if !use_rig {
-        return Box::new(executor);
+        return Box::new(AgentExecutor::from_prepared(executor));
     }
 
     // Extract everything needed from the config up front so the immutable
@@ -124,13 +118,7 @@ fn select_engine_with(executor: AgentExecutor, use_rig: bool) -> BoxedAgentEngin
     let cfg = executor.config();
     let mcps_empty = cfg.mcps.is_empty();
     let agent_id = cfg.agent_id.clone();
-    let conversation_id = cfg.conversation_id.clone();
-    let skills = cfg.skills.clone();
-    let initial_state = cfg.initial_state.clone();
-    let model_name = cfg.model.clone();
-    let before = cfg.before_tool_call.clone();
-    let after = cfg.after_tool_call.clone();
-    let rig_config = cfg.rig_agent_config.clone();
+    let rig_config = executor.rig_config.clone();
 
     if !mcps_empty {
         tracing::warn!(
@@ -138,7 +126,7 @@ fn select_engine_with(executor: AgentExecutor, use_rig: bool) -> BoxedAgentEngin
             agent = %agent_id,
             "ZBOT_ENGINE=rig ignored: MCP servers are configured and the Rig path does not yet bridge the MCP lifecycle; using legacy executor"
         );
-        return Box::new(executor);
+        return Box::new(AgentExecutor::from_prepared(executor));
     }
     let Some(rig_config) = rig_config else {
         tracing::warn!(
@@ -146,32 +134,16 @@ fn select_engine_with(executor: AgentExecutor, use_rig: bool) -> BoxedAgentEngin
             agent = %agent_id,
             "ZBOT_ENGINE=rig ignored: no RigAgentConfig resolved; using legacy executor"
         );
-        return Box::new(executor);
+        return Box::new(AgentExecutor::from_prepared(executor));
     };
-
-    // `tools` is inferred as `Vec<Box<dyn ToolDyn>>` from `RigToolAdapter::boxed`
-    // — the Rig `ToolDyn` type is never named here (Rig stays confined to
-    // `agent-runtime`; gateway-execution does not depend on it).
-    let tools: Vec<_> = executor
-        .model_visible_tools()
-        .into_iter()
-        .map(RigToolAdapter::boxed)
-        .collect();
-    let shared = Arc::new(ToolContext::full_with_state(
-        agent_id.clone(),
-        conversation_id,
-        skills,
-        initial_state,
-    ));
-    let model = LlmCompletionModel::new(executor.llm_client(), model_name);
 
     tracing::info!(
         target: "rig_cutover",
         agent = %agent_id,
         "ZBOT_ENGINE=rig: driving RigAgentEngine"
     );
-    Box::new(RigAgentEngine::with_tool_hooks(
-        rig_config, model, tools, shared, before, after,
+    Box::new(agent_runtime::rig_adapter::factory::build_engine(
+        executor, rig_config,
     ))
 }
 
@@ -1151,7 +1123,7 @@ impl ExecutorBuilder {
         hook_context: Option<&serde_json::Value>,
         mcp_service: &McpService,
         ward_id: Option<&str>,
-    ) -> Result<AgentExecutor, String> {
+    ) -> Result<PreparedExecution, String> {
         let remote_prompt = if matches!(self.actor_kind, RuntimeActorKind::RemotePeer) {
             Some(
                 self.remote_peer_prompt
@@ -1424,7 +1396,6 @@ impl ExecutorBuilder {
         } else {
             agent.mcps.clone()
         };
-        executor_config.rig_agent_config = Some(rig_agent_config);
 
         // Create middleware pipeline after context_window_tokens is resolved.
         let middleware_pipeline = build_runtime_middleware_pipeline(
@@ -1491,14 +1462,15 @@ impl ExecutorBuilder {
         executor_config.offload_threshold_chars = self.tool_settings.offload_threshold_tokens * 4;
         executor_config.offload_dir = Some(self.vault_dir.join("temp"));
 
-        AgentExecutor::new(
+        let mut prepared = PreparedExecution::new(
             executor_config,
             llm_client,
             tool_registry,
             mcp_manager,
             middleware_pipeline,
-        )
-        .map_err(|e| format!("Failed to create executor: {}", e))
+        );
+        prepared.rig_config = Some(rig_agent_config);
+        Ok(prepared)
     }
 
     /// Build a registry without session-scoped model recall (catalog/tests).
@@ -2828,7 +2800,7 @@ extensions: {}
             agent: &Agent,
             provider: &Provider,
             mcp_service: &McpService,
-        ) -> AgentExecutor {
+        ) -> PreparedExecution {
             ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
                 .build(agent, provider, "c", "s", &[], &[], None, mcp_service, None)
                 .await
@@ -2910,8 +2882,7 @@ extensions: {}
             .expect("executor build");
 
         let rig = executor
-            .config()
-            .rig_agent_config
+            .rig_config
             .as_ref()
             .expect("rig config should be attached");
         assert_eq!(rig.agent_id, "agent-1");

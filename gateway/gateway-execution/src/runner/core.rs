@@ -9,7 +9,7 @@
 //! - Session and execution lifecycle management
 
 use agent_runtime::{
-    AgentExecutor, BoxedAgentEngine, ChatMessage, ContextActorKind, ContextCapabilityCatalog,
+    BoxedAgentEngine, ChatMessage, ContextActorKind, ContextCapabilityCatalog, PreparedExecution,
 };
 use api_logs::LogService;
 use execution_state::{SessionPlanSnapshot, StateService};
@@ -373,7 +373,7 @@ fn render_session_plan_for_continuation(snapshot: &SessionPlanSnapshot) -> Strin
     format!("## Current session plan\n\n{steps}{explanation}")
 }
 
-/// Wire the mid-session recall hook onto an [`AgentExecutor`] if the owning
+/// Wire the mid-session recall hook onto prepared inputs if the owning
 /// runner has a [`MemoryRecall`] configured with `mid_session_recall.enabled`.
 ///
 /// Same closure body is wired at two points — after a root executor is built
@@ -382,7 +382,7 @@ fn render_session_plan_for_continuation(snapshot: &SessionPlanSnapshot) -> Strin
 /// invocation lives in exactly one place; either call site that forgets it
 /// must explicitly opt out rather than silently diverge.
 pub(super) fn attach_mid_session_recall_hook(
-    executor: &mut AgentExecutor,
+    executor: &mut PreparedExecution,
     memory_recall: Option<&Arc<crate::recall::MemoryRecall>>,
     goals: Option<&Arc<dyn agent_tools::GoalAccess>>,
     agent_id: &str,

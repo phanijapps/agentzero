@@ -326,7 +326,7 @@ impl ProgressTracker {
 mod progress_tracker_tests {
     use super::*;
     use crate::context_management::compact_messages;
-    use crate::executor::ExecutorConfig;
+    use crate::engine::ExecutorConfig;
     use crate::types::ChatMessage;
     use agent_primitives::types::Part;
     use serde_json::json;

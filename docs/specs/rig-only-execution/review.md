@@ -17,6 +17,12 @@ the required behavior is ported; no cutover AC is marked complete.
 The remaining sections are the historical planning record, not restrictions on
 the subsequent delegated implementation authorization.
 
+T2's bounded implementation review returned Clean after adding a replay-drift
+assertion after the fresh-page reload. The corrected real Rig daemon/UI smoke
+passed again (8.8s). Shared contract extraction, direct prepared-input
+construction and the smoke-discovered successful-respond terminal repair are
+complete; production MCP ownership is the active T3 wave.
+
 ## Implementation handoff — subsequent user approval
 
 The user subsequently authorized incremental implementation and the small

@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
 
-use agent_runtime::{AgentExecutor, BoxedAgentEngine, ChatMessage, ContextActorKind};
+use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind, PreparedExecution};
 use api_logs::LogService;
 use arc_swap::ArcSwapOption;
 use execution_state::StateService;
@@ -1230,12 +1230,12 @@ impl InvokeBootstrap {
     // HELPER METHODS (verbatim from ExecutionRunner, operating on bootstrap fields)
     // =========================================================================
 
-    /// Build an [`AgentExecutor`] from the given args. Mirrors the same-named
+    /// Prepare execution inputs from the given args. Mirrors the same-named
     /// method on `ExecutionRunner`.
     async fn create_executor(
         &self,
         args: CreateExecutorArgs<'_>,
-    ) -> Result<(AgentExecutor, Vec<String>, Option<String>), String> {
+    ) -> Result<(PreparedExecution, Vec<String>, Option<String>), String> {
         let CreateExecutorArgs {
             agent,
             provider,

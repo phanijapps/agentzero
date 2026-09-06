@@ -6,6 +6,7 @@
 pub mod client;
 pub mod config;
 pub mod engine;
+pub mod factory;
 pub mod model;
 pub mod structured;
 pub mod tool;

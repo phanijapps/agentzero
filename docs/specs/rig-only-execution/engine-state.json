@@ -1,12 +1,14 @@
 {
   "schema_version": 1,
-  "run_id": "e2b961d3-abc6-411c-b749-64bbc0dd5305",
+  "run_id": "fb320581-90fd-4785-8474-bd587f006a21",
   "feature": "rig-only-execution",
-  "mode": "spec-plan",
-  "state": "SPEC-HUMAN-GATE",
-  "last_event": "reviewers-clean",
-  "last_event_context": null,
-  "transition_sequence": 4,
-  "last_transition_at": "2026-09-06T14:29:18Z",
-  "gate_question": "Does this spec define the right thing to build?"
+  "mode": "code",
+  "state": "CODE-IMPLEMENTATION",
+  "last_event": "wave-passed",
+  "last_event_context": {
+    "completed_wave_index": 0
+  },
+  "transition_sequence": 9,
+  "last_transition_at": "2026-09-06T16:49:49Z",
+  "gate_question": null
 }

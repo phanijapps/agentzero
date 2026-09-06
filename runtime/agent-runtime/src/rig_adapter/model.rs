@@ -19,13 +19,17 @@
 //!   callback is a synchronous `Fn` invoked from inside the async `chat_stream`,
 //!   where `tokio::mpsc::blocking_send` would panic; an unbounded channel sends
 //!   synchronously without blocking.
-//! - **Usage is not yet threaded** (response type is `()`). Token-usage
-//!   accounting through the Rig bridge is deferred; the legacy `AgentExecutor`
-//!   path still owns it until the cutover completes.
+//! - **Usage travels in the final response.** Rig reads provider token counts
+//!   through `GetTokenUsage` when completing each model call.
+//! - **The stream owns the provider task.** Dropping it aborts an outstanding
+//!   request, including one that has not produced its first token.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use futures::channel::mpsc;
+use futures::Stream;
 use rig::completion::message::ToolResultContent;
 use rig::completion::{
     AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
@@ -87,6 +91,27 @@ pub struct LlmCompletionModel {
     client: Arc<dyn LlmClient>,
     #[allow(dead_code)]
     model_id: String,
+}
+
+/// Bind callback-driven provider work to the lifetime of its consuming stream.
+struct ProviderStream {
+    receiver:
+        mpsc::UnboundedReceiver<Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Stream for ProviderStream {
+    type Item = Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.receiver).poll_next(cx)
+    }
+}
+
+impl Drop for ProviderStream {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl LlmCompletionModel {
@@ -170,7 +195,7 @@ impl CompletionModel for LlmCompletionModel {
             StreamChunk::ToolCall(_) => {}
         });
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let result = client.chat_stream(messages, tools, callback).await;
             match result {
                 Ok(response) => {
@@ -188,7 +213,9 @@ impl CompletionModel for LlmCompletionModel {
             // Dropping `tx` ends the stream.
         });
 
-        Ok(StreamingCompletionResponse::stream(Box::pin(rx)))
+        Ok(StreamingCompletionResponse::stream(Box::pin(
+            ProviderStream { receiver: rx, task },
+        )))
     }
 }
 
@@ -548,6 +575,63 @@ mod tests {
             additional_params: None,
             output_schema: None,
         }
+    }
+
+    #[tokio::test]
+    async fn dropping_bridge_stream_aborts_pending_provider() {
+        struct PendingLlm {
+            entered: Arc<tokio::sync::Notify>,
+            dropped: Arc<tokio::sync::Notify>,
+        }
+        struct DropNotice(Arc<tokio::sync::Notify>);
+        impl Drop for DropNotice {
+            fn drop(&mut self) {
+                self.0.notify_one();
+            }
+        }
+        #[async_trait]
+        impl LlmClient for PendingLlm {
+            fn model(&self) -> &str {
+                "pending"
+            }
+            fn provider(&self) -> &str {
+                "fixture"
+            }
+            async fn chat(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Option<Value>,
+            ) -> Result<ChatResponse, LlmError> {
+                panic!("streaming fixture");
+            }
+            async fn chat_stream(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Option<Value>,
+                _: StreamCallback,
+            ) -> Result<ChatResponse, LlmError> {
+                let _notice = DropNotice(self.dropped.clone());
+                self.entered.notify_one();
+                futures::future::pending().await
+            }
+        }
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let model = LlmCompletionModel::new(
+            Arc::new(PendingLlm {
+                entered: entered.clone(),
+                dropped: dropped.clone(),
+            }),
+            "pending",
+        );
+        let stream = model.stream(rig_request("hello")).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("provider task must actually start");
+        drop(stream);
+        tokio::time::timeout(std::time::Duration::from_secs(1), dropped.notified())
+            .await
+            .expect("stream owns and cancels the pending provider task");
     }
 
     fn invalid_tool_request() -> CompletionRequest {

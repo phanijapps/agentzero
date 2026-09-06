@@ -1,6 +1,6 @@
 # Spec: Rig-only execution
 
-- **Status:** Draft
+- **Status:** Implementing
 - **Owner:** phanijapps
 - **Plan:** [plan.md](plan.md)
 - **Constrained by:** runtime/AGENTS.md; runtime/agent-runtime/AGENTS.md; gateway/gateway-execution/AGENTS.md; gateway/gateway-execution/src/runner/AGENTS.md; [Runtime Context Control](../runtime-context-control/spec.md); [MCP OAuth](../mcp-oauth/spec.md); [Subagent Role Gating](../subagent-role-gating/spec.md); [Agent Handoff Notes](../agent-handoff-notes/spec.md); [Builder Delegation Hygiene](../builder-delegation-hygiene/spec.md); [Provider Configuration](../simplified-provider-model-configuration/spec.md)
@@ -20,10 +20,13 @@ Every local z-Bot root agent, delegated subagent, continuation, and recovered ex
 - Cover every local execution entry point, including WebSocket/HTTP, CLI/cron/connector callers, durable Research tasks, A2A ingress, delegated modes, and restart recovery. Outbound remote A2A peers retain their own engines; this process never falls back locally.
 - Port required behavior before removing its implementation. Record structural retirement separately from lines moved into new modules.
 
+### Delegated branch decisions
+
+- The user delegates cutover implementation decisions on this branch, including the Rig/rmcp dependency selection, bounded baseline repairs and reviewed plan adjustments. No repeated approval pause is required for these decisions.
+- Preserve public schemas/APIs, security controls and provider/MCP/skill support; branch authority is not permission to silently reduce parity or deploy externally.
 ### Ask first
 
-- Rig version/fork changes, additional runtime dependencies, public schema/API changes, weaker security controls, or reduced provider/MCP/skill support.
-- Product changes to legacy broad session controls, retry/delegation policy, or memory/distillation scheduling. Those are not implicit in removing the old engine.
+- External publication/deployment, or product changes beyond this cutover (broad session controls, retry/delegation policy, or memory/distillation scheduling). Branch implementation/dependency/plan choices above are already delegated and require no further approval.
 
 ### Never do
 
@@ -58,11 +61,11 @@ Every local z-Bot root agent, delegated subagent, continuation, and recovered ex
 
 ## Assumptions
 
-- Product: the user explicitly requests no legacy executor and Rig for MCP, skills, root/subagent orchestration and execution (user confirmation 2026-09-06). This authorizes branch/plan creation, not cutover implementation.
+- Product: the user explicitly requests no legacy executor and Rig for MCP, skills, root/subagent orchestration and execution (user confirmation 2026-09-06). Subsequent confirmation authorizes incremental implementation and the tracking repair needed to start.
 - Technical: the current selector is opt-in and falls back for MCP; all three construction sites use it (gateway/gateway-execution/src/invoke/executor.rs; runner/invoke_bootstrap.rs; runner/core.rs; delegation/spawn.rs).
 - Technical: Rig 0.39.0 is pinned to 6b1991bfb246411dd75839c8611e801a2309d33c; the existing provider/tool adapters are retained starting points (Cargo.lock; runtime/agent-runtime/Cargo.toml). Exact hooks required for full parity are a mandatory T1 feasibility gate, not an asserted upstream capability.
 - Technical: no docs/architecture/reference.md was found; design follows existing Rust/Tokio crate boundaries and runtime/gateway AGENTS files.
-- Process: full spec-plan work-loop applies (structural and agent/MCP security boundaries). This remains Draft until scope and strategy approval; no new external API contract or UI redesign is authored.
+- Process: full code work-loop applies (structural and agent/MCP security boundaries). Scope and strategy are approved; no new external API contract or UI redesign is authored.
 
 ## Related work
 

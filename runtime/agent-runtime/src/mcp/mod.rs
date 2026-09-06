@@ -17,7 +17,6 @@
 //! - [`client`]: Common trait for MCP clients
 //! - [`http`]: HTTP transport implementation
 //! - [`stdio`]: Stdio transport implementation (subprocess)
-//! - [`sse`]: Server-Sent Events transport implementation
 //! - [`error`]: Error types for MCP operations
 //! - [`tool`]: Tool types provided by MCP servers
 
@@ -26,7 +25,6 @@ mod config;
 mod error;
 mod http;
 mod manager;
-mod sse;
 mod stdio;
 mod tool;
 

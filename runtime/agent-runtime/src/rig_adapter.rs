@@ -10,6 +10,11 @@ pub mod model;
 pub mod structured;
 pub mod tool;
 
+#[cfg(test)]
+mod capability_tests;
+#[cfg(test)]
+mod mcp_capability_tests;
+
 pub use client::LlmCompletionClient;
 pub use config::{RigAgentConfig, RigConfigError, RigModelConfig};
 pub use structured::prompt_typed;

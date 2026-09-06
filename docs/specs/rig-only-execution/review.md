@@ -1,4 +1,35 @@
-# Planning verification
+# Rig-only execution verification
+
+## Current implementation round
+
+The user's explicit branch authority covers cutover implementation, dependency
+selection and reviewed plan adjustments. The amendment restored an Ask first
+boundary only for external publication/deployment and unrelated product changes;
+both adversarial and secure-design re-reviews returned Clean. The code-mode
+baseline was sealed under run `fb320581-90fd-4785-8474-bd587f006a21`.
+
+T1 repaired the provider-task cancellation leak and removed the duplicate
+170-line SSE client. These bounded repairs independently reviewed Clean.
+Native Rig/rmcp lifecycle probes and dependency checks are recorded in
+[parity-matrix.md](parity-matrix.md). Production routing remains unchanged until
+the required behavior is ported; no cutover AC is marked complete.
+
+The remaining sections are the historical planning record, not restrictions on
+the subsequent delegated implementation authorization.
+
+## Implementation handoff — subsequent user approval
+
+The user subsequently authorized incremental implementation and the small
+tracking repairs needed to begin. The statements below and in the approved
+plan about what "this planning turn" authorized describe that earlier turn,
+not a restriction on the later implementation approval. The approved task
+strategy remains sealed and unchanged.
+
+The current spec is Implementing, the plan is Approved, and the code-mode run
+is at T1. Two new pinned-Rig probes and 34 existing adapter tests pass; the
+focused Clippy, formatting and diff checks pass. See [parity-matrix.md](parity-matrix.md)
+for exact evidence and open gaps. No full T1, parity or cutover completion is
+claimed, and production routing has not changed.
 
 ## Scope and baseline
 

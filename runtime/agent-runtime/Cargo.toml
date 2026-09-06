@@ -47,7 +47,10 @@ reqwest = { workspace = true }
 
 # Rig is pinned for the migration adapter boundary only. Keep default features
 # off until provider/tool/memory adapters deliberately opt in.
-rig = { git = "https://github.com/0xplaygrounds/rig", rev = "6b1991bfb246411dd75839c8611e801a2309d33c", version = "0.39.0", default-features = false }
+rig = { git = "https://github.com/0xplaygrounds/rig", rev = "6b1991bfb246411dd75839c8611e801a2309d33c", version = "0.39.0", default-features = false, features = ["rmcp"] }
+# Match Rig's SDK contract and request the adapter's client transports directly.
+# Rig also enables rmcp's upstream defaults (server/macros/base64).
+rmcp = { version = "=1.7.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider"] }
 
 # Utilities
 uuid = { workspace = true }

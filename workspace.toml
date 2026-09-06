@@ -1,11 +1,26 @@
 # Repository-durable work that is not part of an active initiative queue.
 
+[ini-001]
+name = "Rig-only execution"
+status = "active"
+milestone = "Complete cutover with execution parity"
+
+[ini-001.work]
+queue = []
+active = [
+  { path = "docs/specs/rig-only-execution/spec.md", kind = "spec", source = { mode = "repo-origin", ref = "docs/specs/rig-only-execution/spec.md", revision = "e38e8003" }, summary = "Remove the alternative executor and run all local agents through Rig", needs = [] },
+]
+shipped = []
+
 [backlog]
 open = [
-  # pre-existing: research_subscribes_then_persists_before_acceptance in gateway/src/websocket/handler.rs:1417 fails "acceptance must wait for bootstrap" on untouched 789fa55a and the responsibility refactor.
-  # Fix: diagnose the unexpected pre-bootstrap WebSocket message and reconcile the assertion with the durable Research acceptance contract.
-  # Unblocks when: the isolated test passes on the baseline behavior; no failure suppression is included in the refactor.
-  { slug = "pre-existing-research-acceptance", source = "pre-flight/2026-09-06" },
+  # pre-existing: gateway/tests/saved_surfaces.rs:66 expects a bare surface; the API returns its session/execution/time envelope.
+  # Fix the baseline fixture against the current persisted-surface API contract and rerun the workspace test gate.
+  { slug = "pre-existing-saved-surfaces-envelope", source = "pre-flight/2026-09-06" },
+  # pre-existing: --all-targets --all-features enables adk-eval, but its retired adk_core dependency is absent.
+  # Rig-only T10 should retire the obsolete alternative-framework evaluation feature/test, then rerun the full feature gate.
+  { slug = "pre-existing-adk-eval-build", source = "pre-flight/2026-09-06" },
+  # Research early-acceptance fixture repaired and independently reviewed in edcf854d.
   # Run the official A2A CLI/TCK plus the documented two-daemon pair/delegate/get/cancel/restart journey and record the output before claiming external conformance.
   { slug = "a2a-external-conformance", source = "spec/a2a-federation-discovery AC17" },
   { slug = "conversation-store-revamp-summary-store", source = "spec/conversation-store-revamp" },

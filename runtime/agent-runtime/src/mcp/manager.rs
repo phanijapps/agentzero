@@ -15,7 +15,6 @@ use super::client::McpClient;
 use super::config::McpServerConfig;
 use super::error::McpError;
 use super::http::HttpMcpClient;
-use super::sse::SseMcpClient;
 use super::stdio::StdioMcpClient;
 use super::tool::McpTool;
 
@@ -103,7 +102,9 @@ impl McpManager {
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
-                let client = Arc::new(SseMcpClient::new(
+                // Both configured POST transports accept JSON and SSE bodies.
+                // Share decoding, timeouts and credential redaction.
+                let client = Arc::new(HttpMcpClient::new(
                     id.clone(),
                     name,
                     url,

@@ -4,7 +4,7 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
-| [Rig-only Execution](rig-only-execution/spec.md) | Draft | Complete Rig cutover for root/subagent execution, MCP and skills; removes the legacy executor and all engine-selection fallback paths. |
+| [Rig-only Execution](rig-only-execution/spec.md) | Implementing | Complete Rig cutover for root/subagent execution, MCP and skills; removes the legacy executor and all engine-selection fallback paths. |
 | [Gateway Responsibility Boundaries](gateway-responsibility-boundaries/spec.md) | Shipped | Extracts execution control and capability inspection into focused components while preserving public behavior. |
 | [Session-stop Cancellation](session-stop-cancellation/spec.md) | Implementing | Cancels queued, active, and delegated request work without affecting another session. |
 | [Observatory Force-Graph Polish](observatory-force-graph-polish/spec.md) | Shipped | Makes the existing D3 Observatory graph feel like a clear, premium, layered network without changing its data or interactions. |

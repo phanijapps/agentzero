@@ -1,7 +1,7 @@
 # Plan: Rig-only execution
 
 - **Spec:** [spec.md](spec.md)
-- **Status:** Drafting
+- **Status:** Approved
 
 ## Approach
 
@@ -14,7 +14,8 @@ Close the capability gaps on the existing Rig adapter, replace construction and 
 - The behavior specs linked in spec.md's Constrained by header govern the named context limits/control, child role gating, handoff notes, delegation modes and provider configuration contracts. MCP OAuth is Archived and is cited only as provenance for preserving the current credential/privacy behavior, not as new feature scope. Historical storage paths and engine implementation details in these documents are not reinstated: current configured stores, durable messaging and this spec's Rig-only requirement take precedence. This migration preserves the named product contracts, not every historical implementation constraint.
 - Keep the existing OpenAI-compatible transport, provider auth/retry/rate-limit stack, configured MCP transports, skill format, persistence and gateway protocol contracts. Reusing a protocol client does not constitute retaining the legacy execution engine.
 - No wholesale distillation/knowledge architecture rewrite. Distillation remains a separate one-shot workflow; no AgentExecutor consumer may remain there or elsewhere. Typed extraction migration can be separate work.
-- Approval is for the spec and plan separately. If the pinned Rig API cannot support the required semantics without a second loop, stop at T1 for an explicit version/design decision; do not invent an API or lower an AC.
+- The user subsequently delegated branch implementation decisions, including dependency selection and reviewed plan adjustments. If the pinned API lacks a required seam, acquire and review an appropriate integration/version; never invent an API, lower an AC or add a second loop.
+- Before adopting rmcp in T1/T3, verify official modelcontextprotocol/rust-sdk and crates.io provenance, pin the exact SDK version/revision with lockfile checksums, review enabled features and the transitive cargo tree footprint, run cargo audit and cargo deny, and check for duplicate established helpers. Record baseline exceptions separately from new dependency findings; do not silently suppress either.
 
 ## Construction tests
 
@@ -91,10 +92,10 @@ Report gross deletion, moved code, new adapter code and net non-test LOC separat
 ### T1: Pinned Rig capabilities and the full parity matrix are proven
 
 **Depends on:** none
-**Touches:** docs/specs/rig-only-execution/*, gateway/gateway-execution/tests/rig_parity_tests.rs, runtime/agent-runtime/tests/*, e2e/*
+**Touches:** docs/specs/rig-only-execution/*, gateway/gateway-execution/tests/rig_parity_tests.rs, runtime/agent-runtime/tests/*, runtime/agent-runtime/src/rig_adapter/*, runtime/agent-runtime/src/mcp/*, gateway/src/websocket/handler.rs, e2e/*
 **Verification mode:** goal-based probes and contract tests; no production stub at authoring time.
 **Tests:** Compile/run minimal probes against the locked Rig revision for before-request context mutation, usage events, tool hooks, hidden context, interrupted pending streams, and owned MCP shutdown. Inventory every entry point/config field/event/hook, existing confinement helper and test. Run baseline gates, reproduce/triage the Research acceptance failure, and prove the E2E harness boots in an isolated vault. Covers AC1–AC13 test coverage.
-**Approach:** Use contract-acquisition against pinned local source/toolchain before writing adapters. Store evidence and exact commands in parity-matrix.md. Map each gap to T2–T11; request a plan revision for an unsupported fundamental hook. Baseline-fixture repairs receive independent review, not edited expectations to bless a migration regression.
+**Approach:** Use contract-acquisition against pinned local source/toolchain before writing adapters. Store evidence and exact commands in parity-matrix.md. Resolve bounded, test-proven bridge lifetime and transport-decoding defects during feasibility work; map remaining parity integration to T2–T11. Acquire and review a plan adjustment for an unsupported fundamental hook under delegated branch authority. Baseline repairs receive independent review, not edited expectations to bless a migration regression.
 **Done when:** Each required capability has a verified integration seam and test owner; unresolved upstream/command feasibility blocks implementation, not merely release.
 
 ### T2: Engine contracts no longer depend on the legacy executor
@@ -112,7 +113,7 @@ Report gross deletion, moved code, new adapter code and net non-test LOC separat
 **Touches:** runtime/agent-runtime/src/mcp/*, runtime/agent-runtime/src/rig_adapter/*, gateway/gateway-execution/src/invoke/*
 **Verification mode:** TDD plus real local transport integration.
 **Tests:** Existing configured stdio/SSE/HTTP and distinct StreamableHttp (streamable-http) transports each connect, list and call against fixture servers; each has startup/auth-failure, EOF, timeout, canceled pending call and shutdown cases. No owned process/socket tasks remain after 5 seconds. Two sessions do not close each other's clients. Secret canaries stay out of model-visible fields and error/log channels. Covers AC2/AC9.
-**Approach:** Give lifecycle responsibility to an explicit MCP session owner with async close and a cancellation-safe supervised cleanup path. Preserve current credential resolution and configured transport semantics; any unsupported actual transport is a blocker.
+**Approach:** Give lifecycle responsibility to an explicit MCP session owner with async close and a cancellation-safe supervised cleanup path. Use the pinned Rig native rmcp integration where its acquired transport contract fits; retain focused protocol adapters where needed to preserve configured wire semantics, never a fallback executor. Preserve credential resolution, actor filtering and configured transport semantics; unsupported actual transport remains a release blocker.
 **Done when:** Real client/server fixtures prove successful calls and cleanup on each exit path.
 
 ### T4: Built-in, MCP and skill tools execute through the authorized Rig inventory
@@ -189,7 +190,7 @@ Report gross deletion, moved code, new adapter code and net non-test LOC separat
 
 ## Rollout
 
-No database migration or new hosted infrastructure. Build and verify on the branch; release only the complete T11 artifact, never the interim dual-engine tree. Deployment is a normal binary replacement after active sessions are drained or durably checkpointed. Rollback is redeployment of the previously released binary using compatible persisted data, not an engine toggle in the new binary. No push, PR publication, deployment or cutover implementation is authorized by this planning turn.
+No database migration or new hosted infrastructure. Build and verify on the branch; release only the complete T11 artifact, never the interim dual-engine tree. Deployment is a normal binary replacement after active sessions are drained or durably checkpointed. Rollback is redeployment of the previously released binary using compatible persisted data, not an engine toggle in the new binary. Cutover implementation is authorized under delegated branch authority. PR publication and external deployment remain out of scope; parity is unclaimed until T11.
 
 ## Risks and review shape
 
@@ -199,7 +200,7 @@ MCP cleanup, interrupted streams, context hooks, delegated identity and terminal
 
 - Resolved: user means Rig, not Zig, and explicitly rejects a legacy executor/fallback.
 - Resolved: preserving protocol/storage/policy owners is compatible with Rig-only model/tool execution; a second engine is not.
-- Resolved: this turn creates a branch and Draft artifacts only; it does not authorize implementation or claim parity.
+- Resolved: the user has authorized incremental cutover implementation and delegated branch decisions; parity is not claimed until T11 verification.
 - Gate before implementation: pinned API feasibility and the accepted baseline tree are checked by T1; any necessary version/contract change requires a reviewed plan revision.
 - Declined: swapping all provider transports, moving all memory to Rig, replacing durable orchestration with a new framework, and rewriting distillation. Each broadens scope without being required to eliminate the old executor.
 

@@ -1,0 +1,29 @@
+"""Credential-free MCP fixture for native SDK lifecycle contract probes."""
+
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if "id" not in request:
+        continue
+    if method == "initialize":
+        result = {
+            "protocolVersion": request["params"]["protocolVersion"],
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "lifecycle-probe", "version": "1"},
+        }
+    elif method == "tools/list":
+        result = {"tools": [{
+            "name": "echo",
+            "description": "echo a fixture value",
+            "inputSchema": {"type": "object", "properties": {"value": {"type": "string"}}},
+        }]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": request["params"]["arguments"]["value"]}]}
+    elif method == "ping":
+        result = {}
+    else:
+        raise AssertionError(f"unexpected fixture method: {method}")
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)

@@ -1,4 +1,3 @@
-
 //! Regression tests for the capture-before-init bug that caused
 //! `context_window_tokens = 8192` on the continuation path.
 //!

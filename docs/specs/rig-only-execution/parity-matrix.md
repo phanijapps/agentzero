@@ -725,6 +725,39 @@ No production engine has been retired yet. No AC is marked complete.
   (ExecutionRunner fields pub(super), one private fn -> pub(super)).
   invoke_bootstrap.rs (2631 lines) remains the next-largest file and is
   left for the T8/T9 waves that already touch it.
+
+### T8 execution record
+
+- T8 inventory: every local entry point already constructs through the one
+  `select_engine` choke point — root invoke (initial_execution →
+  invoke_bootstrap), continuation, delegation children (spawn.rs),
+  durable Research and A2A ingress (services/runtime.rs → the same runner
+  invoke entries), and persisted-subagent smart resume
+  (subagent_recovery.rs → DelegationRequest → spawn). No second factory
+  exists to remove; T8's work is proving the delegated flows behave.
+- New flagship integration test (runner/core/delegation_flow_tests.rs):
+  one scripted provider serves all three model turns — the root's
+  `delegate_to_agent` (wait_for_result=true), the child's respond, and
+  the parent's continuation answer. Asserts exactly one terminal per
+  execution (the child's AgentCompleted precedes the root's — the UI keys
+  subagent turns by execution id, so the child terminal routed to the
+  parent session is legitimate and singular), DelegationStarted/Completed
+  exactly once, callback-before-continuation durable ordering (user →
+  tool call → delegated sentinel → callback → synthetic prompt → final
+  answer), and the composed continuation request containing the callback.
+- The flagship test exposed two real findings, both fixed in this wave:
+  (1) on the Rig path the continuation failed closed on the input budget
+  ("estimated 8644, limit 8192") — correct AC6 behavior; the shared
+  harness fixture's provider window (8192) was simply too small for a
+  full delegation continuation. Raised to 32768 (no gateway test relies
+  on the old bound). (2) the test-support helpers were module-private;
+  extracted to runner/core/test_support.rs for reuse.
+- T8 gates: 625 library tests pass on BOTH the default (legacy) engine
+  and `ZBOT_ENGINE=rig` (the established with-Rig suite run), clippy
+  -D warnings and fmt clean, and the real daemon under ZBOT_ENGINE=rig
+  passes the ward-archetypes (delegation archetype bundles) and
+  stop-and-continue Mode Full specs (29.9s combined).
+
 - T7 real-artifact verification: rebuilt daemon (cargo build -p daemon
   --locked) with ZBOT_ENGINE=rig passes the strict Mode Full simple-qa
   answer/reload smoke (9.7s) and the stop-and-continue regression

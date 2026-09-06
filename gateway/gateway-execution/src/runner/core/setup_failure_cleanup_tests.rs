@@ -1,4 +1,3 @@
-
 use super::*;
 use execution_state::{
     DelegationType, ExecutionStatus, Session, SessionStatus, SqliteWorkStore, WorkStore,

@@ -1,4 +1,3 @@
-
 use super::*;
 use agent_tools::{
     RecallContentVisibility, RecallItemKind, RecallLogicalSource, RecallProvenance,

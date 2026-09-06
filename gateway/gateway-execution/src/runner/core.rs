@@ -572,6 +572,8 @@ impl ExecutionRunner {
 }
 
 #[cfg(test)]
+mod delegation_flow_tests;
+#[cfg(test)]
 mod mid_session_recall_tests;
 #[cfg(test)]
 mod model_registry_late_binding_tests;
@@ -579,3 +581,5 @@ mod model_registry_late_binding_tests;
 mod peer_root_lifecycle_tests;
 #[cfg(test)]
 mod setup_failure_cleanup_tests;
+#[cfg(test)]
+mod test_support;

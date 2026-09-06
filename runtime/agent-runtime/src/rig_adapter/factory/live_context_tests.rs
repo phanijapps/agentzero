@@ -12,9 +12,9 @@ use std::sync::{
 };
 
 #[derive(Default)]
-struct Provider {
-    requests: Mutex<Vec<(Vec<ChatMessage>, Option<Value>)>>,
-    effects: Arc<AtomicUsize>,
+pub(super) struct Provider {
+    pub(super) requests: Mutex<Vec<(Vec<ChatMessage>, Option<Value>)>>,
+    pub(super) effects: Arc<AtomicUsize>,
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
     pause_first: bool,
@@ -95,7 +95,7 @@ impl agent_primitives::Tool for Effect {
         Ok(json!("ok"))
     }
 }
-fn prepared(provider: Arc<Provider>) -> PreparedExecution {
+pub(super) fn prepared(provider: Arc<Provider>) -> PreparedExecution {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(Effect(provider.effects.clone())));
     registry.register(Arc::new(crate::RespondTool::new()));
@@ -107,7 +107,7 @@ fn prepared(provider: Arc<Provider>) -> PreparedExecution {
         Arc::new(MiddlewarePipeline::new()),
     )
 }
-fn engine(prepared: PreparedExecution) -> RigAgentEngine<LlmCompletionModel> {
+pub(super) fn engine(prepared: PreparedExecution) -> RigAgentEngine<LlmCompletionModel> {
     let config = RigAgentConfig::new(
         "actor",
         "Actor",

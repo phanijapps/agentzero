@@ -25,6 +25,7 @@ pub(super) struct ContextPolicyConfig {
     pub model: String,
     pub system_instruction: Option<String>,
     pub input_budget: u64,
+    pub progress: super::progress_policy::ProgressConfig,
 }
 
 /// Delivery acknowledgments travel with the provider future, never preparation.
@@ -42,6 +43,7 @@ struct RunContext {
     turn: usize,
     recall_keys: HashSet<String>,
     results: super::tool_results::SharedToolResults,
+    tail: super::checkpoint_tail::CheckpointTail,
 }
 
 pub(super) struct ContextPolicy {
@@ -53,6 +55,8 @@ pub(super) struct ContextPolicy {
     events: Mutex<Option<UnboundedSender<StreamEvent>>>,
     error: Mutex<Option<ExecutorError>>,
     inputs: super::context_inputs::ContextInputs,
+    progress: Mutex<super::progress_policy::ProgressPolicy>,
+    restored: Result<Option<Vec<ChatMessage>>, String>,
 }
 
 impl ContextPolicy {
@@ -61,6 +65,7 @@ impl ContextPolicy {
         middleware: Arc<MiddlewarePipeline>,
         context: SharedToolContext,
         inputs: super::context_inputs::ContextInputs,
+        restored: Result<Option<Vec<ChatMessage>>, String>,
     ) -> Self {
         Self {
             config,
@@ -71,6 +76,8 @@ impl ContextPolicy {
             events: Mutex::new(None),
             error: Mutex::new(None),
             inputs,
+            progress: Mutex::new(Default::default()),
+            restored,
         }
     }
 
@@ -80,7 +87,12 @@ impl ContextPolicy {
         user: &str,
         rig_history_len: usize,
         results: super::tool_results::SharedToolResults,
-    ) -> UnboundedReceiver<StreamEvent> {
+    ) -> Result<UnboundedReceiver<StreamEvent>, ExecutorError> {
+        let restored = self
+            .restored
+            .as_ref()
+            .map_err(|error| ExecutorError::MiddlewareError(error.clone()))?;
+        let history = restored.as_deref().unwrap_or(history);
         let mut messages = Vec::new();
         if let Some(instructions) = &self.config.system_instruction {
             messages.push(ChatMessage::system(instructions.clone()));
@@ -99,16 +111,70 @@ impl ContextPolicy {
                 .map(|(_, _, keys)| keys.clone())
                 .unwrap_or_default(),
             results,
+            tail: Default::default(),
         });
         *self.snapshot.lock().unwrap() = None;
         *self.error.lock().unwrap() = None;
+        *self.progress.lock().unwrap() = Default::default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         *self.events.lock().unwrap() = Some(tx);
-        rx
+        Ok(rx)
     }
 
     pub fn take_error(&self) -> Option<ExecutorError> {
         self.error.lock().unwrap().take()
+    }
+
+    pub fn record_usage(&self, prompt: Option<u64>) {
+        self.progress.lock().unwrap().usage(prompt);
+    }
+    pub fn record_tool(&self, name: &str, args: &Value, error: Option<&str>) {
+        self.progress.lock().unwrap().tool(name, args, error);
+    }
+
+    pub fn text(&self, text: &str) {
+        if let Some(run) = self.run.lock().unwrap().as_mut() {
+            run.tail.text(text);
+        }
+    }
+    pub fn completed(&self, id: &str, name: &str, args: &Value, result: &str) {
+        if let Some(run) = self.run.lock().unwrap().as_mut() {
+            run.tail.completed(id, name, args, result);
+        }
+    }
+    pub fn final_history(&self, history: &[Message]) {
+        let mut run = self.run.lock().unwrap();
+        let Some(run) = run.as_mut() else {
+            return;
+        };
+        let Some(previous) = &run.previous_rig else {
+            return;
+        };
+        let base = run.initial_rig_len - 1;
+        let absorbed = &previous[base..];
+        if !history.starts_with(absorbed) {
+            return;
+        }
+        if let Ok(messages) = convert_rig_messages(history[absorbed.len()..].iter()) {
+            run.tail.messages = messages;
+        }
+    }
+    pub fn checkpoint(&self) -> Option<Value> {
+        let mut state = self.context.export_state();
+        let run = self.run.lock().unwrap();
+        let run = run.as_ref()?;
+        let mut messages = run.messages.clone();
+        messages.extend(run.tail.messages.clone());
+        if let Some(snapshot) = crate::engine::snapshot::capture(
+            &messages,
+            self.config.system_instruction.as_deref(),
+            &state,
+        ) {
+            state
+                .as_object_mut()?
+                .insert(crate::engine::snapshot::CHECKPOINT_KEY.into(), snapshot);
+        }
+        Some(state)
     }
 
     pub async fn prepare(
@@ -227,6 +293,10 @@ impl ContextPolicy {
             })
             .await
             .map_err(ExecutorError::MiddlewareError)?;
+        self.progress
+            .lock()
+            .unwrap()
+            .prepare(&self.config.progress, &mut state.messages)?;
         let acks = self
             .inputs
             .apply(
@@ -236,6 +306,7 @@ impl ContextPolicy {
                 &state.results,
             )
             .await;
+        state.messages = super::context_inputs::resolve_attachments(state.messages).await?;
         let tools = if state.results.peer_influenced() {
             crate::tool_visibility::peer_safe_tools_schema(tools)
         } else {
@@ -255,6 +326,7 @@ impl ContextPolicy {
             )));
         }
         let messages = state.messages.clone();
+        state.tail = Default::default();
         *self.run.lock().unwrap() = Some(state);
         Ok(PreparedRequest {
             messages,

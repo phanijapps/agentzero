@@ -3,6 +3,45 @@ use super::tool_results::ToolResults;
 use crate::{ChatMessage, RecallHook, TransformContextHook};
 use std::{collections::HashSet, sync::Mutex};
 
+/// Resolve persisted attachments before the final request-budget check. Pass
+/// the resolved bytes onward so provider rehydration cannot enlarge a checked
+/// request. File I/O stays off the engine's cancellation/heartbeat task.
+pub(super) async fn resolve_attachments(
+    mut messages: Vec<ChatMessage>,
+) -> Result<Vec<ChatMessage>, crate::ExecutorError> {
+    use agent_primitives::{types::ContentSource, Part};
+    let has_refs = messages.iter().flat_map(|m| &m.content).any(|part| {
+        matches!(
+            part,
+            Part::Image {
+                source: ContentSource::FileRef(_),
+                ..
+            } | Part::File {
+                source: ContentSource::FileRef(_),
+                ..
+            }
+        )
+    });
+    if !has_refs {
+        return Ok(messages);
+    }
+    let invalid =
+        || crate::ExecutorError::MiddlewareError("Unable to resolve request attachment".into());
+    tokio::task::spawn_blocking(move || {
+        for part in messages.iter_mut().flat_map(|m| &mut m.content) {
+            if let Part::Image { source, .. } | Part::File { source, .. } = part {
+                if matches!(source, ContentSource::FileRef(_)) {
+                    *source = agent_primitives::multimodal::rehydrate_source(source)
+                        .map_err(|_| invalid())?;
+                }
+            }
+        }
+        Ok(messages)
+    })
+    .await
+    .map_err(|_| invalid())?
+}
+
 pub(super) struct ContextInputs {
     pub recall: Option<(RecallHook, u32, HashSet<String>)>,
     steering: Mutex<Option<crate::steering::SteeringQueue>>,

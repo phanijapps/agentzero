@@ -14,6 +14,92 @@ use std::sync::{
     Mutex,
 };
 
+#[tokio::test]
+async fn oversized_multimodal_payload_is_rejected_before_provider_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("large-attachment");
+    std::fs::write(&file, vec![7u8; 8192]).unwrap();
+    for source in [
+        ContentSource::Base64("aGVsbG8=".repeat(1000)),
+        ContentSource::Url(format!(
+            "https://fixture.invalid/{}",
+            "segment/".repeat(1000)
+        )),
+        ContentSource::FileRef(file.display().to_string()),
+    ] {
+        for part in [
+            Part::Image {
+                source: source.clone(),
+                mime_type: "image/png".into(),
+                detail: None,
+            },
+            Part::File {
+                source,
+                mime_type: "application/pdf".into(),
+                filename: Some("fixture.pdf".into()),
+            },
+        ] {
+            let provider = Arc::new(Provider::default());
+            let mut cfg = ExecutorConfig::new("actor".into(), "fixture".into(), "fixture".into());
+            cfg.context_window_tokens = 1024;
+            let mut message = ChatMessage::user("attachment".into());
+            message.content.push(part);
+            let result = build(cfg, provider.clone(), MiddlewarePipeline::new(), 0)
+                .execute("read attachment", &[message])
+                .await;
+            assert!(
+                matches!(result, Err(ExecutorError::MiddlewareError(_))),
+                "oversized media: {result:?}"
+            );
+            assert!(provider.requests.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn file_refs_are_resolved_once_and_missing_attachments_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("attachment");
+    std::fs::write(&path, b"hello").unwrap();
+    for exists in [true, false] {
+        let provider = Arc::new(Provider::default());
+        let mut cfg = ExecutorConfig::new("actor".into(), "fixture".into(), "fixture".into());
+        cfg.context_window_tokens = 1024;
+        let mut message = ChatMessage::user("attachment".into());
+        message.content.push(Part::File {
+            source: ContentSource::FileRef(
+                if exists {
+                    path.clone()
+                } else {
+                    dir.path().join("missing")
+                }
+                .display()
+                .to_string(),
+            ),
+            mime_type: "text/plain".into(),
+            filename: Some("attachment.txt".into()),
+        });
+        let result = build(cfg, provider.clone(), MiddlewarePipeline::new(), 0)
+            .execute("read", &[message])
+            .await;
+        let requests = provider.requests.lock().unwrap();
+        if exists {
+            result.unwrap();
+            assert!(requests[0]
+                .iter()
+                .flat_map(|m| &m.content)
+                .any(|part| matches!(part,
+                    Part::File { source: ContentSource::Base64(data), .. } if data == "aGVsbG8="
+                )));
+        } else {
+            assert!(
+                matches!(result, Err(ExecutorError::MiddlewareError(ref error)) if error == "Unable to resolve request attachment")
+            );
+            assert!(requests.is_empty());
+        }
+    }
+}
+
 #[derive(Default)]
 struct Provider {
     requests: Mutex<Vec<Vec<ChatMessage>>>,

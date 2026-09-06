@@ -1,4 +1,7 @@
 //! Effectful tool contracts through production prepared inputs and the Rig loop.
+#[cfg(unix)]
+#[path = "rig_tool_contracts/context.rs"]
+mod context;
 use agent_primitives::{FileSystemContext, Tool};
 use agent_runtime::llm::{ChatResponse, LlmError, StreamCallback, StreamChunk};
 use agent_runtime::{

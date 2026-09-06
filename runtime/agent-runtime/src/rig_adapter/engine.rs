@@ -205,6 +205,14 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         let result = self
             .run_inner(user_message, history, stop_flag, on_event)
             .await;
+        if let Some(policy) = &self.context_policy {
+            if let Some(state) = policy.checkpoint() {
+                on_event(StreamEvent::ContextState {
+                    timestamp: current_timestamp(),
+                    state,
+                });
+            }
+        }
         if let Some(cleanup) = cleanup {
             if matches!(result, Err(ExecutorError::Stopped)) {
                 // Drop schedules supervised cleanup; user-visible stop must not
@@ -244,7 +252,8 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         let mut policy_events = self
             .context_policy
             .as_ref()
-            .map(|policy| policy.begin(history, user_message, chat_history.len(), results.clone()));
+            .map(|policy| policy.begin(history, user_message, chat_history.len(), results.clone()))
+            .transpose()?;
 
         let mut extensions = ToolCallExtensions::new();
         extensions.insert::<SharedToolContext>(self.shared_context.clone());
@@ -337,6 +346,9 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             match item {
                 MultiTurnStreamItem::StreamAssistantItem(content) => match content {
                     StreamedAssistantContent::Text(text) => {
+                        if let Some(policy) = &self.context_policy {
+                            policy.text(&text.text);
+                        }
                         final_message.push_str(&text.text);
                         on_event(StreamEvent::Token {
                             timestamp: current_timestamp(),
@@ -406,6 +418,12 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                         let is_surface_tool = tool_info
                             .as_ref()
                             .is_some_and(|(name, _)| name == "present_surface");
+                        if let (Some(policy), Some((name, args))) =
+                            (&self.context_policy, &tool_info)
+                        {
+                            policy.record_tool(name, args, outcome.error.as_deref());
+                            policy.completed(&tool_result.id, name, args, &context_text);
+                        }
                         let (event_result, event_context, event_error) =
                             externally_visible_tool_result(
                                 results.peer_influenced(),
@@ -583,7 +601,12 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                         tokens_out: total_output,
                     });
                 }
-                MultiTurnStreamItem::FinalResponse(_) => {
+                MultiTurnStreamItem::FinalResponse(response) => {
+                    if let (Some(policy), Some(history)) =
+                        (&self.context_policy, response.history())
+                    {
+                        policy.final_history(history);
+                    }
                     // Terminal; final_message accumulated from tokens above.
                 }
                 // `MultiTurnStreamItem` is #[non_exhaustive]; future variants
@@ -606,10 +629,12 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 token_count: (total_input + total_output) as usize,
             });
         }
-        on_event(StreamEvent::ContextState {
-            timestamp: current_timestamp(),
-            state: self.shared_context.export_state(),
-        });
+        if self.context_policy.is_none() {
+            on_event(StreamEvent::ContextState {
+                timestamp: current_timestamp(),
+                state: self.shared_context.export_state(),
+            });
+        }
         Ok(())
     }
 }

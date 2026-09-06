@@ -196,6 +196,14 @@ impl CompletionModel for LlmCompletionModel {
         for ack in acks {
             let _ = ack.send(());
         }
+        if let Some(policy) = &self.context_policy {
+            policy.record_usage(
+                response
+                    .usage
+                    .as_ref()
+                    .map(|usage| u64::from(usage.prompt_tokens)),
+            );
+        }
         if self.single_action_mode {
             if let Some(calls) = &mut response.tool_calls {
                 calls.truncate(1);
@@ -237,6 +245,7 @@ impl CompletionModel for LlmCompletionModel {
         };
         let client = self.client.clone();
         let single_action_mode = self.single_action_mode;
+        let policy = self.context_policy.clone();
 
         let (tx, rx) =
             mpsc::unbounded::<Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>>();
@@ -263,6 +272,14 @@ impl CompletionModel for LlmCompletionModel {
             let result = client.chat_stream(messages, tools, callback).await;
             match result {
                 Ok(response) => {
+                    if let Some(policy) = &policy {
+                        policy.record_usage(
+                            response
+                                .usage
+                                .as_ref()
+                                .map(|usage| u64::from(usage.prompt_tokens)),
+                        );
+                    }
                     for ack in acks {
                         let _ = ack.send(());
                     }

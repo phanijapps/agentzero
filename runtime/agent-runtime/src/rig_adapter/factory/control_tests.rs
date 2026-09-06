@@ -193,7 +193,8 @@ async fn pending_provider_emits_ten_second_heartbeat_after_metadata() {
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     assert!(matches!(
         events.as_slice(),
-        [StreamEvent::Metadata { .. }, StreamEvent::Heartbeat { .. }]
+        [StreamEvent::Metadata { .. }, StreamEvent::Heartbeat { .. },StreamEvent::ContextState {state,..}]
+        if state[crate::engine::snapshot::CHECKPOINT_KEY]["version"]==1
     ));
 }
 

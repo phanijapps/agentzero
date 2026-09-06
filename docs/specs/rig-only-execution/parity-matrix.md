@@ -2,7 +2,7 @@
 
 ## Status
 
-T1–T5 gates are complete; T6 is in progress. These are incremental results, **not** a completed cutover or
+T1–T6 gates are complete; T7 is in progress. These are incremental results, **not** a completed cutover or
 proof of production parity. The accepted starting commit is `e38e8003` on
 `feat/rig-only-execution`; its working tree was clean before this slice.
 
@@ -543,6 +543,65 @@ No production engine has been retired yet. No AC is marked complete.
 - Runtime Clippy, formatting, whitespace and boundary checks pass. Rebuilt
   daemon strict real UI answer/reload passes in 9.6s. Soft controls, actual
   summarization and private context export remain the final T6 checkpoint.
+- Second checkpoint committed as 374ba651. Final T6 checkpoint scope: existing
+  progress scoring/advisory nudges and stuck safety, real summarization, and
+  versioned private context export/restoration. Use focused owners; do not grow
+  the context coordinator into another executor or import unused extension APIs.
+- Resolved old warning-loop defect: executor.rs injects a memory-flush warning
+  and immediately continues, consuming an iteration without a provider request
+  despite its comment promising a turn to save facts. Rig will inject the nudge
+  into the next actual request, not reproduce a dummy iteration. Existing hard
+  limits still count real Rig request boundaries; a regression must prove the
+  nudge is visible, one-shot and based on last prompt usage rather than billing
+  totals. This is a bounded correction under delegated branch authority.
+- Integrated compaction/recovery fixture found a missing mutable selection:
+  LoadSkillTool uses skill:current_skill for relative resource reads, not the
+  graph alone. The recovered call failed despite retained graph/loaded skills.
+  Extend the explicit restore allowlist to this fourth key; it selects a skill
+  within fresh configured roots and does not replace path confinement or actor
+  authority. Fresh initial state still wins. Keep this real failing regression
+  instead of changing it to an explicit-path call that bypasses the lost state.
+- Minor review found that preserved image/file payloads were absent from the
+  text-only token estimate. A real Rig regression with a small schema and a
+  1024-token input limit reached the provider with oversized media. Count the
+  serialized multimodal payload in the existing estimator; text-only counts
+  stay unchanged. This estimates in-request content, not decoded image tiles,
+  PDF pages or remote content behind a URL; provider-specific billing remains
+  distinct. Both URL/base64 and image/file cases are covered.
+- Parent real integration passes: actual ContextEditing, PlanBlock and
+  Summarization middleware precede effectful Rig tools, with summary-provider
+  calls and editing events asserted. Restored relative skill reads work; fresh
+  ward/actor/session and plan win. File/skill traversal and unknown connector
+  capability fail, network calls use the configured endpoint, and a shell
+  command still times out after one second. Six real gateway tool tests pass.
+- The known old executor trace-capture positive-control flake recurred only in
+  the parallel full runtime suite. All 488 runtime tests pass serially with two
+  existing ignores; T10 removes this obsolete loop test after preserving its
+  neutral helper and Rig diagnostic assertions. No migration assertion relaxed.
+- Final T6 gate rerun after both fixes: 489 runtime tests pass serially with
+  two existing ignores; all six gateway effectful tool tests pass. Runtime and
+  gateway-execution Clippy (lib/bins/tests), workspace formatting, whitespace,
+  SDK boundary and its three regression tests pass. Rebuilt daemon's strict
+  real UI answer/reload smoke passes in 9.8s. Final minor review is pending.
+- Follow-up minor findings accepted: persisted FileRef attachments expand to
+  base64 in the provider, so resolve them through the existing source helper
+  before final budgeting and pass those resolved bytes onward. The regression
+  previously reached the provider with an oversized real temporary file; both
+  image/file cases now reject before dispatch. Missing references return a
+  bounded typed policy error without the path. No remote URL fetch is added.
+- Corrected prior discovery: needs_planning_nudge is live at executor.rs:1308,
+  not an unused extension helper. Restore its one-shot advisory at the next
+  real request after five planless tool calls. The actual Rig regression was
+  red (zero advisories) before the fix. Unused extension APIs remain unported.
+- Follow-up gates pass: 491 runtime tests plus two existing ignores (serial),
+  six real gateway tool fixtures, runtime/gateway Clippy, formatting/whitespace,
+  SDK boundary. Rebuilt real daemon UI answer/reload passes in 9.9s. The 50
+  gateway builder policy/configuration tests also passed before the two focused
+  fixes; no builder code changed. Bounded fix re-review remains pending.
+- T6 bounded minor re-review: **Clean — ready to commit.** All concrete
+  findings are resolved and verified. Private snapshot/progress owners plus
+  integrated tests form the third dependency-ordered T6 checkpoint; T7 now
+  owns persisting/restoring the private payload in the gateway runners.
 
 ### T11 baseline repair preparation (read-only)
 
@@ -555,3 +614,38 @@ No production engine has been retired yet. No AC is marked complete.
   `apps/ui/src/features/chat-v2/useQuickChat.test.ts:83-92` and
   `apps/ui/tests/e2e/persistent-surfaces.spec.ts:203-204`. Reconcile these fixture
   and documentation consumers when closing the baseline repair in T11.
+
+### T7 runner preparation (read-only)
+
+- Continuation and delegation invokers are captured before runtime setters
+  install KG stores and ingestion/goal adapters. Unlike the shared model-registry
+  handle, their plain Option clones remain stale. T7 must resolve these named
+  dependencies at invocation time and remove duplicate bootstrap setter state;
+  retain public setter APIs and the existing shared control registries.
+- Root and continuation both need the same assistant-row resolver: a terminal
+  respond answer can exist only in tool arguments. Persist it before completion
+  and callback publication, with real-store tests for both entry points.
+- Move continuation preparation out of core.rs, then consolidate observation
+  and finalization with an explicit execution-mode policy. Keep root connector
+  routing distinct and leave distillation/handoff scheduling unchanged. Do not
+  hand handlers an Arc<ExecutionRunner> or add a generic service locator.
+- The private versioned runtime checkpoint will replace display history on
+  resume, not concatenate duplicate tapes. Fresh host instructions and authority
+  remain authoritative; only the explicitly owned prior preamble may be removed.
+  T7 persists this additive payload without changing existing display keys or
+  exposing ContextState through gateway events.
+
+### T10 retirement preparation (read-only)
+
+- Most executor.rs behavioral tests now have Rig or neutral counterparts:
+  control/steering, schema normalization, tool-result offload, stream behavior,
+  and peer diagnostics. Preserve direct visibility-helper assertions in their
+  neutral owner before deleting the old loop's test module.
+- Port the remaining real gateway present_surface create/update and rejection
+  flow tests before deleting their AgentExecutor fixture. Adapter surface-unit
+  coverage alone does not replace gateway event conversion coverage.
+- Gateway ward/template/catalog, middleware-order, effective-input-budget and
+  MCP display-name alias tests remain useful. ExecutorBuilder already returns
+  PreparedExecution, so these are not legacy-only tests merely because their
+  containing file is named executor.rs. Keep the neutral policy tests; delete
+  only selector/fallback expectations and actual old-engine construction.

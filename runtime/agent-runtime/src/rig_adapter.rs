@@ -3,6 +3,7 @@
 //! The implementation adapter lands in later migration tasks. This module owns
 //! the dependency pin so Rig stays confined to `agent-runtime`.
 
+mod checkpoint_tail;
 pub mod client;
 pub mod config;
 mod context_inputs;
@@ -10,6 +11,7 @@ mod context_policy;
 pub mod engine;
 pub mod factory;
 pub mod model;
+mod progress_policy;
 mod resources;
 pub mod structured;
 pub mod tool;

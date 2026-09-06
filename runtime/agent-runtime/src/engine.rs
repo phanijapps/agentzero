@@ -13,6 +13,7 @@ pub mod config;
 pub mod error;
 pub mod hooks;
 pub mod prepared;
+pub mod snapshot;
 
 use crate::types::{ChatMessage, StreamEvent};
 pub use config::ExecutorConfig;

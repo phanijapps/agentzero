@@ -13,7 +13,11 @@ mod live_context_tests;
 #[cfg(test)]
 mod mcp_tests;
 #[cfg(test)]
+mod progress_tests;
+#[cfg(test)]
 mod result_tests;
+#[cfg(test)]
+mod snapshot_tests;
 
 /// Build the Rig loop with the actor-filtered inventory and effective prompt.
 /// The engine owns the configured MCP sessions for its execution lifetime.
@@ -26,7 +30,8 @@ pub fn build_engine(
         .into_iter()
         .map(RigToolAdapter::boxed)
         .collect();
-    let cfg = prepared.config;
+    let mut cfg = prepared.config;
+    let restored = crate::engine::snapshot::restore(&mut cfg.initial_state);
     rig_config.agent_id = cfg.agent_id.clone();
     rig_config.model.model = cfg.model.clone();
     rig_config.model.provider_id = cfg.provider_id.clone();
@@ -45,6 +50,13 @@ pub fn build_engine(
             model: cfg.model.clone(),
             system_instruction: cfg.system_instruction,
             input_budget: cfg.context_window_tokens,
+            progress: super::progress_policy::ProgressConfig {
+                turn_budget: cfg.turn_budget,
+                max_turns: cfg.max_turns,
+                complexity: cfg.complexity,
+                input_budget: cfg.context_window_tokens,
+                warn_pct: cfg.compaction_warn_pct,
+            },
         },
         prepared.middleware_pipeline,
         shared.clone(),
@@ -53,6 +65,7 @@ pub fn build_engine(
             prepared.steering_queue,
             cfg.transform_context,
         ),
+        restored,
     ));
     let model = LlmCompletionModel::new(prepared.llm_client, cfg.model)
         .with_single_action_mode(cfg.single_action_mode)

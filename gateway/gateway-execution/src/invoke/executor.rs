@@ -1373,8 +1373,8 @@ impl ExecutorBuilder {
         let tool_registry = self.build_tool_registry_with_recall(fs_context, recall_authorization);
 
         // Build MCP manager
-        let mcp_manager = if remote_prompt.is_some() {
-            Arc::new(McpManager::new())
+        let (mcp_manager, authorized_mcp_ids) = if remote_prompt.is_some() {
+            (Arc::new(McpManager::new()), Vec::new())
         } else {
             self.build_mcp_manager(agent, mcp_service).await
         };
@@ -1391,11 +1391,7 @@ impl ExecutorBuilder {
         executor_config.temperature = agent.temperature;
         executor_config.max_tokens = effective_max_output;
         executor_config.context_window_tokens = effective_max_input;
-        executor_config.mcps = if remote_prompt.is_some() {
-            Vec::new()
-        } else {
-            agent.mcps.clone()
-        };
+        executor_config.mcps = authorized_mcp_ids;
 
         // Create middleware pipeline after context_window_tokens is resolved.
         let middleware_pipeline = build_runtime_middleware_pipeline(
@@ -1470,6 +1466,10 @@ impl ExecutorBuilder {
             middleware_pipeline,
         );
         prepared.rig_config = Some(rig_agent_config);
+        prepared
+            .resolve_mcp_tools()
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(prepared)
     }
 
@@ -1517,7 +1517,7 @@ impl ExecutorBuilder {
             &mut tool_registry,
             actor,
             &[ToolCapability::Shell],
-            Arc::new(ShellTool::new()),
+            Arc::new(ShellTool::new().with_filesystem(fs_context.clone())),
         );
         {
             let mut wt = WriteFileTool::new(fs_context.clone());
@@ -1798,18 +1798,26 @@ impl ExecutorBuilder {
     }
 
     /// Build the MCP manager and start configured servers.
-    async fn build_mcp_manager(&self, agent: &Agent, mcp_service: &McpService) -> Arc<McpManager> {
+    async fn build_mcp_manager(
+        &self,
+        agent: &Agent,
+        mcp_service: &McpService,
+    ) -> (Arc<McpManager>, Vec<String>) {
         let mut mcp_manager = McpManager::new();
         if let Some(observer) = self.mcp_startup_failure_observer.clone() {
             mcp_manager = mcp_manager.with_startup_failure_observer(observer);
         }
         let mcp_manager = Arc::new(mcp_manager);
+        let mut authorized_ids = Vec::new();
 
         // Load and start MCP servers configured for this agent
         if !agent.mcps.is_empty() {
             let mcp_configs = mcp_service.get_multiple_for_runtime(&agent.mcps);
             for mcp_config in mcp_configs {
                 let server_id = mcp_config.id();
+                // The service accepts display-name aliases; runtime inventory and
+                // dispatch must use the same canonical identity as the manager.
+                authorized_ids.push(server_id.clone());
                 tracing::info!("Starting MCP server: {}", server_id);
                 if mcp_manager.start_server(mcp_config).await.is_err() {
                     // Fail closed for this executor: no tool registration and
@@ -1824,7 +1832,7 @@ impl ExecutorBuilder {
             }
         }
 
-        mcp_manager
+        (mcp_manager, authorized_ids)
     }
 }
 
@@ -2825,6 +2833,10 @@ extensions: {}
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("vault dirs");
         let mcp_service = McpService::new(paths);
+        mcp_service.add(serde_json::from_value(serde_json::json!({
+            "type":"stdio", "id":"filesystem", "name":"Filesystem",
+                "description":"startup failure fixture", "command":"/nonexistent/mcp-fixture", "args":[], "enabled":true
+        })).unwrap()).unwrap();
         let mut agent = sample_agent();
         agent.mcps = vec!["filesystem".to_string()]; // MCP configured → safety gate fires
         agent.skills.clear();
@@ -2850,6 +2862,103 @@ extensions: {}
             select_engine_with(executor, true).engine_name(),
             "agent-executor"
         );
+    }
+
+    #[tokio::test]
+    async fn builder_resolves_mcp_display_name_for_real_rig_dispatch() {
+        use agent_runtime::AgentEngine;
+
+        struct AliasLlm;
+        #[async_trait]
+        impl LlmClient for AliasLlm {
+            fn model(&self) -> &str {
+                "fixture"
+            }
+            fn provider(&self) -> &str {
+                "fixture"
+            }
+            async fn chat(
+                &self,
+                _: Vec<agent_runtime::ChatMessage>,
+                _: Option<Value>,
+            ) -> Result<ChatResponse, LlmError> {
+                unreachable!()
+            }
+            async fn chat_stream(
+                &self,
+                messages: Vec<agent_runtime::ChatMessage>,
+                tools: Option<Value>,
+                callback: StreamCallback,
+            ) -> Result<ChatResponse, LlmError> {
+                let result = messages.iter().find(|message| message.role == "tool");
+                if let Some(result) = result {
+                    assert!(result.text_content().contains("alias-dispatch-result"));
+                    callback(agent_runtime::llm::StreamChunk::Token("done".into()));
+                } else {
+                    let tools = tools.unwrap();
+                    assert!(tools
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|tool| tool["function"]["name"] == "canonical-probe__echo"));
+                    assert!(!tools.to_string().contains("Friendly Probe__"));
+                }
+                Ok(ChatResponse {
+                    content: if result.is_some() {
+                        "done".into()
+                    } else {
+                        String::new()
+                    },
+                    tool_calls: result.is_none().then(|| {
+                        vec![agent_runtime::ToolCall::new(
+                            "alias-call".into(),
+                            "canonical-probe__echo".into(),
+                            serde_json::json!({"value":"alias-dispatch-result"}),
+                        )]
+                    }),
+                    reasoning: None,
+                    usage: None,
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        paths.ensure_dirs_exist().unwrap();
+        let service = McpService::new(paths);
+        service.add(serde_json::from_value(serde_json::json!({
+            "type":"stdio", "id":"canonical-probe", "name":"Friendly Probe",
+            "description":"fixture", "command":"python3", "enabled":true,
+            "args":["-u", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/agent-runtime/tests/fixtures/mcp_stdio_probe.py")]
+        })).unwrap()).unwrap();
+        let mut agent = sample_agent();
+        agent.mcps = vec!["Friendly Probe".into()];
+        agent.skills.clear();
+        let mut prepared = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+            .build(
+                &agent,
+                &sample_provider(),
+                "conversation",
+                "session",
+                &[],
+                &[],
+                None,
+                &service,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(prepared.config().mcps, vec!["canonical-probe"]);
+        prepared.llm_client = Arc::new(AliasLlm);
+        let rig = prepared.rig_config.clone().unwrap();
+        let engine = agent_runtime::rig_adapter::factory::build_engine(prepared, rig);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            engine.execute("call the fixture", &[]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 
     #[tokio::test]

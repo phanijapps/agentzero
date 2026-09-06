@@ -5,6 +5,7 @@ use std::{collections::HashSet, sync::Arc};
 use super::{ExecutorConfig, RecallHook};
 use crate::steering::{SteeringHandle, SteeringQueue};
 use crate::{llm::LlmClient, mcp::McpManager, middleware::MiddlewarePipeline, tools::ToolRegistry};
+mod mcp_tools;
 
 /// Session setup data. This type does not execute model or tool turns.
 pub struct PreparedExecution {
@@ -17,6 +18,7 @@ pub struct PreparedExecution {
     pub middleware_pipeline: Arc<MiddlewarePipeline>,
     pub recall: Option<(RecallHook, u32, HashSet<String>)>,
     pub steering_queue: Option<SteeringQueue>,
+    mcp_tools: Vec<Arc<dyn agent_primitives::Tool>>,
 }
 
 impl PreparedExecution {
@@ -36,6 +38,7 @@ impl PreparedExecution {
             middleware_pipeline,
             recall: None,
             steering_queue: None,
+            mcp_tools: Vec::new(),
         }
     }
 
@@ -54,9 +57,18 @@ impl PreparedExecution {
         self.tool_registry
             .get_all()
             .iter()
+            .chain(self.mcp_tools.iter())
             .filter(|tool| !self.config.model_hidden_tools.contains(tool.name()))
             .cloned()
             .collect()
+    }
+
+    /// Discover only configured servers and freeze exact dispatch bindings.
+    /// On an ambiguous namespace, remove any previously prepared inventory.
+    pub async fn resolve_mcp_tools(&mut self) -> Result<(), super::ExecutorError> {
+        self.mcp_tools.clear();
+        self.mcp_tools = mcp_tools::resolve(self).await?;
+        Ok(())
     }
 
     pub fn set_recall_hook(

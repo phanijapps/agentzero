@@ -361,7 +361,9 @@ fn raw_tool_call(call: AgentToolCall) -> RawStreamingChoice<LlmCompletionRespons
         // Rig correlates tool results by `internal_call_id`; reuse the
         // provider call id so the result round-trips match.
         internal_call_id: call.id.clone(),
-        call_id: None,
+        // Rig's tool hook exposes this field, not `id`. Preserve the same
+        // authoritative ID for hidden context and provider result correlation.
+        call_id: Some(call.id.clone()),
         name: call.name.clone(),
         arguments: call.arguments.clone(),
         signature: None,
@@ -518,6 +520,7 @@ mod tests {
                     tool_call.function.name,
                     tool_call.function.arguments,
                     tool_call.id,
+                    tool_call.call_id,
                 ));
             }
         }
@@ -525,6 +528,7 @@ mod tests {
         assert_eq!(tool_calls[0].0, "calculator");
         assert_eq!(tool_calls[0].1, json!({"x": 1}));
         assert_eq!(tool_calls[0].2, "call_1");
+        assert_eq!(tool_calls[0].3.as_deref(), Some("call_1"));
     }
 
     #[tokio::test]

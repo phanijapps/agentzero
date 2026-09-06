@@ -53,6 +53,10 @@ pub struct RigToolAdapter {
     inner: Arc<dyn ZeroTool>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Host tool execution context is missing")]
+struct MissingToolContext;
+
 impl RigToolAdapter {
     /// Wrap an existing AgentZero tool.
     #[must_use]
@@ -76,10 +80,12 @@ impl ToolDyn for RigToolAdapter {
         // Clone the Arc so the returned future does not borrow `self`.
         let inner = self.inner.clone();
         Box::pin(async move {
-            let parameters = inner
-                .parameters_schema()
-                .filter(|v| !v.is_null())
-                .unwrap_or_else(empty_object_schema);
+            let parameters = crate::tool_schema::harden_tool_schema(
+                inner
+                    .parameters_schema()
+                    .filter(|v| !v.is_null())
+                    .unwrap_or_else(empty_object_schema),
+            );
             ToolDefinition {
                 name: inner.name().to_string(),
                 description: inner.description().to_string(),
@@ -110,7 +116,7 @@ impl RigToolAdapter {
     /// Core dispatch shared by both `ToolDyn` entry points.
     ///
     /// Takes an owned context so the returned future borrows nothing from the
-    /// caller. `shared_ctx` is `None` only on the degraded no-extensions path;
+    /// caller. `shared_ctx` is required and cannot be supplied by model arguments;
     /// the engine inserts a real shared context for every run.
     ///
     /// Per-tool-call id is deliberately NOT threaded here: rig builds one
@@ -126,12 +132,9 @@ impl RigToolAdapter {
         let ctx = match shared_ctx {
             Some(ctx) => ctx,
             None => {
-                tracing::warn!(
-                    target: "rig_adapter",
-                    tool = self.inner.name(),
-                    "Rig tool dispatched without a SharedToolContext; running with an empty (no session/agent/auth) context"
-                );
-                Arc::new(ToolContext::default())
+                return Box::pin(async {
+                    Err(ToolError::ToolCallError(Box::new(MissingToolContext)))
+                });
             }
         };
         let inner = self.inner.clone();
@@ -152,6 +155,10 @@ impl RigToolAdapter {
                 &args_value,
             ) {
                 return Ok(agent_tools::guards::cold_graph_redirect().to_string());
+            }
+
+            if let Some(result) = crate::tool_replay::intercept(ctx.as_ref(), inner.name()) {
+                return Ok(result);
             }
 
             let result = inner
@@ -283,7 +290,8 @@ mod tests {
             json!({
                 "type": "object",
                 "properties": {"x": {"type": "number"}},
-                "required": ["x"]
+                "required": ["x"],
+                "additionalProperties": false
             })
         );
     }
@@ -420,7 +428,8 @@ mod tests {
             }
         }
 
-        let extensions = ToolCallExtensions::new();
+        let mut extensions = ToolCallExtensions::new();
+        extensions.insert::<SharedToolContext>(shared_context_with_secret());
 
         let s = RigToolAdapter::new(Arc::new(StringTool))
             .call_with_extensions("{}".to_string(), &extensions)
@@ -489,21 +498,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_runs_without_inserted_context_as_degraded_empty() {
-        // No SharedToolContext inserted -> adapter must not panic; tool runs with
-        // an empty context. The engine is expected to insert it for real runs.
+    async fn tool_without_host_context_fails_closed_even_with_forged_identity() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let adapter = RigToolAdapter::new(Arc::new(RecordingTool::new(seen.clone())));
 
         let extensions = ToolCallExtensions::new();
         adapter
-            .call_with_extensions("{}".to_string(), &extensions)
+            .call_with_extensions(
+                r#"{"agent_id":"forged","execution_id":"forged"}"#.to_string(),
+                &extensions,
+            )
             .await
-            .expect("degraded call should still succeed");
+            .expect_err("hidden host context is mandatory");
 
         let calls = seen.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert!(calls[0].agent_id.is_none());
+        assert!(calls.is_empty());
     }
 
     #[test]
@@ -529,6 +538,72 @@ mod tests {
         let adapter = RigToolAdapter::new(Arc::new(NoSchema));
         // Drive the definition future on a current-thread runtime.
         let def = futures::executor::block_on(adapter.definition(String::new()));
-        assert_eq!(def.parameters, empty_object_schema());
+        assert_eq!(
+            def.parameters,
+            crate::tool_schema::harden_tool_schema(empty_object_schema())
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_interception_precedes_live_tool_side_effects() {
+        use futures::FutureExt;
+        if let Ok(mode) = std::env::var("ZBOT_RIG_REPLAY_PROBE") {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let adapter = RigToolAdapter::new(Arc::new(RecordingTool::new(seen.clone())));
+            let mut extensions = ToolCallExtensions::new();
+            extensions.insert::<SharedToolContext>(shared_context_with_secret());
+            let output = std::panic::AssertUnwindSafe(
+                adapter.call_with_extensions("{}".into(), &extensions),
+            )
+            .catch_unwind()
+            .await;
+            match mode.as_str() {
+                "hit" => {
+                    assert_eq!(output.unwrap().unwrap(), "recorded without execution");
+                    assert!(seen.lock().unwrap().is_empty());
+                }
+                "strict" | "drift" => {
+                    assert!(output.is_err());
+                    assert!(seen.lock().unwrap().is_empty());
+                }
+                "lenient" => {
+                    output.unwrap().unwrap();
+                    assert_eq!(seen.lock().unwrap().len(), 1);
+                }
+                _ => panic!("unknown probe"),
+            }
+            return;
+        }
+        // The replay store intentionally initializes once per process. Fresh
+        // child test processes exercise its real environment boundary without
+        // racing unrelated tests or injecting a test-only dispatch mechanism.
+        for mode in ["hit", "strict", "drift", "lenient"] {
+            let dir = tempfile::tempdir().unwrap();
+            let record = if mode == "hit" || mode == "drift" {
+                json!({"execution_id":"conv-7","tool_index":0,"tool_name":if mode=="drift" {"other"}else{"record"},"args_hash":"fixture","result":"recorded without execution"}).to_string()
+            } else {
+                String::new()
+            };
+            std::fs::write(dir.path().join("tool-results.jsonl"), record).unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "rig_adapter::tool::tests::replay_interception_precedes_live_tool_side_effects",
+                    "--nocapture",
+                ])
+                .env("ZBOT_RIG_REPLAY_PROBE", mode)
+                .env("ZBOT_REPLAY_DIR", dir.path())
+                .env(
+                    "ZBOT_REPLAY_STRICT",
+                    if mode == "lenient" { "0" } else { "1" },
+                )
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+        }
     }
 }

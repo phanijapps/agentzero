@@ -1452,38 +1452,11 @@ impl AgentExecutor {
         // When ZBOT_REPLAY_DIR is set, look up a recorded result and return it
         // instead of running the real tool. Strict mode (default) panics on miss;
         // lenient mode falls through to real execution.
-        if let Some(store) = agent_tools::replay::global_store() {
-            let exec_id =
-                agent_primitives::ReadonlyContext::invocation_id(shared_ctx.as_ref()).to_string();
-            if let Ok(mut guard) = store.lock() {
-                match guard.lookup(&exec_id, tool_name) {
-                    agent_tools::replay::LookupOutcome::Hit(result) => {
-                        return Ok(ToolExecutionResult {
-                            output: result,
-                            actions: EventActions::default(),
-                        });
-                    }
-                    agent_tools::replay::LookupOutcome::Drift {
-                        expected_tool,
-                        got_tool,
-                    } => {
-                        panic!(
-                            "[tool-replay] drift on exec {exec_id}: expected '{expected_tool}' got '{got_tool}'"
-                        );
-                    }
-                    agent_tools::replay::LookupOutcome::MissStrict {
-                        exec_id: miss_id,
-                        tool_index,
-                    } => {
-                        panic!(
-                            "[tool-replay] strict miss on exec {miss_id} tool_index {tool_index}"
-                        );
-                    }
-                    agent_tools::replay::LookupOutcome::MissLenient => {
-                        // fall through to real execution
-                    }
-                }
-            }
+        if let Some(result) = crate::tool_replay::intercept(shared_ctx.as_ref(), tool_name) {
+            return Ok(ToolExecutionResult {
+                output: result,
+                actions: EventActions::default(),
+            });
         }
         // --- end replay intercept -----------------------------------------------
 
@@ -1719,15 +1692,7 @@ impl AgentExecutor {
 /// `OpenAI` requires tool names to match: ^[a-zA-Z0-9_-]+$
 /// This function replaces any invalid characters with underscores.
 fn normalize_tool_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    crate::tool_schema::normalize_tool_name(name)
 }
 
 // ============================================================================

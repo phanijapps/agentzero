@@ -23,6 +23,13 @@ passed again (8.8s). Shared contract extraction, direct prepared-input
 construction and the smoke-discovered successful-respond terminal repair are
 complete; production MCP ownership is the active T3 wave.
 
+T3 and T4 are now complete (see the chronological execution records in
+parity-matrix.md). T4's bounded review applied canonical MCP alias resolution;
+the shell cwd item was reconciled with the existing explicit public option,
+without introducing a new sandbox policy. Re-review returned Clean. Real Rig
+tool contracts, affected crate gates and rebuilt daemon/UI smoke are green.
+The next active wave is T5, execution controls and event parity.
+
 ## Implementation handoff — subsequent user approval
 
 The user subsequently authorized incremental implementation and the small

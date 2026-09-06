@@ -320,3 +320,64 @@ No production engine has been retired yet. No AC is marked complete.
 - Declined: SDK automatic tool discovery/registration, a second execution loop,
   and a general HTTP/provider replacement. Windows cmd.exe launch semantics are
   preserved but have not been executed on this Linux host.
+
+### T4 execution record
+
+- Scope: frozen configured MCP inventory and existing effectful tools dispatched
+  by the production Rig factory. No selector change before T9; no new registry,
+  execution loop, or stronger remote-server sandbox claim.
+- Prepared MCP bindings retain the original client and raw tool name. Only the
+  configured server IDs are discovered; normalized name collisions fail closed.
+  Discovery failure removes the client and reports the existing startup failure
+  once. Hidden/disabled tools and the shared planning gate prevent execution.
+- Missing hidden host context now produces a typed denial before side effects.
+  Schema hardening and replay interception are shared with existing owners;
+  strict replay miss/drift cannot fall through to live execution. Fresh-process
+  replay tests exercise the actual global store, not an injected replacement.
+- Independent local verification: 54 Rig adapter tests pass, including native
+  stdio execution, raw-name dispatch, a prepared binding surviving manager
+  replacement without rerouting, and replay hit/strict/drift/lenient cases.
+  Full serial runtime library: 447 passed, 2 existing ignores; gateway builder:
+  49 passed (before effectful-tool fixes, to be rerun at the T4 gate).
+  Core runtime/gateway Clippy passed before the final simplification/test add.
+- Remaining before T4 completion: real skill/file/shell/connector side-effect
+  fixtures and their bounded same-concern fixes, integrated gates and a minor
+  review. No acceptance criterion or wave completion is claimed yet.
+- Combined production Rig fixture now passes skill loading/resource tracking,
+  native stdio MCP, shell working directory and ward-scoped file writes. The
+  fixture exposed a dropped call ID: `raw_tool_call` populated `id` and
+  `internal_call_id` but left `call_id` empty. Contract-acquisition T1 (strong
+  Rust/source oracle): pinned Rig 6b1991b `streaming.rs:147` defines these fields;
+  `agent/runner.rs:454` passes `call_id` to the tool hook. The existing bridge
+  assertion failed with None vs Some(call_1), then passed after preserving the
+  provider ID in that field. The real skill graph now retains call-0.
+- Effectful fixes have red-to-green evidence: canonical skill-path containment
+  prevents an outside-file canary read; shell environment/working directory use
+  the configured filesystem; timeout cancellation terminates the directly owned
+  PID. This does not claim arbitrary descendant process-tree sandboxing.
+  Built-in tool suite: 158 passed. Connector negative/error-canary coverage is
+  being tightened before the final T4 gate.
+- Final effectful fixture suite: 5 passed, including separate enabled unknown
+  connector/resource/capability requests, disabled requests with zero HTTP, and
+  HTTP-500 auth-canary assertions over model-visible errors and captured logs.
+  Failed HTTP responses now use a shared status-only diagnostic; successful
+  response bodies and wire semantics are unchanged. Request diagnostics omit URLs.
+- Integrated checks before review fixes: runtime library 447 passed/2 existing
+  ignores; agent-tools 158; gateway-connectors 21; four-crate Clippy with warnings
+  denied; formatting/boundary/whitespace clean; rebuilt daemon + strict real UI
+  simple-qa/reload passed in 9.4 seconds.
+- Bounded review found display-name MCP references could start a canonical-ID
+  client but disappear from prepared inventory. Applying canonical-ID preparation
+  plus a gateway-builder-to-Rig real-call regression. The shell cwd review item
+  is being reconciled against the existing explicit public cwd option; no new
+  OS sandbox claim or silently changed policy is accepted.
+- Final review dispositions: canonical-ID preparation applied; the real
+  gateway-builder/display-name/stdin-server Rig call regression passes, and all
+  50 builder tests pass. The cwd concern was reconciled with the existing public
+  explicit-cwd option: host filesystem defaults and hidden ward identity are
+  preserved without inventing a new OS sandbox or removing that option.
+  Bounded re-review returned **Clean — ready to commit.**
+- After the alias fix: gateway Clippy, formatting/boundary/whitespace checks
+  pass; rebuilt daemon strict UI smoke/reload passes again in 8.8 seconds.
+  T4 is complete. Root/child factory routing and end-to-end recovery remain the
+  later T7–T9 integration layers; no complete cutover AC is claimed yet.

@@ -60,6 +60,7 @@ pub mod rig_adapter;
 /// Progress tracking for loop detection
 pub(crate) mod progress;
 
+pub(crate) mod tool_replay;
 /// Tool schema normalization and hardening helpers
 pub(crate) mod tool_schema;
 

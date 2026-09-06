@@ -4,6 +4,9 @@ use super::{engine::RigAgentEngine, model::LlmCompletionModel, RigAgentConfig, R
 use crate::{engine::PreparedExecution, tools::ToolContext};
 use std::sync::Arc;
 
+#[cfg(test)]
+mod mcp_tests;
+
 /// Build the Rig loop with the actor-filtered inventory and effective prompt.
 /// The engine owns the configured MCP sessions for its execution lifetime.
 pub fn build_engine(

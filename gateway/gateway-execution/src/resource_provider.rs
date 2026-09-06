@@ -78,6 +78,10 @@ impl ConnectorResourceProvider for GatewayResourceProvider {
             .await
             .map_err(|e| format!("Connector '{}' not found: {}", connector_id, e))?;
 
+        if !connector.enabled {
+            return Err(format!("Connector '{}' is disabled", connector_id));
+        }
+
         // Find the resource by name
         let resource = connector
             .metadata
@@ -128,21 +132,16 @@ impl ConnectorResourceProvider for GatewayResourceProvider {
         let response = request
             .send()
             .await
-            .map_err(|e| format!("Resource request failed: {}", e))?;
+            .map_err(|e| format!("Resource request failed: {}", e.without_url()))?;
 
         let status = response.status();
+        if !status.is_success() {
+            return Err(gateway_connectors::http_failure_summary(status.as_u16()));
+        }
         let body = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-
-        if !status.is_success() {
-            return Err(format!(
-                "Resource returned HTTP {}: {}",
-                status.as_u16(),
-                body.chars().take(500).collect::<String>()
-            ));
-        }
+            .map_err(|e| format!("Failed to read response: {}", e.without_url()))?;
 
         // Try to parse as JSON, fall back to string value
         match serde_json::from_str::<serde_json::Value>(&body) {

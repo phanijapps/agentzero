@@ -262,6 +262,14 @@ impl LoadSkillTool {
     fn resolve_skill_dir(&self, skill_name: &str) -> Result<std::path::PathBuf> {
         let roots = self.fs.skills_dirs();
         let canonical_skill_name = Self::canonical_skill_name(skill_name);
+        if std::path::Path::new(canonical_skill_name)
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(agent_primitives::AgentError::Tool(
+                "Invalid skill name: must remain inside a configured skills root".into(),
+            ));
+        }
         if roots.is_empty() {
             return Err(agent_primitives::AgentError::Tool(
                 "Skills directory not configured".to_string(),
@@ -270,6 +278,13 @@ impl LoadSkillTool {
         for root in &roots {
             let candidate = root.join(canonical_skill_name);
             if candidate.join("SKILL.md").exists() {
+                let root = root.canonicalize()?;
+                let candidate = candidate.canonicalize()?;
+                if !candidate.starts_with(&root) {
+                    return Err(agent_primitives::AgentError::Tool(
+                        "Invalid skill path: outside configured skills root".into(),
+                    ));
+                }
                 return Ok(candidate);
             }
         }
@@ -293,14 +308,7 @@ impl LoadSkillTool {
         let canonical_skill_name = Self::canonical_skill_name(skill_name);
 
         let skill_dir = self.resolve_skill_dir(skill_name)?;
-        let skill_file = skill_dir.join("SKILL.md");
-
-        if !skill_file.exists() {
-            return Err(agent_primitives::AgentError::Tool(format!(
-                "Skill file not found: {}",
-                skill_file.to_string_lossy()
-            )));
-        }
+        let skill_file = confined_skill_file(&skill_dir, "SKILL.md")?;
 
         let content = std::fs::read_to_string(&skill_file).map_err(|e| {
             agent_primitives::AgentError::Tool(format!("Failed to read skill file: {}", e))
@@ -355,21 +363,7 @@ impl LoadSkillTool {
         // Walk all configured roots so resource files in `~/.agents/skills`
         // resolve too — same priority order as the main SKILL.md loader.
         let skill_dir = self.resolve_skill_dir(&skill_name)?;
-        let full_path = skill_dir.join(&relative_path);
-
-        // Security: Ensure path doesn't escape skill directory
-        if !full_path.starts_with(&skill_dir) {
-            return Err(agent_primitives::AgentError::Tool(
-                "Invalid path: cannot access files outside skill directory".to_string(),
-            ));
-        }
-
-        if !full_path.exists() {
-            return Err(agent_primitives::AgentError::Tool(format!(
-                "Skill file not found: {} (searched in skill: {})",
-                relative_path, skill_name
-            )));
-        }
+        let full_path = confined_skill_file(&skill_dir, &relative_path)?;
 
         // Check for binary file
         if is_binary_file(&relative_path) {
@@ -426,6 +420,22 @@ impl LoadSkillTool {
             Ok((json!({}), content.to_string()))
         }
     }
+}
+
+fn confined_skill_file(skill_dir: &std::path::Path, relative: &str) -> Result<std::path::PathBuf> {
+    let path = skill_dir.join(relative).canonicalize().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            agent_primitives::AgentError::Tool(format!("Skill file not found: {relative}"))
+        } else {
+            agent_primitives::AgentError::Io(error)
+        }
+    })?;
+    if !path.starts_with(skill_dir) {
+        return Err(agent_primitives::AgentError::Tool(
+            "Invalid path: cannot access files outside skill directory".into(),
+        ));
+    }
+    Ok(path)
 }
 
 fn build_skill_packet(

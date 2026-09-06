@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn research_subscribes_then_persists_before_acceptance() {
+    async fn research_subscribes_and_enqueues_before_early_acceptance() {
         let temp_dir = TempDir::new().unwrap();
         let server = GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
         let sessions = SessionRegistry::new();
@@ -1379,7 +1379,6 @@ mod tests {
         subscriptions.connect(client_id.clone(), tx).await;
         let message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
         let session_id = crate::durable_agent_tasks::reserved_session_id(message_id);
-        let execution_id = crate::durable_agent_tasks::reserved_execution_id(message_id);
         let prompt = "Investigate durable handoff";
         let service = server.ws_handler().agent_tasks().unwrap();
 
@@ -1414,48 +1413,17 @@ mod tests {
             .await
             .unwrap();
         assert!(!duplicate.inserted, "invoke must persist before returning");
-        assert!(rx.try_recv().is_err(), "acceptance must wait for bootstrap");
-
-        let session = execution_state::Session::new_with_id(
-            &session_id,
-            "root",
-            execution_state::TriggerSource::Web,
-        )
-        .unwrap();
-        server
+        // Durable queue acceptance provides the identity needed by Stop even
+        // before a worker bootstraps session/execution/message rows.
+        assert!(server
             .state()
             .state_service
-            .create_session_from(&session)
-            .unwrap();
-        let execution =
-            execution_state::AgentExecution::new_root_with_id(&execution_id, &session_id, "root")
-                .unwrap();
-        server
-            .state()
-            .state_service
-            .create_execution(&execution)
-            .unwrap();
-        server
-            .state()
-            .messages
-            .append(&zbot_conversation::Message {
-                id: message_id.to_owned(),
-                execution_id: Some(execution_id.clone()),
-                session_id: session_id.clone(),
-                role: "user".to_owned(),
-                content: prompt.to_owned(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                token_count: 1,
-                tool_calls: None,
-                tool_call_id: None,
-                seq: 0,
-            })
-            .unwrap();
-
-        let accepted = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
+            .get_session(&session_id)
             .unwrap()
-            .unwrap();
+            .is_none());
+        let accepted = rx
+            .try_recv()
+            .expect("durable enqueue acknowledges immediately");
         assert!(matches!(
             accepted,
             ServerMessage::InvokeAccepted {
@@ -1463,6 +1431,10 @@ mod tests {
                 conversation_id
             } if accepted_session == session_id && conversation_id == "research-1"
         ));
+        assert!(
+            rx.try_recv().is_err(),
+            "exactly one enqueue acknowledgement"
+        );
     }
 
     #[tokio::test]

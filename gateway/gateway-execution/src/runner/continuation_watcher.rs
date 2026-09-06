@@ -92,7 +92,7 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
         }
 
         let integrations = self.integrations.snapshot();
-        invoke_continuation(ContinuationArgs {
+        let result = invoke_continuation(ContinuationArgs {
             session_id: &session_id,
             root_agent_id: &root_agent_id,
             event_bus: self.event_bus.clone(),
@@ -125,7 +125,38 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             procedure_store: self.procedure_store.clone(),
             ward_usage: self.ward_usage.clone(),
         })
-        .await
+        .await;
+        if let Err(error) = result {
+            // An unstarted continuation must not leave the session hanging
+            // with completed delegations and no terminal outcome: publish the
+            // crash lifecycle so state and UI converge on a failed session.
+            tracing::error!(
+                session_id = %session_id,
+                root_agent_id = %root_agent_id,
+                %error,
+                "ContinuationWatcher: spawn_continuation failed; crashing session"
+            );
+            let execution_id = self
+                .state_service
+                .get_root_execution(&session_id)
+                .ok()
+                .flatten()
+                .map(|execution| execution.id)
+                .unwrap_or_default();
+            crate::lifecycle::crash_execution(crate::lifecycle::CrashExecution {
+                state_service: &self.state_service,
+                log_service: &self.log_service,
+                event_bus: &self.event_bus,
+                execution_id: &execution_id,
+                session_id: &session_id,
+                agent_id: &root_agent_id,
+                conversation_id: &session_id,
+                error: &error,
+                crash_session: true,
+            })
+            .await;
+        }
+        Ok(())
     }
 }
 

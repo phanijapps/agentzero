@@ -2516,6 +2516,65 @@ mod peer_root_lifecycle_tests {
         );
     }
 
+    /// The same failure driven through the watcher's invoker must crash the
+    /// session and publish a terminal error — not leave it hanging with
+    /// completed delegations and no outcome.
+    #[tokio::test]
+    async fn continuation_spawn_failure_crashes_session_with_terminal_event() {
+        let harness = build_harness("http://127.0.0.1:1/v1".to_owned()).await;
+        let (session, root_exec) = harness.state.create_session("root").unwrap();
+        let session_id = session.id.clone();
+        let execution_id = root_exec.id.clone();
+        let mut engine_state = serde_json::Map::new();
+        engine_state.insert(
+            agent_runtime::engine::snapshot::CHECKPOINT_KEY.to_owned(),
+            serde_json::json!({"version": 1, "messages": [], "mutable_state": {}}),
+        );
+        // Snapshot without cursor metadata → explicit cursor failure.
+        let context_state = serde_json::Value::Object(engine_state).to_string();
+        harness
+            .runner
+            .checkpoints
+            .write(&zbot_conversation::Checkpoint {
+                id: "cp-no-cursor".to_owned(),
+                execution_id: execution_id.clone(),
+                session_id: session_id.clone(),
+                llm_turn: 1,
+                last_message_id: String::new(),
+                pending_tool_calls: None,
+                context_state: Some(context_state),
+                child_executions: None,
+                schema_version: 1,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            })
+            .unwrap();
+        let mut events = harness.runner.event_bus.subscribe_all();
+        let invoker = harness.runner.make_continuation_invoker();
+        use crate::runner::ContinuationSpawner as _;
+        invoker
+            .spawn_continuation(session_id.clone(), "root".to_owned())
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    GatewayEvent::Error {
+                        session_id: done, ..
+                    } if done == Some(session_id.clone()) => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("terminal error event");
+        let crashed = harness.state.get_session(&session_id).unwrap().unwrap();
+        assert_eq!(
+            crashed.status,
+            execution_state::SessionStatus::Crashed,
+            "session must reach a terminal crashed state, not hang"
+        );
+    }
+
     #[tokio::test]
     async fn checkpoint_read_error_fails_continuation_explicitly() {
         struct FailingCheckpoints;

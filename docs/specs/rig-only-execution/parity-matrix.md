@@ -716,6 +716,23 @@ No production engine has been retired yet. No AC is marked complete.
   failed on that race, two subsequent full runs passed both specs).
   The reload assertion exercises the flush-before-completion ordering on
   the shipped artifact, not only the unit gate.
+- T7 bounded adversarial review (post-commit, all six focus areas
+  verified clean): zero blockers; five findings applied in full —
+  (1) present-but-unparseable gateway_recovery (or snapshot without
+  cursor) now fails as continuation_cursor_invalid instead of silently
+  defaulting to a zero cursor that would duplicate the conversation;
+  (2) restored tapes strip previously injected `## Context Packet` recall
+  packets so N-step delegation chains no longer accumulate N stale
+  packets (fresh injection still happens each continuation);
+  (3) spawn_continuation failures now crash the session and publish the
+  terminal Error event instead of log-only hanging (integration test
+  drives the watcher invoker and asserts SessionStatus::Crashed);
+  (4) CheckpointStore module doc corrected to the created_at-first
+  ordering; (5) restore input is now only the private snapshot — display
+  fields like response/ward never enter engine initial state (unit test
+  asserts only whitelisted mutable keys survive). Post-fix gates: 624
+  gateway-execution lib tests, clippy -D warnings clean, both Mode Full
+  daemon smokes pass again (27.9s combined).
 
 ### T10 retirement preparation (read-only)
 

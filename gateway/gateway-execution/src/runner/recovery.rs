@@ -50,10 +50,10 @@ pub(crate) struct ComposedHistory {
 /// Read the newest checkpoint and compose the invocation's history.
 ///
 /// Fails explicitly — never silently degrades to display replay — when the
-/// checkpoint store errors or a present private snapshot is malformed. A
-/// checkpoint without a private snapshot (legacy executions, omitted capture)
-/// composes from display rows like before, keeping the cursor metadata when
-/// present.
+/// checkpoint store errors, the context JSON is unreadable, a present private
+/// snapshot is malformed, or recovery cursor metadata is missing/unparseable
+/// beside a present snapshot. A checkpoint without a private snapshot (legacy
+/// executions, omitted capture) composes from display rows like before.
 pub(crate) fn compose_continuation_history(
     checkpoints: &Arc<dyn CheckpointStore>,
     messages: &Arc<dyn MessageStore>,
@@ -73,21 +73,28 @@ pub(crate) fn compose_continuation_history(
     let Some(context) = context else {
         return Err("continuation_checkpoint_invalid".to_owned());
     };
-    let cursor: RecoveryCursor = context
-        .get(GATEWAY_RECOVERY_KEY)
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default();
+    let cursor = cursor_from_value(&context)?;
 
-    let mut state: HashMap<String, serde_json::Value> =
-        serde_json::from_value(context).unwrap_or_default();
+    // Only the private snapshot enters the restore seam — never the full
+    // stored context object — so `initial_state` ends up holding exactly the
+    // whitelisted mutable keys the seam merged.
+    let mut state: HashMap<String, serde_json::Value> = HashMap::new();
+    if let Some(snapshot) = context
+        .get(agent_runtime::engine::snapshot::CHECKPOINT_KEY)
+        .cloned()
+    {
+        state.insert(
+            agent_runtime::engine::snapshot::CHECKPOINT_KEY.to_owned(),
+            snapshot,
+        );
+    }
     match agent_runtime::engine::snapshot::restore(&mut state)? {
         Some(tape) => {
             let rows = messages
                 .replay(session_id, Some(cursor.input_cursor), 200)
                 .map_err(|_| "continuation_history_read_failed".to_owned())?;
             let (tails, tail_cursor) = tail_rows(rows, &cursor.represented_output_ids);
-            let mut history = tape;
+            let mut history = strip_stale_context_packets(tape);
             history.extend(crate::conversation_history::messages_to_chat_format(&tails));
             Ok(ComposedHistory {
                 history,
@@ -100,6 +107,42 @@ pub(crate) fn compose_continuation_history(
         // display replay and the cursor advances across every row.
         None => replay_display_history(messages, session_id),
     }
+}
+
+/// Cursor rules, shared with tests: present-but-unparseable metadata fails
+/// closed, and a snapshot without its cursor cannot identify represented rows
+/// (replaying against it would duplicate the whole conversation), so it fails
+/// too. No snapshot and no cursor is the legacy display-replay default.
+fn cursor_from_value(context: &serde_json::Value) -> Result<RecoveryCursor, String> {
+    let has_snapshot = context
+        .get(agent_runtime::engine::snapshot::CHECKPOINT_KEY)
+        .is_some();
+    match context.get(GATEWAY_RECOVERY_KEY) {
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|_| "continuation_cursor_invalid".to_owned()),
+        None if has_snapshot => Err("continuation_cursor_invalid".to_owned()),
+        None => Ok(RecoveryCursor::default()),
+    }
+}
+
+/// Drop previously injected recall packets from a restored tape.
+///
+/// Each continuation prepends a fresh unified-recall packet; the packets are
+/// advisory per-turn context and were never durable on the display-replay
+/// path. Without this strip an N-step delegation chain would accumulate N
+/// stale `## Context Packet` system messages inside the restored tape.
+fn strip_stale_context_packets(
+    tape: Vec<agent_runtime::ChatMessage>,
+) -> Vec<agent_runtime::ChatMessage> {
+    tape.into_iter()
+        .filter(|message| {
+            !(message.role == "system"
+                && message
+                    .text_content()
+                    .trim_start()
+                    .starts_with("## Context Packet"))
+        })
+        .collect()
 }
 
 /// Display-row replay (no private snapshot): every row, newest cursor = the
@@ -241,5 +284,75 @@ mod tests {
             .get(agent_runtime::engine::snapshot::CHECKPOINT_KEY)
             .is_none());
         assert!(parsed.get(GATEWAY_RECOVERY_KEY).is_some());
+    }
+
+    #[test]
+    fn strip_stale_context_packets_removes_only_injected_packets() {
+        let tape = vec![
+            agent_runtime::ChatMessage::system(
+                "## Context Packet\n### Task State\n- stale".to_owned(),
+            ),
+            agent_runtime::ChatMessage::user(
+                "## Context Packet\nlooks like one but is user text".to_owned(),
+            ),
+            agent_runtime::ChatMessage::system("kept system note".to_owned()),
+        ];
+        let kept = strip_stale_context_packets(tape);
+        let texts: Vec<_> = kept.iter().map(|m| m.text_content()).collect();
+        assert_eq!(kept.len(), 2, "only the injected system packet is dropped");
+        assert!(texts.iter().any(|t| t.starts_with("## Context Packet")));
+        assert!(texts.iter().any(|t| t == "kept system note"));
+    }
+
+    /// Cursor metadata beside a snapshot must parse; missing or unparseable
+    /// metadata fails closed instead of silently replaying everything.
+    #[test]
+    fn cursor_beside_snapshot_must_parse_or_fail() {
+        let mut context = serde_json::Map::new();
+        context.insert(
+            agent_runtime::engine::snapshot::CHECKPOINT_KEY.to_owned(),
+            serde_json::json!({"version": 1, "messages": [], "mutable_state": {}}),
+        );
+        // Missing cursor with a present snapshot → explicit failure.
+        assert_eq!(
+            cursor_from_value(&serde_json::Value::Object(context.clone())).unwrap_err(),
+            "continuation_cursor_invalid"
+        );
+        // Unparseable cursor → explicit failure.
+        context.insert(
+            GATEWAY_RECOVERY_KEY.to_owned(),
+            serde_json::json!("not-an-object"),
+        );
+        assert_eq!(
+            cursor_from_value(&serde_json::Value::Object(context)).unwrap_err(),
+            "continuation_cursor_invalid"
+        );
+        // No snapshot, no cursor → default (legacy display replay).
+        assert_eq!(
+            cursor_from_value(&serde_json::json!({"intent": null})).unwrap(),
+            RecoveryCursor::default()
+        );
+    }
+
+    #[test]
+    fn restored_state_carries_only_whitelisted_mutable_keys() {
+        // The full stored context object must never become engine state: only
+        // the snapshot's whitelisted mutable keys survive the seam.
+        let mut state: HashMap<String, serde_json::Value> = HashMap::new();
+        state.insert(
+            agent_runtime::engine::snapshot::CHECKPOINT_KEY.to_owned(),
+            serde_json::json!({
+                "version": 1,
+                "owned_preamble": null,
+                "messages": [],
+                "mutable_state": {"skill:loaded_skills": ["s1"]}
+            }),
+        );
+        let restored = agent_runtime::engine::snapshot::restore(&mut state).unwrap();
+        assert!(restored.is_some());
+        assert_eq!(state.len(), 1, "only the whitelisted mutable key survives");
+        assert!(state.contains_key("skill:loaded_skills"));
+        assert!(!state.contains_key("response"));
+        assert!(!state.contains_key(GATEWAY_RECOVERY_KEY));
     }
 }

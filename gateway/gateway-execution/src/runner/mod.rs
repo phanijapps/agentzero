@@ -9,10 +9,12 @@ use std::path::Path;
 use agent_runtime::{prepare_tool_result_for_context, ToolResultContextConfig};
 use agent_tools::ToolSettings;
 
+mod continuation_execution;
 mod continuation_watcher;
 pub(super) mod core;
 mod delegation_dispatcher;
 mod execution_stream;
+mod integrations;
 mod invoke_bootstrap;
 mod session_control;
 mod session_invoker;

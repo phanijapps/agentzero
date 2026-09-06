@@ -634,6 +634,29 @@ No production engine has been retired yet. No AC is marked complete.
   remain authoritative; only the explicitly owned prior preamble may be removed.
   T7 persists this additive payload without changing existing display keys or
   exposing ContextState through gateway events.
+- T6 completed in e3dfcc71; T7a starts with the live dependency fix and
+  mechanical continuation extraction. Red proof uses the real runner harness:
+  capture both invokers, install real Engram/episode stores through public
+  setters, and observe the continuation's stale None. No checkpoint or stream
+  semantics change in this first checkpoint.
+- T7b must preserve messages that arrive after a checkpoint (especially child
+  callbacks) and fresh recall/working-memory injections. Restoring the private
+  tape cannot simply discard every supplied gateway history item. Use the
+  durable message cursor rather than concatenating the full display tape.
+- Existing CheckpointStore::latest sorts llm_turn before created_at, while a
+  continuation creates a fresh handle counter. Make checkpoint ordering
+  monotonic across the same execution ID; otherwise a shorter continuation can
+  leave an older snapshot selected forever. Test this with the actual store.
+- Parent extraction check: the complete invoke_continuation function body is
+  byte-identical before and after the move (Git HEAD extraction versus new
+  continuation_execution.rs, diff exit 0). The behavior change in T7a is the
+  invocation-time shared integration snapshot, not a rewritten stream loop.
+- T7a closure: parent bounded review removed repeated integration snapshots;
+  all 609 gateway-execution library tests pass with Rig, Clippy is clean with
+  warnings denied, and the rebuilt daemon passes the real UI answer/reload
+  smoke (9.2 seconds). Formatting, diff hygiene and Rig boundary checks pass.
+  This is an independently verified extraction checkpoint, not T7 completion;
+  shared finalization and durable private-checkpoint recovery remain next.
 
 ### T10 retirement preparation (read-only)
 

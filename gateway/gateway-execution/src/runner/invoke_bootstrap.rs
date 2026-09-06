@@ -73,9 +73,7 @@ pub(super) struct InvokeBootstrap {
     pub(super) connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     pub(super) bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
     pub(super) bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
-    pub(super) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    pub(super) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    pub(super) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
+    pub(super) integrations: super::integrations::SharedIntegrations,
     pub(super) steering_registry: Option<Arc<agent_runtime::SteeringRegistry>>,
     pub(super) agent_result_bus: Option<Arc<AgentResultBus>>,
     /// Trait-routed procedure store used to build the executor's run_procedure tool.
@@ -272,6 +270,7 @@ fn history_before_current_prompt(
 /// promotion of procedures that reference that tool (legacy advisory text
 /// still fires), so correctness is preserved, just opportunity is lost.
 fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
+    let integrations = bootstrap.integrations.snapshot();
     let mut names: Vec<String> = vec![
         "shell".to_string(),
         "memory".to_string(),
@@ -293,13 +292,13 @@ fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
         names.push("wait_agent".to_string());
         names.push("kill_agent".to_string());
     }
-    if bootstrap.kg_store.is_some() {
+    if integrations.kg_store.is_some() {
         names.push("graph_query".to_string());
     }
-    if bootstrap.ingestion_adapter.is_some() {
+    if integrations.ingestion_adapter.is_some() {
         names.push("ingest".to_string());
     }
-    if bootstrap.goal_adapter.is_some() {
+    if integrations.goal_adapter.is_some() {
         names.push("goal".to_string());
     }
     if bootstrap.a2a_delegation.is_some() {
@@ -1002,7 +1001,7 @@ impl InvokeBootstrap {
                 if let Some(authorization) = authorization {
                     match crate::invoke::unified_recall_adapter::automatic_unified_recall(
                         recall.clone(),
-                        self.goal_adapter.clone(),
+                        self.integrations.snapshot().goal_adapter,
                         authorization,
                         message,
                         top_k,
@@ -1091,7 +1090,7 @@ impl InvokeBootstrap {
                             if let Some(authorization) = authorization {
                                 match crate::invoke::unified_recall_adapter::automatic_unified_recall(
                                     recall.clone(),
-                                    self.goal_adapter.clone(),
+                                    self.integrations.snapshot().goal_adapter,
                                     authorization,
                                     entry.summary,
                                     5,
@@ -1333,14 +1332,15 @@ impl InvokeBootstrap {
         if let Some(cp) = connector_provider {
             builder = builder.with_connector_provider(cp);
         }
-        if let Some(ref ks) = self.kg_store {
-            builder = builder.with_kg_store(ks.clone());
+        let integrations = self.integrations.snapshot();
+        if let Some(ks) = integrations.kg_store {
+            builder = builder.with_kg_store(ks);
         }
-        if let Some(ref a) = self.ingestion_adapter {
-            builder = builder.with_ingestion_adapter(a.clone());
+        if let Some(a) = integrations.ingestion_adapter {
+            builder = builder.with_ingestion_adapter(a);
         }
-        if let Some(ref a) = self.goal_adapter {
-            builder = builder.with_goal_adapter(a.clone());
+        if let Some(a) = integrations.goal_adapter {
+            builder = builder.with_goal_adapter(a);
         }
         // Ward-curator observer — bumps `created_by=agent` whenever the
         // `ward` tool creates a new ward dir. Always wired in production
@@ -1549,7 +1549,7 @@ impl InvokeBootstrap {
             super::core::attach_mid_session_recall_hook(
                 &mut executor,
                 self.memory_recall.as_ref(),
-                self.goal_adapter.as_ref(),
+                self.integrations.snapshot().goal_adapter.as_ref(),
                 &agent.id,
                 session_id,
                 effective_ward_id.as_deref(),
@@ -1702,7 +1702,7 @@ impl InvokeBootstrap {
             msg,
             fs.as_ref(),
             self.memory_recall.as_ref(),
-            self.goal_adapter.clone(),
+            self.integrations.snapshot().goal_adapter,
             recall_authorization,
             &system_prompt,
             &tool_inventory,
@@ -2303,9 +2303,7 @@ mod tests {
             connector_registry: None,
             bridge_registry: None,
             bridge_outbox: None,
-            kg_store: None,
-            ingestion_adapter: None,
-            goal_adapter: None,
+            integrations: super::super::integrations::SharedIntegrations::default(),
             steering_registry: None,
             agent_result_bus: None,
             procedure_store: None,
@@ -2350,9 +2348,7 @@ mod tests {
             connector_registry: None,
             bridge_registry: None,
             bridge_outbox: None,
-            kg_store: None,
-            ingestion_adapter: None,
-            goal_adapter: None,
+            integrations: super::super::integrations::SharedIntegrations::default(),
             steering_registry: None,
             agent_result_bus: None,
             procedure_store: None,
@@ -2584,9 +2580,7 @@ mod tests {
             connector_registry: None,
             bridge_registry: None,
             bridge_outbox: None,
-            kg_store: None,
-            ingestion_adapter: None,
-            goal_adapter: None,
+            integrations: super::super::integrations::SharedIntegrations::default(),
             steering_registry: None,
             agent_result_bus: None,
             procedure_store: None,

@@ -257,9 +257,7 @@ pub(crate) struct RunnerDelegationInvoker {
             std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
         >,
     >,
-    pub(crate) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    pub(crate) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    pub(crate) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
+    pub(super) integrations: super::integrations::SharedIntegrations,
     pub(crate) steering_registry: Arc<agent_runtime::SteeringRegistry>,
     pub(crate) agent_result_bus: Arc<AgentResultBus>,
     /// Per-ward serialization locks (see [`acquire_ward_lock`]).
@@ -295,6 +293,7 @@ impl DelegationSpawner for RunnerDelegationInvoker {
             Some(ward) => Some(acquire_ward_lock(&self.ward_locks, ward).await),
             None => None,
         };
+        let integrations = self.integrations.snapshot();
         spawn_delegated_agent(
             &request,
             self.event_bus.clone(),
@@ -318,9 +317,9 @@ impl DelegationSpawner for RunnerDelegationInvoker {
             self.peer_messages.clone(),
             self.a2a_delegation.clone(),
             self.rate_limiters.clone(),
-            self.kg_store.clone(),
-            self.ingestion_adapter.clone(),
-            self.goal_adapter.clone(),
+            integrations.kg_store,
+            integrations.ingestion_adapter,
+            integrations.goal_adapter,
             self.steering_registry.clone(),
             self.agent_result_bus.clone(),
         )

@@ -16,8 +16,7 @@
 //!   the watcher can be wired inside `ExecutionRunner::with_config`
 //!   without requiring `Arc<ExecutionRunner>` at construction time.
 
-use super::core::invoke_continuation;
-use super::core::ContinuationArgs;
+use super::continuation_execution::{invoke_continuation, ContinuationArgs};
 use super::session_invoker::ContinuationSpawner;
 use api_logs::LogService;
 use async_trait::async_trait;
@@ -74,10 +73,7 @@ pub(crate) struct RunnerContinuationInvoker {
     /// the live value at fire time via `.load_full()`.
     pub(crate) model_registry:
         Arc<arc_swap::ArcSwapOption<gateway_services::models::ModelRegistry>>,
-    pub(crate) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    pub(crate) kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
-    pub(crate) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    pub(crate) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
+    pub(super) integrations: super::integrations::SharedIntegrations,
     pub(crate) procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
     /// Per-ward usage telemetry — passed through to `invoke_continuation`
     /// so the ward tool's create action can mark new wards as agent-authored.
@@ -95,6 +91,7 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             tracing::warn!(%session_id, %error, "Failed to clear continuation flag");
         }
 
+        let integrations = self.integrations.snapshot();
         invoke_continuation(ContinuationArgs {
             session_id: &session_id,
             root_agent_id: &root_agent_id,
@@ -121,10 +118,10 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
             steering_registry: self.steering_registry.clone(),
             // Read the live registry at fire time — not a stale capture.
             model_registry: self.model_registry.load_full(),
-            kg_store: self.kg_store.clone(),
-            kg_episode_store: self.kg_episode_store.clone(),
-            ingestion_adapter: self.ingestion_adapter.clone(),
-            goal_adapter: self.goal_adapter.clone(),
+            kg_store: integrations.kg_store,
+            kg_episode_store: integrations.kg_episode_store,
+            ingestion_adapter: integrations.ingestion_adapter,
+            goal_adapter: integrations.goal_adapter,
             procedure_store: self.procedure_store.clone(),
             ward_usage: self.ward_usage.clone(),
         })

@@ -147,6 +147,15 @@ impl RigToolAdapter {
         Box::pin(async move {
             let started = std::time::Instant::now();
             let result = async {
+                if results
+                    .as_ref()
+                    .is_some_and(|results| results.peer_influenced())
+                    && inner.name() != "respond"
+                {
+                    return Ok(
+                        json!({"blocked":true,"reason":"peer_data_authority_boundary"}).to_string(),
+                    );
+                }
                 // LLMs send `null` for tools whose arguments are all optional. JSON
                 // `null` parses to `Value::Null`, so normalize both the parsed-null
                 // and the unparseable cases to an empty object.
@@ -423,6 +432,23 @@ mod tests {
 
         let calls = seen.lock().unwrap();
         assert_eq!(calls[0].args, Value::Object(Default::default()));
+    }
+
+    #[tokio::test]
+    async fn direct_dispatch_respects_host_owned_peer_authority() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let adapter = RigToolAdapter::new(Arc::new(RecordingTool::new(seen.clone())));
+        let mut extensions = ToolCallExtensions::new();
+        extensions.insert::<SharedToolContext>(shared_context_with_secret());
+        let results = Arc::new(super::super::tool_results::ToolResults::default());
+        results.mark_peer_influenced();
+        extensions.insert::<SharedToolResults>(results);
+        let response = adapter
+            .call_with_extensions("{\"peer_influenced\":false}".into(), &extensions)
+            .await
+            .unwrap();
+        assert!(response.contains("peer_data_authority_boundary"));
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -3,6 +3,22 @@ use crate::types::ChatMessage;
 use agent_primitives::types::Part;
 use serde_json::{json, Value};
 
+pub(crate) fn peer_safe_tools_schema(tools_schema: &Option<Value>) -> Option<Value> {
+    let tools = tools_schema.as_ref()?.as_array()?;
+    Some(Value::Array(
+        tools
+            .iter()
+            .filter(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    == Some("respond")
+            })
+            .cloned()
+            .collect(),
+    ))
+}
+
 /// Tool-call events, traces, and conversation rows are externally observable.
 /// Peer text belongs only in the durable work payload and the recipient's
 /// bounded steering envelope, so expose identifiers while replacing content.

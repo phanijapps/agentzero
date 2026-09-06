@@ -320,7 +320,7 @@ async fn large_successful_result_is_offloaded_before_after_hook_and_model() {
 }
 
 #[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Capture(pub(super) Arc<Mutex<Vec<u8>>>);
 impl std::io::Write for Capture {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.lock().unwrap().extend_from_slice(bytes);
@@ -382,8 +382,8 @@ async fn host_peer_outcome_plumbing_blocks_real_rig_effects_before_dispatch() {
     };
     // Plumbing only: T6's post-policy model boundary supplies this host-owned
     // state. A fresh local user must not inherit historical peer taint.
-    let mut outcomes = ToolResults::default();
-    outcomes.peer_influenced = true;
+    let outcomes = ToolResults::default();
+    outcomes.mark_peer_influenced();
     let outcomes = Arc::new(outcomes);
     let context = Arc::new(crate::tools::ToolContext::new());
     let calls = Arc::new(AtomicUsize::new(0));

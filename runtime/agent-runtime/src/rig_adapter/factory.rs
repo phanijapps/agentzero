@@ -9,6 +9,8 @@ mod context_tests;
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]
+mod live_context_tests;
+#[cfg(test)]
 mod mcp_tests;
 #[cfg(test)]
 mod result_tests;
@@ -46,6 +48,11 @@ pub fn build_engine(
         },
         prepared.middleware_pipeline,
         shared.clone(),
+        super::context_inputs::ContextInputs::new(
+            prepared.recall,
+            prepared.steering_queue,
+            cfg.transform_context,
+        ),
     ));
     let model = LlmCompletionModel::new(prepared.llm_client, cfg.model)
         .with_single_action_mode(cfg.single_action_mode)

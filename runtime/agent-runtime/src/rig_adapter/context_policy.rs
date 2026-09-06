@@ -14,7 +14,10 @@ use rig::{
     completion::{CompletionError, CompletionModel, CompletionRequest, Message},
 };
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub(super) struct ContextPolicyConfig {
@@ -24,12 +27,21 @@ pub(super) struct ContextPolicyConfig {
     pub input_budget: u64,
 }
 
+/// Delivery acknowledgments travel with the provider future, never preparation.
+pub(super) struct PreparedRequest {
+    pub messages: Vec<ChatMessage>,
+    pub tools: Option<Value>,
+    pub acks: Vec<tokio::sync::oneshot::Sender<()>>,
+}
+
 #[derive(Clone)]
 struct RunContext {
     messages: Vec<ChatMessage>,
     previous_rig: Option<Vec<Message>>,
     initial_rig_len: usize,
     turn: usize,
+    recall_keys: HashSet<String>,
+    results: super::tool_results::SharedToolResults,
 }
 
 pub(super) struct ContextPolicy {
@@ -40,6 +52,7 @@ pub(super) struct ContextPolicy {
     snapshot: Mutex<Option<(usize, Vec<Message>)>>,
     events: Mutex<Option<UnboundedSender<StreamEvent>>>,
     error: Mutex<Option<ExecutorError>>,
+    inputs: super::context_inputs::ContextInputs,
 }
 
 impl ContextPolicy {
@@ -47,6 +60,7 @@ impl ContextPolicy {
         config: ContextPolicyConfig,
         middleware: Arc<MiddlewarePipeline>,
         context: SharedToolContext,
+        inputs: super::context_inputs::ContextInputs,
     ) -> Self {
         Self {
             config,
@@ -56,6 +70,7 @@ impl ContextPolicy {
             snapshot: Mutex::new(None),
             events: Mutex::new(None),
             error: Mutex::new(None),
+            inputs,
         }
     }
 
@@ -64,6 +79,7 @@ impl ContextPolicy {
         history: &[ChatMessage],
         user: &str,
         rig_history_len: usize,
+        results: super::tool_results::SharedToolResults,
     ) -> UnboundedReceiver<StreamEvent> {
         let mut messages = Vec::new();
         if let Some(instructions) = &self.config.system_instruction {
@@ -76,6 +92,13 @@ impl ContextPolicy {
             previous_rig: None,
             initial_rig_len: rig_history_len + 1,
             turn: 0,
+            recall_keys: self
+                .inputs
+                .recall
+                .as_ref()
+                .map(|(_, _, keys)| keys.clone())
+                .unwrap_or_default(),
+            results,
         });
         *self.snapshot.lock().unwrap() = None;
         *self.error.lock().unwrap() = None;
@@ -92,7 +115,7 @@ impl ContextPolicy {
         &self,
         request: &CompletionRequest,
         tools: &Option<Value>,
-    ) -> Result<Vec<ChatMessage>, CompletionError> {
+    ) -> Result<PreparedRequest, CompletionError> {
         match self.prepare_inner(request, tools).await {
             Ok(messages) => Ok(messages),
             Err(error) => {
@@ -108,7 +131,7 @@ impl ContextPolicy {
         &self,
         request: &CompletionRequest,
         tools: &Option<Value>,
-    ) -> Result<Vec<ChatMessage>, ExecutorError> {
+    ) -> Result<PreparedRequest, ExecutorError> {
         let mismatch = || {
             ExecutorError::MiddlewareError(
                 "Rig context cursor disagrees with request history".into(),
@@ -204,7 +227,20 @@ impl ContextPolicy {
             })
             .await
             .map_err(ExecutorError::MiddlewareError)?;
-        crate::context_management::sanitize_messages(&mut state.messages);
+        let acks = self
+            .inputs
+            .apply(
+                &mut state.messages,
+                &mut state.recall_keys,
+                turn,
+                &state.results,
+            )
+            .await;
+        let tools = if state.results.peer_influenced() {
+            crate::tool_visibility::peer_safe_tools_schema(tools)
+        } else {
+            tools.clone()
+        };
         let tokens = estimate_total_tokens(&state.messages, &self.config.model).saturating_add(
             tools.as_ref().map_or(0, |tools| {
                 estimate_tokens(&tools.to_string(), &self.config.model)
@@ -220,7 +256,11 @@ impl ContextPolicy {
         }
         let messages = state.messages.clone();
         *self.run.lock().unwrap() = Some(state);
-        Ok(messages)
+        Ok(PreparedRequest {
+            messages,
+            tools,
+            acks,
+        })
     }
 }
 

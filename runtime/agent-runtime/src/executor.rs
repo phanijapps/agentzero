@@ -54,23 +54,8 @@ struct ToolExecutionResult {
 
 use crate::tool_visibility::{
     contains_persisted_peer_result, externally_visible_tool_args, externally_visible_tool_result,
+    peer_safe_tools_schema,
 };
-
-fn peer_safe_tools_schema(tools_schema: &Option<Value>) -> Option<Value> {
-    let tools = tools_schema.as_ref()?.as_array()?;
-    Some(Value::Array(
-        tools
-            .iter()
-            .filter(|tool| {
-                tool.get("function")
-                    .and_then(|function| function.get("name"))
-                    .and_then(Value::as_str)
-                    == Some("respond")
-            })
-            .cloned()
-            .collect(),
-    ))
-}
 
 // ============================================================================
 // EXECUTOR CONFIGURATION

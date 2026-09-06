@@ -31,7 +31,7 @@ impl<M: CompletionModel> AgentHook<M> for RigExecutionHook {
                 self.ctx
                     .set_function_call_id(tool_call_id.unwrap_or(internal_call_id).to_owned());
                 let args = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                let decision = if self.results.peer_influenced && tool_name != "respond" {
+                let decision = if self.results.peer_influenced() && tool_name != "respond" {
                     ToolCallDecision::Block {
                         reason: "peer_data_authority_boundary".into(),
                     }

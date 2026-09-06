@@ -24,6 +24,7 @@
 //! - **The stream owns the provider task.** Dropping it aborts an outstanding
 //!   request, including one that has not produced its first token.
 
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -100,13 +101,27 @@ struct ProviderStream {
     receiver:
         mpsc::UnboundedReceiver<Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>>,
     task: tokio::task::JoinHandle<()>,
+    joined: bool,
 }
 
 impl Stream for ProviderStream {
     type Item = Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.receiver).poll_next(cx)
+        match Pin::new(&mut self.receiver).poll_next(cx) {
+            Poll::Ready(None) if !self.joined => match Pin::new(&mut self.task).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(result) => {
+                    self.joined = true;
+                    Poll::Ready(result.err().map(|_| {
+                        Err(CompletionError::ProviderError(
+                            "Provider task failed".into(),
+                        ))
+                    }))
+                }
+            },
+            item => item,
+        }
     }
 }
 
@@ -157,9 +172,17 @@ impl CompletionModel for LlmCompletionModel {
         request: CompletionRequest,
     ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
         let tools = convert_tools(&request.tools);
-        let messages = match &self.context_policy {
+        let super::context_policy::PreparedRequest {
+            messages,
+            tools,
+            acks,
+        } = match &self.context_policy {
             Some(policy) => policy.prepare(&request, &tools).await?,
-            None => convert_messages(&request)?,
+            None => super::context_policy::PreparedRequest {
+                messages: convert_messages(&request)?,
+                tools,
+                acks: Vec::new(),
+            },
         };
         let output_schema = request
             .output_schema
@@ -170,6 +193,9 @@ impl CompletionModel for LlmCompletionModel {
             .chat_with_schema(messages, tools, output_schema)
             .await
             .map_err(llm_error_to_completion)?;
+        for ack in acks {
+            let _ = ack.send(());
+        }
         if self.single_action_mode {
             if let Some(calls) = &mut response.tool_calls {
                 calls.truncate(1);
@@ -197,9 +223,17 @@ impl CompletionModel for LlmCompletionModel {
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
         let tools = convert_tools(&request.tools);
-        let messages = match &self.context_policy {
+        let super::context_policy::PreparedRequest {
+            messages,
+            tools,
+            acks,
+        } = match &self.context_policy {
             Some(policy) => policy.prepare(&request, &tools).await?,
-            None => convert_messages(&request)?,
+            None => super::context_policy::PreparedRequest {
+                messages: convert_messages(&request)?,
+                tools,
+                acks: Vec::new(),
+            },
         };
         let client = self.client.clone();
         let single_action_mode = self.single_action_mode;
@@ -229,6 +263,9 @@ impl CompletionModel for LlmCompletionModel {
             let result = client.chat_stream(messages, tools, callback).await;
             match result {
                 Ok(response) => {
+                    for ack in acks {
+                        let _ = ack.send(());
+                    }
                     let mut calls = response.tool_calls.unwrap_or_default();
                     if single_action_mode {
                         calls.truncate(1);
@@ -248,7 +285,11 @@ impl CompletionModel for LlmCompletionModel {
         });
 
         Ok(StreamingCompletionResponse::stream(Box::pin(
-            ProviderStream { receiver: rx, task },
+            ProviderStream {
+                receiver: rx,
+                task,
+                joined: false,
+            },
         )))
     }
 }

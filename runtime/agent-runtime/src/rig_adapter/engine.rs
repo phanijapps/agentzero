@@ -240,14 +240,14 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         }
         let prompt = Message::user(user_message.to_string());
         let chat_history = convert_history(history);
+        let results = Arc::new(ToolResults::default());
         let mut policy_events = self
             .context_policy
             .as_ref()
-            .map(|policy| policy.begin(history, user_message, chat_history.len()));
+            .map(|policy| policy.begin(history, user_message, chat_history.len(), results.clone()));
 
         let mut extensions = ToolCallExtensions::new();
         extensions.insert::<SharedToolContext>(self.shared_context.clone());
-        let results = Arc::new(ToolResults::default());
         extensions.insert::<SharedToolResults>(results.clone());
 
         // Awaiting the `StreamingPromptRequest` IntoFuture yields the agent
@@ -362,7 +362,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                             args: externally_visible_tool_args(
                                 &tool_call.function.name,
                                 &tool_call.function.arguments,
-                                results.peer_influenced,
+                                results.peer_influenced(),
                             ),
                         });
                     }
@@ -396,7 +396,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                                 args: externally_visible_tool_args(
                                     name,
                                     args,
-                                    results.peer_influenced,
+                                    results.peer_influenced(),
                                 ),
                             });
                         }
@@ -408,7 +408,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                             .is_some_and(|(name, _)| name == "present_surface");
                         let (event_result, event_context, event_error) =
                             externally_visible_tool_result(
-                                results.peer_influenced,
+                                results.peer_influenced(),
                                 result_text.clone(),
                                 Some(context_text),
                                 outcome.error,
@@ -565,7 +565,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                                 args: externally_visible_tool_args(
                                     &tool_name,
                                     &args,
-                                    results.peer_influenced,
+                                    results.peer_influenced(),
                                 ),
                                 tool_name,
                             });

@@ -498,6 +498,51 @@ No production engine has been retired yet. No AC is marked complete.
 - Runtime Clippy, formatting and the unchanged boundary check pass. Rebuilt
   daemon strict real UI answer/reload smoke passes in 9.8s. This remains a T6
   checkpoint: recall, steering, soft controls and final context export are next.
+- First context checkpoint committed as d5be5105; the five real gateway tool
+  fixtures also pass with the request policy enabled.
+- Second checkpoint scope: recall, steering, transform hooks and live peer
+  authority at the same request boundary. Red probes observe zero recall calls
+  instead of three, and a transformed peer marker permits two effectful tool
+  executions instead of zero. Preserve middleware → recall → steering →
+  sanitize → transform ordering, then final authority and budget checks.
+  Peer delivery acknowledges provider success, never preparation or cancellation.
+- Declined: muting user-visible peer-informed answers. Existing token/reasoning
+  output stays visible; tool-event payloads and diagnostics retain their separate
+  redaction rules. Snapshot export is a later T6 checkpoint, not a blind dump
+  of canonical history into externally observable events.
+- Snapshot seam acquired for the next checkpoint: ContextState is explicitly
+  internal checkpoint data; gateway conversion returns None (pinned by a test)
+  and selected-event log/trace handling omits it. Current root/continuation
+  observers discard it, while write_turn_checkpoint synthesizes display fields.
+  T7 can capture it privately without a new event API, preserving existing
+  display keys and adding a namespaced runtime snapshot.
+- Restore allowlist starts with skill:graph, skill:loaded_skills and app:plan.
+  Do not restore planning gate/catalog/placeholder authority, agent/session IDs,
+  ward/cwd or confinement: fresh bootstrap owns those. Keep checkpoints private;
+  no new HTTP/WS/log/trace projection is authorized. Bounded retrieval found no
+  checkpoint exposure path but did not claim an exhaustive admin-reader audit.
+- Pinned Rig FinalResponse carries run-local history, excluding input history.
+  Early respond/delegation exits occur before that item. A completed-pair tail
+  can supplement canonical context, deduplicated at the next request boundary;
+  never persist unexecuted siblings as completed calls. Preserve summary flags
+  and media explicitly in the private snapshot representation.
+- Provider-panic probe is red: closing the bridge channel after its task panics
+  is interpreted by Rig as successful EOF. Observe the existing JoinHandle at
+  channel close and return a bounded typed provider error; never log the panic
+  payload or retry the request. Peer delivery must remain unacknowledged.
+- Second checkpoint green: 84 adapter tests and all 8 live-context tests pass;
+  parent full runtime suite passes 477 with 2 existing ignores. Provider success,
+  failure, stop, dropped run and panic have explicit acknowledgment assertions;
+  every non-success case has no Done. Late steering reaches the next request,
+  scoped recall deduplicates, and final injected content is budget checked.
+- Parent minor review: focused ContextInputs owns live injection; the canonical
+  policy remains a coordinator. The existing provider JoinHandle is observed
+  exactly once at stream EOF, with fixed error text rather than panic payload.
+  Direct tool dispatch shares the host-owned peer flag with hooks and events.
+  No open finding remains in this checkpoint.
+- Runtime Clippy, formatting, whitespace and boundary checks pass. Rebuilt
+  daemon strict real UI answer/reload passes in 9.6s. Soft controls, actual
+  summarization and private context export remain the final T6 checkpoint.
 
 ### T11 baseline repair preparation (read-only)
 

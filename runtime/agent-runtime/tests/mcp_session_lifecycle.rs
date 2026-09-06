@@ -487,7 +487,7 @@ async fn native_mcp_trace_diagnostics_do_not_expose_payload_canaries() {
             "trace,rmcp::service=trace",
         ))
         .with(tracing_subscriber::filter::filter_fn(
-            agent_runtime::logging::safe_mcp_diagnostics,
+            agent_runtime::logging::safe_runtime_diagnostics,
         ))
         .with(
             tracing_subscriber::fmt::layer()

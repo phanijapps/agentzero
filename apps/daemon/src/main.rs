@@ -282,7 +282,7 @@ fn setup_logging(
     let level = parse_level(&config.level);
     let env_filter = EnvFilter::from_default_env().add_directive(level.into());
     let registry = tracing_subscriber::registry().with(env_filter).with(
-        tracing_subscriber::filter::filter_fn(gateway::safe_mcp_diagnostics),
+        tracing_subscriber::filter::filter_fn(gateway::safe_runtime_diagnostics),
     );
 
     // Check if file logging is enabled

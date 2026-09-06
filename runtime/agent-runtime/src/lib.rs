@@ -63,6 +63,7 @@ pub(crate) mod progress;
 pub(crate) mod tool_replay;
 /// Tool schema normalization and hardening helpers
 pub(crate) mod tool_schema;
+pub(crate) mod tool_visibility;
 
 /// Context management helpers (compaction, sanitization, truncation)
 pub(crate) mod context_management;

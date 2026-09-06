@@ -15,9 +15,8 @@
 //! `LlmCompletionModel` bridge (`model.rs`) lets Rig drive the real
 //! OpenAI-compatible `LlmClient`.
 //!
-//! Still deferred (see TODOs):
-//! - the raw/context/persisted/UI result distinction on `ToolResult`
-//!   (currently the model-visible text only).
+//! Tool results retain raw/error/duration telemetry separately from the
+//! offloaded/truncated/after-hook context sent to the model.
 //!
 //! T7c is wired: [`RigExecutionHook`] surfaces `before_tool_call`
 //! (`Block`→`Flow::Skip`) and `after_tool_call` (→`Flow::RewriteResult`), and
@@ -25,11 +24,9 @@
 //! `tool_concurrency(1)` keeps the shared context race-free.
 
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agent_primitives::CallbackContext;
 use futures::StreamExt;
 use rig::agent::{
     Agent, AgentBuilder, AgentHook, Flow, MultiTurnStreamItem, StepEvent, StreamingError,
@@ -41,9 +38,12 @@ use rig::tool::{ToolCallExtensions, ToolDyn};
 use serde_json::Value;
 
 use super::resources::SessionResources;
-use crate::engine::{AfterToolCallHook, BeforeToolCallHook, ExecutorError, ToolCallDecision};
+use super::tool_hook::RigExecutionHook;
+use super::tool_results::{SharedToolResults, ToolResults};
+use crate::engine::{AfterToolCallHook, BeforeToolCallHook, ExecutorError};
 use crate::engine::{AgentEngine, StreamEventSink};
 use crate::rig_adapter::{RigAgentConfig, SharedToolContext};
+use crate::tool_visibility::{externally_visible_tool_args, externally_visible_tool_result};
 use crate::types::events::current_timestamp;
 use crate::types::{ChatMessage, StreamEvent};
 
@@ -61,6 +61,9 @@ pub struct RigAgentEngine<M: CompletionModel> {
     max_turns: usize,
     hard_turn_limit: u32,
     resources: Option<SessionResources>,
+    before: Option<BeforeToolCallHook>,
+    after: Option<AfterToolCallHook>,
+    result_context: crate::ToolResultContextConfig,
 }
 
 impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
@@ -92,7 +95,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
     }
 
     /// Same as [`Self::new`] with before/after-tool hooks (T7c). The hooks map
-    /// onto Rig's `Flow` model: `before_tool_call` returning [`ToolCallDecision::Block`]
+    /// onto Rig's `Flow` model: `before_tool_call` returning [`crate::ToolCallDecision::Block`]
     /// becomes `Flow::Skip` (the reason is returned to the model as the tool
     /// result), and `after_tool_call` returning a replacement becomes
     /// `Flow::RewriteResult`. The hook also sets the per-call `function_call_id`
@@ -127,12 +130,10 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         before: Option<BeforeToolCallHook>,
         after: Option<AfterToolCallHook>,
     ) -> Self {
-        let hook = RigExecutionHook::<M>::new(shared_context.clone(), before, after);
         let agent = AgentBuilder::new(model)
             .preamble(&config.instructions)
             .tools(tools)
             .default_max_turns(max_turns)
-            .add_hook(hook)
             .build();
         Self {
             config,
@@ -141,6 +142,9 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             max_turns,
             hard_turn_limit: 0,
             resources: None,
+            before,
+            after,
+            result_context: crate::ToolResultContextConfig::default(),
         }
     }
 
@@ -148,6 +152,11 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
     /// an engine discarded before its first run.
     pub(super) fn with_mcp_session(mut self, manager: Arc<crate::mcp::McpManager>) -> Self {
         self.resources = Some(SessionResources::new(manager));
+        self
+    }
+
+    pub(super) fn with_result_context(mut self, config: crate::ToolResultContextConfig) -> Self {
+        self.result_context = config;
         self
     }
 
@@ -224,6 +233,8 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
 
         let mut extensions = ToolCallExtensions::new();
         extensions.insert::<SharedToolContext>(self.shared_context.clone());
+        let results = Arc::new(ToolResults::default());
+        extensions.insert::<SharedToolResults>(results.clone());
 
         // Awaiting the `StreamingPromptRequest` IntoFuture yields the agent
         // stream directly: `Stream<Item = Result<MultiTurnStreamItem, _>>`.
@@ -236,6 +247,13 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             .agent
             .stream_chat(prompt, chat_history)
             .tool_extensions(extensions)
+            .add_hook(RigExecutionHook {
+                ctx: self.shared_context.clone(),
+                before: self.before.clone(),
+                after: self.after.clone(),
+                results: results.clone(),
+                context_config: self.result_context.clone(),
+            })
             .add_hook(TurnLimitHook {
                 limit: self.hard_turn_limit,
                 reached: limit_reached.clone(),
@@ -298,13 +316,22 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                             .call_id
                             .clone()
                             .unwrap_or_else(|| tool_call.id.clone());
-                        tool_names_by_call_id
-                            .insert(tool_id.clone(), tool_call.function.name.clone());
+                        tool_names_by_call_id.insert(
+                            tool_id.clone(),
+                            (
+                                tool_call.function.name.clone(),
+                                tool_call.function.arguments.clone(),
+                            ),
+                        );
                         on_event(StreamEvent::ToolCallStart {
                             timestamp: current_timestamp(),
                             tool_id,
                             tool_name: tool_call.function.name.clone(),
-                            args: tool_call.function.arguments.clone(),
+                            args: externally_visible_tool_args(
+                                &tool_call.function.name,
+                                &tool_call.function.arguments,
+                                results.peer_influenced,
+                            ),
                         });
                     }
                     StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
@@ -322,18 +349,38 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 },
                 MultiTurnStreamItem::StreamUserItem(user_content) => match user_content {
                     StreamedUserContent::ToolResult { tool_result, .. } => {
-                        let result_text = tool_result_text(&tool_result);
-                        let is_surface_tool = tool_names_by_call_id
+                        let outcome = results.take();
+                        let context_text = outcome
+                            .context
+                            .unwrap_or_else(|| tool_result_text(&tool_result));
+                        let result_text = outcome.raw.unwrap_or_else(|| context_text.clone());
+                        if let Some((name, args)) = &outcome.rejected_call {
+                            // Rig's invalid-call recovery omits a dispatch-start
+                            // item because no tool ran; retain our attempt trace.
+                            on_event(StreamEvent::ToolCallStart {
+                                timestamp: current_timestamp(),
+                                tool_id: tool_result.id.clone(),
+                                tool_name: name.clone(),
+                                args: externally_visible_tool_args(
+                                    name,
+                                    args,
+                                    results.peer_influenced,
+                                ),
+                            });
+                        }
+                        let tool_info = tool_names_by_call_id
                             .remove(&tool_result.id)
-                            .is_some_and(|name| name == "present_surface");
-                        on_event(StreamEvent::ToolResult {
-                            timestamp: current_timestamp(),
-                            tool_id: tool_result.id.clone(),
-                            result: result_text.clone(),
-                            context_result: None,
-                            error: None,
-                            duration_ms: None,
-                        });
+                            .or(outcome.rejected_call);
+                        let is_surface_tool = tool_info
+                            .as_ref()
+                            .is_some_and(|(name, _)| name == "present_surface");
+                        let (event_result, event_context, event_error) =
+                            externally_visible_tool_result(
+                                results.peer_influenced,
+                                result_text.clone(),
+                                Some(context_text),
+                                outcome.error,
+                            );
                         // Surface tool side-effects set on the shared context
                         // (delegate/respond), mirroring the legacy executor. Without
                         // ActionDelegate, delegate_to_agent would not spawn a child
@@ -471,6 +518,26 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                                 });
                             }
                         }
+                        on_event(StreamEvent::ToolResult {
+                            timestamp: current_timestamp(),
+                            tool_id: tool_result.id.clone(),
+                            result: event_result,
+                            context_result: event_context,
+                            error: event_error,
+                            duration_ms: Some(outcome.duration_ms),
+                        });
+                        if let Some((tool_name, args)) = tool_info {
+                            on_event(StreamEvent::ToolCallEnd {
+                                timestamp: current_timestamp(),
+                                tool_id: tool_result.id.clone(),
+                                args: externally_visible_tool_args(
+                                    &tool_name,
+                                    &args,
+                                    results.peer_influenced,
+                                ),
+                                tool_name,
+                            });
+                        }
                     }
                 },
                 MultiTurnStreamItem::CompletionCall(cc) => {
@@ -605,102 +672,17 @@ impl<M: CompletionModel + Send + Sync + 'static> AgentEngine for RigAgentEngine<
 
 /// Map a Rig streaming error onto the AgentZero executor error.
 ///
-/// Kept coarse for the first slice: tool/completion/prompt failures all surface
-/// as `ExecutorError::LlmError`. T7c may split these once the engine handles
-/// tool errors distinctly.
+/// Tool errors and invalid calls recover through tool-result policy before
+/// reaching this boundary; remaining provider/protocol failures are terminal.
 fn map_streaming_error(error: StreamingError) -> ExecutorError {
     ExecutorError::LlmError(error.to_string())
-}
-
-/// AgentZero execution hook bridging before/after-tool behavior onto Rig's
-/// [`Flow`] model and threading the per-call function-call id onto the shared
-/// [`ToolContext`].
-///
-/// - `StepEvent::ToolCall` sets `function_call_id` (resolving the T6 race —
-///   `tool_concurrency(1)` keeps the shared context safe), then applies
-///   `before_tool_call`; [`ToolCallDecision::Block`] becomes [`Flow::skip`].
-/// - `StepEvent::ToolResult` applies `after_tool_call`; a returned replacement
-///   becomes [`Flow::rewrite_result`] (model-visible only — the real result
-///   still ran).
-struct RigExecutionHook<M: CompletionModel> {
-    ctx: SharedToolContext,
-    before: Option<BeforeToolCallHook>,
-    after: Option<AfterToolCallHook>,
-    _marker: PhantomData<M>,
-}
-
-impl<M: CompletionModel> RigExecutionHook<M> {
-    fn new(
-        ctx: SharedToolContext,
-        before: Option<BeforeToolCallHook>,
-        after: Option<AfterToolCallHook>,
-    ) -> Self {
-        Self {
-            ctx,
-            before,
-            after,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<M: CompletionModel> AgentHook<M> for RigExecutionHook<M> {
-    async fn on_event(&self, event: StepEvent<'_, M>) -> Flow {
-        match event {
-            StepEvent::ToolCall {
-                tool_name,
-                tool_call_id,
-                args,
-                ..
-            } => {
-                if let Some(id) = tool_call_id.filter(|id: &&str| !id.is_empty()) {
-                    self.ctx.set_function_call_id((*id).to_string());
-                }
-                if let Some(before) = &self.before {
-                    let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                    if let ToolCallDecision::Block { reason } = before(tool_name, &args_value) {
-                        return Flow::skip(reason);
-                    }
-                }
-                Flow::cont()
-            }
-            StepEvent::CompletionCall { .. } => {
-                // Mirror the legacy executor's per-turn reset of the
-                // delegation claim. Without this, the first delegation's
-                // `app:delegation_active=true` is never released on the Rig
-                // path, so every subsequent `delegate_to_agent` is blocked
-                // with "You already have an active delegation" and the root
-                // deadlocks looping on queued delegations that never spawn.
-                self.ctx
-                    .set_state("app:delegation_active".to_string(), Value::Bool(false));
-                Flow::cont()
-            }
-            StepEvent::ToolResult {
-                tool_name,
-                args,
-                result,
-                ..
-            } => {
-                if let Some(after) = &self.after {
-                    let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                    // rig's ToolResult fires for completed calls; the legacy
-                    // executor calls after_tool_call with succeeded=true on
-                    // this path, so we match it.
-                    if let Some(replacement) = after(tool_name, &args_value, result, true) {
-                        return Flow::rewrite_result(replacement);
-                    }
-                }
-                Flow::cont()
-            }
-            _ => Flow::cont(),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rig_adapter::RigToolAdapter;
+    use crate::ToolCallDecision;
     use rig::completion::{
         AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
         Usage,
@@ -1492,6 +1474,14 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, StreamEvent::Done { .. })),
             "delegated root must remain resumable instead of completing"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::ContextState { .. })
+        ));
+        let result_index = events.iter().position(|event| matches!(event, StreamEvent::ToolResult { tool_id, .. } if tool_id == "ward_call")).unwrap();
+        assert!(
+            matches!(&events[result_index + 1], StreamEvent::ToolCallEnd { tool_id, .. } if tool_id == "ward_call")
         );
     }
 

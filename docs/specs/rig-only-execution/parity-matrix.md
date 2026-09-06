@@ -413,3 +413,31 @@ No production engine has been retired yet. No AC is marked complete.
   runtime Clippy with warnings denied passed; formatting clean. This is an
   intermediate T5 checkpoint, not wave completion. Tool error/result telemetry
   and final integrated T5 checks remain.
+- Second checkpoint restores typed tool errors, raw-versus-context results,
+  elapsed time, blocked-hook feedback, after-hook success flags and
+  ToolResult → ToolCallEnd ordering through Rig. Existing result truncation and
+  offload policy is reused. Runtime library gate: 461 passed, 2 existing ignores.
+- Contract disposition: the pinned Rig runner rejects unregistered calls before
+  its dispatch hook. InvalidToolCall → skip provides typed model feedback and
+  a correlated attempted-call trace, with zero side effects. Rig abandons the
+  remaining siblings in that invalid model turn; the recovery fixture proves
+  matching call/result history, no invented sibling success, and a subsequent
+  respond answer. This fail-closed SDK behavior is retained without name repair
+  or a second per-call execution loop.
+- Actual Rig tracing reproduced raw argument/result disclosure before host
+  hooks. The existing mandatory diagnostic filter now rejects the observed
+  `rig` and `rig_core` roots alongside MCP SDK roots; a positive application-log
+  sentinel proves capture is active. No new logging layer was introduced.
+- T6 still owns dynamic post-middleware/steering peer taint, context budgeting,
+  recall and soft progress nudges. T5 proves shared visibility/guard plumbing;
+  it does not claim that an unused marker establishes live context parity.
+- Final integration gate after the diagnostic helper rename: 68 adapter tests,
+  5 gateway real-tool fixtures, runtime/gateway/daemon Clippy (library, binaries
+  and tests, warnings denied), formatting, unchanged boundary checker and its
+  3 tests pass. Rebuilt daemon + strict real UI answer/reload passes in 8.7s.
+  The shared filter is now named `safe_runtime_diagnostics`; SDK target names
+  remain owned by the adapter metadata boundary. No compatibility alias remains.
+- Bounded independent minor review returned **Clean — ready to commit**.
+  T5 disposition record closed with no open review findings; T6 owns the
+  explicitly identified context/soft-nudge integration, not deferred release
+  capabilities. T5 control/event layer is complete.

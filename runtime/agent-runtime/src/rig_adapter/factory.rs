@@ -8,6 +8,8 @@ use std::sync::Arc;
 mod control_tests;
 #[cfg(test)]
 mod mcp_tests;
+#[cfg(test)]
+mod result_tests;
 
 /// Build the Rig loop with the actor-filtered inventory and effective prompt.
 /// The engine owns the configured MCP sessions for its execution lifetime.
@@ -44,6 +46,12 @@ pub fn build_engine(
         cfg.after_tool_call,
     )
     .with_execution_turn_limit(cfg.max_turns)
+    .with_result_context(crate::ToolResultContextConfig {
+        max_tool_result_chars: cfg.max_tool_result_chars,
+        offload_large_results: cfg.offload_large_results,
+        offload_threshold_chars: cfg.offload_threshold_chars,
+        offload_dir: cfg.offload_dir,
+    })
     .with_mcp_session(prepared.mcp_manager)
 }
 

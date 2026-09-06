@@ -34,6 +34,7 @@ use rig::tool::{ToolCallExtensions, ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
 use serde_json::{json, Value};
 
+use super::tool_results::{SharedToolResults, ToolOutcome};
 use crate::tools::context::ToolContext;
 
 /// Shared AgentZero tool execution context carried through Rig's
@@ -97,7 +98,7 @@ impl ToolDyn for RigToolAdapter {
     fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
         // No extensions on this path; the engine is expected to go through the
         // `call_with_extensions` entry point for real runs.
-        self.dispatch(args, None)
+        self.dispatch(args, None, None)
     }
 
     fn call_with_extensions<'a>(
@@ -108,7 +109,11 @@ impl ToolDyn for RigToolAdapter {
         // Extract hidden runtime context into an owned value up front so the
         // returned future does not borrow `extensions` (keeps the borrow off
         // the await boundary and off the `call` path's temporary).
-        self.dispatch(args, extensions.get::<SharedToolContext>().cloned())
+        self.dispatch(
+            args,
+            extensions.get::<SharedToolContext>().cloned(),
+            extensions.get::<SharedToolResults>().cloned(),
+        )
     }
 }
 
@@ -128,6 +133,7 @@ impl RigToolAdapter {
         &'a self,
         args: String,
         shared_ctx: Option<SharedToolContext>,
+        results: Option<SharedToolResults>,
     ) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
         let ctx = match shared_ctx {
             Some(ctx) => ctx,
@@ -139,34 +145,63 @@ impl RigToolAdapter {
         };
         let inner = self.inner.clone();
         Box::pin(async move {
-            // LLMs send `null` for tools whose arguments are all optional. JSON
-            // `null` parses to `Value::Null`, so normalize both the parsed-null
-            // and the unparseable cases to an empty object.
-            let args_value: Value = match serde_json::from_str::<Value>(&args) {
-                Ok(Value::Null) => Value::Object(Default::default()),
-                Ok(v) => v,
-                Err(_) if args.trim() == "null" => Value::Object(Default::default()),
-                Err(e) => return Err(ToolError::JsonError(e)),
-            };
+            let started = std::time::Instant::now();
+            let result = async {
+                // LLMs send `null` for tools whose arguments are all optional. JSON
+                // `null` parses to `Value::Null`, so normalize both the parsed-null
+                // and the unparseable cases to an empty object.
+                let args_value: Value = match serde_json::from_str::<Value>(&args) {
+                    Ok(Value::Null) => Value::Object(Default::default()),
+                    Ok(v) => v,
+                    Err(_) if args.trim() == "null" => Value::Object(Default::default()),
+                    Err(e) => return Err(ToolError::JsonError(e)),
+                };
 
-            if agent_tools::guards::planning_gate_blocks_tool(
-                ctx.as_ref(),
-                inner.name(),
-                &args_value,
-            ) {
-                return Ok(agent_tools::guards::cold_graph_redirect().to_string());
+                if agent_tools::guards::planning_gate_blocks_tool(
+                    ctx.as_ref(),
+                    inner.name(),
+                    &args_value,
+                ) {
+                    return Ok(agent_tools::guards::cold_graph_redirect().to_string());
+                }
+
+                if let Some(result) = crate::tool_replay::intercept(ctx.as_ref(), inner.name()) {
+                    return Ok(result);
+                }
+
+                let result = inner
+                    .execute(ctx, args_value)
+                    .await
+                    .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
+
+                Ok(serialize_model_visible(result))
             }
-
-            if let Some(result) = crate::tool_replay::intercept(ctx.as_ref(), inner.name()) {
-                return Ok(result);
+            .await;
+            if let Some(results) = results {
+                let duration_ms = started.elapsed().as_millis() as i64;
+                match result {
+                    Ok(raw) => {
+                        results.record(ToolOutcome {
+                            raw: Some(raw.clone()),
+                            duration_ms,
+                            ..ToolOutcome::default()
+                        });
+                        Ok(raw)
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        results.record(ToolOutcome {
+                            raw: Some(String::new()),
+                            error: Some(error.clone()),
+                            duration_ms,
+                            ..ToolOutcome::default()
+                        });
+                        Ok(json!({"error":error}).to_string())
+                    }
+                }
+            } else {
+                result
             }
-
-            let result = inner
-                .execute(ctx, args_value)
-                .await
-                .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
-
-            Ok(serialize_model_visible(result))
         })
     }
 }

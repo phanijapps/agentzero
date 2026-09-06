@@ -11,6 +11,8 @@ pub mod model;
 mod resources;
 pub mod structured;
 pub mod tool;
+mod tool_hook;
+mod tool_results;
 
 #[cfg(test)]
 mod capability_tests;
@@ -23,6 +25,9 @@ pub use client::LlmCompletionClient;
 pub use config::{RigAgentConfig, RigConfigError, RigModelConfig};
 pub use structured::prompt_typed;
 pub use tool::{RigToolAdapter, SharedToolContext};
+
+/// SDK tracing roots that record raw payloads before host policy hooks.
+pub(crate) const PAYLOAD_DIAGNOSTIC_TARGETS: &[&str] = &["rig", "rig_core"];
 
 // Re-exported through the adapter boundary so gateway crates can use Rig
 // extractors (typed structured output) over LlmCompletionClient without

@@ -17,9 +17,11 @@
 //! on restore, which is exactly how a racing callback that landed before the
 //! parent's final own row survives without duplicating parent output.
 
+use execution_state::StateService;
 use std::collections::HashMap;
 use std::sync::Arc;
 use zbot_conversation::{CheckpointStore, Message, MessageStore};
+use zbot_runtime_sqlite::DatabaseManager;
 
 /// Key inside the persisted checkpoint `context_state` JSON holding the
 /// gateway-owned cursor metadata.
@@ -199,6 +201,94 @@ pub(crate) fn checkpoint_context_state(
             .insert(GATEWAY_RECOVERY_KEY.to_owned(), map);
     }
     context.to_string()
+}
+
+// ============================================================================
+// TURN-BOUNDARY CHECKPOINT (T11)
+// ============================================================================
+
+/// Write a versioned `Checkpoint` at the turn boundary — the point where the
+/// assistant's final/respond turn completes. `context_state` captures a
+/// best-effort snapshot of the agent's mutable context so `session_state`
+/// can read it in O(1) (T12) instead of replaying `execution_logs`.
+///
+/// Fields not yet sourced (`intent`, `plan`, `recalled_facts`, `model`,
+/// `subagents`, `title`) are `null` — they're populated in a follow-up slice
+/// once the in-memory runtime state is threaded to this call site. The
+/// important invariant today: one `checkpoints` row per turn with `llm_turn`,
+/// `last_message_id`, and a `context_state` JSON blob.
+pub(crate) struct TurnCheckpoint<'a> {
+    pub checkpoints: &'a Arc<dyn zbot_conversation::CheckpointStore>,
+    pub state_service: &'a StateService<DatabaseManager>,
+    pub execution_id: &'a str,
+    pub session_id: &'a str,
+    pub llm_turn: u32,
+    pub response: &'a str,
+    /// Last engine-emitted context state (carries the private snapshot).
+    pub engine_state: Option<&'a serde_json::Value>,
+    /// Max durable `seq` of rows composed into this invocation's input.
+    pub input_cursor: i64,
+    /// Durable IDs authored by this invocation (already inside the tape).
+    pub represented_output_ids: &'a [String],
+}
+
+pub(crate) fn write_turn_checkpoint(turn: TurnCheckpoint<'_>) {
+    let TurnCheckpoint {
+        checkpoints,
+        state_service,
+        execution_id,
+        session_id,
+        llm_turn,
+        response,
+        engine_state,
+        input_cursor,
+        represented_output_ids,
+    } = turn;
+    let ward = state_service
+        .get_session(session_id)
+        .ok()
+        .flatten()
+        .and_then(|s| s.ward_id);
+
+    let display = serde_json::json!({
+        "intent": null,
+        "ward": ward,
+        "plan": null,
+        "recalled_facts": null,
+        "response": response,
+        "title": null,
+        "model": null,
+        "subagents": null,
+    });
+    let context_state = super::recovery::checkpoint_context_state(
+        display,
+        engine_state,
+        &super::recovery::RecoveryCursor {
+            input_cursor,
+            represented_output_ids: represented_output_ids.to_vec(),
+        },
+    );
+
+    let checkpoint = zbot_conversation::Checkpoint {
+        id: uuid::Uuid::now_v7().to_string(),
+        execution_id: execution_id.to_string(),
+        session_id: session_id.to_string(),
+        llm_turn,
+        last_message_id: String::new(),
+        pending_tool_calls: None,
+        context_state: Some(context_state),
+        child_executions: None,
+        schema_version: 1,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    if let Err(e) = checkpoints.write(&checkpoint) {
+        tracing::warn!(
+            execution_id = %execution_id,
+            session_id = %session_id,
+            "Turn-boundary checkpoint write failed: {e}"
+        );
+    }
 }
 
 #[cfg(test)]

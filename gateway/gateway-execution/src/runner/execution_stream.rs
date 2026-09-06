@@ -585,7 +585,7 @@ impl ExecutionStream {
         // Turn-boundary checkpoint — the display snapshot plus the engine's
         // private checkpoint (carried by the final ContextState event) and the
         // gateway-owned input cursor / represented-output IDs beside it.
-        super::core::write_turn_checkpoint(super::core::TurnCheckpoint {
+        super::recovery::write_turn_checkpoint(super::recovery::TurnCheckpoint {
             checkpoints: &self.checkpoints,
             state_service: &self.state_service,
             execution_id: &execution_id,
@@ -681,7 +681,7 @@ impl ExecutionStream {
                         if let Err(e) = distiller.distill(&sid, &aid).await {
                             tracing::warn!("Session distillation failed: {}", e);
                         }
-                        super::core::run_ward_artifact_indexer(
+                        crate::ward_artifact_indexer::run_session_index(
                             &ward_id_for_indexer,
                             &sid,
                             &aid,

@@ -14,16 +14,18 @@ cargo clippy -p gateway-execution --all-targets --features test-stubs -- -D warn
 
 | File                       | Owns                                          |
 |----------------------------|-----------------------------------------------|
-| `core.rs`                  | `ExecutionRunner` facade, DI wiring, invocation and persisted recovery |
+| `core.rs`                  | `ExecutionRunner` struct + config, DI wiring, late-binding setters/accessors; test modules live in `core/` |
+| `initial_execution.rs`     | Initial root invocation: two-phase setup completion and shared-stream dispatch |
 | `session_control.rs`       | Live stop/pause/resume/cancel/end/iteration control; shared handles and delegation registry |
+| `subagent_recovery.rs`     | Persisted subagent re-spawn (smart resume) without re-running root |
 | `session_invoker.rs`       | Narrow traits handlers depend on instead      |
 |                            | of `Arc<ExecutionRunner>`                     |
 | `invoke_bootstrap.rs`      | Pre-execution setup (per session, two-phase)  |
 | `execution_stream.rs`      | Shared root/continuation observation, assistant persistence and finalization; explicit mode preserves routing, working-memory and cleanup differences |
-| `delegation_dispatcher.rs` | Long-lived queue for spawning subagents       |
-| `continuation_watcher.rs`  | Long-lived listener for continuations         |
+| `delegation_dispatcher.rs` | Long-lived queue for spawning subagents; runner delegation entry + invoker factory |
+| `continuation_watcher.rs`  | Long-lived listener for continuations; continuation invoker factory |
 | `continuation_execution.rs` | Continuation recall/prompt preparation and shared stream dispatch |
-| `recovery.rs`            | Checkpoint restore inputs: private-tape + tail-row composition, input cursor and represented-output IDs |
+| `recovery.rs`            | Checkpoint write + restore: private-tape composition, input cursor, represented-output IDs, turn-checkpoint persistence |
 | `integrations.rs` | Shared late-installed graph, episode, ingestion and goal handles |
 
 ## The rule

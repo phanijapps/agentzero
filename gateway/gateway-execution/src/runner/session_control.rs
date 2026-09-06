@@ -151,6 +151,131 @@ fn cancel_execution_tree(
     }
 }
 
+use super::core::ExecutionRunner;
+
+impl ExecutionRunner {
+    /// Stop an execution by conversation ID.
+    ///
+    /// Cascades the stop signal to any delegated subagents currently
+    /// running under this conversation. Without the cascade, stopping a
+    /// root that's awaiting a planner would only signal the root's
+    /// handle; the planner would keep running until its next iteration
+    /// boundary. The cascade is one-level (parent → direct children) —
+    /// extend to a BFS over `get_children` if multi-level delegation
+    /// becomes common.
+    pub async fn stop(&self, conversation_id: &str) -> Result<(), String> {
+        self.control.stop(conversation_id).await
+    }
+
+    /// Continue an execution after max iterations.
+    pub async fn continue_execution(
+        &self,
+        conversation_id: &str,
+        additional_iterations: u32,
+    ) -> Result<(), String> {
+        self.control
+            .continue_execution(conversation_id, additional_iterations)
+            .await
+    }
+
+    /// Pause an execution by session ID.
+    ///
+    /// Pausing sets a flag that the executor will check. The execution
+    /// will complete the current operation and then wait for resume.
+    pub async fn pause(&self, session_id: &str) -> Result<(), String> {
+        self.control.pause(session_id).await
+    }
+
+    /// Resume a paused or crashed execution by session ID.
+    ///
+    /// For crashed sessions with a crashed subagent: re-spawns only the crashed
+    /// subagent using its child session's message history, avoiding root re-evaluation.
+    /// For paused sessions or root-only crashes: falls through to current behavior.
+    pub async fn resume(&self, session_id: &str) -> Result<(), String> {
+        // Rebuild a persisted delegated execution before falling back to live
+        // handles. After either a crash or graceful daemon shutdown there are
+        // no in-memory handles to wake, and durable peer work still targets the
+        // original execution ID.
+        let resumable_subagent = match self
+            .control
+            .state_service
+            .get_last_crashed_subagent(session_id)?
+        {
+            some @ Some(_) => some,
+            None => self
+                .control
+                .state_service
+                .list_executions(&execution_state::ExecutionFilter {
+                    session_id: Some(session_id.to_owned()),
+                    status: Some(execution_state::ExecutionStatus::Paused),
+                    ..Default::default()
+                })?
+                .into_iter()
+                .find(|execution| {
+                    execution.parent_execution_id.is_some() && execution.child_session_id.is_some()
+                }),
+        };
+        if let Some(resumable_exec) = resumable_subagent {
+            if resumable_exec.child_session_id.is_some() {
+                tracing::info!(
+                    session_id = %session_id,
+                    resumed_agent = %resumable_exec.agent_id,
+                    prior_status = %resumable_exec.status.as_str(),
+                    child_session = ?resumable_exec.child_session_id,
+                    "Smart resume: re-spawning persisted subagent instead of root"
+                );
+                return self
+                    .resume_persisted_subagent(session_id, &resumable_exec)
+                    .await;
+            }
+        }
+
+        // Fallback: standard resume (paused sessions or root-only crashes)
+        self.control.resume_live(session_id).await
+    }
+
+    /// Cancel an execution by session ID.
+    ///
+    /// Cancellation immediately stops the execution and marks it as cancelled.
+    pub async fn cancel(&self, session_id: &str) -> Result<(), String> {
+        self.control.cancel(session_id).await
+    }
+
+    /// Cancel one session and signal its exact conversation's delegation tree.
+    /// This is used by externally scoped work where signaling
+    /// unrelated executions would cross an authorization boundary.
+    pub async fn cancel_exact(
+        &self,
+        session_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), String> {
+        self.control.cancel_exact(session_id, conversation_id).await
+    }
+
+    /// End a session (mark as completed).
+    ///
+    /// Called when user explicitly ends a session via /end, /new, or +new button.
+    /// This marks the session as completed regardless of running executions.
+    pub async fn end_session(&self, session_id: &str) -> Result<(), String> {
+        self.control.end_session(session_id).await
+    }
+
+    /// Get execution handle for a conversation.
+    pub async fn get_handle(&self, conversation_id: &str) -> Option<ExecutionHandle> {
+        self.control.get_handle(conversation_id).await
+    }
+
+    /// Get the delegation registry.
+    pub fn delegation_registry(&self) -> Arc<DelegationRegistry> {
+        self.control.delegation_registry.clone()
+    }
+
+    /// Get the state service for execution state management.
+    pub fn state_service(&self) -> Arc<StateService<DatabaseManager>> {
+        self.control.state_service.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

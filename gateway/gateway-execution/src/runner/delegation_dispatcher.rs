@@ -25,6 +25,8 @@
 //!   regardless of session. The permit is acquired here and passed to the
 //!   invoker so it holds it for the duration of the child execution.
 
+use super::core::ExecutionRunner;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -38,9 +40,12 @@ use tokio::task::JoinHandle;
 use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::agent_pool::AgentResultBus;
+use crate::config::ExecutionConfig;
 use crate::delegation::{spawn_delegated_agent, DelegationRegistry, DelegationRequest};
 use crate::handle::ExecutionHandle;
 use crate::runner::session_invoker::DelegationSpawner;
+use gateway_events::GatewayEvent;
+use serde_json::Value;
 
 /// Dispatcher that enforces per-session sequential ordering and global
 /// concurrency cap for subagent delegations.
@@ -325,6 +330,129 @@ impl DelegationSpawner for RunnerDelegationInvoker {
         )
         .await
         .map(|_| ())
+    }
+}
+
+impl ExecutionRunner {
+    /// Build a [`RunnerDelegationInvoker`] from this runner's fields.
+    ///
+    /// Called from `with_config` to wire the `DelegationDispatcher` before
+    /// the runner is wrapped in `Arc`. Each field is cloned so the invoker
+    /// holds live Arc handles rather than stale captured values.
+    pub(super) fn make_delegation_invoker(
+        &self,
+    ) -> super::delegation_dispatcher::RunnerDelegationInvoker {
+        super::delegation_dispatcher::RunnerDelegationInvoker {
+            event_bus: self.event_bus.clone(),
+            agent_service: self.agent_service.clone(),
+            provider_service: self.provider_service.clone(),
+            mcp_service: self.mcp_service.clone(),
+            skill_service: self.skill_service.clone(),
+            paths: self.paths.clone(),
+            messages: self.messages.clone(),
+            session_meta: self.session_meta.clone(),
+            checkpoints: self.checkpoints.clone(),
+            handles: self.control.handles.clone(),
+            delegation_registry: self.control.delegation_registry.clone(),
+            delegation_tx: self.delegation_tx.clone(),
+            log_service: self.log_service.clone(),
+            state_service: self.control.state_service.clone(),
+            memory_store: self.memory_store.clone(),
+            distiller: self.distiller.clone(),
+            memory_recall: self.memory_recall.clone(),
+            peer_messages: self.peer_messages.clone(),
+            a2a_delegation: self.a2a_delegation.clone(),
+            rate_limiters: self.rate_limiters.clone(),
+            integrations: self.integrations.clone(),
+            steering_registry: self.steering_registry.clone(),
+            agent_result_bus: self.agent_result_bus.clone(),
+            ward_locks: std::sync::Arc::new(
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
+            ward_usage: self.ward_usage.clone(),
+        }
+    }
+
+    /// Spawn a delegated subagent.
+    ///
+    /// This is called when an agent uses the delegate_to_agent tool.
+    /// The subagent runs in a separate task with its own conversation.
+    pub async fn spawn_delegation(
+        &self,
+        parent_agent_id: &str,
+        parent_conversation_id: &str,
+        child_agent_id: &str,
+        task: &str,
+        context: Option<Value>,
+    ) -> Result<String, String> {
+        // Generate child conversation ID
+        let child_conversation_id = format!(
+            "{}-sub-{}",
+            parent_conversation_id,
+            uuid::Uuid::new_v4()
+                .to_string()
+                .split('-')
+                .next()
+                .unwrap_or("0")
+        );
+
+        // Register the delegation (legacy function, using conversation_id as session for backward compat)
+        let delegation_context = crate::delegation::DelegationContext::new(
+            parent_conversation_id, // session_id (using conv_id for legacy)
+            parent_conversation_id, // parent_execution_id (using conv_id for legacy)
+            parent_agent_id,
+            parent_conversation_id,
+        );
+        let delegation_context = if let Some(ctx) = context {
+            delegation_context.with_context(ctx)
+        } else {
+            delegation_context
+        };
+        self.control
+            .delegation_registry
+            .register(&child_conversation_id, delegation_context);
+
+        // Create config for the child agent
+        let config = ExecutionConfig::new(
+            child_agent_id.to_string(),
+            child_conversation_id.clone(),
+            self.paths.vault_dir().clone(),
+        );
+
+        // Emit delegation started event
+        self.event_bus
+            .publish(GatewayEvent::DelegationStarted {
+                session_id: parent_conversation_id.to_string(), // legacy: using conv_id as session
+                parent_execution_id: parent_conversation_id.to_string(),
+                child_execution_id: child_conversation_id.clone(),
+                parent_agent_id: parent_agent_id.to_string(),
+                child_agent_id: child_agent_id.to_string(),
+                task: task.to_string(),
+                parent_conversation_id: Some(parent_conversation_id.to_string()),
+                child_conversation_id: Some(child_conversation_id.clone()),
+            })
+            .await;
+
+        // Spawn the child agent
+        match self.invoke(config, task.to_string()).await {
+            Ok((_handle, session_id)) => {
+                tracing::info!(
+                    parent_agent = %parent_agent_id,
+                    child_agent = %child_agent_id,
+                    child_conversation = %child_conversation_id,
+                    session_id = %session_id,
+                    "Spawned delegated subagent"
+                );
+                Ok(child_conversation_id)
+            }
+            Err(e) => {
+                // Remove from registry on failure
+                self.control
+                    .delegation_registry
+                    .remove(&child_conversation_id);
+                Err(e)
+            }
+        }
     }
 }
 

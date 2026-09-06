@@ -13,6 +13,7 @@
 //! changes to this module.
 
 use crate::indexer::relationship_rules;
+use gateway_services::SharedVaultPaths;
 use knowledge_graph::{Entity, EntityType, Relationship};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -652,6 +653,38 @@ fn object_iter_for_schema(
             .unwrap_or_default(),
         CollectionSchema::Unknown => Vec::new(),
     }
+}
+
+/// Phase 6a: index structured ward artifacts into the knowledge graph after distillation.
+///
+/// Phase C: trait-routed. Skips when the session has no ward (scratch),
+/// either trait store is unwired, or the ward path does not exist on disk.
+/// All errors from the indexer are logged and never propagate.
+pub(crate) async fn run_session_index(
+    ward_id: &Option<String>,
+    session_id: &str,
+    agent_id: &str,
+    kg_episode_store: Option<&Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
+    kg_store: Option<&Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    paths: &SharedVaultPaths,
+) {
+    let (Some(wid), Some(ep_store), Some(kg)) = (ward_id, kg_episode_store, kg_store) else {
+        return;
+    };
+    let ward_path = paths.vault_dir().join("wards").join(wid);
+    if !ward_path.exists() {
+        return;
+    }
+    let n = crate::ward_artifact_indexer::index_ward(
+        &ward_path, wid, session_id, agent_id, ep_store, kg,
+    )
+    .await;
+    tracing::info!(
+        ward = %wid,
+        indexed_entities = n,
+        session = %session_id,
+        "Ward artifact indexing complete"
+    );
 }
 
 #[cfg(test)]

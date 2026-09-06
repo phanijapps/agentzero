@@ -14,11 +14,13 @@ mod continuation_watcher;
 pub(super) mod core;
 mod delegation_dispatcher;
 mod execution_stream;
+mod initial_execution;
 mod integrations;
 mod invoke_bootstrap;
-mod recovery;
+pub(crate) mod recovery;
 mod session_control;
 mod session_invoker;
+mod subagent_recovery;
 
 pub use continuation_watcher::ContinuationWatcher;
 pub use core::*;

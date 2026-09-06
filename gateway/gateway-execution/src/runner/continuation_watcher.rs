@@ -17,6 +17,7 @@
 //!   without requiring `Arc<ExecutionRunner>` at construction time.
 
 use super::continuation_execution::{invoke_continuation, ContinuationArgs};
+use super::core::ExecutionRunner;
 use super::session_invoker::ContinuationSpawner;
 use api_logs::LogService;
 use async_trait::async_trait;
@@ -221,6 +222,46 @@ impl ContinuationWatcher {
                 %error,
                 "ContinuationWatcher: spawn_continuation failed"
             );
+        }
+    }
+}
+
+impl ExecutionRunner {
+    /// Build a [`RunnerContinuationInvoker`] from this runner's fields.
+    ///
+    /// Called from `with_config` to wire the `ContinuationWatcher` before
+    /// the runner is wrapped in `Arc`. Each field is cloned — the
+    /// `model_registry` ArcSwap handle is cloned (not its inner value)
+    /// so late-stored registries are visible at fire time.
+    pub(super) fn make_continuation_invoker(
+        &self,
+    ) -> super::continuation_watcher::RunnerContinuationInvoker {
+        super::continuation_watcher::RunnerContinuationInvoker {
+            event_bus: self.event_bus.clone(),
+            agent_service: self.agent_service.clone(),
+            provider_service: self.provider_service.clone(),
+            mcp_service: self.mcp_service.clone(),
+            skill_service: self.skill_service.clone(),
+            paths: self.paths.clone(),
+            handles: self.control.handles.clone(),
+            messages: self.messages.clone(),
+            checkpoints: self.checkpoints.clone(),
+            delegation_registry: self.control.delegation_registry.clone(),
+            delegation_tx: self.delegation_tx.clone(),
+            log_service: self.log_service.clone(),
+            state_service: self.control.state_service.clone(),
+            memory_store: self.memory_store.clone(),
+            embedding_client: self.embedding_client.clone(),
+            distiller: self.distiller.clone(),
+            handoff_writer: self.handoff_writer.clone(),
+            memory_recall: self.memory_recall.clone(),
+            peer_messages: self.peer_messages.clone(),
+            a2a_delegation: self.a2a_delegation.clone(),
+            steering_registry: self.steering_registry.clone(),
+            model_registry: self.model_registry.clone(),
+            integrations: self.integrations.clone(),
+            procedure_store: self.procedure_store.clone(),
+            ward_usage: self.ward_usage.clone(),
         }
     }
 }

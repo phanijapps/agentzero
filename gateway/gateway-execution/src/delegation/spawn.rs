@@ -1252,7 +1252,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
 
         // Turn-boundary checkpoint — the child's context state plus its
         // private snapshot and recovery cursor beside it.
-        crate::runner::core::write_turn_checkpoint(crate::runner::core::TurnCheckpoint {
+        crate::runner::recovery::write_turn_checkpoint(crate::runner::recovery::TurnCheckpoint {
             checkpoints: &checkpoints,
             state_service: &state_service,
             execution_id: &execution_id,

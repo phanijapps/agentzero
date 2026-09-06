@@ -709,6 +709,22 @@ No production engine has been retired yet. No AC is marked complete.
   malformed snapshot, checkpoint read error, failed-append non-recording,
   fresh-root cursor/recording) pass. All-features gate still blocked by the
   tracked pre-existing adk-eval build entry.
+- T7 structural follow-up (runner god-file decomposition, requested before
+  finishing): core.rs shrank 2828 -> 581 lines with zero behavior change —
+  the four inline test modules moved to `runner/core/*_tests.rs`, invoke
+  entries + finish_initial_invoke to `initial_execution.rs`, live control
+  wrappers to `session_control.rs`, resume_persisted_subagent to
+  `subagent_recovery.rs`, spawn_delegation + invoker factories to their
+  owning modules, TurnCheckpoint/write_turn_checkpoint to `recovery.rs`,
+  and the ward session-index wrapper to `ward_artifact_indexer.rs`.
+  Verification: the full 624-test inventory is name-identical to the
+  pre-move tree (list diff empty), all suites green, clippy -D warnings
+  and fmt clean, workspace check locked green. Test bodies are
+  rustfmt-dedented copies (wrapper removal), not edits; the moved
+  production code is byte-identical modulo import/visibility wiring
+  (ExecutionRunner fields pub(super), one private fn -> pub(super)).
+  invoke_bootstrap.rs (2631 lines) remains the next-largest file and is
+  left for the T8/T9 waves that already touch it.
 - T7 real-artifact verification: rebuilt daemon (cargo build -p daemon
   --locked) with ZBOT_ENGINE=rig passes the strict Mode Full simple-qa
   answer/reload smoke (9.7s) and the stop-and-continue regression

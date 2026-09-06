@@ -64,6 +64,7 @@ pub struct RigAgentEngine<M: CompletionModel> {
     before: Option<BeforeToolCallHook>,
     after: Option<AfterToolCallHook>,
     result_context: crate::ToolResultContextConfig,
+    context_policy: Option<Arc<super::context_policy::ContextPolicy>>,
 }
 
 impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
@@ -145,6 +146,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             before,
             after,
             result_context: crate::ToolResultContextConfig::default(),
+            context_policy: None,
         }
     }
 
@@ -157,6 +159,14 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
 
     pub(super) fn with_result_context(mut self, config: crate::ToolResultContextConfig) -> Self {
         self.result_context = config;
+        self
+    }
+
+    pub(super) fn with_context_policy(
+        mut self,
+        policy: Arc<super::context_policy::ContextPolicy>,
+    ) -> Self {
+        self.context_policy = Some(policy);
         self
     }
 
@@ -230,6 +240,10 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         }
         let prompt = Message::user(user_message.to_string());
         let chat_history = convert_history(history);
+        let mut policy_events = self
+            .context_policy
+            .as_ref()
+            .map(|policy| policy.begin(history, user_message, chat_history.len()));
 
         let mut extensions = ToolCallExtensions::new();
         extensions.insert::<SharedToolContext>(self.shared_context.clone());
@@ -243,7 +257,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         // per-call state (e.g. function_call_id) race-free until T7c moves it
         // onto a proper per-call carrier.
         let limit_reached = Arc::new(AtomicBool::new(false));
-        let mut stream = self
+        let mut request = self
             .agent
             .stream_chat(prompt, chat_history)
             .tool_extensions(extensions)
@@ -259,8 +273,11 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 reached: limit_reached.clone(),
             })
             .multi_turn(self.max_turns)
-            .tool_concurrency(1)
-            .await;
+            .tool_concurrency(1);
+        if let Some(policy) = &self.context_policy {
+            request = request.add_hook(super::context_policy::ContextCapture(policy.clone()));
+        }
+        let mut stream = request.await;
 
         let mut final_message = String::new();
         let mut total_input: u64 = 0;
@@ -282,12 +299,21 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             let item = tokio::select! {
                 biased;
                 _ = stop_poll.tick(), if stop_flag.is_some() => { continue; }
+                event = async { match policy_events.as_mut() { Some(events) => events.recv().await, None => futures::future::pending().await } }, if policy_events.is_some() => {
+                    if let Some(event) = event { on_event(event); } else { policy_events = None; }
+                    continue;
+                }
                 _ = heartbeat.tick() => {
                     on_event(StreamEvent::Heartbeat { timestamp: current_timestamp() });
                     continue;
                 }
                 item = stream.next() => item,
             };
+            if let Some(events) = &mut policy_events {
+                while let Ok(event) = events.try_recv() {
+                    on_event(event);
+                }
+            }
             if is_stopped() {
                 return Err(ExecutorError::Stopped);
             }
@@ -300,7 +326,13 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                     self.emit_turn_limit(on_event);
                     return Ok(());
                 }
-                Err(error) => return Err(map_streaming_error(error)),
+                Err(error) => {
+                    return Err(self
+                        .context_policy
+                        .as_ref()
+                        .and_then(|policy| policy.take_error())
+                        .unwrap_or_else(|| map_streaming_error(error)))
+                }
             };
             match item {
                 MultiTurnStreamItem::StreamAssistantItem(content) => match content {
@@ -602,8 +634,9 @@ impl<M: CompletionModel> AgentHook<M> for TurnLimitHook {
 
 /// Convert AgentZero chat history into rig `Message`s (text-first).
 ///
-/// Tool-result (`role: "tool"`) and multimodal content are not yet converted;
-/// that fidelity rides on the remaining T7 work.
+/// This is Rig's structural seed only on the production path: ContextPolicy
+/// retains the original full-fidelity host messages for provider requests.
+/// Generic models without that policy retain the existing text-only projection.
 fn convert_history(history: &[ChatMessage]) -> Vec<Message> {
     history
         .iter()

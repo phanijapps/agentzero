@@ -2,7 +2,7 @@
 
 ## Status
 
-T1 and T2 gates are complete; T3 is in progress. These are incremental results, **not** a completed cutover or
+T1–T5 gates are complete; T6 is in progress. These are incremental results, **not** a completed cutover or
 proof of production parity. The accepted starting commit is `e38e8003` on
 `feat/rig-only-execution`; its working tree was clean before this slice.
 
@@ -12,6 +12,12 @@ replaces the planning-only tracking. The user subsequently delegated cutover
 dependency/implementation/plan decisions on this branch. The amendment permits
 bounded bridge/transport repairs in T1 and native Rig MCP integration in T3;
 both amendment reviewers returned Clean. Unrelated backlog entries were preserved.
+
+Review scope follows the user's later instruction: bounded minor reviews, not
+broad security or quality sweeps. Specialist security-reviewer,
+quality-engineer and whole-spec quality sweeps are named skips under that
+instruction; behavioral/confinement tests, compiler gates and final real-artifact
+verification remain required. No release parity is claimed by skipping a review.
 
 ## Pinned contract slice
 
@@ -441,3 +447,66 @@ No production engine has been retired yet. No AC is marked complete.
   T5 disposition record closed with no open review findings; T6 owns the
   explicitly identified context/soft-nudge integration, not deferred release
   capabilities. T5 control/event layer is complete.
+
+### T6 execution record (in progress)
+
+- T5 committed as 11567aac. Scope: focused adapter request-policy integration,
+  preserving the existing middleware, skill/plan, recall and steering owners.
+  Tests will drive multiple actual Rig provider requests, permanent compaction,
+  full-fidelity initial history, budget refusal, cancellation during middleware,
+  peer delivery acknowledgements and isolation across separately built sessions.
+- Review shape: dependency-ordered checkpoints, starting with canonical context
+  and per-request middleware/budget enforcement, then recall/steering and soft
+  progress controls. Keep each checkpoint reviewable and the build working;
+  wave completion requires the integrated T6 contracts, not only the first layer.
+- Declined: copying the old iteration loop, changing the storage schema,
+  introducing a provider transport, or widening skill/tool authority. A
+  request-local rewrite alone is insufficient because Rig retains its own
+  growing history; canonical host context must retain prior policy edits.
+- Resolve-versus-surface record open: pinned history append and grouping are
+  being checked before selecting the cursor. The original host history must
+  preserve multimodal parts and summary flags; no lossy JSON round-trip is
+  accepted as a checkpoint representation.
+- Strong-tier pinned source contract (6b1991b): `AgentRun` owns input history
+  separately from run-local messages (`crates/rig-core/src/agent/run/mod.rs`,
+  with_history/messages/full_history); `CompletionCall` exposes history and
+  prompt before provider request construction (`agent/prompt_request/streaming.rs:527`).
+  Request construction may prepend/replace a system preamble, so its final
+  length is not the canonical append cursor. Capture the pre-provider hook
+  sequence and count grouped Rig messages before converting tool results into
+  separate provider messages. Validate with multi-request runtime probes.
+- Input-budget authority: gateway `resolve_effective_max_input` supplies
+  `ExecutorConfig.context_window_tokens`; `max_tokens` is separately resolved
+  output capacity. Do not subtract output twice. Count messages and offered
+  tool schemas against the configured input limit; zero disables the check.
+- Additional T5 follow-through: all 11 real MCP lifecycle/transport tests pass
+  after renaming the diagnostic helper, including actual trace canaries.
+- First checkpoint red evidence: production factory tests observe middleware
+  invoked zero times across three Rig requests, pending preprocessing bypassed,
+  and oversized messages reaching the provider instead of a typed rejection.
+  The fix remains inside the engine-polled model future so its existing stop
+  selection controls compaction as well as streaming.
+- First checkpoint green: 75 adapter tests include seven context contracts;
+  parent full runtime suite passes 468 tests with 2 existing ignores. The
+  canonical context retains original summary flags and image/file parts, then
+  appends grouped Rig tool deltas exactly once. Actual plan middleware sees host
+  state. Both initial and later requests must fit the input budget.
+- Parent minor review kept preparation transactional only in the simple sense:
+  clone the last committed context and replace it on success. A canceled or
+  failed middleware future no longer consumes the recoverable context. Live
+  middleware events and typed failures are covered. No new transaction layer.
+- Runtime Clippy, formatting and the unchanged boundary check pass. Rebuilt
+  daemon strict real UI answer/reload smoke passes in 9.8s. This remains a T6
+  checkpoint: recall, steering, soft controls and final context export are next.
+
+### T11 baseline repair preparation (read-only)
+
+- `pre-existing-saved-surfaces-envelope` is a stale fixture, not a handler bug:
+  `gateway/src/http/surfaces.rs:41-83` returns wrappers containing execution_id,
+  session_id, created_at and surface. UI transport types and QuickChat/Research
+  consumers agree. The later repair must assert the wrapper identities and
+  nested surface, not change the production response to a bare descriptor.
+- Same contract drift exists in `contracts/openapi/work-surfaces.yaml:60-64`,
+  `apps/ui/src/features/chat-v2/useQuickChat.test.ts:83-92` and
+  `apps/ui/tests/e2e/persistent-surfaces.spec.ts:203-204`. Reconcile these fixture
+  and documentation consumers when closing the baseline repair in T11.

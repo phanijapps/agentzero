@@ -5,6 +5,8 @@ use crate::{engine::PreparedExecution, tools::ToolContext};
 use std::sync::Arc;
 
 #[cfg(test)]
+mod context_tests;
+#[cfg(test)]
 mod control_tests;
 #[cfg(test)]
 mod mcp_tests;
@@ -28,15 +30,26 @@ pub fn build_engine(
     rig_config.model.provider_id = cfg.provider_id.clone();
     // Gateway resolves shards, capability instructions and session context after
     // loading the agent YAML. Those instructions are authoritative at execution.
-    rig_config.instructions = cfg.system_instruction.unwrap_or_default();
+    rig_config.instructions = cfg.system_instruction.clone().unwrap_or_default();
     let shared = Arc::new(ToolContext::full_with_state(
         cfg.agent_id,
         cfg.conversation_id,
         cfg.skills,
         cfg.initial_state,
     ));
+    let policy = Arc::new(super::context_policy::ContextPolicy::new(
+        super::context_policy::ContextPolicyConfig {
+            provider_id: cfg.provider_id,
+            model: cfg.model.clone(),
+            system_instruction: cfg.system_instruction,
+            input_budget: cfg.context_window_tokens,
+        },
+        prepared.middleware_pipeline,
+        shared.clone(),
+    ));
     let model = LlmCompletionModel::new(prepared.llm_client, cfg.model)
-        .with_single_action_mode(cfg.single_action_mode);
+        .with_single_action_mode(cfg.single_action_mode)
+        .with_context_policy(policy.clone());
     RigAgentEngine::with_tool_hooks(
         rig_config,
         model,
@@ -46,6 +59,7 @@ pub fn build_engine(
         cfg.after_tool_call,
     )
     .with_execution_turn_limit(cfg.max_turns)
+    .with_context_policy(policy)
     .with_result_context(crate::ToolResultContextConfig {
         max_tool_result_chars: cfg.max_tool_result_chars,
         offload_large_results: cfg.offload_large_results,

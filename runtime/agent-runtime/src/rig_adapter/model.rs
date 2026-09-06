@@ -92,6 +92,7 @@ pub struct LlmCompletionModel {
     #[allow(dead_code)]
     model_id: String,
     single_action_mode: bool,
+    context_policy: Option<Arc<super::context_policy::ContextPolicy>>,
 }
 
 /// Bind callback-driven provider work to the lifetime of its consuming stream.
@@ -123,12 +124,21 @@ impl LlmCompletionModel {
             client,
             model_id: model_id.into(),
             single_action_mode: false,
+            context_policy: None,
         }
     }
 
     /// Constrain authoritative complete calls before Rig can dispatch siblings.
     pub(super) fn with_single_action_mode(mut self, enabled: bool) -> Self {
         self.single_action_mode = enabled;
+        self
+    }
+
+    pub(super) fn with_context_policy(
+        mut self,
+        policy: Arc<super::context_policy::ContextPolicy>,
+    ) -> Self {
+        self.context_policy = Some(policy);
         self
     }
 }
@@ -146,8 +156,11 @@ impl CompletionModel for LlmCompletionModel {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
-        let messages = convert_messages(&request)?;
         let tools = convert_tools(&request.tools);
+        let messages = match &self.context_policy {
+            Some(policy) => policy.prepare(&request, &tools).await?,
+            None => convert_messages(&request)?,
+        };
         let output_schema = request
             .output_schema
             .as_ref()
@@ -183,8 +196,11 @@ impl CompletionModel for LlmCompletionModel {
         &self,
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
-        let messages = convert_messages(&request)?;
         let tools = convert_tools(&request.tools);
+        let messages = match &self.context_policy {
+            Some(policy) => policy.prepare(&request, &tools).await?,
+            None => convert_messages(&request)?,
+        };
         let client = self.client.clone();
         let single_action_mode = self.single_action_mode;
 
@@ -249,11 +265,17 @@ impl CompletionModel for LlmCompletionModel {
 pub(crate) fn convert_messages(
     request: &CompletionRequest,
 ) -> Result<Vec<ChatMessage>, CompletionError> {
+    convert_rig_messages(request.chat_history.iter())
+}
+
+pub(super) fn convert_rig_messages<'a>(
+    messages: impl IntoIterator<Item = &'a Message>,
+) -> Result<Vec<ChatMessage>, CompletionError> {
     use agent_primitives::types::Part;
     use rig::completion::message::{AssistantContent, UserContent};
 
     let mut out = Vec::new();
-    for message in request.chat_history.iter() {
+    for message in messages {
         match message {
             Message::System { content } => out.push(ChatMessage::system(content.clone())),
 

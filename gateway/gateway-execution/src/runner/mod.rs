@@ -16,6 +16,7 @@ mod delegation_dispatcher;
 mod execution_stream;
 mod integrations;
 mod invoke_bootstrap;
+mod recovery;
 mod session_control;
 mod session_invoker;
 

@@ -113,9 +113,14 @@ pub(super) struct PartialSetup {
 pub(super) struct SetupResult {
     pub(super) session_id: String,
     pub(super) execution_id: String,
+    /// Durable prompt row ID (phase-2 write). The engine receives its content
+    /// as `message`, so the turn checkpoint lists it as a represented output.
+    pub(super) root_message_id: String,
     pub(super) executor: BoxedAgentEngine,
     pub(super) handle: ExecutionHandle,
     pub(super) history: Vec<ChatMessage>,
+    /// Max durable `seq` of the rows composed into `history`.
+    pub(super) scanned_input_cursor: i64,
     pub(super) recommended_skills: Vec<String>,
 }
 
@@ -246,16 +251,26 @@ fn client_message_id(config: &ExecutionConfig) -> String {
 }
 
 /// Converts persisted conversation rows into the engine's prior history while
-/// omitting the request supplied separately as the current prompt.
+/// omitting the request supplied separately as the current prompt. Returns the
+/// composed history with the max durable `seq` actually scanned into it.
 fn history_before_current_prompt(
     rows: Vec<zbot_conversation::Message>,
     current_message_id: &str,
-) -> Vec<ChatMessage> {
+) -> (Vec<ChatMessage>, i64) {
+    let scanned_input_cursor = rows
+        .iter()
+        .filter(|row| row.id != current_message_id)
+        .map(|row| row.seq)
+        .max()
+        .unwrap_or(0);
     let prior_rows: Vec<_> = rows
         .into_iter()
         .filter(|row| row.id != current_message_id)
         .collect();
-    crate::conversation_history::messages_to_chat_format(&prior_rows)
+    (
+        crate::conversation_history::messages_to_chat_format(&prior_rows),
+        scanned_input_cursor,
+    )
 }
 
 /// Root-agent tool inventory snapshot for procedure dispatchability gating.
@@ -963,14 +978,15 @@ impl InvokeBootstrap {
         };
 
         // Load full session conversation (all messages including tool calls/results).
-        let mut history: Vec<ChatMessage> = if config.is_remote_peer() {
-            Vec::new()
-        } else {
-            self.messages
-                .replay(&session_id, None, 200)
-                .map(|rows| history_before_current_prompt(rows, &root_message_id))
-                .unwrap_or_default()
-        };
+        let (mut history, scanned_input_cursor): (Vec<ChatMessage>, i64) =
+            if config.is_remote_peer() {
+                (Vec::new(), 0)
+            } else {
+                self.messages
+                    .replay(&session_id, None, 200)
+                    .map(|rows| history_before_current_prompt(rows, &root_message_id))
+                    .unwrap_or_default()
+            };
         let mut initial_recall_keys = std::collections::HashSet::new();
 
         let skip_eager_context =
@@ -1218,9 +1234,11 @@ impl InvokeBootstrap {
         Ok(SetupResult {
             session_id,
             execution_id,
+            root_message_id,
             executor: select_engine(executor),
             handle,
             history,
+            scanned_input_cursor,
             recommended_skills,
         })
     }
@@ -2506,7 +2524,7 @@ mod tests {
 
     #[test]
     fn current_prompt_is_excluded_from_prior_history() {
-        let history = history_before_current_prompt(
+        let (history, scanned) = history_before_current_prompt(
             vec![
                 zbot_conversation::Message {
                     id: "msg-prior".to_string(),
@@ -2539,6 +2557,7 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].role, "user");
         assert_eq!(history[0].text_content(), "prior request");
+        assert_eq!(scanned, 1, "cursor covers only the scanned prior row");
     }
 
     /// Regression: when intent analysis can't produce a result (e.g. the

@@ -59,7 +59,7 @@ impl CheckpointStore for SqliteCheckpointStore {
                         pending_tool_calls, context_state, child_executions,
                         schema_version, created_at
                  FROM checkpoints WHERE execution_id = ?
-                 ORDER BY llm_turn DESC, created_at DESC LIMIT 1",
+                 ORDER BY created_at DESC, llm_turn DESC LIMIT 1",
                 [execution_id],
                 |r| {
                     Ok(Checkpoint {

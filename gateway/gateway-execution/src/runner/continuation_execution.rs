@@ -1,18 +1,11 @@
-//! Continuation preparation and execution; stream semantics remain unchanged.
-use super::core::{
-    attach_mid_session_recall_hook, run_ward_artifact_indexer, write_turn_checkpoint,
-};
+//! Continuation preparation; shared stream observation lives in ExecutionStream.
+use super::core::attach_mid_session_recall_hook;
 use crate::delegation::{DelegationRegistry, DelegationRequest};
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
-    assistant_turn_content, broadcast_event, collect_agents_summary, collect_skills_summary,
-    process_stream_event, select_engine, spawn_batch_writer_with_traces, AgentLoader,
-    ExecutorBuilder, ResponseAccumulator, StreamContext, ToolCallAccumulator,
+    collect_agents_summary, collect_skills_summary, select_engine, AgentLoader, ExecutorBuilder,
 };
-use crate::lifecycle::{
-    complete_execution, crash_execution, emit_agent_started, stop_execution, CompleteExecution,
-    CrashExecution, StopExecution,
-};
+use crate::lifecycle::emit_agent_started;
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind};
 use api_logs::LogService;
 use execution_state::{SessionPlanSnapshot, StateService};
@@ -227,7 +220,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         messages,
         checkpoints,
         handles,
-        delegation_registry: _delegation_registry,
+        delegation_registry,
         delegation_tx,
         log_service,
         state_service,
@@ -291,11 +284,20 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         .with_settings(&settings_for_loader);
     let (agent, provider) = agent_loader.load_or_create_root(root_agent_id).await?;
 
-    // Load full session conversation (includes tool calls, results, and callbacks).
-    let mut history: Vec<ChatMessage> = messages
-        .replay(session_id, None, 200)
-        .map_err(|_| "continuation_history_read_failed".to_string())
-        .map(|rows| crate::conversation_history::messages_to_chat_format(&rows))?;
+    // Compose the continuation's history from the newest checkpoint: the
+    // runtime's private tape (when present) plus durable tail rows after the
+    // recorded input cursor minus represented outputs (racing callbacks
+    // survive; the parent's own rows do not duplicate). A checkpoint read
+    // error or a present-but-malformed private snapshot fails explicitly.
+    let composed = super::recovery::compose_continuation_history(
+        &checkpoints,
+        &messages,
+        &execution_id,
+        session_id,
+    )?;
+    let mut history = composed.history;
+    let scanned_input_cursor = composed.scanned_cursor;
+    let restored_initial_state = composed.initial_state;
 
     // Look up active ward from session (needed for recall ward affinity)
     let session = state_service
@@ -334,8 +336,6 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     // Get tool settings
     let settings_service = gateway_services::SettingsService::new(paths.clone());
     let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
-    let tool_result_context =
-        super::prompt_safe_tool_result_config(&tool_settings, paths.vault_dir());
 
     // Collect available agents and skills
     let available_agents = collect_agents_summary(&agent_service, &paths).await;
@@ -396,6 +396,11 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         "execution_id",
         serde_json::Value::String(execution_id.clone()),
     );
+    // Mutable keys restored beside the private tape (skills, plan). The
+    // restore seam already preferred fresh gateway authority per key.
+    for (key, value) in &restored_initial_state {
+        builder = builder.with_initial_state(key, value.clone());
+    }
 
     let mut executor = builder
         .build(
@@ -436,333 +441,45 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
     )
     .await;
 
-    // Spawn execution task
-    let session_id_clone = session_id.to_string();
-    let agent_id_clone = root_agent_id.to_string();
-
+    let stream = super::execution_stream::ExecutionStream {
+        event_bus,
+        state_service,
+        log_service,
+        messages,
+        checkpoints,
+        delegation_tx,
+        delegation_registry,
+        handles,
+        distiller,
+        kg_episode_store,
+        paths,
+        kg_store,
+        ingestion_adapter,
+        memory_store,
+        connector_registry: None,
+        bridge_registry: None,
+        bridge_outbox: None,
+        handoff_writer,
+    };
+    let ctx = super::execution_stream::ExecutionContext {
+        mode: super::execution_stream::ExecutionMode::Continuation,
+        execution_id: execution_id.clone(),
+        session_id: session_id.to_owned(),
+        agent_id: root_agent_id.to_owned(),
+        conversation_id,
+        handle,
+        respond_to: None,
+        thread_id: None,
+        message: continuation_message,
+        scanned_input_cursor,
+        // The synthetic continuation prompt is batched (and therefore already
+        // counted by the writer's registry); no out-of-band prompt row exists.
+        authored_prompt_id: None,
+        history,
+        recommended_skills: Vec::new(),
+    };
     tokio::spawn(async move {
-        // Create batch writer for non-blocking DB writes.
-        let batch_writer = spawn_batch_writer_with_traces(
-            state_service.clone(),
-            log_service.clone(),
-            paths.traces_dir(),
-            messages.clone(),
-        );
-
-        let stream_ctx = StreamContext::new(
-            agent_id_clone.clone(),
-            conversation_id.clone(),
-            session_id_clone.clone(),
-            execution_id.clone(),
-            event_bus.clone(),
-            log_service.clone(),
-            state_service.clone(),
-            delegation_tx,
-            paths.vault_dir().clone(),
-        )
-        .with_batch_writer(batch_writer.clone());
-
-        let mut response_acc = ResponseAccumulator::new();
-        let mut tool_acc = ToolCallAccumulator::new();
-
-        // Append continuation system message to session stream
-        batch_writer.session_message(
-            &session_id_clone,
-            &execution_id,
-            "system",
-            &continuation_message,
-            None,
-            None,
-        );
-
-        let session_id_inner = session_id_clone.clone();
-        let execution_id_inner = execution_id.clone();
-        let batch_writer_inner = batch_writer.clone();
-        let mut turn_tool_calls: Vec<serde_json::Value> = Vec::new();
-        let mut turn_text = String::new();
-
-        // Phase 6d: clones for real-time tool-result extraction (fire-and-forget).
-        let kg_episode_store_inner = kg_episode_store.clone();
-        let kg_store_inner = kg_store.clone();
-        let agent_id_inner = agent_id_clone.clone();
-        // Track current tool name so the extractor can dispatch by name.
-        let mut current_tool_name = String::new();
-
-        let stop_sig = Some(handle.stop_signal());
-        let mut on_event = |event| {
-            if handle.is_stop_requested() {
-                return;
-            }
-
-            handle.increment();
-
-            // Stream messages to session as they happen
-            match &event {
-                agent_runtime::StreamEvent::ToolCallStart {
-                    tool_id,
-                    tool_name,
-                    args,
-                    ..
-                } => {
-                    tool_acc.start_call(tool_id.clone(), tool_name.clone(), args.clone());
-                    current_tool_name = tool_name.clone();
-                    turn_tool_calls.push(serde_json::json!({
-                        "tool_id": tool_id,
-                        "tool_name": tool_name,
-                        "args": args,
-                    }));
-                }
-                agent_runtime::StreamEvent::ToolResult {
-                    tool_id,
-                    result,
-                    context_result,
-                    error,
-                    ..
-                } => {
-                    tool_acc.complete_call(tool_id, result.clone(), error.clone());
-
-                    // Emit assistant message for this turn
-                    if !turn_tool_calls.is_empty() {
-                        let tc_json = serde_json::to_string(&turn_tool_calls).unwrap_or_default();
-                        let content = assistant_turn_content(&mut turn_text, &turn_tool_calls);
-                        batch_writer_inner.session_message(
-                            &session_id_inner,
-                            &execution_id_inner,
-                            "assistant",
-                            &content,
-                            Some(&tc_json),
-                            None,
-                        );
-                        turn_tool_calls.clear();
-                    }
-
-                    // Emit tool result message
-                    let tool_content = super::prompt_safe_tool_content(
-                        &current_tool_name,
-                        result,
-                        context_result.as_deref(),
-                        error.as_deref(),
-                        &tool_result_context,
-                    );
-                    batch_writer_inner.session_message(
-                        &session_id_inner,
-                        &execution_id_inner,
-                        "tool",
-                        &tool_content,
-                        None,
-                        Some(tool_id),
-                    );
-
-                    // Phase 6d: real-time graph extraction from tool output.
-                    // Non-blocking — fires in a background task so the
-                    // execution loop never waits.
-                    if let (Some(ref ep_store), Some(ref kg)) =
-                        (&kg_episode_store_inner, &kg_store_inner)
-                    {
-                        let tool_name_cl = current_tool_name.clone();
-                        let tool_id_cl = tool_id.clone();
-                        let result_cl = result.clone();
-                        let session_id_cl = session_id_inner.clone();
-                        let agent_id_cl = agent_id_inner.clone();
-                        let ep_store = ep_store.clone();
-                        let kg_cl = kg.clone();
-                        let intake_cl = ingestion_adapter.clone();
-                        tokio::spawn(async move {
-                            crate::tool_result_extractor::extract_and_persist(
-                                crate::tool_result_extractor::ExtractAndPersistRequest {
-                                    tool_name: &tool_name_cl,
-                                    tool_call_id: &tool_id_cl,
-                                    result_text: &result_cl,
-                                    session_id: &session_id_cl,
-                                    agent_id: &agent_id_cl,
-                                    evidence_intake: intake_cl.as_deref(),
-                                    episode_store: ep_store.as_ref(),
-                                    kg: kg_cl.as_ref(),
-                                },
-                            )
-                            .await;
-                        });
-                    }
-                }
-                agent_runtime::StreamEvent::Token { content, .. } => {
-                    turn_text.push_str(content);
-                }
-                _ => {}
-            }
-
-            let (gateway_event, response_delta) = process_stream_event(&stream_ctx, &event);
-
-            if let Some(delta) = response_delta {
-                response_acc.append(&delta);
-            }
-
-            // Broadcast the gateway event (if not an internal-only event)
-            if let Some(event) = gateway_event {
-                broadcast_event(stream_ctx.event_bus.clone(), event);
-            }
-        };
-        let result = executor
-            .execute_stream_with_stop_flag(&continuation_message, &history, stop_sig, &mut on_event)
-            .await;
-
-        let accumulated_response = response_acc.into_response();
-
-        // Emit any remaining text that wasn't flushed as part of a tool-call turn.
-        if !turn_text.is_empty() {
-            batch_writer.session_message(
-                &session_id_clone,
-                &execution_id,
-                "assistant",
-                &turn_text,
-                None,
-                None,
-            );
-        }
-
-        // Turn-boundary checkpoint — write a versioned snapshot of the
-        // agent's context state so session_state can read it in O(1)
-        // (T12) instead of replaying execution_logs.
-        write_turn_checkpoint(
-            &checkpoints,
-            &state_service,
-            &execution_id,
-            &session_id_clone,
-            handle.current_iteration(),
-            &accumulated_response,
-        );
-
-        // A terminal completion event is also a client snapshot boundary.
-        // Flush the queued final assistant message before publishing it.
-        if result.is_ok() {
-            batch_writer.flush().await;
-        }
-
-        match result {
-            Ok(()) => {
-                // Check if this continuation spawned new delegations
-                let has_active_delegations = state_service
-                    .get_session(&session_id_clone)
-                    .ok()
-                    .flatten()
-                    .map(|s| s.has_pending_delegations())
-                    .unwrap_or(false);
-
-                if has_active_delegations {
-                    // Root delegated again — wait for subagent, don't complete
-                    tracing::info!(
-                        session_id = %session_id_clone,
-                        "Continuation paused for delegation — skipping execution completion"
-                    );
-                    if let Err(e) = state_service.request_continuation(&session_id_clone) {
-                        tracing::warn!("Failed to request continuation: {}", e);
-                    }
-                    if let Err(e) = state_service.aggregate_session_tokens(&session_id_clone) {
-                        tracing::warn!("Failed to aggregate session tokens: {}", e);
-                    }
-                } else {
-                    // No more delegations — complete normally
-                    complete_execution(CompleteExecution {
-                        state_service: &state_service,
-                        log_service: &log_service,
-                        event_bus: &event_bus,
-                        execution_id: &execution_id,
-                        session_id: &session_id_clone,
-                        agent_id: &agent_id_clone,
-                        conversation_id: &conversation_id,
-                        response: Some(accumulated_response),
-                        connector_registry: None,
-                        respond_to: None,
-                        thread_id: None,
-                        bridge_registry: None,
-                        bridge_outbox: None,
-                    })
-                    .await;
-                }
-
-                // Fire-and-forget session distillation, followed by ward artifact indexing.
-                if let Some(distiller) = distiller {
-                    let sid = session_id_clone.clone();
-                    let aid = agent_id_clone.clone();
-                    let ward_id_for_indexer = state_service
-                        .get_session(&sid)
-                        .ok()
-                        .flatten()
-                        .and_then(|s| s.ward_id);
-                    // Both indexer dependencies are backend-neutral stores.
-                    let kg_episode_store_for_indexer = kg_episode_store.clone();
-                    let kg_store_for_indexer = kg_store.clone();
-                    let paths_for_indexer = paths.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = distiller.distill(&sid, &aid).await {
-                            tracing::warn!("Continuation distillation failed: {}", e);
-                        }
-                        run_ward_artifact_indexer(
-                            &ward_id_for_indexer,
-                            &sid,
-                            &aid,
-                            kg_episode_store_for_indexer.as_ref(),
-                            kg_store_for_indexer.as_ref(),
-                            &paths_for_indexer,
-                        )
-                        .await;
-                    });
-                }
-
-                // Session handoff — fire-and-forget, silent on failure.
-                if let Some(writer) = handoff_writer {
-                    let sid = session_id_clone.clone();
-                    let aid = agent_id_clone.clone();
-                    let wid = state_service
-                        .get_session(&sid)
-                        .ok()
-                        .flatten()
-                        .and_then(|s| s.ward_id)
-                        .unwrap_or_default();
-                    tokio::spawn(async move {
-                        writer.write(&sid, &aid, &wid).await;
-                    });
-                }
-            }
-            Err(agent_runtime::ExecutorError::Stopped) => {
-                // Cooperative stop — the trailing
-                // `if handle.is_stop_requested()` block below calls
-                // stop_execution. No crash report; no double call (which
-                // would warn "Cannot cancel session in CANCELLED state"
-                // because cancel_session is non-idempotent).
-                tracing::info!(
-                    session_id = %session_id_clone,
-                    "Continuation stopped cooperatively"
-                );
-            }
-            Err(e) => {
-                crash_execution(CrashExecution {
-                    state_service: &state_service,
-                    log_service: &log_service,
-                    event_bus: &event_bus,
-                    execution_id: &execution_id,
-                    session_id: &session_id_clone,
-                    agent_id: &agent_id_clone,
-                    conversation_id: &conversation_id,
-                    error: &e.to_string(),
-                    crash_session: true,
-                })
-                .await;
-            }
-        }
-
-        if handle.is_stop_requested() {
-            stop_execution(StopExecution {
-                state_service: &state_service,
-                log_service: &log_service,
-                event_bus: &event_bus,
-                execution_id: &execution_id,
-                session_id: &session_id_clone,
-                agent_id: &agent_id_clone,
-                conversation_id: &conversation_id,
-                iteration: handle.current_iteration(),
-            })
-            .await;
-        }
+        let _ = stream.run(ctx, executor).await;
         steering_registry.remove(&execution_id);
     });
 

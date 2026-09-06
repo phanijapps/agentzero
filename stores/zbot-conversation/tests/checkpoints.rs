@@ -64,3 +64,25 @@ fn latest_tiebreaks_on_created_at() {
     let latest = store.latest(exec).unwrap().expect("a checkpoint");
     assert_eq!(latest.id, "cp-b", "later created_at wins the tie");
 }
+
+#[test]
+fn latest_selects_newer_continuation_over_higher_root_turn() {
+    // A continuation restarts its iteration counter, so its llm_turn is
+    // lower than the paused root's. Ordering by turn alone would pin the
+    // stale root checkpoint forever; write time is the authority.
+    let store = store();
+    let exec = "e1";
+    let mut root = cp(exec, 7, Some(r#"{"root":true}"#));
+    root.created_at = "2026-07-07T00:00:01Z".into();
+    let mut continuation = cp(exec, 2, Some(r#"{"continuation":true}"#));
+    continuation.id = "cp-cont".into();
+    continuation.created_at = "2026-07-07T00:00:05Z".into();
+    store.write(&root).unwrap();
+    store.write(&continuation).unwrap();
+
+    let latest = store.latest(exec).unwrap().expect("a checkpoint");
+    assert_eq!(
+        latest.id, "cp-cont",
+        "a newer checkpoint with a lower turn must still win"
+    );
+}

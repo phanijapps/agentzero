@@ -71,9 +71,12 @@ struct Snapshot {
     mutable_state: HashMap<String, Value>,
 }
 /// Consume the private handoff; never merge stale authority from a checkpoint.
-pub(crate) fn restore(
-    state: &mut HashMap<String, Value>,
-) -> Result<Option<Vec<ChatMessage>>, String> {
+///
+/// Gateway-owned orchestration calls this typed seam before composing durable
+/// tail rows: it returns the provider-grade tape, validates the snapshot
+/// (malformed input is an explicit error), and merges only the whitelisted
+/// mutable keys into fresh host authority.
+pub fn restore(state: &mut HashMap<String, Value>) -> Result<Option<Vec<ChatMessage>>, String> {
     let Some(value) = state.remove(CHECKPOINT_KEY) else {
         return Ok(None);
     };

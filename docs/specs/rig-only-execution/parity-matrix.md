@@ -657,6 +657,65 @@ No production engine has been retired yet. No AC is marked complete.
   smoke (9.2 seconds). Formatting, diff hygiene and Rig boundary checks pass.
   This is an independently verified extraction checkpoint, not T7 completion;
   shared finalization and durable private-checkpoint recovery remain next.
+- T7 recovery design: consume the runtime's typed private-restore seam before
+  composing durable tail rows and fresh gateway recall/working memory. Never
+  merge the full stored context object into fresh host authority. Preserve
+  remote-peer history isolation and omit the current root row by durable ID,
+  not matching text. A present malformed private snapshot must fail explicitly.
+- Recovery persistence must distinguish successful durable writes from a
+  batch-writer acknowledgement that merely attempted writes. Checkpoint query
+  errors likewise cannot be treated as an absent checkpoint. The construction
+  tests must cover these failure paths before recovery relies on either seam.
+- Cursor review resolved: Rig emits ActionDelegate before ToolResult; child
+  callbacks append directly while parent assistant/tool rows are batched. A
+  callback can therefore precede the parent's final own row. Use a typed
+  gateway-owned input high-water cursor plus this invocation's represented
+  output IDs beside (never inside) the runtime snapshot. Replay after the input
+  cursor, omit represented IDs, and advance the next input cursor across all
+  scanned rows. This retains racing callbacks without duplicating own output.
+  Include synthetic continuation prompt IDs in represented outputs, not in the
+  input boundary. Tests cover both append orders and next-cursor advancement.
+- T7 implementation closure: runner/recovery.rs owns the typed restore
+  composition (agent_runtime::engine::snapshot::restore is now the public
+  gateway seam). The stream stashes the final ContextState, flushes the batch
+  writer before the checkpoint write, and records only append-confirmed row
+  IDs as represented outputs (written_message_ids distinguishes durable
+  success from the FIFO acknowledgement; a failed append stays unrecorded).
+  The checkpoint carries the display JSON plus `app:rig_checkpoint` and
+  `gateway_recovery` beside it. Continuation composes tape + tails, seeds the
+  restored mutable keys via ExecutorBuilder initial state, and fails
+  explicitly on checkpoint read errors and malformed snapshots (absent
+  snapshots still display-replay for legacy-engine compatibility). Root and
+  child prompt rows ride the represented set by durable ID, never text
+  matching. CheckpointStore::latest now orders by created_at first (store
+  test proves a newer lower-turn continuation beats a stale higher-turn root
+  checkpoint), fixing the pinned-snapshot hazard flagged above.
+- Parity-oracle correction, evidenced not assumed: parity_error previously
+  asserted zero StreamEvents before an LLM error and parity_stop_cancel
+  expected Ok with Done→TurnComplete on stop. The legacy executor itself
+  emits StreamEvent::Metadata before any request (executor.rs:240) and
+  surfaces ExecutorError::Stopped on user stop (executor.rs:728) — the T4-era
+  Rig engine merely lacked both behaviors, so the assertions passed against
+  a divergent engine. The corrected oracle permits only pre-request Metadata
+  before an error, requires Err(Stopped) with exactly the pre-stop tokens and
+  no Done/TurnComplete, matching the gateway's cooperative-stop finalization
+  (execution_stream Err(Stopped) arm + trailing stop_execution publishes
+  AgentStopped exactly once). No assertion was deleted to excuse a Rig gap.
+- T7 gates: cargo check/test/clippy --workspace --locked green except the
+  tracked pre-existing saved-surfaces envelope failure and the recorded
+  agent-runtime tracing flake (passes in isolation at the T7 baseline);
+  gateway-execution 620 library tests + 4/4 parity scenarios + recovery unit
+  and integration suites (racing-callback both orders, cursor advancement,
+  malformed snapshot, checkpoint read error, failed-append non-recording,
+  fresh-root cursor/recording) pass. All-features gate still blocked by the
+  tracked pre-existing adk-eval build entry.
+- T7 real-artifact verification: rebuilt daemon (cargo build -p daemon
+  --locked) with ZBOT_ENGINE=rig passes the strict Mode Full simple-qa
+  answer/reload smoke (9.7s) and the stop-and-continue regression
+  (16.8s; the spec's cancel is best-effort-racy by design — first run
+  failed on that race, two subsequent full runs passed both specs).
+  The reload assertion exercises the flush-before-completion ordering on
+  the shipped artifact, not only the unit gate.
 
 ### T10 retirement preparation (read-only)
 

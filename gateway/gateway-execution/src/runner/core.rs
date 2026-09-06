@@ -814,6 +814,7 @@ impl ExecutionRunner {
             bridge_outbox: self.bridge_outbox.clone(),
         };
         let ctx = super::execution_stream::ExecutionContext {
+            mode: super::execution_stream::ExecutionMode::Root,
             execution_id: setup.execution_id,
             session_id: setup.session_id.clone(),
             agent_id: config.agent_id.clone(),
@@ -822,6 +823,8 @@ impl ExecutionRunner {
             respond_to: config.respond_to.clone(),
             thread_id: config.thread_id.clone(),
             message,
+            scanned_input_cursor: setup.scanned_input_cursor,
+            authored_prompt_id: Some(setup.root_message_id),
             history: setup.history,
             recommended_skills: setup.recommended_skills,
         };
@@ -1197,21 +1200,40 @@ impl ExecutionRunner {
 /// once the in-memory runtime state is threaded to this call site. The
 /// important invariant today: one `checkpoints` row per turn with `llm_turn`,
 /// `last_message_id`, and a `context_state` JSON blob.
-pub(crate) fn write_turn_checkpoint(
-    checkpoints: &Arc<dyn zbot_conversation::CheckpointStore>,
-    state_service: &StateService<DatabaseManager>,
-    execution_id: &str,
-    session_id: &str,
-    llm_turn: u32,
-    response: &str,
-) {
+pub(crate) struct TurnCheckpoint<'a> {
+    pub checkpoints: &'a Arc<dyn zbot_conversation::CheckpointStore>,
+    pub state_service: &'a StateService<DatabaseManager>,
+    pub execution_id: &'a str,
+    pub session_id: &'a str,
+    pub llm_turn: u32,
+    pub response: &'a str,
+    /// Last engine-emitted context state (carries the private snapshot).
+    pub engine_state: Option<&'a serde_json::Value>,
+    /// Max durable `seq` of rows composed into this invocation's input.
+    pub input_cursor: i64,
+    /// Durable IDs authored by this invocation (already inside the tape).
+    pub represented_output_ids: &'a [String],
+}
+
+pub(crate) fn write_turn_checkpoint(turn: TurnCheckpoint<'_>) {
+    let TurnCheckpoint {
+        checkpoints,
+        state_service,
+        execution_id,
+        session_id,
+        llm_turn,
+        response,
+        engine_state,
+        input_cursor,
+        represented_output_ids,
+    } = turn;
     let ward = state_service
         .get_session(session_id)
         .ok()
         .flatten()
         .and_then(|s| s.ward_id);
 
-    let context_state = serde_json::json!({
+    let display = serde_json::json!({
         "intent": null,
         "ward": ward,
         "plan": null,
@@ -1220,8 +1242,15 @@ pub(crate) fn write_turn_checkpoint(
         "title": null,
         "model": null,
         "subagents": null,
-    })
-    .to_string();
+    });
+    let context_state = super::recovery::checkpoint_context_state(
+        display,
+        engine_state,
+        &super::recovery::RecoveryCursor {
+            input_cursor,
+            represented_output_ids: represented_output_ids.to_vec(),
+        },
+    );
 
     let checkpoint = zbot_conversation::Checkpoint {
         id: uuid::Uuid::now_v7().to_string(),
@@ -1726,6 +1755,11 @@ mod peer_root_lifecycle_tests {
     }
 
     async fn read_request(stream: &mut TcpStream) {
+        read_request_body(stream).await;
+    }
+
+    /// Read one HTTP request and return its body (for history assertions).
+    async fn read_request_body(stream: &mut TcpStream) -> String {
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 4096];
         let mut expected = None;
@@ -1744,10 +1778,21 @@ mod peer_root_lifecycle_tests {
                     expected = Some(header_end + 4 + content_length);
                 }
             }
-            if expected.is_some_and(|length| bytes.len() >= length) {
-                return;
+            if let Some(length) = expected {
+                if bytes.len() >= length {
+                    return String::from_utf8_lossy(&bytes[expected_header_end(&bytes)..])
+                        .to_string();
+                }
             }
         }
+    }
+
+    fn expected_header_end(bytes: &[u8]) -> usize {
+        bytes
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .map(|end| end + 4)
+            .unwrap_or(0)
     }
 
     async fn write_sse(stream: &mut TcpStream, body: &str) {
@@ -1969,6 +2014,563 @@ mod peer_root_lifecycle_tests {
             &continuation.steering_registry,
             &harness.runner.steering_registry
         ));
+    }
+
+    async fn assert_respond_persisted_before_completion(continuation: bool) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let provider = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            let delta = serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                "index":0,"id":"respond-no-token","function":{
+                    "name":"respond","arguments":r#"{"message":"durable answer without tokens"}"#
+                }
+            }]},"finish_reason":null}]});
+            let body = format!("data: {delta}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n");
+            write_sse(&mut socket, &body).await;
+        });
+        let harness = build_harness(base_url).await;
+        let mut events = harness.runner.event_bus.subscribe_all();
+        let session_id;
+        if continuation {
+            let (session, root) = harness.state.create_session("root").unwrap();
+            harness.state.start_execution(&root.id).unwrap();
+            harness.state.complete_execution(&root.id).unwrap();
+            harness.state.complete_session(&session.id).unwrap();
+            session_id = session.id;
+            invoke_continuation(ContinuationArgs {
+                session_id: &session_id,
+                root_agent_id: "root",
+                event_bus: harness.runner.event_bus.clone(),
+                agent_service: harness.runner.agent_service.clone(),
+                provider_service: harness.runner.provider_service.clone(),
+                mcp_service: harness.runner.mcp_service.clone(),
+                skill_service: harness.runner.skill_service.clone(),
+                paths: harness.runner.paths.clone(),
+                messages: harness.runner.messages.clone(),
+                checkpoints: harness.runner.checkpoints.clone(),
+                handles: harness.runner.control.handles.clone(),
+                delegation_registry: harness.runner.control.delegation_registry.clone(),
+                delegation_tx: harness.runner.delegation_tx.clone(),
+                log_service: harness.runner.log_service.clone(),
+                state_service: harness.runner.control.state_service.clone(),
+                memory_store: None,
+                embedding_client: None,
+                distiller: None,
+                handoff_writer: None,
+                memory_recall: None,
+                peer_messages: harness.runner.peer_messages.clone(),
+                a2a_delegation: harness.runner.a2a_delegation.clone(),
+                steering_registry: harness.steering.clone(),
+                model_registry: None,
+                kg_store: None,
+                kg_episode_store: None,
+                ingestion_adapter: None,
+                goal_adapter: None,
+                procedure_store: None,
+                ward_usage: harness.runner.ward_usage.clone(),
+            })
+            .await
+            .unwrap();
+        } else {
+            (_, session_id) = harness
+                .runner
+                .invoke_with_callback(
+                    ExecutionConfig::new(
+                        "root".to_owned(),
+                        "respond-persistence".to_owned(),
+                        harness.paths.vault_dir().clone(),
+                    )
+                    .with_mode("chat".to_owned()),
+                    "answer now".to_owned(),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    gateway_events::GatewayEvent::AgentCompleted {
+                        session_id: completed,
+                        ..
+                    } if completed == session_id => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("completion event");
+        // Read immediately at the public completion boundary, without polling the store.
+        let rows = harness
+            .runner
+            .messages
+            .replay(&session_id, None, 100)
+            .unwrap();
+        let answers: Vec<_> = rows
+            .iter()
+            .filter(|row| row.role == "assistant" && row.content == "durable answer without tokens")
+            .collect();
+        assert_eq!(
+            answers.len(),
+            1,
+            "answer must already be durable exactly once"
+        );
+        let result = rows
+            .iter()
+            .find(|row| row.tool_call_id.as_deref() == Some("respond-no-token"))
+            .unwrap();
+        assert!(
+            answers[0].seq < result.seq,
+            "assistant arguments precede the tool result"
+        );
+        assert!(answers[0].tool_calls.as_ref().unwrap().contains("respond"));
+        provider.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn root_no_token_respond_is_durable_before_completion() {
+        assert_respond_persisted_before_completion(false).await;
+    }
+
+    #[tokio::test]
+    async fn continuation_no_token_respond_is_durable_before_completion() {
+        assert_respond_persisted_before_completion(true).await;
+    }
+
+    #[tokio::test]
+    async fn turn_checkpoint_records_cursor_and_represented_outputs() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let provider = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            write_sse(&mut socket, body).await;
+        });
+        let harness = build_harness(base_url).await;
+        let (_, session_id) = harness
+            .runner
+            .invoke_with_callback(
+                ExecutionConfig::new(
+                    "root".to_owned(),
+                    "checkpoint-cursor".to_owned(),
+                    harness.paths.vault_dir().clone(),
+                )
+                .with_mode("chat".to_owned()),
+                "checkpoint me".to_owned(),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut events = harness.runner.event_bus.subscribe_all();
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    GatewayEvent::AgentCompleted {
+                        session_id: done, ..
+                    } if done == session_id => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("completion event");
+        let execution_id = harness
+            .state
+            .get_root_execution(&session_id)
+            .unwrap()
+            .expect("root execution")
+            .id;
+        let checkpoint = harness
+            .runner
+            .checkpoints
+            .latest(&execution_id)
+            .unwrap()
+            .expect("turn checkpoint");
+        let context: serde_json::Value =
+            serde_json::from_str(checkpoint.context_state.as_deref().unwrap()).unwrap();
+        let cursor: super::super::recovery::RecoveryCursor = serde_json::from_value(
+            context
+                .get(super::super::recovery::GATEWAY_RECOVERY_KEY)
+                .cloned()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cursor.input_cursor, 0,
+            "fresh session scanned no prior rows"
+        );
+        let rows = harness
+            .runner
+            .messages
+            .replay(&session_id, None, 100)
+            .unwrap();
+        assert!(
+            cursor
+                .represented_output_ids
+                .iter()
+                .all(|id| rows.iter().any(|row| &row.id == id)),
+            "represented ids must reference durable rows"
+        );
+        assert!(
+            rows.iter().any(
+                |row| row.execution_id.as_deref() == Some(execution_id.as_str())
+                    && cursor.represented_output_ids.contains(&row.id)
+            ),
+            "this execution's durable rows are represented outputs"
+        );
+        provider.await.unwrap();
+    }
+
+    /// Seed a session with prior rows, a represented prompt row and a racing
+    /// callback, then prove the continuation composes tape + callback without
+    /// duplicating the prompt or prior turns.
+    #[tokio::test]
+    async fn continuation_restores_tape_with_racing_callback_and_advances_cursor() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (body_tx, body_rx) = tokio::sync::oneshot::channel::<String>();
+        let provider = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let body = read_request_body(&mut socket).await;
+            let _ = body_tx.send(body);
+            let done = "data: {\"choices\":[{\"delta\":{\"content\":\"resumed\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            write_sse(&mut socket, done).await;
+        });
+        let harness = build_harness(base_url).await;
+        let (session, root_exec) = harness.state.create_session("root").unwrap();
+        let session_id = session.id.clone();
+        let execution_id = root_exec.id.clone();
+        let messages = harness.runner.messages.clone();
+        let prior_user = zbot_conversation::Message {
+            id: "msg-prior-user".to_owned(),
+            execution_id: None,
+            session_id: session_id.clone(),
+            role: "user".to_owned(),
+            content: "prior question from human".to_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            token_count: 4,
+            tool_calls: None,
+            tool_call_id: None,
+            seq: 0,
+        };
+        let prior_assistant = zbot_conversation::Message {
+            id: "msg-prior-assistant".to_owned(),
+            role: "assistant".to_owned(),
+            content: "prior answer from agent".to_owned(),
+            ..prior_user.clone()
+        };
+        let prompt_row = zbot_conversation::Message {
+            id: "msg-prompt-restore".to_owned(),
+            role: "user".to_owned(),
+            content: "do the thing".to_owned(),
+            execution_id: Some(execution_id.clone()),
+            ..prior_user.clone()
+        };
+        messages.append(&prior_user).unwrap();
+        messages.append(&prior_assistant).unwrap();
+        messages.append(&prompt_row).unwrap();
+        let callback = zbot_conversation::Message {
+            id: "msg-callback".to_owned(),
+            role: "system".to_owned(),
+            content: "## From Research Agent\ndurable result".to_owned(),
+            ..prior_user.clone()
+        };
+        messages.append(&callback).unwrap();
+
+        // Private tape: prior turns + the prompt. Cursor covers the two prior
+        // rows; the prompt row is a represented output of this execution.
+        let tape = serde_json::json!({
+            "version": 1,
+            "owned_preamble": null,
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"prior question from human"}],"tool_calls":null,"tool_call_id":null,"is_summary":false},
+                {"role":"assistant","content":[{"type":"text","text":"prior answer from agent"}],"tool_calls":null,"tool_call_id":null,"is_summary":false},
+                {"role":"user","content":[{"type":"text","text":"do the thing"}],"tool_calls":null,"tool_call_id":null,"is_summary":false}
+            ],
+            "mutable_state": {}
+        });
+        let mut engine_state = serde_json::Map::new();
+        engine_state.insert(
+            agent_runtime::engine::snapshot::CHECKPOINT_KEY.to_owned(),
+            tape,
+        );
+        let context_state = super::super::recovery::checkpoint_context_state(
+            serde_json::json!({"intent": null, "ward": null}),
+            Some(&serde_json::Value::Object(engine_state)),
+            &super::super::recovery::RecoveryCursor {
+                input_cursor: 2,
+                represented_output_ids: vec!["msg-prompt-restore".to_owned()],
+            },
+        );
+        harness
+            .runner
+            .checkpoints
+            .write(&zbot_conversation::Checkpoint {
+                id: "cp-restore".to_owned(),
+                execution_id: execution_id.clone(),
+                session_id: session_id.clone(),
+                llm_turn: 1,
+                last_message_id: String::new(),
+                pending_tool_calls: None,
+                context_state: Some(context_state),
+                child_executions: None,
+                schema_version: 1,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            })
+            .unwrap();
+
+        harness.state.start_execution(&execution_id).unwrap();
+        harness.state.complete_execution(&execution_id).unwrap();
+        harness.state.complete_session(&session_id).unwrap();
+        let mut events = harness.runner.event_bus.subscribe_all();
+        let mut completed_count = 0_usize;
+        invoke_continuation(ContinuationArgs {
+            session_id: &session_id,
+            root_agent_id: "root",
+            event_bus: harness.runner.event_bus.clone(),
+            agent_service: harness.runner.agent_service.clone(),
+            provider_service: harness.runner.provider_service.clone(),
+            mcp_service: harness.runner.mcp_service.clone(),
+            skill_service: harness.runner.skill_service.clone(),
+            paths: harness.runner.paths.clone(),
+            messages: harness.runner.messages.clone(),
+            checkpoints: harness.runner.checkpoints.clone(),
+            handles: harness.runner.control.handles.clone(),
+            delegation_registry: harness.runner.control.delegation_registry.clone(),
+            delegation_tx: harness.runner.delegation_tx.clone(),
+            log_service: harness.runner.log_service.clone(),
+            state_service: harness.runner.control.state_service.clone(),
+            memory_store: None,
+            embedding_client: None,
+            distiller: None,
+            handoff_writer: None,
+            memory_recall: None,
+            peer_messages: harness.runner.peer_messages.clone(),
+            a2a_delegation: None,
+            steering_registry: harness.steering.clone(),
+            model_registry: None,
+            kg_store: None,
+            kg_episode_store: None,
+            ingestion_adapter: None,
+            goal_adapter: None,
+            procedure_store: None,
+            ward_usage: harness.runner.ward_usage.clone(),
+        })
+        .await
+        .unwrap();
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    GatewayEvent::AgentCompleted {
+                        session_id: done, ..
+                    } if done == session_id => {
+                        completed_count += 1;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("completion event");
+        // Exactly one terminal outcome: drain stragglers and re-count.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        while let Ok(event) = events.try_recv() {
+            if matches!(
+                &event,
+                GatewayEvent::AgentCompleted { session_id: done, .. } if *done == session_id
+            ) {
+                completed_count += 1;
+            }
+        }
+        assert_eq!(completed_count, 1, "no duplicate terminal event");
+        let body = body_rx.await.unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let request_text = payload["messages"].to_string();
+        for (needle, count) in [
+            ("prior question from human", 1),
+            ("prior answer from agent", 1),
+            ("do the thing", 1),
+            ("## From Research Agent", 1),
+        ] {
+            assert_eq!(
+                request_text.matches(needle).count(),
+                count,
+                "{needle} must appear exactly {count} time(s) in the model request"
+            );
+        }
+        // The next checkpoint advanced past the callback and the new own rows
+        // are represented outputs.
+        let next = harness
+            .runner
+            .checkpoints
+            .latest(&execution_id)
+            .unwrap()
+            .expect("advanced checkpoint");
+        let context: serde_json::Value =
+            serde_json::from_str(next.context_state.as_deref().unwrap()).unwrap();
+        let cursor: super::super::recovery::RecoveryCursor = serde_json::from_value(
+            context
+                .get(super::super::recovery::GATEWAY_RECOVERY_KEY)
+                .cloned()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            cursor.input_cursor >= 3,
+            "cursor advanced across scanned rows"
+        );
+        // Old represented rows sit at/below the advanced cursor, so they need
+        // no repeat entry; the new set covers this invocation's own rows.
+        assert!(
+            !cursor.represented_output_ids.is_empty(),
+            "this invocation's durable outputs are represented"
+        );
+        let rows = harness
+            .runner
+            .messages
+            .replay(&session_id, None, 100)
+            .unwrap();
+        assert!(
+            cursor
+                .represented_output_ids
+                .iter()
+                .all(|id| rows.iter().any(|row| &row.id == id)),
+            "represented ids reference durable rows"
+        );
+        provider.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_private_snapshot_fails_continuation_explicitly() {
+        let harness = build_harness("http://127.0.0.1:1/v1".to_owned()).await;
+        let (session, root_exec) = harness.state.create_session("root").unwrap();
+        let session_id = session.id.clone();
+        let execution_id = root_exec.id.clone();
+        let mut engine_state = serde_json::Map::new();
+        engine_state.insert(
+            agent_runtime::engine::snapshot::CHECKPOINT_KEY.to_owned(),
+            serde_json::json!({"version": 99, "messages": [], "mutable_state": {}}),
+        );
+        let context_state = super::super::recovery::checkpoint_context_state(
+            serde_json::json!({"intent": null}),
+            Some(&serde_json::Value::Object(engine_state)),
+            &super::super::recovery::RecoveryCursor::default(),
+        );
+        harness
+            .runner
+            .checkpoints
+            .write(&zbot_conversation::Checkpoint {
+                id: "cp-bad".to_owned(),
+                execution_id: execution_id.clone(),
+                session_id: session_id.clone(),
+                llm_turn: 1,
+                last_message_id: String::new(),
+                pending_tool_calls: None,
+                context_state: Some(context_state),
+                child_executions: None,
+                schema_version: 1,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            })
+            .unwrap();
+        let error = invoke_continuation(ContinuationArgs {
+            session_id: &session_id,
+            root_agent_id: "root",
+            event_bus: harness.runner.event_bus.clone(),
+            agent_service: harness.runner.agent_service.clone(),
+            provider_service: harness.runner.provider_service.clone(),
+            mcp_service: harness.runner.mcp_service.clone(),
+            skill_service: harness.runner.skill_service.clone(),
+            paths: harness.runner.paths.clone(),
+            messages: harness.runner.messages.clone(),
+            checkpoints: harness.runner.checkpoints.clone(),
+            handles: harness.runner.control.handles.clone(),
+            delegation_registry: harness.runner.control.delegation_registry.clone(),
+            delegation_tx: harness.runner.delegation_tx.clone(),
+            log_service: harness.runner.log_service.clone(),
+            state_service: harness.runner.control.state_service.clone(),
+            memory_store: None,
+            embedding_client: None,
+            distiller: None,
+            handoff_writer: None,
+            memory_recall: None,
+            peer_messages: harness.runner.peer_messages.clone(),
+            a2a_delegation: None,
+            steering_registry: harness.steering.clone(),
+            model_registry: None,
+            kg_store: None,
+            kg_episode_store: None,
+            ingestion_adapter: None,
+            goal_adapter: None,
+            procedure_store: None,
+            ward_usage: harness.runner.ward_usage.clone(),
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("Unsupported execution checkpoint version"),
+            "malformed snapshot must fail explicitly: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_read_error_fails_continuation_explicitly() {
+        struct FailingCheckpoints;
+        impl zbot_conversation::CheckpointStore for FailingCheckpoints {
+            fn write(&self, _cp: &zbot_conversation::Checkpoint) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn latest(
+                &self,
+                _execution_id: &str,
+            ) -> anyhow::Result<Option<zbot_conversation::Checkpoint>> {
+                Err(anyhow::anyhow!("store offline"))
+            }
+        }
+        let harness = build_harness("http://127.0.0.1:1/v1".to_owned()).await;
+        let (session, _root_exec) = harness.state.create_session("root").unwrap();
+        let session_id = session.id.clone();
+        let error = invoke_continuation(ContinuationArgs {
+            session_id: &session_id,
+            root_agent_id: "root",
+            event_bus: harness.runner.event_bus.clone(),
+            agent_service: harness.runner.agent_service.clone(),
+            provider_service: harness.runner.provider_service.clone(),
+            mcp_service: harness.runner.mcp_service.clone(),
+            skill_service: harness.runner.skill_service.clone(),
+            paths: harness.runner.paths.clone(),
+            messages: harness.runner.messages.clone(),
+            checkpoints: std::sync::Arc::new(FailingCheckpoints),
+            handles: harness.runner.control.handles.clone(),
+            delegation_registry: harness.runner.control.delegation_registry.clone(),
+            delegation_tx: harness.runner.delegation_tx.clone(),
+            log_service: harness.runner.log_service.clone(),
+            state_service: harness.runner.control.state_service.clone(),
+            memory_store: None,
+            embedding_client: None,
+            distiller: None,
+            handoff_writer: None,
+            memory_recall: None,
+            peer_messages: harness.runner.peer_messages.clone(),
+            a2a_delegation: None,
+            steering_registry: harness.steering.clone(),
+            model_registry: None,
+            kg_store: None,
+            kg_episode_store: None,
+            ingestion_adapter: None,
+            goal_adapter: None,
+            procedure_store: None,
+            ward_usage: harness.runner.ward_usage.clone(),
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("continuation_checkpoint_read_failed"),
+            "checkpoint query errors are not an absent checkpoint: {error}"
+        );
     }
 
     async fn deliver_during_first_turn(

@@ -257,9 +257,14 @@ async fn parity_error() {
         matches!(err, ExecutorError::LlmError(_)),
         "expected LlmError for parity with the legacy executor, got {err:?}"
     );
+    // Legacy parity (executor.rs emits StreamEvent::Metadata before any
+    // request): the pre-request Metadata event may precede the error, but no
+    // progress event — token, tool, or terminal — may leak before it.
     assert!(
-        events.is_empty(),
-        "no StreamEvents should be emitted before the error"
+        events
+            .iter()
+            .all(|event| matches!(event, StreamEvent::Metadata { .. })),
+        "no progress StreamEvents should be emitted before the error: {events:?}"
     );
 }
 
@@ -293,8 +298,18 @@ async fn parity_stop_cancel() {
             }
         })
         .await
-        .expect("stopped run should finalize");
+        // Legacy parity (executor.rs:728): a user stop aborts the stream and
+        // surfaces ExecutorError::Stopped so the caller finalizes — the
+        // engine never reports turn completion itself. AgentStopped /
+        // SessionCancelled are gateway-lifecycle events around the executor.
+        .expect_err("stop must surface ExecutorError::Stopped");
 
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::Token { .. })),
+        "stopped run should still surface the tokens produced before the stop"
+    );
     let gateway_events = convert_all(&events);
     let token_count = gateway_events
         .iter()
@@ -305,10 +320,10 @@ async fn parity_stop_cancel() {
         "stop must halt after the first token: {gateway_events:?}"
     );
     assert!(
-        gateway_events
+        !gateway_events
             .iter()
             .any(|event| matches!(event, GatewayEvent::TurnComplete { .. })),
-        "stopped run must still finalize (Done -> TurnComplete): {gateway_events:?}"
+        "a stopped turn is not a completed turn — no Done/TurnComplete: {gateway_events:?}"
     );
 }
 

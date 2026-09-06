@@ -1139,6 +1139,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
         let mut current_tool_name = String::new();
 
         let stop_sig = Some(handle.stop_signal());
+        let mut child_engine_state: Option<serde_json::Value> = None;
         let mut on_event = |event| {
             if handle.is_stop_requested() {
                 return;
@@ -1205,6 +1206,10 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 agent_runtime::StreamEvent::Token { content, .. } => {
                     turn_text.push_str(content);
                 }
+                // Private checkpoint snapshot for the child's turn boundary.
+                agent_runtime::StreamEvent::ContextState { state, .. } => {
+                    child_engine_state = Some(state.clone());
+                }
                 _ => {}
             }
 
@@ -1239,23 +1244,28 @@ fn spawn_execution_task(ctx: SpawnContext) {
             );
         }
 
-        // Turn-boundary checkpoint — write a versioned snapshot of the
-        // subagent's context state so session_state can read it in O(1).
-        crate::runner::core::write_turn_checkpoint(
-            &checkpoints,
-            &state_service,
-            &execution_id,
-            &child_session_id,
-            handle.current_iteration(),
-            &accumulated_response,
-        );
+        // Confirm queued rows before the checkpoint lists them as represented
+        // outputs; also keeps the final child row visible before the result
+        // bus can race the periodic flush.
+        batch_writer.flush().await;
+        let child_represented_ids = batch_writer.written_message_ids();
+
+        // Turn-boundary checkpoint — the child's context state plus its
+        // private snapshot and recovery cursor beside it.
+        crate::runner::core::write_turn_checkpoint(crate::runner::core::TurnCheckpoint {
+            checkpoints: &checkpoints,
+            state_service: &state_service,
+            execution_id: &execution_id,
+            session_id: &child_session_id,
+            llm_turn: handle.current_iteration(),
+            response: &accumulated_response,
+            engine_state: child_engine_state.as_ref(),
+            input_cursor: 0, // child input is in-memory, not durable rows
+            represented_output_ids: &child_represented_ids,
+        });
 
         match result {
             Ok(()) => {
-                // Child completion can be observed independently by Research;
-                // do not let it overtake the final child-session message.
-                batch_writer.flush().await;
-
                 // Unblock any wait_agent before firing callbacks.
                 agent_result_bus.resolve(&execution_id, &agent_id, &accumulated_response);
 

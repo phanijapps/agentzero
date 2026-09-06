@@ -19,10 +19,11 @@ cargo clippy -p gateway-execution --all-targets --features test-stubs -- -D warn
 | `session_invoker.rs`       | Narrow traits handlers depend on instead      |
 |                            | of `Arc<ExecutionRunner>`                     |
 | `invoke_bootstrap.rs`      | Pre-execution setup (per session, two-phase)  |
-| `execution_stream.rs`      | Per-execution event loop                      |
+| `execution_stream.rs`      | Shared root/continuation observation, assistant persistence and finalization; explicit mode preserves routing, working-memory and cleanup differences |
 | `delegation_dispatcher.rs` | Long-lived queue for spawning subagents       |
 | `continuation_watcher.rs`  | Long-lived listener for continuations         |
-| `continuation_execution.rs` | Continuation recall/prompt preparation and execution |
+| `continuation_execution.rs` | Continuation recall/prompt preparation and shared stream dispatch |
+| `recovery.rs`            | Checkpoint restore inputs: private-tape + tail-row composition, input cursor and represented-output IDs |
 | `integrations.rs` | Shared late-installed graph, episode, ingestion and goal handles |
 
 ## The rule

@@ -660,10 +660,13 @@ export function useResearchSession() {
   );
 
   const stopAgent = useCallback(async () => {
-    if (!state.conversationId) return;
+    if (state.status !== "running" || !state.conversationId || !state.sessionId) return;
     const transport = await getTransport();
-    await transport.stopAgent(state.conversationId);
-  }, [state.conversationId]);
+    const result = await transport.cancelSession(state.sessionId, state.conversationId);
+    if (!result.success) {
+      dispatch({ type: "ERROR", message: result.error ?? "Failed to cancel request" });
+    }
+  }, [state.status, state.conversationId, state.sessionId]);
 
   // --- Reset for a brand-new research session ---
   const startNewResearch = useCallback(() => {

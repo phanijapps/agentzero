@@ -295,10 +295,13 @@ export function useQuickChat() {
 
   // --- Stop a running turn ---
   const stopAgent = useCallback(async () => {
-    if (state.status !== "running" || !state.conversationId) return;
+    if (state.status !== "running" || !state.conversationId || !state.sessionId) return;
     const transport = await getTransport();
-    await transport.stopAgent(state.conversationId);
-  }, [state.status, state.conversationId]);
+    const result = await transport.cancelSession(state.sessionId, state.conversationId);
+    if (!result.success) {
+      dispatch({ type: "ERROR", message: result.error ?? "Failed to cancel request" });
+    }
+  }, [state.status, state.conversationId, state.sessionId]);
 
   // --- Clear the reserved session and bootstrap a fresh one ---
   const clearSession = useCallback(async () => {

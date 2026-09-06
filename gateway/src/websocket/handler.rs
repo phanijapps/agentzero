@@ -288,7 +288,12 @@ pub(super) async fn handle_client_message(
             let ws_sid = session_id.to_string();
             let on_ready: gateway_execution::OnSessionReady =
                 Box::new(move |agent_session_id: String| {
+                    let owner_subscriptions = subs.clone();
+                    let owner_session_id = ws_sid.clone();
                     Box::pin(async move {
+                        owner_subscriptions
+                            .bind_session_owner(&owner_session_id, agent_session_id.clone())
+                            .await;
                         let _ = subs
                             .subscribe_with_scope(
                                 &ws_sid,
@@ -357,22 +362,19 @@ pub(super) async fn handle_client_message(
                     .await
                 {
                     Ok(receipt) => {
+                        // The durable queue has accepted and persisted the
+                        // request. Publish its reserved identity immediately
+                        // so Stop can cancel it before a worker starts it.
                         if let Some(client) = sessions.get(session_id).await {
-                            tokio::spawn(async move {
-                                let ready = agent_tasks.wait_until_ready(&receipt).await;
-                                let response = if ready.is_ok() {
-                                    ServerMessage::InvokeAccepted {
-                                        session_id: receipt.session_id,
-                                        conversation_id: conversation_id.clone(),
-                                    }
-                                } else {
-                                    ServerMessage::error(
-                                        Some(conversation_id),
-                                        "invocation_failed",
-                                        "Unable to start this request",
-                                    )
-                                };
-                                let _ = client.send(response);
+                            subscriptions
+                                .bind_session_owner(
+                                    &session_id.to_string(),
+                                    receipt.session_id.clone(),
+                                )
+                                .await;
+                            let _ = client.send(ServerMessage::InvokeAccepted {
+                                session_id: receipt.session_id,
+                                conversation_id,
                             });
                         }
                     }
@@ -551,13 +553,73 @@ pub(super) async fn handle_client_message(
         }
         ClientMessage::Cancel {
             session_id: exec_session_id,
+            conversation_id,
         } => {
             debug!(
                 "Session {} cancelling execution session {}",
                 session_id, exec_session_id
             );
 
-            match runtime.cancel(&exec_session_id).await {
+            let Some(conversation_id) = conversation_id else {
+                if let Some(session) = sessions.get(session_id).await {
+                    let _ = session.send(ServerMessage::error(
+                        None,
+                        "cancel_failed",
+                        "Cancellation request is missing its conversation",
+                    ));
+                }
+                return Ok(());
+            };
+            if !subscriptions
+                .owns_session(&session_id.to_string(), &exec_session_id)
+                .await
+            {
+                if let Some(session) = sessions.get(session_id).await {
+                    let _ = session.send(ServerMessage::error(
+                        Some(conversation_id),
+                        "cancel_failed",
+                        "You cannot cancel this request",
+                    ));
+                }
+                return Ok(());
+            }
+            let queued = match agent_tasks
+                .as_ref()
+                .map(|tasks| tasks.cancel_research(session_id, &conversation_id, &exec_session_id))
+            {
+                Some(Ok(outcome)) => outcome,
+                Some(Err(_)) => {
+                    if let Some(session) = sessions.get(session_id).await {
+                        let _ = session.send(ServerMessage::error(
+                            Some(conversation_id),
+                            "cancel_failed",
+                            "Unable to cancel this request",
+                        ));
+                    }
+                    return Ok(());
+                }
+                None => crate::durable_agent_tasks::AgentTaskCancelOutcome::NotFound,
+            };
+            let cancel_result = match queued {
+                crate::durable_agent_tasks::AgentTaskCancelOutcome::Canceled
+                | crate::durable_agent_tasks::AgentTaskCancelOutcome::AlreadyCanceled => {
+                    // A leased item may already have created its durable
+                    // session. Cancel its live execution too; for a pending
+                    // item there is no session yet and the queue transition is
+                    // still the accepted cancellation.
+                    let _ = runtime
+                        .cancel_exact(&exec_session_id, &conversation_id)
+                        .await;
+                    Ok(())
+                }
+                crate::durable_agent_tasks::AgentTaskCancelOutcome::NotFound
+                | crate::durable_agent_tasks::AgentTaskCancelOutcome::NotCancelable => {
+                    runtime
+                        .cancel_exact(&exec_session_id, &conversation_id)
+                        .await
+                }
+            };
+            match cancel_result {
                 Ok(()) => {
                     debug!("Execution session {} cancelled", exec_session_id);
                     if let Some(session) = sessions.get(session_id).await {
@@ -567,9 +629,13 @@ pub(super) async fn handle_client_message(
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to cancel session {}: {}", exec_session_id, e);
+                    warn!(session_id = %exec_session_id, error = %e, "Failed to cancel session");
                     if let Some(session) = sessions.get(session_id).await {
-                        let _ = session.send(ServerMessage::error(None, "cancel_failed", &e));
+                        let _ = session.send(ServerMessage::error(
+                            None,
+                            "cancel_failed",
+                            "Unable to cancel this request",
+                        ));
                     }
                 }
             }

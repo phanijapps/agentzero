@@ -4,6 +4,8 @@ Active feature specs for AgentZero.
 
 | Spec | Status | Summary |
 | --- | --- | --- |
+| [Session-stop Cancellation](session-stop-cancellation/spec.md) | Implementing | Cancels queued, active, and delegated request work without affecting another session. |
+| [Observatory Force-Graph Polish](observatory-force-graph-polish/spec.md) | Shipped | Makes the existing D3 Observatory graph feel like a clear, premium, layered network without changing its data or interactions. |
 | [Distillation Graph Governance](distillation-graph-governance/spec.md) | Shipped | Filters session-distillation graph candidates through z-Bot's built-in entity and relationship governance without changing durable fact persistence. |
 | [Engram Local Graph Repair](engram-local-graph-repair/spec.md) | Shipped | Provides a dry-run-first, backup-protected utility for removing unsupported relationships and relationship-only unknown stubs from an explicit local graph database. |
 | [Planner Template Handoff](planner-template-handoff/spec.md) | Shipped | Carries the selected normalized ward template into automatic graph planning and persists applicable declared planning roles. |

@@ -120,6 +120,8 @@ function ResearchHeader({ state, pillState, onOpenDrawer, onNew, onStop, showNew
             className="btn btn--ghost btn--sm"
             onClick={onStop}
             title="Stop"
+            aria-label="Stop research"
+            disabled={!state.sessionId}
           >
             <Square size={14} />
           </button>

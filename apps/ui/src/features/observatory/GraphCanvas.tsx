@@ -75,6 +75,14 @@ function matchesHighlight(entity: GraphEntity, term: string): boolean {
   );
 }
 
+function linkTouchesEntity(link: SimLink, entityId: string): boolean {
+  const source = link.source as SimNode | string;
+  const target = link.target as SimNode | string;
+  const sourceId = typeof source === "string" ? source : source.id;
+  const targetId = typeof target === "string" ? target : target.id;
+  return sourceId === entityId || targetId === entityId;
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -149,8 +157,8 @@ export function GraphCanvas({
       .data(links)
       .join("line")
       .attr("class", "graph-edge")
-      .style("opacity", (d) =>
-        Math.max(0.15, Math.min(0.6, (d.relationship.mention_count || 1) * 0.15))
+      .style("--graph-edge-strength", (d) =>
+        String(Math.max(0.15, Math.min(0.6, (d.relationship.mention_count || 1) * 0.15)))
       );
 
     // Node groups
@@ -287,6 +295,23 @@ export function GraphCanvas({
         const datum = select<Element, SimNode>(parent).datum();
         return !matchesHighlight(datum.entity, highlightTerm!);
       });
+
+    gSel
+      .selectAll<SVGLineElement, SimLink>("line.graph-edge")
+      .classed("graph-edge--related", (d) =>
+        selectedEntityId ? linkTouchesEntity(d, selectedEntityId) : false
+      )
+      .classed("graph-edge--dimmed", (d) => {
+        if (!hasTerm) return false;
+        const source = d.source as SimNode | string;
+        const target = d.target as SimNode | string;
+        const sourceEntity = typeof source === "string" ? undefined : source.entity;
+        const targetEntity = typeof target === "string" ? undefined : target.entity;
+        return !(
+          (sourceEntity && matchesHighlight(sourceEntity, highlightTerm!)) ||
+          (targetEntity && matchesHighlight(targetEntity, highlightTerm!))
+        );
+      });
   }, [selectedEntityId, highlightTerm]);
 
   // Zoom controls — no d3-transition, use direct transform
@@ -331,8 +356,27 @@ export function GraphCanvas({
   }
 
   return (
-    <div className="observatory__canvas">
-      <svg ref={svgRef} />
+    <div className="observatory__canvas observatory__canvas--graph">
+      <svg ref={svgRef} aria-label="Interactive knowledge graph">
+        <defs>
+          <radialGradient id="observatory-graph-glow" cx="50%" cy="45%" r="70%">
+            <stop offset="0%" className="graph-atmosphere__core" />
+            <stop offset="100%" className="graph-atmosphere__edge" />
+          </radialGradient>
+          <pattern id="observatory-graph-grid" width="32" height="32" patternUnits="userSpaceOnUse">
+            <path d="M 32 0 L 0 0 0 32" className="graph-atmosphere__grid" />
+          </pattern>
+        </defs>
+        <g className="graph-atmosphere" aria-hidden="true">
+          <rect width="100%" height="100%" fill="url(#observatory-graph-glow)" />
+          <rect width="100%" height="100%" fill="url(#observatory-graph-grid)" />
+        </g>
+      </svg>
+
+      <div className="observatory__graph-context">
+        <span className="observatory__graph-kicker">Knowledge network</span>
+        <span>{entities.length} entities · {relationships.length} relationships</span>
+      </div>
 
       {/* Legend */}
       <div className="observatory__legend">

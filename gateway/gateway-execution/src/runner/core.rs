@@ -1324,7 +1324,11 @@ impl ExecutionRunner {
     ) -> Result<(), String> {
         self.state_service.cancel_session(session_id)?;
 
-        cancel_exact_handle(&*self.handles.read().await, conversation_id);
+        cancel_execution_tree(
+            &*self.handles.read().await,
+            &self.delegation_registry,
+            conversation_id,
+        );
 
         Ok(())
     }
@@ -1445,9 +1449,22 @@ impl ExecutionRunner {
     }
 }
 
-fn cancel_exact_handle(handles: &HashMap<String, ExecutionHandle>, conversation_id: &str) {
-    if let Some(handle) = handles.get(conversation_id) {
-        handle.cancel();
+fn cancel_execution_tree(
+    handles: &HashMap<String, ExecutionHandle>,
+    delegations: &DelegationRegistry,
+    root_conversation_id: &str,
+) {
+    let mut pending = vec![root_conversation_id.to_owned()];
+    let mut visited = std::collections::HashSet::new();
+
+    while let Some(conversation_id) = pending.pop() {
+        if !visited.insert(conversation_id.clone()) {
+            continue;
+        }
+        if let Some(handle) = handles.get(&conversation_id) {
+            handle.cancel();
+        }
+        pending.extend(delegations.get_children(&conversation_id));
     }
 }
 
@@ -1464,7 +1481,7 @@ mod exact_cancel_tests {
             ("unrelated".to_string(), unrelated.clone()),
         ]);
 
-        cancel_exact_handle(&handles, "selected");
+        cancel_execution_tree(&handles, &DelegationRegistry::new(), "selected");
 
         assert!(selected.is_cancelled());
         assert!(!unrelated.is_cancelled());
@@ -3063,5 +3080,38 @@ mod peer_root_lifecycle_tests {
             pending.envelope().payload()["target_execution_id"],
             child.id
         );
+    }
+
+    #[test]
+    fn session_stop_recursive_cancellation_contract() {
+        let root = ExecutionHandle::new(10);
+        let child = ExecutionHandle::new(10);
+        let grandchild = ExecutionHandle::new(10);
+        let unrelated = ExecutionHandle::new(10);
+        let handles = HashMap::from([
+            ("root".to_owned(), root.clone()),
+            ("child".to_owned(), child.clone()),
+            ("grandchild".to_owned(), grandchild.clone()),
+            ("unrelated".to_owned(), unrelated.clone()),
+        ]);
+
+        let registry = DelegationRegistry::new();
+        registry.register(
+            "child",
+            crate::delegation::DelegationContext::new("session", "root", "root", "root"),
+        );
+        registry.register(
+            "grandchild",
+            crate::delegation::DelegationContext::new("session", "child", "child", "child"),
+        );
+        cancel_execution_tree(&handles, &registry, "root");
+
+        assert!(root.is_cancelled());
+        assert!(child.is_cancelled(), "all descendants must be cancelled");
+        assert!(
+            grandchild.is_cancelled(),
+            "all descendants must be cancelled"
+        );
+        assert!(!unrelated.is_cancelled());
     }
 }

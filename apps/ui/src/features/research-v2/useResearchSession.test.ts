@@ -35,6 +35,7 @@ import type {
 const subscribeConversation = vi.fn<Transport["subscribeConversation"]>();
 const executeAgent = vi.fn<Transport["executeAgent"]>();
 const stopAgent = vi.fn<Transport["stopAgent"]>();
+const cancelSession = vi.fn<Transport["cancelSession"]>();
 const getSessionMessages = vi.fn<Transport["getSessionMessages"]>();
 const listSessionArtifacts = vi.fn<Transport["listSessionArtifacts"]>();
 const listLogSessions = vi.fn<Transport["listLogSessions"]>();
@@ -49,6 +50,7 @@ vi.mock("@/services/transport", () => ({
     subscribeConversation,
     executeAgent,
     stopAgent,
+    cancelSession,
     getSessionMessages,
     listSessionArtifacts,
     listLogSessions,
@@ -157,6 +159,7 @@ beforeEach(() => {
   subscribeConversation.mockReset();
   executeAgent.mockReset();
   stopAgent.mockReset();
+  cancelSession.mockReset();
   getSessionMessages.mockReset();
   listSessionArtifacts.mockReset();
   listLogSessions.mockReset();
@@ -173,6 +176,7 @@ beforeEach(() => {
     return { success: true, data: { conversationId: convId } };
   });
   stopAgent.mockResolvedValue({ success: true, data: undefined });
+  cancelSession.mockResolvedValue({ success: true, data: undefined });
   getSessionMessages.mockResolvedValue({ success: true, data: [] });
   listSessionArtifacts.mockResolvedValue({ success: true, data: [] });
   listLogSessions.mockResolvedValue({ success: true, data: [] });

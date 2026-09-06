@@ -264,3 +264,59 @@ planning turn from the subsequent implementation approval in `review.md`;
 the sealed plan's task strategy was preserved.
 No production engine has been retired yet. No AC is marked complete.
 `project-knowledge not requested`; no capture residue was admitted at approval.
+
+### T3 execution record
+
+- Scope: replace spawn-per-call stdio with one initialized SDK session, use the
+  actual Streamable HTTP protocol, retain configured HTTP/SSE POST semantics,
+  and attach session cleanup directly to the Rig factory/engine lifetime.
+  Actor inventory/dispatch remains T4; the selector is not removed early.
+- Removed `mcp/stdio.rs` (436 lines, including its implementation-specific tests).
+  Real subprocess fixtures now verify initialize/list/call, persistent PID,
+  EOF, canceled startup, pending-call close, replacement, failed discovery,
+  canceled cleanup, manager drop and session isolation. HTTP-family fixtures
+  verify auth failure/redaction, cancellation and a virtual-clock 30-second
+  call deadline without replay. Streamable HTTP additionally verifies the
+  initialized notification, session ID and DELETE; it is not a bare POST alias.
+- Native SDK contract findings: its HTTP worker awaits a POST outside its
+  cancellation select, and its default client lacks a request deadline.
+  `mcp/native_http.rs` delegates wire parsing to the SDK while applying request
+  cancellation, bounded DELETE and redacted errors before SDK diagnostics.
+  Reinitialization on expired sessions is disabled to prevent implicit replay.
+- The wrapper requires direct edges to existing locked reqwest 0.13.4 and
+  sse-stream 0.2 packages. Explicit rustls ring initialization fixes a reproduced
+  no-provider panic, respecting an already-installed host provider. `tempfile`
+  is test-only. Package count remains 769; no new package versions or backend.
+  The boundary checker permits only the renamed MCP dependency in agent-runtime
+  and only two MCP transport source files; three counterexample tests preserve
+  the ban elsewhere. Audit/deny still pass under the unchanged baseline policy.
+- Rig execution guards supervise close on success/error, dropped futures and
+  never-run engine disposal, even while clients/managers remain referenced.
+  Four production-factory subprocess tests pass. The first three failed before
+  lifecycle wiring; the fourth reproduced out-of-runtime disposal and passed
+  after capturing the owning runtime handle. Cleanup does not depend on Done.
+- Verification: transport lifecycle 11/11, HTTP/SSE decoder probes 2/2,
+  factory lifecycle 4/4, gateway construction 49/49, focused Clippy clean.
+  Full serial runtime passed 441 tests with 2 existing ignores. The rebuilt
+  daemon/real-UI strict simple-qa fixture passed in 8.8 seconds, including zero
+  replay drift before/after reload. Additional real-fixture tests cover stdio
+  initialization/call deadlines, HTTP-family EOF, native HTTP startup timeout
+  and cancellation, and observed socket disconnection after canceled requests.
+  Final review disposition is recorded below.
+- Bounded-review finding applied: SDK trace events precede result redaction.
+  A real native stdio trace-canary test reproduced the leak. The runtime and
+  daemon's console/file subscribers now share a non-overridable metadata filter
+  for raw rmcp/sse-stream diagnostics; AgentZero's safe operational warnings and
+  application trace logs remain enabled. The passing test covers native stdio,
+  Streamable HTTP responses and an SSE comment canary, with positive trace/warn
+  controls and an explicit `rmcp::service=trace` directive. A captured parser-target
+  warning separately pins the sse-stream filter even when that dependency's
+  optional tracing feature is disabled. Daemon wiring is a
+  necessary same-concern T3 correction, not a logging-system redesign.
+- Final bounded re-review: **Clean — ready to commit.** Runtime 441/2 existing
+  ignores, lifecycle 11/11, runtime/daemon Clippy and boundary/format checks pass.
+  After the logging fix, the rebuilt daemon's strict UI smoke passed again
+  (8.7 seconds, `RUST_LOG=trace` supplied); no production routing switch yet.
+- Declined: SDK automatic tool discovery/registration, a second execution loop,
+  and a general HTTP/provider replacement. Windows cmd.exe launch semantics are
+  preserved but have not been executed on this Linux host.

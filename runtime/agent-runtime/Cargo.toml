@@ -51,6 +51,9 @@ rig = { git = "https://github.com/0xplaygrounds/rig", rev = "6b1991bfb246411dd75
 # Match Rig's SDK contract and request the adapter's client transports directly.
 # Rig also enables rmcp's upstream defaults (server/macros/base64).
 rmcp = { version = "=1.7.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "stream", "rustls-no-provider"] }
+sse-stream = "0.2"
 
 # Utilities
 uuid = { workspace = true }
@@ -68,6 +71,7 @@ fastembed = { version = "4", default-features = false, features = ["hf-hub-rustl
 tiktoken-rs = { workspace = true }
 
 [dev-dependencies]
+tempfile = "3"
 tokio-test = "0.4"
 
 # NOTE: ADK-Rust evaluation completed - decision: DO NOT MIGRATE

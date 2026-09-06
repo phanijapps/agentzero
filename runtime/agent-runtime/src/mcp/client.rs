@@ -15,6 +15,14 @@ use super::tool::McpTool;
 /// Trait for MCP client implementations
 #[async_trait]
 pub trait McpClient: Send + Sync {
+    /// Stop accepting work and interrupt pending requests synchronously.
+    fn cancel(&self) {}
+
+    /// Release the owning session and wait for bounded transport cleanup.
+    async fn close(&self) {
+        self.cancel();
+    }
+
     /// Get the client name
     fn name(&self) -> &str;
 

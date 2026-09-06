@@ -5,7 +5,7 @@ use crate::{engine::PreparedExecution, tools::ToolContext};
 use std::sync::Arc;
 
 /// Build the Rig loop with the actor-filtered inventory and effective prompt.
-/// Session policy and MCP lifecycle integration are added at this boundary.
+/// The engine owns the configured MCP sessions for its execution lifetime.
 pub fn build_engine(
     prepared: PreparedExecution,
     mut rig_config: RigAgentConfig,
@@ -34,6 +34,7 @@ pub fn build_engine(
         cfg.before_tool_call,
         cfg.after_tool_call,
     )
+    .with_mcp_session(prepared.mcp_manager)
 }
 
 #[cfg(test)]

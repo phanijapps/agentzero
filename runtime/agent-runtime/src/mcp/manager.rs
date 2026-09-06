@@ -15,7 +15,7 @@ use super::client::McpClient;
 use super::config::McpServerConfig;
 use super::error::McpError;
 use super::http::HttpMcpClient;
-use super::stdio::StdioMcpClient;
+use super::native::NativeMcpClient;
 use super::tool::McpTool;
 
 /// Host-owned observer for a safe, canonical MCP startup/discovery failure.
@@ -26,6 +26,7 @@ pub type McpStartupFailureObserver = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct McpManager {
     servers: RwLock<HashMap<String, Arc<dyn McpClient>>>,
     startup_failure_observer: Option<McpStartupFailureObserver>,
+    closed: tokio::sync::watch::Sender<bool>,
 }
 
 impl McpManager {
@@ -35,6 +36,7 @@ impl McpManager {
         Self {
             servers: RwLock::new(HashMap::new()),
             startup_failure_observer: None,
+            closed: tokio::sync::watch::channel(false).0,
         }
     }
 
@@ -57,6 +59,31 @@ impl McpManager {
 
     /// Start an MCP server connection
     pub async fn start_server(&self, config: McpServerConfig) -> Result<(), McpError> {
+        let mut closed = self.closed.subscribe();
+        tokio::select! {
+            biased;
+            _ = closed.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
+            result = self.start_server_inner(config) => result,
+        }
+    }
+
+    async fn install(&self, id: String, client: Arc<dyn McpClient>) -> Result<(), McpError> {
+        let previous = {
+            let mut servers = self.servers.write().await;
+            if *self.closed.borrow() {
+                drop(servers);
+                client.close().await;
+                return Err(McpError::ProtocolError("MCP session closed".into()));
+            }
+            servers.insert(id, client)
+        };
+        if let Some(previous) = previous {
+            previous.close().await;
+        }
+        Ok(())
+    }
+
+    async fn start_server_inner(&self, config: McpServerConfig) -> Result<(), McpError> {
         match config {
             McpServerConfig::Stdio {
                 id,
@@ -67,15 +94,10 @@ impl McpManager {
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
-                let client = Arc::new(StdioMcpClient::new(
-                    id.clone(),
-                    name,
-                    command,
-                    args,
-                    env.unwrap_or_default(),
-                )?);
-                self.servers.write().await.insert(id, client);
-                Ok(())
+                let client = Arc::new(
+                    NativeMcpClient::stdio(name, command, args, env.unwrap_or_default()).await?,
+                );
+                self.install(id, client).await
             }
             McpServerConfig::Http {
                 id,
@@ -91,8 +113,7 @@ impl McpManager {
                     url,
                     headers.unwrap_or_default(),
                 ));
-                self.servers.write().await.insert(id, client);
-                Ok(())
+                self.install(id, client).await
             }
             McpServerConfig::Sse {
                 id,
@@ -110,8 +131,7 @@ impl McpManager {
                     url,
                     headers.unwrap_or_default(),
                 ));
-                self.servers.write().await.insert(id, client);
-                Ok(())
+                self.install(id, client).await
             }
             McpServerConfig::StreamableHttp {
                 id,
@@ -121,15 +141,10 @@ impl McpManager {
                 ..
             } => {
                 let id = id.unwrap_or_else(|| name.clone());
-                // Streamable-http uses the same client as HTTP for now
-                let client = Arc::new(HttpMcpClient::new(
-                    id.clone(),
-                    name,
-                    url,
-                    headers.unwrap_or_default(),
-                ));
-                self.servers.write().await.insert(id, client);
-                Ok(())
+                let client = Arc::new(
+                    NativeMcpClient::streamable(name, url, headers.unwrap_or_default()).await?,
+                );
+                self.install(id, client).await
             }
         }
     }
@@ -143,7 +158,10 @@ impl McpManager {
     /// using only its canonical configured ID. Removing it prevents retries on
     /// later turns in the same executor.
     pub async fn mark_startup_failed(&self, id: &str) {
-        self.servers.write().await.remove(id);
+        let removed = self.servers.write().await.remove(id);
+        if let Some(client) = removed {
+            client.close().await;
+        }
         self.notify_startup_failure(id);
     }
 
@@ -177,14 +195,55 @@ impl McpManager {
     /// List all tools from all connected servers
     pub async fn list_all_tools(&self) -> Result<Vec<McpTool>, McpError> {
         let mut all_tools = Vec::new();
-        let servers = self.servers.read().await;
+        let servers: Vec<_> = self.servers.read().await.values().cloned().collect();
 
-        for client in servers.values() {
+        for client in servers {
             let tools = client.list_tools().await?;
             all_tools.extend(tools);
         }
 
         Ok(all_tools)
+    }
+
+    /// Close this session permanently, interrupting requests before waiting for
+    /// each transport's bounded cleanup. Never hold the registry lock over I/O.
+    pub async fn close(&self) {
+        self.closed.send_replace(true);
+        let clients: Vec<_> = self
+            .servers
+            .write()
+            .await
+            .drain()
+            .map(|(_, client)| client)
+            .collect();
+        for client in &clients {
+            client.cancel();
+        }
+        // Each task owns its client until cleanup completes. Canceling the
+        // caller drops join handles, not cleanup futures or session owners.
+        let cleanup: Vec<_> = clients
+            .into_iter()
+            .map(|client| {
+                tokio::spawn(async move {
+                    if tokio::time::timeout(std::time::Duration::from_secs(5), client.close())
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!("MCP client cleanup exceeded its budget");
+                    }
+                })
+            })
+            .collect();
+        futures::future::join_all(cleanup).await;
+    }
+}
+
+impl Drop for McpManager {
+    fn drop(&mut self) {
+        self.closed.send_replace(true);
+        for client in self.servers.get_mut().values() {
+            client.cancel();
+        }
     }
 }
 

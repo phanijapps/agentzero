@@ -8,6 +8,7 @@ pub mod config;
 pub mod engine;
 pub mod factory;
 pub mod model;
+mod resources;
 pub mod structured;
 pub mod tool;
 
@@ -15,6 +16,8 @@ pub mod tool;
 mod capability_tests;
 #[cfg(test)]
 mod mcp_capability_tests;
+#[cfg(test)]
+mod mcp_lifecycle_tests;
 
 pub use client::LlmCompletionClient;
 pub use config::{RigAgentConfig, RigConfigError, RigModelConfig};

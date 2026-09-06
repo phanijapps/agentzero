@@ -281,6 +281,9 @@ fn setup_logging(
 ) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let level = parse_level(&config.level);
     let env_filter = EnvFilter::from_default_env().add_directive(level.into());
+    let registry = tracing_subscriber::registry().with(env_filter).with(
+        tracing_subscriber::filter::filter_fn(gateway::safe_mcp_diagnostics),
+    );
 
     // Check if file logging is enabled
     if config.enabled {
@@ -317,8 +320,7 @@ fn setup_logging(
 
         if config.suppress_stdout {
             // Only file logging
-            tracing_subscriber::registry()
-                .with(env_filter)
+            registry
                 .with(
                     fmt::layer()
                         .with_writer(file_writer)
@@ -333,8 +335,7 @@ fn setup_logging(
             // Both stdout and file logging using combined writer
             let combined_writer = file_writer.and(std::io::stdout);
 
-            tracing_subscriber::registry()
-                .with(env_filter)
+            registry
                 .with(
                     fmt::layer()
                         .with_writer(combined_writer)
@@ -356,8 +357,7 @@ fn setup_logging(
         Ok(Some(file_guard))
     } else {
         // Only stdout logging (default behavior)
-        tracing_subscriber::registry()
-            .with(env_filter)
+        registry
             .with(
                 fmt::layer()
                     .with_target(true)

@@ -40,6 +40,7 @@ use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingCha
 use rig::tool::{ToolCallExtensions, ToolDyn};
 use serde_json::Value;
 
+use super::resources::SessionResources;
 use crate::engine::{AfterToolCallHook, BeforeToolCallHook, ExecutorError, ToolCallDecision};
 use crate::engine::{AgentEngine, StreamEventSink};
 use crate::rig_adapter::{RigAgentConfig, SharedToolContext};
@@ -59,6 +60,7 @@ pub struct RigAgentEngine<M: CompletionModel> {
     agent: Agent<M>,
     shared_context: SharedToolContext,
     max_turns: usize,
+    resources: Option<SessionResources>,
 }
 
 impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
@@ -137,7 +139,15 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             agent,
             shared_context,
             max_turns,
+            resources: None,
         }
+    }
+
+    /// Attach the execution's configured MCP sessions, including cleanup for
+    /// an engine discarded before its first run.
+    pub(super) fn with_mcp_session(mut self, manager: Arc<crate::mcp::McpManager>) -> Self {
+        self.resources = Some(SessionResources::new(manager));
+        self
     }
 
     /// Drive the Rig agent stream and map it onto [`StreamEvent`]s.
@@ -145,6 +155,23 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
     /// `stop_flag` enables cooperative cancellation: when set, the loop breaks
     /// after the current item and finalizes with whatever was accumulated.
     async fn run(
+        &self,
+        user_message: &str,
+        history: &[ChatMessage],
+        stop_flag: Option<Arc<AtomicBool>>,
+        on_event: &mut StreamEventSink<'_>,
+    ) -> Result<(), ExecutorError> {
+        let cleanup = self.resources.as_ref().map(SessionResources::for_run);
+        let result = self
+            .run_inner(user_message, history, stop_flag, on_event)
+            .await;
+        if let Some(cleanup) = cleanup {
+            cleanup.close().await;
+        }
+        result
+    }
+
+    async fn run_inner(
         &self,
         user_message: &str,
         history: &[ChatMessage],

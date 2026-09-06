@@ -2,6 +2,17 @@
 
 import json
 import sys
+import os
+import time
+
+mode = os.environ.get("PROBE_MODE", "normal")
+if os.environ.get("PROBE_PID_FILE"):
+    with open(os.environ["PROBE_PID_FILE"], "a") as output:
+        output.write(str(os.getpid()) + "\n")
+if mode == "startup_hang":
+    time.sleep(60)
+if mode == "startup_fail":
+    sys.exit(2)
 
 for line in sys.stdin:
     request = json.loads(line)
@@ -21,6 +32,12 @@ for line in sys.stdin:
             "inputSchema": {"type": "object", "properties": {"value": {"type": "string"}}},
         }]}
     elif method == "tools/call":
+        if mode == "eof":
+            sys.exit(0)
+        if mode == "call_hang":
+            with open(os.environ["PROBE_CALL_FILE"], "w") as output:
+                output.write("entered")
+            time.sleep(60)
         result = {"content": [{"type": "text", "text": request["params"]["arguments"]["value"]}]}
     elif method == "ping":
         result = {}

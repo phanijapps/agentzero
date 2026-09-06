@@ -20,6 +20,18 @@
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+/// Keep third-party MCP protocol payloads out of application diagnostics.
+/// Apply as a separate filter so an environment directive cannot override it.
+pub fn safe_mcp_diagnostics(metadata: &tracing::Metadata<'_>) -> bool {
+    // rmcp traces raw protocol events; sse-stream even includes malformed
+    // lines in warnings. AgentZero emits bounded, redacted MCP diagnostics at
+    // its transport/manager boundary instead of forwarding these payloads.
+    !matches!(
+        metadata.target().split("::").next(),
+        Some("rmcp" | "sse_stream")
+    )
+}
+
 /// Log level for the application
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogLevel {
@@ -74,7 +86,9 @@ pub fn init_logging(level: LogLevel, with_file: bool) {
         .with_default_directive(level.as_tracing().into())
         .from_env_lossy();
 
-    let registry = tracing_subscriber::registry().with(env_filter);
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::filter::filter_fn(safe_mcp_diagnostics));
 
     if with_file {
         registry
@@ -106,7 +120,9 @@ pub fn init_logging_from_env(with_file: bool) {
         .with_default_directive(tracing::Level::INFO.into())
         .from_env_lossy();
 
-    let registry = tracing_subscriber::registry().with(env_filter);
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::filter::filter_fn(safe_mcp_diagnostics));
 
     if with_file {
         registry

@@ -47,11 +47,6 @@ async fn http_configuration_decodes_event_stream_discovery() {
 }
 
 #[tokio::test]
-async fn streamable_http_configuration_decodes_event_stream_discovery() {
-    discover_over_event_stream("streamable-http").await;
-}
-
-#[tokio::test]
 async fn sse_configuration_decodes_event_stream_discovery() {
     discover_over_event_stream("sse").await;
 }

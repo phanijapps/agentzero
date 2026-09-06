@@ -2,6 +2,10 @@
 
 [backlog]
 open = [
+  # pre-existing: research_subscribes_then_persists_before_acceptance in gateway/src/websocket/handler.rs:1417 fails "acceptance must wait for bootstrap" on untouched 789fa55a and the responsibility refactor.
+  # Fix: diagnose the unexpected pre-bootstrap WebSocket message and reconcile the assertion with the durable Research acceptance contract.
+  # Unblocks when: the isolated test passes on the baseline behavior; no failure suppression is included in the refactor.
+  { slug = "pre-existing-research-acceptance", source = "pre-flight/2026-09-06" },
   # Run the official A2A CLI/TCK plus the documented two-daemon pair/delegate/get/cancel/restart journey and record the output before claiming external conformance.
   { slug = "a2a-external-conformance", source = "spec/a2a-federation-discovery AC17" },
   { slug = "conversation-store-revamp-summary-store", source = "spec/conversation-store-revamp" },

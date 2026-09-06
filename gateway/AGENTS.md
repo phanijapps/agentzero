@@ -1,6 +1,6 @@
 # Gateway
 
-Network layer providing HTTP and WebSocket APIs for agent interaction. Decomposed into 11 focused sub-crates with a thin shell for HTTP routes, WebSocket handler, and AppState wiring.
+Network layer providing HTTP and WebSocket APIs for agent interaction. The shell and 12 sub-crates compose transport, execution, memory, and durable work.
 
 ## Crate Structure
 
@@ -12,6 +12,8 @@ gateway/
 ├── gateway-services/    # AgentService, ProviderService, McpService, SkillService, SettingsService,
 │                        #   EmbeddingService, ModelRegistry, PluginService, VaultPaths
 ├── gateway-execution/   # ExecutionRunner, delegation, lifecycle, streaming, BatchWriter
+├── gateway-memory/      # Recall, memory services and sleep-time processing
+├── gateway-a2a/         # Peer protocol, transport and discovery contracts
 ├── gateway-hooks/       # Hook trait, HookRegistry, CliHook, CronHook, NoOpHook
 ├── gateway-cron/        # CronJobConfig, CronService, CRUD types
 ├── gateway-bus/         # GatewayBus trait, SessionRequest, SessionHandle
@@ -22,7 +24,7 @@ gateway/
 │   ├── websocket/       #   WebSocket handler + subscription manager
 │   ├── bus/             #   HttpGatewayBus (composes execution runner with bus trait)
 │   ├── hooks/           #   WebHook (depends on WS module)
-│   └── state/           #   AppState + persistence_factory (wires all services together)
+│   └── state/           #   AppState + persistence_factory + capability_catalog
 └── templates/           # Embedded system prompt templates (SOUL, INSTRUCTIONS, OS, shards)
 ```
 
@@ -35,6 +37,8 @@ gateway/
 | `gateway-connectors` | HTTP/CLI connectors for dispatching agent responses outbound |
 | `gateway-services` | Config services with `RwLock` caching (agents, providers, MCPs, skills, settings, embeddings) |
 | `gateway-execution` | Execution engine: runner, delegation, lifecycle, stream, `BatchWriter`, distillation |
+| `gateway-memory` | Recall, memory service composition, background consolidation |
+| `gateway-a2a` | Peer protocol, transport, policies and task projections |
 | `gateway-hooks` | `Hook` trait + registry (CLI, Cron, NoOp implementations) |
 | `gateway-cron` | Cron job config types and CRUD service |
 | `gateway-bus` | `GatewayBus` trait, `SessionRequest`/`Handle` types |
@@ -101,6 +105,16 @@ intent_analysis_started, intent_analysis_complete, token_usage, heartbeat, error
 ```
 
 ## Key Patterns
+
+- **Capability inspection ownership**: `state/capability_catalog.rs` owns
+  fallback tool-catalog construction and metadata enrichment. `AppState`
+  selects the live runner when available and assembles fresh explicit inputs
+  for `ToolCatalog` / `ResourceCatalog`; catalog services never retain the
+  parent state. Enrichment calls metadata list/summary APIs only. Actor
+  filtering, deduplication and logical resource URIs belong to this module.
+- **Execution control ownership**: `gateway-execution/src/runner/session_control.rs`
+  owns live control operations with a shared registry; `ExecutionRunner`
+  retains invocation and recovery orchestration. See the runner module map.
 
 - **BatchWriter**: Decouples DB writes from streaming callback (100ms flush, token coalescing)
 - **RwLock caching**: Provider, MCP, Settings services cache config files in memory

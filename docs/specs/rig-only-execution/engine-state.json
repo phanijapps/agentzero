@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "run_id": "e2b961d3-abc6-411c-b749-64bbc0dd5305",
+  "feature": "rig-only-execution",
+  "mode": "spec-plan",
+  "state": "SPEC-HUMAN-GATE",
+  "last_event": "reviewers-clean",
+  "last_event_context": null,
+  "transition_sequence": 4,
+  "last_transition_at": "2026-09-06T14:29:18Z",
+  "gate_question": "Does this spec define the right thing to build?"
+}

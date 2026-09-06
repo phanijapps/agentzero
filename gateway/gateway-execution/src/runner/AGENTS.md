@@ -1,7 +1,7 @@
 # runner
 
-Session orchestration. Decomposed from a 3,067-LOC god module into
-six focused units. **Read this before adding code here.**
+Session orchestration with focused control, bootstrap, streaming and dispatch
+components. **Read this before adding code here.**
 
 ## Build & Test
 
@@ -14,9 +14,8 @@ cargo clippy -p gateway-execution --all-targets --features test-stubs -- -D warn
 
 | File                       | Owns                                          |
 |----------------------------|-----------------------------------------------|
-| `core.rs`                  | `ExecutionRunner` struct + DI wiring +        |
-|                            | public lifecycle methods (invoke, stop,       |
-|                            | pause, resume, cancel, continue, end)         |
+| `core.rs`                  | `ExecutionRunner` facade, DI wiring, invocation and persisted recovery |
+| `session_control.rs`       | Live stop/pause/resume/cancel/end/iteration control; shared handles and delegation registry |
 | `session_invoker.rs`       | Narrow traits handlers depend on instead      |
 |                            | of `Arc<ExecutionRunner>`                     |
 | `invoke_bootstrap.rs`      | Pre-execution setup (per session, two-phase)  |
@@ -37,6 +36,13 @@ whole point of this layout is to never hand a single handler the
 god-struct again.
 
 ## Setter mirroring invariant
+
+`SessionControl` owns the runner's handle map, delegation registry and state
+service references. Bootstrap, streams and recovery receive clones of these
+same handles; never create a replacement registry during extraction. Public
+control methods delegate to it, while `resume` retains persisted-subagent
+recovery orchestration and delegates only its live-handle fallback. Legacy
+broad controls and exact conversation-tree cancellation are distinct semantics.
 
 Late-wired setters on `ExecutionRunner` (e.g.
 `set_graph_storage`, `set_ingestion_adapter`, `set_goal_adapter`)

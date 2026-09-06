@@ -1,7 +1,7 @@
 //! # Runner
 //!
-//! Session orchestration. Decomposed from a 3,067-LOC god module into
-//! six focused units. **Read `AGENTS.md` in this directory before
+//! Session orchestration with focused live-control and execution components.
+//! **Read `AGENTS.md` in this directory before
 //! adding code here.**
 
 use std::path::Path;
@@ -14,6 +14,7 @@ pub(super) mod core;
 mod delegation_dispatcher;
 mod execution_stream;
 mod invoke_bootstrap;
+mod session_control;
 mod session_invoker;
 
 pub use continuation_watcher::ContinuationWatcher;

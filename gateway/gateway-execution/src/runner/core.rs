@@ -67,22 +67,18 @@ pub struct ExecutionRunner {
     skill_service: Arc<gateway_services::SkillService>,
     /// Vault paths for accessing configuration and data directories
     paths: SharedVaultPaths,
-    /// Active execution handles
-    handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
+    /// Live control owns the shared execution handles and persisted control transitions.
+    control: super::session_control::SessionControl,
     /// Message store (append-only conversation log).
     messages: Arc<dyn zbot_conversation::MessageStore>,
     /// Narrow session metadata reads.
     session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
     /// Versioned agent-state checkpoints — written at each turn boundary.
     checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
-    /// Delegation registry for tracking parent-child relationships
-    delegation_registry: Arc<DelegationRegistry>,
     /// Channel for delegation requests
     delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     /// Log service for execution tracing
     log_service: Arc<LogService<DatabaseManager>>,
-    /// State service for execution state management
-    state_service: Arc<StateService<DatabaseManager>>,
     /// Connector registry for response routing to external connectors
     connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     /// Bridge registry for WebSocket worker connections
@@ -584,20 +580,22 @@ impl ExecutionRunner {
         };
 
         let runner = Self {
+            control: super::session_control::SessionControl {
+                handles,
+                delegation_registry,
+                state_service,
+            },
             event_bus,
             agent_service,
             provider_service,
             mcp_service,
             skill_service,
             paths,
-            handles,
             messages,
             session_meta,
             checkpoints,
-            delegation_registry,
             delegation_tx,
             log_service,
-            state_service,
             connector_registry,
             bridge_registry,
             bridge_outbox,
@@ -658,7 +656,7 @@ impl ExecutionRunner {
         let service = self.peer_messages.as_ref()?;
         Some(Arc::new(crate::peer_messaging::PeerMessageHandler::new(
             service.store(),
-            self.state_service.clone(),
+            self.control.state_service.clone(),
             self.steering_registry.clone(),
             crate::peer_messaging::PEER_MESSAGE_TARGET,
         )))
@@ -707,7 +705,7 @@ impl ExecutionRunner {
     ) -> ContextCapabilityCatalog {
         let mut builder = ExecutorBuilder::new(self.paths.vault_dir().clone(), tool_settings)
             .with_actor_kind(actor_kind)
-            .with_state_service(self.state_service.clone())
+            .with_state_service(self.control.state_service.clone())
             .with_message_store(self.messages.clone());
 
         if let Some(registry) = self.model_registry.load_full() {
@@ -795,13 +793,13 @@ impl ExecutionRunner {
             mcp_service: self.mcp_service.clone(),
             skill_service: self.skill_service.clone(),
             paths: self.paths.clone(),
-            handles: self.handles.clone(),
+            handles: self.control.handles.clone(),
             messages: self.messages.clone(),
             checkpoints: self.checkpoints.clone(),
-            delegation_registry: self.delegation_registry.clone(),
+            delegation_registry: self.control.delegation_registry.clone(),
             delegation_tx: self.delegation_tx.clone(),
             log_service: self.log_service.clone(),
-            state_service: self.state_service.clone(),
+            state_service: self.control.state_service.clone(),
             memory_store: self.memory_store.clone(),
             embedding_client: self.embedding_client.clone(),
             distiller: self.distiller.clone(),
@@ -838,11 +836,11 @@ impl ExecutionRunner {
             messages: self.messages.clone(),
             session_meta: self.session_meta.clone(),
             checkpoints: self.checkpoints.clone(),
-            handles: self.handles.clone(),
-            delegation_registry: self.delegation_registry.clone(),
+            handles: self.control.handles.clone(),
+            delegation_registry: self.control.delegation_registry.clone(),
             delegation_tx: self.delegation_tx.clone(),
             log_service: self.log_service.clone(),
-            state_service: self.state_service.clone(),
+            state_service: self.control.state_service.clone(),
             memory_store: self.memory_store.clone(),
             distiller: self.distiller.clone(),
             memory_recall: self.memory_recall.clone(),
@@ -982,7 +980,7 @@ impl ExecutionRunner {
                     );
                 }
                 {
-                    let mut handles = self.handles.write().await;
+                    let mut handles = self.control.handles.write().await;
                     if handles
                         .get(&config.conversation_id)
                         .is_some_and(|handle| handle.is_same_execution(&partial_handle))
@@ -992,7 +990,7 @@ impl ExecutionRunner {
                 }
                 const SAFE_SETUP_ERROR: &str = "Unable to start this request";
                 crash_execution(CrashExecution {
-                    state_service: &self.state_service,
+                    state_service: &self.control.state_service,
                     log_service: &self.log_service,
                     event_bus: &self.event_bus,
                     execution_id: &partial_execution_id,
@@ -1009,13 +1007,13 @@ impl ExecutionRunner {
 
         let stream = super::execution_stream::ExecutionStream {
             event_bus: self.event_bus.clone(),
-            state_service: self.state_service.clone(),
+            state_service: self.control.state_service.clone(),
             log_service: self.log_service.clone(),
             messages: self.messages.clone(),
             checkpoints: self.checkpoints.clone(),
             delegation_tx: self.delegation_tx.clone(),
-            delegation_registry: self.delegation_registry.clone(),
-            handles: self.handles.clone(),
+            delegation_registry: self.control.delegation_registry.clone(),
+            handles: self.control.handles.clone(),
             distiller: self.distiller.clone(),
             handoff_writer: self.handoff_writer.clone(),
             kg_episode_store: self.kg_episode_store.clone(),
@@ -1058,29 +1056,7 @@ impl ExecutionRunner {
     /// extend to a BFS over `get_children` if multi-level delegation
     /// becomes common.
     pub async fn stop(&self, conversation_id: &str) -> Result<(), String> {
-        let handles = self.handles.read().await;
-        let stopped_root = handles.get(conversation_id).is_some();
-        if let Some(handle) = handles.get(conversation_id) {
-            handle.stop();
-        }
-        for child_conv_id in self.delegation_registry.get_children(conversation_id) {
-            if let Some(child) = handles.get(&child_conv_id) {
-                child.stop();
-                tracing::info!(
-                    parent = %conversation_id,
-                    child = %child_conv_id,
-                    "Cascaded stop signal to delegated subagent"
-                );
-            }
-        }
-        if stopped_root {
-            Ok(())
-        } else {
-            Err(format!(
-                "No active execution for conversation: {}",
-                conversation_id
-            ))
-        }
+        self.control.stop(conversation_id).await
     }
 
     /// Continue an execution after max iterations.
@@ -1089,16 +1065,9 @@ impl ExecutionRunner {
         conversation_id: &str,
         additional_iterations: u32,
     ) -> Result<(), String> {
-        let handles = self.handles.read().await;
-        if let Some(handle) = handles.get(conversation_id) {
-            handle.add_iterations(additional_iterations);
-            Ok(())
-        } else {
-            Err(format!(
-                "No active execution for conversation: {}",
-                conversation_id
-            ))
-        }
+        self.control
+            .continue_execution(conversation_id, additional_iterations)
+            .await
     }
 
     /// Pause an execution by session ID.
@@ -1106,16 +1075,7 @@ impl ExecutionRunner {
     /// Pausing sets a flag that the executor will check. The execution
     /// will complete the current operation and then wait for resume.
     pub async fn pause(&self, session_id: &str) -> Result<(), String> {
-        // First update the database state
-        self.state_service.pause_session(session_id)?;
-
-        // Then pause any running execution with matching session
-        let handles = self.handles.read().await;
-        for handle in handles.values() {
-            handle.pause();
-        }
-
-        Ok(())
+        self.control.pause(session_id).await
     }
 
     /// Resume a paused or crashed execution by session ID.
@@ -1128,9 +1088,14 @@ impl ExecutionRunner {
         // handles. After either a crash or graceful daemon shutdown there are
         // no in-memory handles to wake, and durable peer work still targets the
         // original execution ID.
-        let resumable_subagent = match self.state_service.get_last_crashed_subagent(session_id)? {
+        let resumable_subagent = match self
+            .control
+            .state_service
+            .get_last_crashed_subagent(session_id)?
+        {
             some @ Some(_) => some,
             None => self
+                .control
                 .state_service
                 .list_executions(&execution_state::ExecutionFilter {
                     session_id: Some(session_id.to_owned()),
@@ -1158,14 +1123,7 @@ impl ExecutionRunner {
         }
 
         // Fallback: standard resume (paused sessions or root-only crashes)
-        self.state_service.resume_session(session_id)?;
-
-        let handles = self.handles.read().await;
-        for handle in handles.values() {
-            handle.resume();
-        }
-
-        Ok(())
+        self.control.resume_live(session_id).await
     }
 
     /// Re-spawn a crashed or gracefully paused subagent without re-running root.
@@ -1181,46 +1139,59 @@ impl ExecutionRunner {
 
         // 1. Reactivate root session and execution.
         if self
+            .control
             .state_service
             .get_session(session_id)?
             .is_some_and(|session| session.status == execution_state::SessionStatus::Paused)
         {
-            self.state_service.resume_session(session_id)?;
+            self.control.state_service.resume_session(session_id)?;
         } else {
-            self.state_service.reactivate_session(session_id)?;
+            self.control.state_service.reactivate_session(session_id)?;
         }
-        if let Ok(Some(root_exec)) = self.state_service.get_root_execution(session_id) {
-            self.state_service.reactivate_execution(&root_exec.id)?;
+        if let Ok(Some(root_exec)) = self.control.state_service.get_root_execution(session_id) {
+            self.control
+                .state_service
+                .reactivate_execution(&root_exec.id)?;
         }
 
         // 2. Preserve and reactivate the crashed execution identity. Durable
         // peer work is addressed to an execution ID; replacing that ID during
         // smart resume would orphan already-accepted messages.
-        self.state_service.reactivate_execution(&crashed_exec.id)?;
+        self.control
+            .state_service
+            .reactivate_execution(&crashed_exec.id)?;
 
         // 3. Reactivate the child session.
         if self
+            .control
             .state_service
             .get_session(child_session_id)?
             .is_some_and(|session| session.status == execution_state::SessionStatus::Paused)
         {
-            self.state_service.resume_session(child_session_id)?;
+            self.control
+                .state_service
+                .resume_session(child_session_id)?;
         } else {
-            self.state_service.reactivate_session(child_session_id)?;
+            self.control
+                .state_service
+                .reactivate_session(child_session_id)?;
         }
 
         // 4. Ensure pending_delegations is at least 1 without double-counting
         // a gracefully paused delegation whose bookkeeping stayed durable.
         let parent_session = self
+            .control
             .state_service
             .get_session(session_id)?
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         if !parent_session.has_pending_delegations() {
-            self.state_service.register_delegation(session_id)?;
+            self.control.state_service.register_delegation(session_id)?;
         }
 
         // 5. Request continuation so root agent processes the callback when subagent finishes
-        self.state_service.request_continuation(session_id)?;
+        self.control
+            .state_service
+            .request_continuation(session_id)?;
 
         // 6. Build DelegationRequest from crashed execution's data
         let parent_execution_id = crashed_exec
@@ -1235,6 +1206,7 @@ impl ExecutionRunner {
 
         // Get root agent ID for parent_agent_id
         let root_agent_id = self
+            .control
             .state_service
             .get_root_execution(session_id)?
             .map(|e| e.agent_id)
@@ -1275,11 +1247,11 @@ impl ExecutionRunner {
             self.messages.clone(),
             self.session_meta.clone(),
             self.checkpoints.clone(),
-            self.handles.clone(),
-            self.delegation_registry.clone(),
+            self.control.handles.clone(),
+            self.control.delegation_registry.clone(),
             self.delegation_tx.clone(),
             self.log_service.clone(),
-            self.state_service.clone(),
+            self.control.state_service.clone(),
             None, // No delegation permit needed for resume
             self.memory_store.clone(),
             self.distiller.clone(),
@@ -1302,35 +1274,18 @@ impl ExecutionRunner {
     ///
     /// Cancellation immediately stops the execution and marks it as cancelled.
     pub async fn cancel(&self, session_id: &str) -> Result<(), String> {
-        // First update the database state
-        self.state_service.cancel_session(session_id)?;
-
-        // Then cancel any running execution
-        let handles = self.handles.read().await;
-        for handle in handles.values() {
-            handle.cancel();
-        }
-
-        Ok(())
+        self.control.cancel(session_id).await
     }
 
-    /// Cancel one session and only the handle registered for its exact
-    /// conversation. This is used by externally scoped work where signaling
+    /// Cancel one session and signal its exact conversation's delegation tree.
+    /// This is used by externally scoped work where signaling
     /// unrelated executions would cross an authorization boundary.
     pub async fn cancel_exact(
         &self,
         session_id: &str,
         conversation_id: &str,
     ) -> Result<(), String> {
-        self.state_service.cancel_session(session_id)?;
-
-        cancel_execution_tree(
-            &*self.handles.read().await,
-            &self.delegation_registry,
-            conversation_id,
-        );
-
-        Ok(())
+        self.control.cancel_exact(session_id, conversation_id).await
     }
 
     /// End a session (mark as completed).
@@ -1338,35 +1293,22 @@ impl ExecutionRunner {
     /// Called when user explicitly ends a session via /end, /new, or +new button.
     /// This marks the session as completed regardless of running executions.
     pub async fn end_session(&self, session_id: &str) -> Result<(), String> {
-        tracing::info!(session_id = %session_id, "User requested session end");
-
-        // Stop any running executions gracefully
-        let handles = self.handles.read().await;
-        for handle in handles.values() {
-            handle.stop();
-        }
-
-        // Mark session as completed
-        self.state_service.complete_session(session_id)?;
-
-        tracing::info!(session_id = %session_id, "Session ended by user request");
-        Ok(())
+        self.control.end_session(session_id).await
     }
 
     /// Get execution handle for a conversation.
     pub async fn get_handle(&self, conversation_id: &str) -> Option<ExecutionHandle> {
-        let handles = self.handles.read().await;
-        handles.get(conversation_id).cloned()
+        self.control.get_handle(conversation_id).await
     }
 
     /// Get the delegation registry.
     pub fn delegation_registry(&self) -> Arc<DelegationRegistry> {
-        self.delegation_registry.clone()
+        self.control.delegation_registry.clone()
     }
 
     /// Get the state service for execution state management.
     pub fn state_service(&self) -> Arc<StateService<DatabaseManager>> {
-        self.state_service.clone()
+        self.control.state_service.clone()
     }
 
     /// Spawn a delegated subagent.
@@ -1404,7 +1346,8 @@ impl ExecutionRunner {
         } else {
             delegation_context
         };
-        self.delegation_registry
+        self.control
+            .delegation_registry
             .register(&child_conversation_id, delegation_context);
 
         // Create config for the child agent
@@ -1442,49 +1385,12 @@ impl ExecutionRunner {
             }
             Err(e) => {
                 // Remove from registry on failure
-                self.delegation_registry.remove(&child_conversation_id);
+                self.control
+                    .delegation_registry
+                    .remove(&child_conversation_id);
                 Err(e)
             }
         }
-    }
-}
-
-fn cancel_execution_tree(
-    handles: &HashMap<String, ExecutionHandle>,
-    delegations: &DelegationRegistry,
-    root_conversation_id: &str,
-) {
-    let mut pending = vec![root_conversation_id.to_owned()];
-    let mut visited = std::collections::HashSet::new();
-
-    while let Some(conversation_id) = pending.pop() {
-        if !visited.insert(conversation_id.clone()) {
-            continue;
-        }
-        if let Some(handle) = handles.get(&conversation_id) {
-            handle.cancel();
-        }
-        pending.extend(delegations.get_children(&conversation_id));
-    }
-}
-
-#[cfg(test)]
-mod exact_cancel_tests {
-    use super::*;
-
-    #[test]
-    fn exact_cancel_does_not_signal_an_unrelated_execution() {
-        let selected = ExecutionHandle::new(10);
-        let unrelated = ExecutionHandle::new(10);
-        let handles = HashMap::from([
-            ("selected".to_string(), selected.clone()),
-            ("unrelated".to_string(), unrelated.clone()),
-        ]);
-
-        cancel_execution_tree(&handles, &DelegationRegistry::new(), "selected");
-
-        assert!(selected.is_cancelled());
-        assert!(!unrelated.is_cancelled());
     }
 }
 
@@ -2973,11 +2879,11 @@ mod peer_root_lifecycle_tests {
             paths: harness.runner.paths.clone(),
             messages: harness.runner.messages.clone(),
             checkpoints: harness.runner.checkpoints.clone(),
-            handles: harness.runner.handles.clone(),
-            delegation_registry: harness.runner.delegation_registry.clone(),
+            handles: harness.runner.control.handles.clone(),
+            delegation_registry: harness.runner.control.delegation_registry.clone(),
             delegation_tx: harness.runner.delegation_tx.clone(),
             log_service: harness.runner.log_service.clone(),
-            state_service: harness.runner.state_service.clone(),
+            state_service: harness.runner.control.state_service.clone(),
             memory_store: None,
             embedding_client: None,
             distiller: None,
@@ -3080,38 +2986,5 @@ mod peer_root_lifecycle_tests {
             pending.envelope().payload()["target_execution_id"],
             child.id
         );
-    }
-
-    #[test]
-    fn session_stop_recursive_cancellation_contract() {
-        let root = ExecutionHandle::new(10);
-        let child = ExecutionHandle::new(10);
-        let grandchild = ExecutionHandle::new(10);
-        let unrelated = ExecutionHandle::new(10);
-        let handles = HashMap::from([
-            ("root".to_owned(), root.clone()),
-            ("child".to_owned(), child.clone()),
-            ("grandchild".to_owned(), grandchild.clone()),
-            ("unrelated".to_owned(), unrelated.clone()),
-        ]);
-
-        let registry = DelegationRegistry::new();
-        registry.register(
-            "child",
-            crate::delegation::DelegationContext::new("session", "root", "root", "root"),
-        );
-        registry.register(
-            "grandchild",
-            crate::delegation::DelegationContext::new("session", "child", "child", "child"),
-        );
-        cancel_execution_tree(&handles, &registry, "root");
-
-        assert!(root.is_cancelled());
-        assert!(child.is_cancelled(), "all descendants must be cancelled");
-        assert!(
-            grandchild.is_cancelled(),
-            "all descendants must be cancelled"
-        );
-        assert!(!unrelated.is_cancelled());
     }
 }

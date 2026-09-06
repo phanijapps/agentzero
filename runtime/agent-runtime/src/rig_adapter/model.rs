@@ -91,6 +91,7 @@ pub struct LlmCompletionModel {
     client: Arc<dyn LlmClient>,
     #[allow(dead_code)]
     model_id: String,
+    single_action_mode: bool,
 }
 
 /// Bind callback-driven provider work to the lifetime of its consuming stream.
@@ -121,7 +122,14 @@ impl LlmCompletionModel {
         Self {
             client,
             model_id: model_id.into(),
+            single_action_mode: false,
         }
+    }
+
+    /// Constrain authoritative complete calls before Rig can dispatch siblings.
+    pub(super) fn with_single_action_mode(mut self, enabled: bool) -> Self {
+        self.single_action_mode = enabled;
+        self
     }
 }
 
@@ -144,11 +152,16 @@ impl CompletionModel for LlmCompletionModel {
             .output_schema
             .as_ref()
             .map(|schema| schema.as_value().clone());
-        let response = self
+        let mut response = self
             .client
             .chat_with_schema(messages, tools, output_schema)
             .await
             .map_err(llm_error_to_completion)?;
+        if self.single_action_mode {
+            if let Some(calls) = &mut response.tool_calls {
+                calls.truncate(1);
+            }
+        }
 
         let choice = if let Some(calls) = nonempty_tool_calls(&response) {
             OneOrMany::many(calls).map_err(|_| {
@@ -173,6 +186,7 @@ impl CompletionModel for LlmCompletionModel {
         let messages = convert_messages(&request)?;
         let tools = convert_tools(&request.tools);
         let client = self.client.clone();
+        let single_action_mode = self.single_action_mode;
 
         let (tx, rx) =
             mpsc::unbounded::<Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>>();
@@ -199,7 +213,11 @@ impl CompletionModel for LlmCompletionModel {
             let result = client.chat_stream(messages, tools, callback).await;
             match result {
                 Ok(response) => {
-                    for call in response.tool_calls.unwrap_or_default() {
+                    let mut calls = response.tool_calls.unwrap_or_default();
+                    if single_action_mode {
+                        calls.truncate(1);
+                    }
+                    for call in calls {
                         let _ = tx.unbounded_send(Ok(raw_tool_call(call)));
                     }
                     let _ = tx.unbounded_send(Ok(RawStreamingChoice::FinalResponse(

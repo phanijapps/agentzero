@@ -5,6 +5,8 @@ use crate::{engine::PreparedExecution, tools::ToolContext};
 use std::sync::Arc;
 
 #[cfg(test)]
+mod control_tests;
+#[cfg(test)]
 mod mcp_tests;
 
 /// Build the Rig loop with the actor-filtered inventory and effective prompt.
@@ -19,6 +21,9 @@ pub fn build_engine(
         .map(RigToolAdapter::boxed)
         .collect();
     let cfg = prepared.config;
+    rig_config.agent_id = cfg.agent_id.clone();
+    rig_config.model.model = cfg.model.clone();
+    rig_config.model.provider_id = cfg.provider_id.clone();
     // Gateway resolves shards, capability instructions and session context after
     // loading the agent YAML. Those instructions are authoritative at execution.
     rig_config.instructions = cfg.system_instruction.unwrap_or_default();
@@ -28,7 +33,8 @@ pub fn build_engine(
         cfg.skills,
         cfg.initial_state,
     ));
-    let model = LlmCompletionModel::new(prepared.llm_client, cfg.model);
+    let model = LlmCompletionModel::new(prepared.llm_client, cfg.model)
+        .with_single_action_mode(cfg.single_action_mode);
     RigAgentEngine::with_tool_hooks(
         rig_config,
         model,
@@ -37,6 +43,7 @@ pub fn build_engine(
         cfg.before_tool_call,
         cfg.after_tool_call,
     )
+    .with_execution_turn_limit(cfg.max_turns)
     .with_mcp_session(prepared.mcp_manager)
 }
 

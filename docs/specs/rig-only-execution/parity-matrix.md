@@ -381,3 +381,35 @@ No production engine has been retired yet. No AC is marked complete.
   pass; rebuilt daemon strict UI smoke/reload passes again in 8.8 seconds.
   T4 is complete. Root/child factory routing and end-to-end recovery remain the
   later T7–T9 integration layers; no complete cutover AC is claimed yet.
+
+### T5 execution record (in progress)
+
+- Scope: Rig run cancellation, control propagation and event fidelity in the
+  existing adapter; only proven shared result-policy helpers leave executor.rs.
+  Tests drive stalled providers, tool side-effect counters, terminal event
+  ordering and configured limits through Rig. T4 is committed as b1e34141.
+- Preserve effective pause/extension semantics: current gateway handles and DB
+  state own them; neither execution engine consumes a runtime pause flag. Do not
+  introduce a new pause loop or treat diagnostic iteration fields as hard caps.
+- Declined: another executor, a replacement provider/retry stack, concurrent
+  side-effect dispatch, or dynamic request overrides that the provider bridge
+  does not actually forward. Context middleware/recall/steering remains T6.
+- Resolve-versus-surface record open: no new user decision is required. Any
+  control/event discrepancy is resolved against existing behavior and pinned
+  Rig contracts before T5 is marked complete.
+- First bounded checkpoint: pre-set and stalled-provider stop tests reproduced
+  one-second timeouts before the fix. Stop now returns Stopped without Done,
+  aborts provider work and schedules MCP cleanup independently. Tests stop both
+  at ToolCallStart (zero effects) and after the first result (no second effect).
+  Metadata uses prepared host IDs even when optional Rig metadata is stale;
+  a real ten-second pending heartbeat and terminal context export are covered.
+- Pinned Rig's native cap does not have the configured one-based boundary. A
+  per-run CompletionCall hook preserves existing hard limits exactly: limits
+  1/2/4 permit 0/1/3 provider requests; disabled permits 53 requests. The native
+  ceiling avoids `max_turns + 1` overflow. Single-action reduces the fixture's
+  104 effects to 52 before Rig sees sibling calls. No second loop was added.
+- Parent minor diff review: no open findings; simplified an unnecessary optional
+  limit field. Independent post-simplification gate: 59 adapter tests passed,
+  runtime Clippy with warnings denied passed; formatting clean. This is an
+  intermediate T5 checkpoint, not wave completion. Tool error/result telemetry
+  and final integrated T5 checks remain.

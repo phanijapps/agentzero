@@ -55,11 +55,11 @@ const DEFAULT_MAX_TURNS: usize = 50;
 /// `execute_*` calls; per-request hidden context is threaded through Rig's
 /// `ToolCallExtensions` each run.
 pub struct RigAgentEngine<M: CompletionModel> {
-    #[allow(dead_code)]
     config: RigAgentConfig,
     agent: Agent<M>,
     shared_context: SharedToolContext,
     max_turns: usize,
+    hard_turn_limit: u32,
     resources: Option<SessionResources>,
 }
 
@@ -139,6 +139,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             agent,
             shared_context,
             max_turns,
+            hard_turn_limit: 0,
             resources: None,
         }
     }
@@ -150,10 +151,30 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         self
     }
 
+    /// Preserve the configured tick-before-check contract without a second loop.
+    pub(super) fn with_execution_turn_limit(mut self, limit: u32) -> Self {
+        self.hard_turn_limit = limit;
+        // Rig's native counter differs at the first round-trip. Apply the
+        // exact policy at its one-based CompletionCall hook instead; disable
+        // the native cap without overflowing Rig's `max_turns + 1`.
+        self.max_turns = usize::MAX - 1;
+        self
+    }
+
+    fn emit_turn_limit(&self, on_event: &mut StreamEventSink<'_>) {
+        on_event(StreamEvent::Done {
+            timestamp: current_timestamp(),
+            final_message: format!(
+                "[Turn limit reached after {} iterations. Stopping execution.]",
+                self.hard_turn_limit
+            ),
+            token_count: 0,
+        });
+    }
+
     /// Drive the Rig agent stream and map it onto [`StreamEvent`]s.
     ///
-    /// `stop_flag` enables cooperative cancellation: when set, the loop breaks
-    /// after the current item and finalizes with whatever was accumulated.
+    /// Stop interrupts pending stream polling and never reports completion.
     async fn run(
         &self,
         user_message: &str,
@@ -166,7 +187,13 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             .run_inner(user_message, history, stop_flag, on_event)
             .await;
         if let Some(cleanup) = cleanup {
-            cleanup.close().await;
+            if matches!(result, Err(ExecutorError::Stopped)) {
+                // Drop schedules supervised cleanup; user-visible stop must not
+                // wait for a transport's graceful shutdown budget.
+                drop(cleanup);
+            } else {
+                cleanup.close().await;
+            }
         }
         result
     }
@@ -178,6 +205,20 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         stop_flag: Option<Arc<AtomicBool>>,
         on_event: &mut StreamEventSink<'_>,
     ) -> Result<(), ExecutorError> {
+        on_event(StreamEvent::Metadata {
+            timestamp: current_timestamp(),
+            agent_id: self.config.agent_id.clone(),
+            model: self.config.model.model.clone(),
+            provider: self.config.model.provider_id.clone(),
+        });
+        let is_stopped = || {
+            stop_flag
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+        };
+        if is_stopped() {
+            return Err(ExecutorError::Stopped);
+        }
         let prompt = Message::user(user_message.to_string());
         let chat_history = convert_history(history);
 
@@ -190,10 +231,15 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         // matching the legacy executor and keeping the shared `ToolContext`'s
         // per-call state (e.g. function_call_id) race-free until T7c moves it
         // onto a proper per-call carrier.
+        let limit_reached = Arc::new(AtomicBool::new(false));
         let mut stream = self
             .agent
             .stream_chat(prompt, chat_history)
             .tool_extensions(extensions)
+            .add_hook(TurnLimitHook {
+                limit: self.hard_turn_limit,
+                reached: limit_reached.clone(),
+            })
             .multi_turn(self.max_turns)
             .tool_concurrency(1)
             .await;
@@ -204,14 +250,38 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         let mut tool_names_by_call_id = HashMap::new();
         let mut stopped_for_delegation = false;
         let mut responded = false;
-        while let Some(item) = stream.next().await {
-            if let Some(flag) = &stop_flag {
-                if flag.load(Ordering::Acquire) {
-                    break;
-                }
+        let mut stop_poll = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(10),
+        );
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            // Check before polling Rig: its next poll may dispatch a tool.
+            if is_stopped() {
+                return Err(ExecutorError::Stopped);
             }
+            let item = tokio::select! {
+                biased;
+                _ = stop_poll.tick(), if stop_flag.is_some() => { continue; }
+                _ = heartbeat.tick() => {
+                    on_event(StreamEvent::Heartbeat { timestamp: current_timestamp() });
+                    continue;
+                }
+                item = stream.next() => item,
+            };
+            if is_stopped() {
+                return Err(ExecutorError::Stopped);
+            }
+            let Some(item) = item else {
+                break;
+            };
             let item = match item {
                 Ok(item) => item,
+                Err(_) if limit_reached.load(Ordering::Acquire) => {
+                    self.emit_turn_limit(on_event);
+                    return Ok(());
+                }
                 Err(error) => return Err(map_streaming_error(error)),
             };
             match item {
@@ -437,7 +507,29 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 token_count: (total_input + total_output) as usize,
             });
         }
+        on_event(StreamEvent::ContextState {
+            timestamp: current_timestamp(),
+            state: self.shared_context.export_state(),
+        });
         Ok(())
+    }
+}
+
+/// Hard-limit policy at Rig's request boundary, not a duplicate turn loop.
+struct TurnLimitHook {
+    limit: u32,
+    reached: Arc<AtomicBool>,
+}
+
+impl<M: CompletionModel> AgentHook<M> for TurnLimitHook {
+    async fn on_event(&self, event: StepEvent<'_, M>) -> Flow {
+        if let StepEvent::CompletionCall { turn, .. } = event {
+            if self.limit > 0 && turn >= self.limit as usize {
+                self.reached.store(true, Ordering::Release);
+                return Flow::terminate("Configured hard turn limit reached");
+            }
+        }
+        Flow::cont()
     }
 }
 
@@ -761,7 +853,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_closure = stop.clone();
         let mut events = Vec::new();
-        engine
+        let result = engine
             .execute_stream_with_stop_flag("hi", &[], Some(stop.clone()), &mut |event| {
                 let is_token = matches!(event, StreamEvent::Token { .. });
                 events.push(event);
@@ -770,8 +862,8 @@ mod tests {
                     stop_for_closure.store(true, Ordering::Release);
                 }
             })
-            .await
-            .expect("stopped run should still finalize");
+            .await;
+        assert!(matches!(result, Err(ExecutorError::Stopped)));
 
         let tokens: Vec<String> = events
             .iter()
@@ -781,9 +873,9 @@ mod tests {
             })
             .collect();
         // The stop flag is checked before polling the next item, so exactly one
-        // token is emitted before the loop breaks and finalizes.
+        // token is emitted before the run stops without synthetic completion.
         assert_eq!(tokens, vec!["a".to_string()]);
-        assert!(events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
+        assert!(!events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
     }
 
     // End-to-end: the real LlmCompletionModel bridge over a stub AgentZero

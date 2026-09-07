@@ -1726,36 +1726,55 @@ impl InvokeBootstrap {
             })
             .await;
 
-        let retrying = match self
+        let _retrying = match self
             .build_intent_llm_client(agent, provider, config, session_id, execution_id)
             .await
         {
             Some(client) => client,
             None => return None,
         };
-        let system_prompt = crate::middleware::intent::load_intent_analysis_prompt(&self.ctx.paths);
+        let _system_prompt =
+            crate::middleware::intent::load_intent_analysis_prompt(&self.ctx.paths);
 
         let _tool_inventory = root_orchestrator_tool_names(self);
-        let existing_wards = list_existing_wards(&self.ctx.paths);
-        let recall_authorization = self.ctx.memory_recall.as_ref().and_then(|recall| {
+        let _existing_wards = list_existing_wards(&self.ctx.paths);
+        let _recall_authorization = self.ctx.memory_recall.as_ref().and_then(|recall| {
             crate::invoke::unified_recall_adapter::recall_authorization_context(
                 recall, "root", "root", session_id, None,
             )
         });
         let available_mcps = safe_intent_mcp_catalog(&self.ctx.mcp_service);
-        let mut analysis = analyze_intent(
-            retrying.clone(),
-            msg,
-            fs.as_ref(),
-            self.ctx.memory_recall.as_ref(),
-            self.ctx.integrations.snapshot().goal_adapter,
-            recall_authorization,
-            &system_prompt,
-            self.ctx.procedure_store.as_deref(),
-            &existing_wards,
-            &available_mcps,
-        )
-        .await;
+        // Build the intent agent deps from the configured intent model
+        let exec_settings = gateway_services::SettingsService::new(self.ctx.paths.clone())
+            .get_execution_settings()
+            .unwrap_or_default();
+        let intent_cfg = exec_settings.intent_analysis;
+        let intent_provider =
+            if let Some(id) = intent_cfg.provider_id.as_deref().filter(|s| !s.is_empty()) {
+                self.ctx
+                    .provider_service
+                    .get(id)
+                    .unwrap_or_else(|_| provider.clone())
+            } else {
+                provider.clone()
+            };
+        let intent_model = intent_cfg
+            .model
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| agent.model.clone());
+        let intent_max_tokens = intent_cfg.max_tokens.unwrap_or(agent.max_tokens);
+
+        let deps = crate::middleware::intent::agent::IntentAgentDeps {
+            skill_service: self.ctx.skill_service.clone(),
+            agent_service: self.ctx.agent_service.clone(),
+            procedure_store: self.ctx.procedure_store.clone(),
+            fact_store: fs.clone(),
+            paths: self.ctx.paths.clone(),
+            provider: intent_provider,
+            model: intent_model,
+            max_tokens: intent_max_tokens as u64,
+        };
+        let mut analysis = analyze_intent(&deps, msg).await;
 
         if config.is_chat_mode() {
             analysis.execution_strategy.approach = ExecutionApproach::Simple;
@@ -2273,6 +2292,10 @@ mod tests {
     fn intent_with_approach(approach: ExecutionApproach) -> IntentAnalysis {
         IntentAnalysis {
             pinned_procedure: None,
+            solution_path: vec![],
+            recommended_procedures: vec![],
+            complexity: None,
+            explanation: String::new(),
             primary_intent: "test-goal".to_string(),
             hidden_intents: Vec::new(),
             recommended_skills: vec!["coding".to_string()],

@@ -228,6 +228,8 @@ pub async fn index_resources(
     let _ = std::fs::write(&index_marker, aw_count.to_string());
 }
 
+const MAX_MCP_DESCRIPTION_CHARS: usize = 512;
+
 /// Index the safe MCP metadata used by semantic intent retrieval.
 /// Only ID, name, and description are stored — never commands, URLs,
 /// headers, or credentials. Disabled/OAuth-blocked servers are excluded.
@@ -275,93 +277,3 @@ async fn index_mcps(fact_store: &dyn MemoryFactStore, mcp_service: &McpService) 
 // ---------------------------------------------------------------------------
 // Read path — semantic candidate retrieval
 // ---------------------------------------------------------------------------
-
-/// Semantic search result grouped by resource type.
-pub(crate) struct SearchResults {
-    pub(crate) skills: Vec<serde_json::Value>,
-    pub(crate) agents: Vec<serde_json::Value>,
-    pub(crate) wards: Vec<String>,
-    pub(crate) mcps: Vec<serde_json::Value>,
-}
-
-/// Minimum relevance score to include a result (filters noise).
-///
-/// Calibrated to the RRF regime in `search_memory_facts_hybrid`. Raw RRF
-/// scores max at roughly 2/61 (≈ 0.033) when a fact is #1 in both arms,
-/// then get modulated by `confidence × recency × mention_boost`. A value
-/// near 0.005 retains exact keyword hits and mid-ranked dual-arm matches
-/// while filtering single-arm tail noise.
-const MIN_RELEVANCE_SCORE: f64 = 0.005;
-const MAX_SKILLS: usize = 8;
-const MAX_AGENTS: usize = 5;
-const MAX_WARDS: usize = 5;
-const MAX_MCPS: usize = 8;
-const MAX_MCP_DESCRIPTION_CHARS: usize = 512;
-
-/// Search the fact store for resources semantically relevant to the message.
-pub(crate) async fn search_resources(
-    fact_store: &dyn MemoryFactStore,
-    user_message: &str,
-) -> SearchResults {
-    let mut skills = Vec::new();
-    let mut agents = Vec::new();
-    let mut wards = Vec::new();
-    let mut mcps = Vec::new();
-
-    match fact_store.recall_facts("root", user_message, 50).await {
-        Ok(result) => {
-            if let Some(items) = result.get("results").and_then(|r| r.as_array()) {
-                for item in items {
-                    let score = item.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
-                    if score < MIN_RELEVANCE_SCORE {
-                        continue;
-                    }
-
-                    let category = item.get("category").and_then(|c| c.as_str()).unwrap_or("");
-                    let content = item.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    let key = item.get("key").and_then(|k| k.as_str()).unwrap_or("");
-
-                    match category {
-                        "skill" if skills.len() < MAX_SKILLS => {
-                            let name = key.strip_prefix("skill:").unwrap_or(key);
-                            let parts: Vec<&str> = content.splitn(3, " | ").collect();
-                            skills.push(serde_json::json!({
-                                "name": name,
-                                "description": parts.get(1).copied().unwrap_or(""),
-                            }));
-                        }
-                        "agent" if agents.len() < MAX_AGENTS => {
-                            let name = key.strip_prefix("agent:").unwrap_or(key);
-                            let parts: Vec<&str> = content.splitn(2, " | ").collect();
-                            agents.push(serde_json::json!({
-                                "name": name,
-                                "description": parts.get(1).copied().unwrap_or(""),
-                            }));
-                        }
-                        "ward" if wards.len() < MAX_WARDS => {
-                            wards.push(content.to_string());
-                        }
-                        "mcp" if mcps.len() < MAX_MCPS => {
-                            let id = key.strip_prefix("mcp:").unwrap_or(key);
-                            let parts: Vec<&str> = content.splitn(3, " | ").collect();
-                            mcps.push(serde_json::json!({
-                                "id": id,
-                                "name": parts.get(1).copied().unwrap_or(id),
-                                "description": parts.get(2).copied().unwrap_or(""),
-                            }));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        Err(e) => tracing::warn!("Semantic search failed: {}", e),
-    }
-
-    SearchResults {
-        skills,
-        agents,
-        wards,
-        mcps,
-    }
-}

@@ -382,6 +382,10 @@ fn test_intent_injection_sdlc_for_graph() {
     use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "stock analysis".to_string(),
         hidden_intents: vec!["fetch options data".to_string()],
         recommended_skills: vec!["coding".to_string()],
@@ -425,6 +429,10 @@ fn test_intent_injection_no_sdlc_for_simple() {
     use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "greeting".to_string(),
         hidden_intents: vec![],
         recommended_skills: vec![],
@@ -474,6 +482,10 @@ fn test_ward_rules_domain_agnostic() {
     use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "test".to_string(),
         hidden_intents: vec![],
         recommended_skills: vec![],

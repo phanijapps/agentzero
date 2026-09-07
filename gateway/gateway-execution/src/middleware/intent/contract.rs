@@ -1,8 +1,9 @@
-//! Intent contract — the typed decision a router returns.
+//! Intent contract — the typed decision the intent agent produces.
 //!
-//! The LLM judges only what it uniquely knows (posture, domain, implicit
-//! requirements). Skills/agents/MCPs come from retrieval, enforcement from
-//! the runtime — neither is re-narrated here.
+//! The intent agent reasons about the user's request using discovery tools
+//! (list_skills, list_agents, search_procedures, list_wards), then calls
+//! `submit_intent` with this structure. The orchestrator consumes it to
+//! route, load resources, and delegate.
 
 use agent_primitives::event::AgentCapabilityAssignment;
 use schemars::JsonSchema;
@@ -12,25 +13,35 @@ use std::collections::HashMap;
 /// The routed decision for one user request.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct IntentAnalysis {
-    /// Concise kebab-case or short phrase describing the user's main goal.
+    /// Concise kebab-case phrase describing the user's main goal.
     pub primary_intent: String,
     /// Actionable implicit requirements the user expects but didn't state.
     pub hidden_intents: Vec<String>,
-    /// Retrieved skill candidates (embedding search, not LLM judgment).
+    /// High-level steps the agent identified for solving this request.
+    /// Drives the planner's first draft when approach is graph.
+    #[serde(default)]
+    pub solution_path: Vec<String>,
+    /// Skills to load (names from list_skills tool output).
     pub recommended_skills: Vec<String>,
-    /// Retrieved agent candidates (embedding search, not LLM judgment).
+    /// Agents to delegate to (names from list_agents tool output).
     pub recommended_agents: Vec<String>,
-    /// Capability recommendations grouped by the exact agent that may use
-    /// them. MCP IDs are validated again at execution time.
+    /// Procedures that could handle this request (from search_procedures).
+    #[serde(default)]
+    pub recommended_procedures: Vec<String>,
+    /// Capability recommendations grouped by the exact agent that may use them.
     #[serde(default)]
     pub recommended_capabilities: Vec<AgentCapabilityAssignment>,
-    /// Reusable domain category for the work (never task-specific).
+    /// Reusable domain category for the work.
     pub ward_recommendation: WardRecommendation,
     /// Orchestration posture.
     pub execution_strategy: ExecutionStrategy,
+    /// Task complexity: S, M, L, or XL. Sets iteration budget.
+    #[serde(default)]
+    pub complexity: Option<String>,
+    /// Why the agent made these choices. Surfaced in the UI.
+    #[serde(default)]
+    pub explanation: String,
     /// Server-computed: a proven procedure whose name the request matched.
-    /// Never requested from the LLM; carries the home ward so the directive
-    /// can route a cross-ward macro invocation.
     #[serde(skip)]
     pub pinned_procedure: Option<PinnedProcedure>,
 }
@@ -39,8 +50,6 @@ pub struct IntentAnalysis {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PinnedProcedure {
     pub name: String,
-    /// Home ward of the procedure; the invocation executes with its context
-    /// regardless of the session's current ward.
     pub ward_id: Option<String>,
 }
 
@@ -102,7 +111,6 @@ impl std::fmt::Display for ExecutionApproach {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ExecutionStrategy {
     pub approach: ExecutionApproach,
-    /// One-line classifier rationale; surfaced as the approach note.
     #[serde(default)]
     pub explanation: String,
 }

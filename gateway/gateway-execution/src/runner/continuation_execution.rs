@@ -3,7 +3,8 @@ use super::core::attach_mid_session_recall_hook;
 use crate::delegation::{DelegationRegistry, DelegationRequest};
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
-    collect_agents_summary, collect_skills_summary, select_engine, AgentLoader, ExecutorBuilder,
+    build_execution_engine, collect_agents_summary, collect_skills_summary, AgentLoader,
+    ExecutorBuilder,
 };
 use crate::lifecycle::emit_agent_started;
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind};
@@ -429,7 +430,7 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         let steering_handle = executor.enable_steering();
         steering_registry.register_peer_only(&execution_id, steering_handle);
     }
-    let executor: BoxedAgentEngine = select_engine(executor);
+    let executor: BoxedAgentEngine = build_execution_engine(executor)?;
 
     // Build a focused continuation message with the plan injected if one exists.
     let continuation_message = build_continuation_message(

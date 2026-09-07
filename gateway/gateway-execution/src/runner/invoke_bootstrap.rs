@@ -31,8 +31,8 @@ use crate::agent_pool::AgentResultBus;
 use crate::config::ExecutionConfig;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
-    collect_agents_summary, collect_skills_summary, mcp_startup_failure_observer, select_engine,
-    AgentLoader, ExecutorBuilder,
+    build_execution_engine, collect_agents_summary, collect_skills_summary,
+    mcp_startup_failure_observer, AgentLoader, ExecutorBuilder,
 };
 use crate::lifecycle::{emit_agent_started, get_or_create_session, start_execution};
 use crate::middleware::intent_analysis::{
@@ -1235,7 +1235,7 @@ impl InvokeBootstrap {
             session_id,
             execution_id,
             root_message_id,
-            executor: select_engine(executor),
+            executor: build_execution_engine(executor)?,
             handle,
             history,
             scanned_input_cursor,

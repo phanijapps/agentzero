@@ -797,3 +797,33 @@ No production engine has been retired yet. No AC is marked complete.
   PreparedExecution, so these are not legacy-only tests merely because their
   containing file is named executor.rs. Keep the neutral policy tests; delete
   only selector/fallback expectations and actual old-engine construction.
+
+### T9 execution record — hard cutover
+
+- `select_engine`/`select_engine_with` and every `ZBOT_ENGINE` read are
+  deleted. `build_execution_engine(PreparedExecution) -> Result<BoxedAgentEngine>`
+  is the sole construction choke: unconditional Rig, explicit
+  `rig_execution_config_unresolved` failure when the resolved config is
+  missing, never a fallback. The stale MCP safety-gate branch (T3/T4 moved
+  MCP onto Rig) is gone with it. All four construction sites (root invoke,
+  continuation, delegated children, and the runner entries serving durable
+  Research/A2A) now call the new factory.
+- New cutover tests: `execution_engine_is_rig_regardless_of_environment`
+  pins ZBOT_ENGINE absent/rig/legacy/garbage — construction returns the Rig
+  engine every time; `missing_rig_config_fails_explicitly_instead_of_falling_back`
+  proves fail-closed. The A/B selector tests are deleted with the selector.
+- package.json daemon:watch no longer sets ZBOT_ENGINE=rig;
+  runtime/AGENTS.md and runtime/agent-runtime/AGENTS.md now state the
+  sole-engine truth.
+- Gates: the ENTIRE 625-test gateway-execution suite now runs through Rig
+  unconditionally and passes; workspace tests green except the two tracked
+  pre-existing entries; clippy -D warnings clean; release binaries build
+  (cargo build -p daemon -p cli --release --locked).
+- e2e: the stop-and-continue spec failed consistently on the cutover tree —
+  root-caused to the spec's own documented best-effort cancel race (when the
+  stop wins pre-request, the continuation consumes the first FIFO response).
+  The daemon behaved correctly in both outcomes (session completes,
+  continuation answer renders and is durable); the spec's assertions now
+  tolerate the race it documents, keeping the strict completion contract.
+  4 consecutive green runs plus simple-qa and ward-archetypes on the
+  flag-less Rig daemon.

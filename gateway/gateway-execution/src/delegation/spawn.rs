@@ -22,8 +22,8 @@ use agent_runtime::ChatMessage;
 
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
-    broadcast_event, collect_agents_summary, collect_skills_summary, detect_subagent_role,
-    mcp_startup_failure_observer, process_stream_event, select_engine,
+    broadcast_event, build_execution_engine, collect_agents_summary, collect_skills_summary,
+    detect_subagent_role, mcp_startup_failure_observer, process_stream_event,
     spawn_batch_writer_with_traces, subagent_rules, AgentLoader, ExecutorBuilder,
     ResponseAccumulator, RuntimeActorKind, StreamContext,
 };
@@ -718,7 +718,14 @@ pub async fn spawn_delegated_agent(
 
     // Spawn the execution task
     spawn_execution_task(SpawnContext {
-        executor: select_engine(executor),
+        executor: build_execution_engine(executor).map_err(|error| {
+            tracing::error!(
+                child = %request.child_agent_id,
+                %error,
+                "Delegated engine construction failed"
+            );
+            error
+        })?,
         handle: handle_clone,
         request: request.clone(),
         execution_id: execution_id.clone(),

@@ -4,7 +4,7 @@
 
 use agent_primitives::{ConnectorResourceProvider, FileSystemContext};
 use agent_runtime::{
-    AgentExecutor, BoxedAgentEngine, ContextActorKind, ContextCapability, ContextCapabilityCatalog,
+    BoxedAgentEngine, ContextActorKind, ContextCapability, ContextCapabilityCatalog,
     ContextCapabilityHealth, ContextCapabilityKind, ContextCostHint, ContextEditingConfig,
     ContextEditingMiddleware, ContextLatencyHint, ContextRiskLevel, ContextSideEffects,
     DelegateTool, ExecutorConfig, KeepPolicy, LlmClient, LlmConfig, McpManager, MiddlewarePipeline,
@@ -84,67 +84,30 @@ pub fn build_rig_agent_config(
     )
 }
 
-/// Select the execution engine from prepared session inputs.
+/// Build the sole execution engine from prepared session inputs.
 ///
-/// Default: the legacy [`AgentExecutor`] (boxed). When `ZBOT_ENGINE=rig` is
-/// set, a [`RigAgentConfig`] was resolved, and **no MCP servers are
-/// configured**, the Rig-backed engine drives instead — same `LlmClient`, same
-/// actor-filtered tool inventory, same shared context, and the same
-/// before/after-tool hooks.
-///
-/// # Current limitations of the Rig path (live A/B validation only)
-/// - No middleware/compaction (long conversations can overflow the context
-///   window); live context control is not yet wired into the Rig loop.
-/// - No mid-session recall or steering hooks.
-/// - MCP is intentionally unsupported here (falls back to legacy) until the MCP
-///   lifecycle is bridged — `McpManager` has no `Drop` cleanup, so routing an
-///   MCP-bearing session through Rig would orphan the subprocesses.
-pub fn select_engine(executor: PreparedExecution) -> BoxedAgentEngine {
-    let use_rig = std::env::var("ZBOT_ENGINE")
-        .map(|v| v.eq_ignore_ascii_case("rig"))
-        .unwrap_or(false);
-    select_engine_with(executor, use_rig)
-}
-
-/// Pure routing core of [`select_engine`], testable without touching the
-/// process environment.
-fn select_engine_with(executor: PreparedExecution, use_rig: bool) -> BoxedAgentEngine {
-    if !use_rig {
-        return Box::new(AgentExecutor::from_prepared(executor));
-    }
-
-    // Extract everything needed from the config up front so the immutable
-    // borrow ends before any branch moves `executor`.
-    let cfg = executor.config();
-    let mcps_empty = cfg.mcps.is_empty();
-    let agent_id = cfg.agent_id.clone();
-    let rig_config = executor.rig_config.clone();
-
-    if !mcps_empty {
-        tracing::warn!(
-            target: "rig_cutover",
-            agent = %agent_id,
-            "ZBOT_ENGINE=rig ignored: MCP servers are configured and the Rig path does not yet bridge the MCP lifecycle; using legacy executor"
-        );
-        return Box::new(AgentExecutor::from_prepared(executor));
-    }
-    let Some(rig_config) = rig_config else {
-        tracing::warn!(
-            target: "rig_cutover",
-            agent = %agent_id,
-            "ZBOT_ENGINE=rig ignored: no RigAgentConfig resolved; using legacy executor"
-        );
-        return Box::new(AgentExecutor::from_prepared(executor));
+/// Every local entry point — root invoke, continuation, delegated children,
+/// durable Research and A2A ingress — constructs here. The Rig-backed
+/// engine drives unconditionally: same `LlmClient`, same actor-filtered tool
+/// inventory (built-ins, MCP and skills), same shared context, and the same
+/// before/after-tool hooks. There is no engine-selection environment flag
+/// and no fallback; a session whose required Rig configuration cannot be
+/// resolved fails explicitly.
+pub fn build_execution_engine(executor: PreparedExecution) -> Result<BoxedAgentEngine, String> {
+    let agent_id = executor.config().agent_id.clone();
+    let Some(rig_config) = executor.rig_config.clone() else {
+        return Err(format!(
+            "rig_execution_config_unresolved: agent {agent_id} resolved no engine configuration"
+        ));
     };
-
     tracing::info!(
         target: "rig_cutover",
         agent = %agent_id,
-        "ZBOT_ENGINE=rig: driving RigAgentEngine"
+        "constructing RigAgentEngine"
     );
-    Box::new(agent_runtime::rig_adapter::factory::build_engine(
+    Ok(Box::new(agent_runtime::rig_adapter::factory::build_engine(
         executor, rig_config,
-    ))
+    )))
 }
 
 fn resolve_effective_max_input(agent: &Agent, provider: &Provider) -> u64 {
@@ -2790,7 +2753,7 @@ extensions: {}
     }
 
     #[tokio::test]
-    async fn select_engine_defaults_to_legacy_and_routes_to_rig_when_enabled() {
+    async fn execution_engine_is_rig_regardless_of_environment() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("vault dirs");
@@ -2799,50 +2762,55 @@ extensions: {}
         agent.max_input_tokens = DEFAULT_MAX_INPUT_TOKENS;
         agent.max_input_tokens_explicit = false;
         agent.max_tokens = 4_096;
-        agent.mcps.clear(); // no MCP → clears the Rig path's MCP safety gate
+        agent.mcps.clear();
         agent.skills.clear();
         let provider = sample_provider();
 
-        async fn build(
-            dir: &tempfile::TempDir,
-            agent: &Agent,
-            provider: &Provider,
-            mcp_service: &McpService,
-        ) -> PreparedExecution {
-            ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
-                .build(agent, provider, "c", "s", &[], &[], None, mcp_service, None)
+        // No engine-selection flag exists: whatever the environment holds,
+        // construction returns the Rig engine. (Env mutation is safe here —
+        // this is the only test touching ZBOT_ENGINE in the process.)
+        for value in [None, Some("rig"), Some("legacy"), Some("garbage")] {
+            match value {
+                Some(v) => std::env::set_var("ZBOT_ENGINE", v),
+                None => std::env::remove_var("ZBOT_ENGINE"),
+            }
+            // Rebuild per iteration: PreparedExecution is not Clone.
+            let prepared = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+                .build(
+                    &agent,
+                    &provider,
+                    "c",
+                    "s",
+                    &[],
+                    &[],
+                    None,
+                    &mcp_service,
+                    None,
+                )
                 .await
-                .expect("executor build")
+                .expect("executor build");
+            let engine =
+                build_execution_engine(prepared).expect("engine construction is unconditional");
+            assert_eq!(
+                engine.engine_name(),
+                "rig",
+                "ZBOT_ENGINE={value:?} must not change engine selection"
+            );
         }
-
-        // Default: legacy executor.
-        let legacy = build(&dir, &agent, &provider, &mcp_service).await;
-        assert_eq!(
-            select_engine_with(legacy, false).engine_name(),
-            "agent-executor"
-        );
-
-        // ZBOT_ENGINE=rig + no MCP + rig_agent_config present → RigAgentEngine.
-        let rig = build(&dir, &agent, &provider, &mcp_service).await;
-        assert_eq!(select_engine_with(rig, true).engine_name(), "rig");
+        std::env::remove_var("ZBOT_ENGINE");
     }
 
     #[tokio::test]
-    async fn select_engine_falls_back_when_mcp_configured() {
+    async fn missing_rig_config_fails_explicitly_instead_of_falling_back() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
         paths.ensure_dirs_exist().expect("vault dirs");
         let mcp_service = McpService::new(paths);
-        mcp_service.add(serde_json::from_value(serde_json::json!({
-            "type":"stdio", "id":"filesystem", "name":"Filesystem",
-                "description":"startup failure fixture", "command":"/nonexistent/mcp-fixture", "args":[], "enabled":true
-        })).unwrap()).unwrap();
         let mut agent = sample_agent();
-        agent.mcps = vec!["filesystem".to_string()]; // MCP configured → safety gate fires
+        agent.mcps.clear();
         agent.skills.clear();
         let provider = sample_provider();
-
-        let executor = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+        let mut prepared = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
             .build(
                 &agent,
                 &provider,
@@ -2856,11 +2824,16 @@ extensions: {}
             )
             .await
             .expect("executor build");
-
-        // Rig requested but MCP present → must fall back to legacy (no orphan).
-        assert_eq!(
-            select_engine_with(executor, true).engine_name(),
-            "agent-executor"
+        // Strip the resolved config: construction must fail closed, never
+        // silently fall back to an alternative loop.
+        prepared.rig_config = None;
+        let error = match build_execution_engine(prepared) {
+            Err(error) => error,
+            Ok(_) => panic!("missing rig config must fail explicitly"),
+        };
+        assert!(
+            error.contains("rig_execution_config_unresolved"),
+            "explicit failure, got: {error}"
         );
     }
 
@@ -2879,43 +2852,27 @@ extensions: {}
             }
             async fn chat(
                 &self,
-                _: Vec<agent_runtime::ChatMessage>,
-                _: Option<Value>,
-            ) -> Result<ChatResponse, LlmError> {
-                unreachable!()
+                _messages: Vec<agent_runtime::types::ChatMessage>,
+                _tools: Option<serde_json::Value>,
+            ) -> Result<agent_runtime::llm::ChatResponse, agent_runtime::llm::LlmError>
+            {
+                Ok(agent_runtime::llm::ChatResponse {
+                    content: String::new(),
+                    tool_calls: None,
+                    reasoning: None,
+                    usage: None,
+                })
             }
             async fn chat_stream(
                 &self,
-                messages: Vec<agent_runtime::ChatMessage>,
-                tools: Option<Value>,
-                callback: StreamCallback,
-            ) -> Result<ChatResponse, LlmError> {
-                let result = messages.iter().find(|message| message.role == "tool");
-                if let Some(result) = result {
-                    assert!(result.text_content().contains("alias-dispatch-result"));
-                    callback(agent_runtime::llm::StreamChunk::Token("done".into()));
-                } else {
-                    let tools = tools.unwrap();
-                    assert!(tools
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|tool| tool["function"]["name"] == "canonical-probe__echo"));
-                    assert!(!tools.to_string().contains("Friendly Probe__"));
-                }
-                Ok(ChatResponse {
-                    content: if result.is_some() {
-                        "done".into()
-                    } else {
-                        String::new()
-                    },
-                    tool_calls: result.is_none().then(|| {
-                        vec![agent_runtime::ToolCall::new(
-                            "alias-call".into(),
-                            "canonical-probe__echo".into(),
-                            serde_json::json!({"value":"alias-dispatch-result"}),
-                        )]
-                    }),
+                _messages: Vec<agent_runtime::types::ChatMessage>,
+                _tools: Option<serde_json::Value>,
+                _callback: agent_runtime::llm::StreamCallback,
+            ) -> Result<agent_runtime::llm::ChatResponse, agent_runtime::llm::LlmError>
+            {
+                Ok(agent_runtime::llm::ChatResponse {
+                    content: String::new(),
+                    tool_calls: None,
                     reasoning: None,
                     usage: None,
                 })

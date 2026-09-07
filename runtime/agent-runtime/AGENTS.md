@@ -18,7 +18,7 @@ cargo build -p agent-runtime
 | `AgentExecutor` | Existing executor implementation and fallback path. |
 | `RigAgentEngine` | Rig-backed implementation that adapts zbot config/tools/history/hooks/streams into the existing runtime event contract. |
 
-`ZBOT_ENGINE=rig` selects the Rig path when gateway safety gates allow it. Sessions with configured MCP servers currently fall back to `AgentExecutor` because MCP subprocess lifecycle cleanup has not been moved into the Rig path.
+Rig is the sole execution engine; `gateway-execution` constructs it unconditionally. MCP sessions are owned by the Rig engine's session resources.
 
 ## Key Components
 

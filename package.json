@@ -8,7 +8,7 @@
     "preview": "npm --prefix apps/ui run preview",
     "lint": "npm --prefix apps/ui run lint",
     "daemon": "cargo run -p daemon -- --static-dir ./dist",
-    "daemon:watch": "ZBOT_ENGINE=rig watchexec -r --poll 2s -w gateway/gateway-execution/src -w gateway/gateway-services/src -w gateway/src -w runtime/agent-tools/src -w runtime/agent-runtime/src -w services/knowledge-graph/src -w stores/zbot-stores-sqlite/src -w stores/zbot-stores-traits/src -w stores/zbot-stores-domain/src -w stores/zbot-stores/src -w apps/daemon/src -e rs -- cargo run -p daemon -- --static-dir ./dist",
+    "daemon:watch": "watchexec -r --poll 2s -w gateway/gateway-execution/src -w gateway/gateway-services/src -w gateway/src -w runtime/agent-tools/src -w runtime/agent-runtime/src -w services/knowledge-graph/src -w stores/zbot-stores-sqlite/src -w stores/zbot-stores-traits/src -w stores/zbot-stores-domain/src -w stores/zbot-stores/src -w apps/daemon/src -e rs -- cargo run -p daemon -- --static-dir ./dist",
     "daemon:surreal": "cargo run -p daemon --features surreal-backend -- --static-dir ./dist",
     "daemon:surreal:watch": "watchexec -r --poll 2s -w gateway/gateway-execution/src -w gateway/gateway-services/src -w gateway/src -w runtime/agent-tools/src -w runtime/agent-runtime/src -w services/knowledge-graph/src -w stores/zbot-stores-sqlite/src -w stores/zbot-stores-traits/src -w stores/zbot-stores-domain/src -w stores/zbot-stores/src -w stores/zbot-stores-surreal/src -w apps/daemon/src -e rs -- cargo run -p daemon --features surreal-backend -- --static-dir ./dist"
   },

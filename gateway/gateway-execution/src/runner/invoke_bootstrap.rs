@@ -35,10 +35,11 @@ use crate::invoke::{
     mcp_startup_failure_observer, AgentLoader, ExecutorBuilder,
 };
 use crate::lifecycle::{emit_agent_started, get_or_create_session, start_execution};
-use crate::middleware::intent_analysis::{
-    analyze_intent_with_capabilities, format_intent_injection, format_planner_task,
-    index_resources, ExecutionApproach, IntentAnalysis, WardAction,
+use crate::middleware::intent::{
+    analyze_intent, format_intent_injection, format_planner_task, ExecutionApproach,
+    IntentAnalysis, WardAction,
 };
+use crate::middleware::resource_index::index_resources;
 use crate::session_title::{SessionTitleInputs, SessionTitleService};
 
 use super::OnSessionReady;
@@ -84,7 +85,6 @@ pub(super) struct InvokeBootstrap {
     /// Procedure recommendation tier thresholds. Threaded from settings.json
     /// at AppState wiring time; default tiers if absent. See
     /// `gateway_memory::ProcedureRecommendationConfig`.
-    pub(super) procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig,
     pub(super) event_bus: Arc<EventBus>,
     pub(super) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
 }
@@ -1704,10 +1704,9 @@ impl InvokeBootstrap {
                 std::sync::Arc::new(raw_client),
                 agent_runtime::RetryPolicy::default(),
             ));
-        let system_prompt =
-            crate::middleware::intent_analysis::load_intent_analysis_prompt(&self.paths);
+        let system_prompt = crate::middleware::intent::load_intent_analysis_prompt(&self.paths);
 
-        let tool_inventory = root_orchestrator_tool_names(self);
+        let _tool_inventory = root_orchestrator_tool_names(self);
         let existing_wards = list_existing_wards(&self.paths);
         let recall_authorization = self.memory_recall.as_ref().and_then(|recall| {
             crate::invoke::unified_recall_adapter::recall_authorization_context(
@@ -1715,7 +1714,7 @@ impl InvokeBootstrap {
             )
         });
         let available_mcps = safe_intent_mcp_catalog(&self.mcp_service);
-        let mut analysis = match analyze_intent_with_capabilities(
+        let mut analysis = analyze_intent(
             retrying.clone(),
             msg,
             fs.as_ref(),
@@ -1723,40 +1722,14 @@ impl InvokeBootstrap {
             self.integrations.snapshot().goal_adapter,
             recall_authorization,
             &system_prompt,
-            &tool_inventory,
-            Some(&self.procedure_recommendation_cfg),
+            self.procedure_store.as_deref(),
             &existing_wards,
             &available_mcps,
         )
-        .await
-        {
-            Ok(a) => a,
-            Err(e) => {
-                if config.redact_diagnostics() {
-                    tracing::warn!(
-                        session_id,
-                        execution_id,
-                        reason_code = "intent_analysis_failed",
-                        "Intent analysis unavailable"
-                    );
-                } else {
-                    tracing::warn!("Intent analysis failed (non-fatal): {}", e);
-                }
-                self.emit_intent_fallback_complete(
-                    session_id,
-                    execution_id,
-                    &config.agent_id,
-                    "Intent analysis failed — workspace selection unavailable",
-                    "Intent analysis unavailable",
-                )
-                .await;
-                return None;
-            }
-        };
+        .await;
 
         if config.is_chat_mode() {
             analysis.execution_strategy.approach = ExecutionApproach::Simple;
-            analysis.execution_strategy.graph = None;
             analysis.execution_strategy.explanation =
                 "Quick Chat runs directly in the root execution".to_string();
         }
@@ -1832,22 +1805,6 @@ impl InvokeBootstrap {
         }
 
         // Collect spec guidance from recommended skills' ward_setup.
-        let spec_guidance = {
-            let mut guidances = Vec::new();
-            for skill_name in &analysis.recommended_skills {
-                if let Ok(Some(ws)) = self.skill_service.get_ward_setup(skill_name).await {
-                    if let Some(ref g) = ws.spec_guidance {
-                        guidances.push(g.clone());
-                    }
-                }
-            }
-            if guidances.is_empty() {
-                None
-            } else {
-                Some(guidances.join("\n\n"))
-            }
-        };
-
         let planning_capability_catalog =
             if analysis.execution_strategy.approach == ExecutionApproach::Graph {
                 Some(
@@ -1868,11 +1825,7 @@ impl InvokeBootstrap {
             recommended_capabilities: analysis.recommended_capabilities.clone(),
             is_graph: analysis.execution_strategy.approach == ExecutionApproach::Graph,
             title_hint: analysis.primary_intent.clone(),
-            instructions_injection: format_intent_injection(
-                &analysis,
-                spec_guidance.as_deref(),
-                Some(msg),
-            ),
+            instructions_injection: format_intent_injection(&analysis, Some(msg)),
             existing_ward_id,
             planning_task,
             planning_capability_catalog,
@@ -2044,7 +1997,7 @@ impl InvokeBootstrap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::middleware::intent_analysis::{ExecutionStrategy, WardRecommendation};
+    use crate::middleware::intent::{ExecutionStrategy, WardRecommendation};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -2136,6 +2089,7 @@ mod tests {
 
     fn intent_with_approach(approach: ExecutionApproach) -> IntentAnalysis {
         IntentAnalysis {
+            pinned_procedure: None,
             primary_intent: "test-goal".to_string(),
             hidden_intents: Vec::new(),
             recommended_skills: vec!["coding".to_string()],
@@ -2150,11 +2104,8 @@ mod tests {
             },
             execution_strategy: ExecutionStrategy {
                 approach,
-                graph: None,
                 explanation: String::new(),
             },
-            rewritten_prompt: String::new(),
-            procedure_recommendation: None,
         }
     }
 
@@ -2325,7 +2276,6 @@ mod tests {
             steering_registry: None,
             agent_result_bus: None,
             procedure_store: None,
-            procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig::default(),
             ward_usage: Arc::new(gateway_services::WardUsage::new(
                 std::env::temp_dir().join("zbot-test-wards"),
             )),
@@ -2370,7 +2320,6 @@ mod tests {
             steering_registry: None,
             agent_result_bus: None,
             procedure_store: None,
-            procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig::default(),
             ward_usage: Arc::new(gateway_services::WardUsage::new(
                 std::env::temp_dir().join("zbot-test-wards-root-message"),
             )),
@@ -2603,7 +2552,6 @@ mod tests {
             steering_registry: None,
             agent_result_bus: None,
             procedure_store: None,
-            procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig::default(),
             ward_usage: Arc::new(gateway_services::WardUsage::new(
                 std::env::temp_dir().join("zbot-test-wards-fallback"),
             )),

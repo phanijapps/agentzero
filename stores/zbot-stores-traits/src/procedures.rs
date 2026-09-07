@@ -19,6 +19,18 @@ pub trait ProcedureStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// List `(name, home ward)` pairs for an agent across ALL wards, capped
+    /// at `limit`. The global name index for deterministic macro matching —
+    /// wards organize context, not callables, so procedure names are never
+    /// ward-scoped. Default empty.
+    async fn list_procedure_names(
+        &self,
+        _agent_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<(String, Option<String>)>, String> {
+        Ok(Vec::new())
+    }
+
     /// Upsert a procedure. The `procedure` Value carries the full
     /// `Procedure` shape; `embedding` is optional.
     async fn upsert_procedure(

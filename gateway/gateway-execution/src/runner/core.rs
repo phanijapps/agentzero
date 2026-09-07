@@ -323,12 +323,12 @@ impl ExecutionRunner {
             bridge_outbox,
             embedding_client,
             procedure_store,
-            procedure_recommendation_cfg,
             max_parallel_agents,
             ward_usage,
             messages,
             session_meta,
             checkpoints,
+            procedure_recommendation_cfg: _procedure_recommendation_cfg,
         } = config;
 
         // Create channel for delegation requests
@@ -376,7 +376,6 @@ impl ExecutionRunner {
             steering_registry: Some(steering_registry.clone()),
             agent_result_bus: Some(agent_result_bus.clone()),
             procedure_store: procedure_store.clone(),
-            procedure_recommendation_cfg,
             ward_usage: ward_usage.clone(),
             event_bus: event_bus.clone(),
             handles: handles.clone(),

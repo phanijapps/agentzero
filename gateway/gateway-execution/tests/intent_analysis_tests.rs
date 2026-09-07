@@ -5,7 +5,7 @@
 
 use agent_runtime::{ChatMessage, ChatResponse, LlmClient, LlmError, StreamCallback};
 use async_trait::async_trait;
-use gateway_execution::middleware::intent_analysis::{
+use gateway_execution::middleware::intent::{
     analyze_intent, format_intent_injection, ExecutionApproach, WardAction,
     DEFAULT_INTENT_ANALYSIS_PROMPT,
 };
@@ -132,25 +132,6 @@ fn complex_analysis_json() -> String {
         },
         "execution_strategy": {
             "approach": "graph",
-            "graph": {
-                "nodes": [
-                    {"id": "A", "task": "Research current financial data", "agent": "researcher", "skills": ["web-search"]},
-                    {"id": "B", "task": "Evaluate investment options", "agent": "analyst", "skills": ["code-exec"]},
-                    {"id": "C", "task": "Synthesize findings", "agent": "analyst", "skills": ["file-write"]},
-                    {"id": "D", "task": "Quality verification", "agent": "root", "skills": []},
-                    {"id": "E", "task": "Fix gaps", "agent": "analyst", "skills": ["web-search", "code-exec"]}
-                ],
-                "edges": [
-                    {"from": "A", "to": "B"},
-                    {"from": "B", "to": "C"},
-                    {"from": "C", "to": "D"},
-                    {"from": "D", "conditions": [
-                        {"when": "all checks pass", "to": "END"},
-                        {"when": "gaps or errors found", "to": "E"}
-                    ]},
-                    {"from": "E", "to": "D"}
-                ]
-            },
             "explanation": "Research feeds into analysis, then synthesis. Quality gate loops back capped at 2 cycles."
         }
     })
@@ -177,12 +158,11 @@ async fn test_full_enrichment_flow() {
         None,
         None,
         DEFAULT_INTENT_ANALYSIS_PROMPT,
-        &[],
         None,
         &[],
+        &[],
     )
-    .await
-    .expect("analyze_intent should succeed with valid JSON");
+    .await;
 
     assert_eq!(analysis.primary_intent, "financial_analysis");
     assert_eq!(analysis.hidden_intents.len(), 3);
@@ -197,19 +177,10 @@ async fn test_full_enrichment_flow() {
         ExecutionApproach::Graph
     );
 
-    let graph = analysis
-        .execution_strategy
-        .graph
-        .as_ref()
-        .expect("graph should be present");
-    assert_eq!(graph.nodes.len(), 5);
-    assert_eq!(graph.edges.len(), 5);
-
     // Verify injection formatting
-    let injection = format_intent_injection(&analysis, None, None);
+    let injection = format_intent_injection(&analysis, None);
     assert!(injection.contains("## Task Analysis"));
     assert!(injection.contains("financial-analysis"));
-    assert!(injection.contains("planner-agent"));
 }
 
 /// LLM call failure should degrade to a simple fallback analysis.
@@ -218,7 +189,7 @@ async fn test_graceful_degradation_on_llm_failure() {
     let client = FailingLlmClient;
     let fact_store = MockFactStore;
 
-    let result = analyze_intent(
+    let analysis = analyze_intent(
         std::sync::Arc::new(client),
         "Create a dashboard for monitoring server metrics",
         &fact_store,
@@ -226,13 +197,11 @@ async fn test_graceful_degradation_on_llm_failure() {
         None,
         None,
         DEFAULT_INTENT_ANALYSIS_PROMPT,
-        &[],
         None,
+        &[],
         &[],
     )
     .await;
-
-    let analysis = result.expect("LLM failure should fall back, not abort execution");
     assert_eq!(
         analysis.execution_strategy.approach,
         ExecutionApproach::Simple
@@ -249,7 +218,7 @@ async fn test_graceful_degradation_on_malformed_json() {
     };
     let fact_store = MockFactStore;
 
-    let result = analyze_intent(
+    let analysis = analyze_intent(
         std::sync::Arc::new(mock),
         "Do something",
         &fact_store,
@@ -257,13 +226,11 @@ async fn test_graceful_degradation_on_malformed_json() {
         None,
         None,
         DEFAULT_INTENT_ANALYSIS_PROMPT,
-        &[],
         None,
+        &[],
         &[],
     )
     .await;
-
-    let analysis = result.expect("malformed output should fall back, not abort execution");
     assert_eq!(
         analysis.execution_strategy.approach,
         ExecutionApproach::Simple
@@ -306,19 +273,17 @@ async fn test_simple_request_no_graph() {
         None,
         None,
         DEFAULT_INTENT_ANALYSIS_PROMPT,
-        &[],
         None,
         &[],
+        &[],
     )
-    .await
-    .expect("should parse simple intent");
+    .await;
 
     assert_eq!(analysis.primary_intent, "greeting");
     assert_eq!(
         analysis.execution_strategy.approach,
         ExecutionApproach::Simple
     );
-    assert!(analysis.execution_strategy.graph.is_none());
 }
 
 /// Verify skills and agents are correctly parsed from complex analysis.
@@ -337,12 +302,11 @@ async fn test_skills_recommended() {
         None,
         None,
         DEFAULT_INTENT_ANALYSIS_PROMPT,
-        &[],
         None,
         &[],
+        &[],
     )
-    .await
-    .expect("should succeed");
+    .await;
 
     assert_eq!(
         analysis.recommended_skills,

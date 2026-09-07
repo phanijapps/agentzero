@@ -106,9 +106,9 @@ impl ContextPolicy {
             turn: 0,
             recall_keys: self
                 .inputs
-                .recall
+                .schedule
                 .as_ref()
-                .map(|(_, _, keys)| keys.clone())
+                .map(|schedule| schedule.injected_keys.clone())
                 .unwrap_or_default(),
             results,
             tail: Default::default(),

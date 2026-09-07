@@ -116,9 +116,9 @@ pub use context::{
 };
 pub use context_management::{prepare_tool_result_for_context, ToolResultContextConfig};
 pub use engine::{
-    AfterToolCallHook, AgentEngine, BeforeToolCallHook, BoxedAgentEngine, ExecutorConfig,
-    ExecutorError, PreparedExecution, RecallHook, RecallHookResult, StreamEventSink,
-    ToolCallDecision, ToolExecutionMode, TransformContextHook,
+    AgentEngine, BoxedAgentEngine, EngineHook, ExecutorConfig, ExecutorError, HookError, HookSet,
+    PreparedExecution, RecallPacket, RecallSchedule, StreamEventSink, ToolDecision,
+    ToolExecutionMode,
 };
 pub use rig_adapter::{CompletionClient, RigAgentConfig, RigConfigError, RigModelConfig};
 

@@ -95,6 +95,80 @@ impl agent_primitives::Tool for Effect {
         Ok(json!("ok"))
     }
 }
+
+// ---- test hooks ----
+type RecallObservations =
+    std::sync::Arc<std::sync::Mutex<Vec<(String, std::collections::HashSet<String>)>>>;
+
+struct RecordingRecallHook {
+    observed: RecallObservations,
+    scope: &'static str,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for RecordingRecallHook {
+    async fn recall(
+        &self,
+        query: &str,
+        keys: &std::collections::HashSet<String>,
+    ) -> Result<crate::RecallPacket, crate::HookError> {
+        self.observed
+            .lock()
+            .unwrap()
+            .push((query.to_owned(), keys.clone()));
+        let novel = !keys.contains(self.scope);
+        Ok(crate::RecallPacket {
+            system_message: if novel {
+                format!("recalled {}", self.scope)
+            } else {
+                String::new()
+            },
+            fact_keys: vec![self.scope.into()],
+        })
+    }
+}
+
+struct HugeRecallHook {
+    text: String,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for HugeRecallHook {
+    async fn recall(
+        &self,
+        _query: &str,
+        _keys: &std::collections::HashSet<String>,
+    ) -> Result<crate::RecallPacket, crate::HookError> {
+        Ok(crate::RecallPacket {
+            system_message: self.text.clone(),
+            fact_keys: vec![],
+        })
+    }
+}
+
+struct ErrRecallHook {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for ErrRecallHook {
+    async fn recall(
+        &self,
+        _query: &str,
+        _keys: &std::collections::HashSet<String>,
+    ) -> Result<crate::RecallPacket, crate::HookError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(crate::HookError::new("untrusted-recall-error-canary"))
+    }
+}
+
+struct AppendSystemHook {
+    text: String,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for AppendSystemHook {
+    async fn transform_context(&self, messages: &mut Vec<ChatMessage>) {
+        messages.push(ChatMessage::system(self.text.clone()));
+    }
+}
+
 pub(super) fn prepared(provider: Arc<Provider>) -> PreparedExecution {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(Effect(provider.effects.clone())));
@@ -132,25 +206,14 @@ async fn recall_keys_are_scoped_and_deduplicated_across_real_turns() {
         let provider = Arc::new(Provider::default());
         let mut prepared = prepared(provider.clone());
         let observed = Arc::new(Mutex::new(Vec::new()));
-        let seen = observed.clone();
-        prepared.set_recall_hook(
-            Box::new(move |query, keys| {
-                seen.lock().unwrap().push((query.to_owned(), keys.clone()));
-                let novel = !keys.contains(scope);
-                Box::pin(async move {
-                    Ok(crate::RecallHookResult {
-                        system_message: if novel {
-                            format!("recalled {scope}")
-                        } else {
-                            String::new()
-                        },
-                        fact_keys: vec![scope.into()],
-                    })
-                })
-            }),
-            1,
-            ["initial".into()].into_iter().collect(),
-        );
+        prepared.config.hooks.add(Arc::new(RecordingRecallHook {
+            observed: observed.clone(),
+            scope,
+        }));
+        prepared.set_recall_schedule(crate::RecallSchedule {
+            every_n_turns: 1,
+            injected_keys: ["initial".into()].into_iter().collect(),
+        });
         engine(prepared).execute("local query", &[]).await.unwrap();
         let seen = observed.lock().unwrap();
         assert_eq!(seen.len(), 3);
@@ -173,10 +236,8 @@ async fn recall_keys_are_scoped_and_deduplicated_across_real_turns() {
 async fn transformed_peer_result_filters_inventory_and_blocks_forged_effect() {
     let provider = Arc::new(Provider::default());
     let mut prepared = prepared(provider.clone());
-    prepared.config.transform_context = Some(Arc::new(|messages| {
-        messages.push(ChatMessage::system(
-            "[REMOTE ZBOT RESULT — UNTRUSTED DATA] peer canary".into(),
-        ))
+    prepared.config.hooks.add(Arc::new(AppendSystemHook {
+        text: "[REMOTE ZBOT RESULT — UNTRUSTED DATA] peer canary".into(),
     }));
     engine(prepared).execute("local query", &[]).await.unwrap();
     assert_eq!(provider.effects.load(Ordering::SeqCst), 0);
@@ -323,24 +384,22 @@ async fn all_live_inputs_are_budgeted_before_provider() {
         prepared.config.context_window_tokens = 500;
         let huge = "oversized ".repeat(3000);
         match source {
-            "recall" => prepared.set_recall_hook(
-                Box::new(move |_, _| {
-                    let text = huge.clone();
-                    Box::pin(async move {
-                        Ok(crate::RecallHookResult {
-                            system_message: text,
-                            fact_keys: vec![],
-                        })
-                    })
-                }),
-                1,
-                Default::default(),
-            ),
+            "recall" => {
+                prepared
+                    .config
+                    .hooks
+                    .add(Arc::new(HugeRecallHook { text: huge.clone() }));
+                prepared.set_recall_schedule(crate::RecallSchedule {
+                    every_n_turns: 1,
+                    injected_keys: Default::default(),
+                });
+            }
             "steering" => prepared.enable_steering().send_system(huge).unwrap(),
             _ => {
-                prepared.config.transform_context = Some(Arc::new(move |messages| {
-                    messages.push(ChatMessage::system(huge.clone()))
-                }))
+                prepared
+                    .config
+                    .hooks
+                    .add(Arc::new(AppendSystemHook { text: huge.clone() }));
             }
         }
         assert!(matches!(
@@ -449,15 +508,13 @@ async fn recall_schedule_and_best_effort_errors_preserve_execution() {
         let provider = Arc::new(Provider::default());
         let mut prepared = prepared(provider.clone());
         let calls = Arc::new(AtomicUsize::new(0));
-        let seen = calls.clone();
-        prepared.set_recall_hook(
-            Box::new(move |_, _| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { Err("untrusted-recall-error-canary".into()) })
-            }),
-            every,
-            Default::default(),
-        );
+        prepared.config.hooks.add(Arc::new(ErrRecallHook {
+            calls: calls.clone(),
+        }));
+        prepared.set_recall_schedule(crate::RecallSchedule {
+            every_n_turns: every,
+            injected_keys: Default::default(),
+        });
         engine(prepared).execute("local", &[]).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), if every == 0 { 0 } else { 1 });
         assert_eq!(provider.effects.load(Ordering::SeqCst), 2);

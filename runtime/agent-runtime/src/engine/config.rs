@@ -98,7 +98,6 @@ pub struct ExecutorConfig {
     /// Tool execution mode: parallel (default) or sequential.
     pub tool_execution_mode: ToolExecutionMode,
 
-
     /// Task complexity level: "S", "M", "L", "XL".
     /// When set, applies complexity-based iteration budgets:
     /// S=15, M=30, L=50, XL=100.
@@ -193,19 +192,8 @@ impl fmt::Debug for ExecutorConfig {
             .field("compaction_warn_pct", &self.compaction_warn_pct)
             .field("turn_budget", &self.turn_budget)
             .field("max_turns", &self.max_turns)
-            .field(
-                "before_tool_call",
-                &self.before_tool_call.as_ref().map(|_| "<hook>"),
-            )
-            .field(
-                "after_tool_call",
-                &self.after_tool_call.as_ref().map(|_| "<hook>"),
-            )
+            .field("hooks", &self.hooks.len())
             .field("tool_execution_mode", &self.tool_execution_mode)
-            .field(
-                "transform_context",
-                &self.transform_context.as_ref().map(|_| "<hook>"),
-            )
             .field("complexity", &self.complexity)
             .field("single_action_mode", &self.single_action_mode)
             .finish()
@@ -215,7 +203,6 @@ impl fmt::Debug for ExecutorConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::ToolCallDecision;
     use serde_json::json;
     use std::sync::Arc;
     // ------------- ExecutorConfig builder + Debug -------------
@@ -228,14 +215,16 @@ mod tests {
         assert_eq!(cfg.initial_state.get("k2").unwrap(), 42);
     }
 
+    struct NoopHook;
+    #[async_trait::async_trait]
+    impl crate::EngineHook for NoopHook {}
+
     #[test]
-    fn config_debug_renders_hooks_as_placeholders() {
+    fn config_debug_renders_hook_count() {
         let mut cfg = ExecutorConfig::new("a".into(), "p".into(), "m".into());
-        cfg.before_tool_call = Some(Arc::new(|_, _| ToolCallDecision::Allow));
-        cfg.after_tool_call = Some(Arc::new(|_, _, _, _| None));
-        cfg.transform_context = Some(Arc::new(|_| {}));
+        cfg.hooks.add(Arc::new(NoopHook));
         let s = format!("{cfg:?}");
-        assert!(s.contains("<hook>"));
+        assert!(s.contains("hooks: 1"));
         assert!(s.contains("agent_id"));
     }
 

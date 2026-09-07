@@ -40,7 +40,8 @@ use serde_json::Value;
 use super::resources::SessionResources;
 use super::tool_hook::RigExecutionHook;
 use super::tool_results::{SharedToolResults, ToolResults};
-use crate::engine::{AfterToolCallHook, BeforeToolCallHook, ExecutorError};
+use crate::engine::hooks::HookSet;
+use crate::engine::ExecutorError;
 use crate::engine::{AgentEngine, StreamEventSink};
 use crate::rig_adapter::{RigAgentConfig, SharedToolContext};
 use crate::tool_visibility::{externally_visible_tool_args, externally_visible_tool_result};
@@ -61,8 +62,7 @@ pub struct RigAgentEngine<M: CompletionModel> {
     max_turns: usize,
     hard_turn_limit: u32,
     resources: Option<SessionResources>,
-    before: Option<BeforeToolCallHook>,
-    after: Option<AfterToolCallHook>,
+    hooks: Arc<HookSet>,
     result_context: crate::ToolResultContextConfig,
     context_policy: Option<Arc<super::context_policy::ContextPolicy>>,
 }
@@ -92,24 +92,27 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         shared_context: SharedToolContext,
         max_turns: usize,
     ) -> Self {
-        Self::build(config, model, tools, shared_context, max_turns, None, None)
+        Self::build(
+            config,
+            model,
+            tools,
+            shared_context,
+            max_turns,
+            Arc::new(HookSet::new()),
+        )
     }
 
-    /// Same as [`Self::new`] with before/after-tool hooks (T7c). The hooks map
-    /// onto Rig's `Flow` model: `before_tool_call` returning [`crate::ToolCallDecision::Block`]
-    /// becomes `Flow::Skip` (the reason is returned to the model as the tool
-    /// result), and `after_tool_call` returning a replacement becomes
-    /// `Flow::RewriteResult`. The hook also sets the per-call `function_call_id`
-    /// on the shared context from `StepEvent::ToolCall`, resolving the race
-    /// noted in the T6 review.
+    /// Same as [`Self::new`] with the engine hook set. Hooks map onto Rig's
+    /// `Flow` model: a `before_tool` [`crate::ToolDecision::Block`] becomes
+    /// `Flow::Skip` (the reason returns to the model as the tool result);
+    /// an `after_tool` replacement becomes `Flow::RewriteResult`.
     #[must_use]
-    pub fn with_tool_hooks(
+    pub fn with_hooks(
         config: RigAgentConfig,
         model: M,
         tools: Vec<Box<dyn ToolDyn>>,
         shared_context: SharedToolContext,
-        before: Option<BeforeToolCallHook>,
-        after: Option<AfterToolCallHook>,
+        hooks: Arc<HookSet>,
     ) -> Self {
         Self::build(
             config,
@@ -117,8 +120,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             tools,
             shared_context,
             DEFAULT_MAX_TURNS,
-            before,
-            after,
+            hooks,
         )
     }
 
@@ -128,8 +130,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         tools: Vec<Box<dyn ToolDyn>>,
         shared_context: SharedToolContext,
         max_turns: usize,
-        before: Option<BeforeToolCallHook>,
-        after: Option<AfterToolCallHook>,
+        hooks: Arc<HookSet>,
     ) -> Self {
         let agent = AgentBuilder::new(model)
             .preamble(&config.instructions)
@@ -143,8 +144,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             max_turns,
             hard_turn_limit: 0,
             resources: None,
-            before,
-            after,
+            hooks,
             result_context: crate::ToolResultContextConfig::default(),
             context_policy: None,
         }
@@ -272,8 +272,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             .tool_extensions(extensions)
             .add_hook(RigExecutionHook {
                 ctx: self.shared_context.clone(),
-                before: self.before.clone(),
-                after: self.after.clone(),
+                hooks: self.hooks.clone(),
                 results: results.clone(),
                 context_config: self.result_context.clone(),
             })
@@ -743,7 +742,7 @@ fn map_streaming_error(error: StreamingError) -> ExecutorError {
 mod tests {
     use super::*;
     use crate::rig_adapter::RigToolAdapter;
-    use crate::ToolCallDecision;
+    use crate::ToolDecision;
     use rig::completion::{
         AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
         Usage,
@@ -1010,17 +1009,24 @@ mod tests {
 
         let calls = Arc::new(AtomicU32::new(0));
         let tool = RigToolAdapter::boxed(Arc::new(RecordingTool::new("recorder", &calls)));
-        let before: BeforeToolCallHook = Arc::new(|_name, _args| ToolCallDecision::Block {
-            reason: "blocked".to_string(),
-        });
+        struct BlockAll;
+        #[async_trait::async_trait]
+        impl crate::EngineHook for BlockAll {
+            async fn before_tool(&self, _name: &str, _args: &serde_json::Value) -> ToolDecision {
+                ToolDecision::Block {
+                    reason: "blocked".to_string(),
+                }
+            }
+        }
+        let mut hooks = crate::HookSet::new();
+        hooks.add(Arc::new(BlockAll));
 
-        let engine = RigAgentEngine::with_tool_hooks(
+        let engine = RigAgentEngine::with_hooks(
             sample_config(),
             ToolCallModel::new("recorder"),
             vec![tool],
             Arc::new(crate::tools::context::ToolContext::default()),
-            Some(before),
-            None,
+            Arc::new(hooks),
         );
 
         let mut events = Vec::new();

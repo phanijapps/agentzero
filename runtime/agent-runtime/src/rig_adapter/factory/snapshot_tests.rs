@@ -16,6 +16,37 @@ async fn capture(prepared: crate::PreparedExecution, history: &[ChatMessage]) ->
     state.unwrap()
 }
 
+// ---- test hooks ----
+struct BloatAfterFirstTurn {
+    turn: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for BloatAfterFirstTurn {
+    async fn transform_context(&self, messages: &mut Vec<ChatMessage>) {
+        if self.turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+            messages.push(ChatMessage::system("oversized ".repeat(3000)));
+        }
+    }
+}
+
+struct PreambleMutator {
+    duplicate: bool,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for PreambleMutator {
+    async fn transform_context(&self, messages: &mut Vec<ChatMessage>) {
+        if self.duplicate {
+            messages.push(ChatMessage::system("owned".into()));
+        } else {
+            for message in messages {
+                if message.text_content() == "owned" {
+                    *message = ChatMessage::system("rewritten".into());
+                }
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn private_snapshot_preserves_final_pairs_summary_and_media() {
     let provider = Arc::new(Provider::default());
@@ -145,11 +176,8 @@ async fn failed_prepare_and_stop_keep_completed_tail_without_done() {
         let mut prepared = prepared(Arc::new(Provider::default()));
         prepared.config.context_window_tokens = 1000;
         if !stopped {
-            let turn = AtomicUsize::new(0);
-            prepared.config.transform_context = Some(Arc::new(move |messages| {
-                if turn.fetch_add(1, Ordering::SeqCst) > 0 {
-                    messages.push(ChatMessage::system("oversized ".repeat(3000)));
-                }
+            prepared.config.hooks.add(Arc::new(BloatAfterFirstTurn {
+                turn: std::sync::Arc::new(AtomicUsize::new(0)),
             }));
         }
         let stop = Arc::new(AtomicBool::new(false));
@@ -225,17 +253,10 @@ async fn changed_or_ambiguous_owned_preamble_omits_unsafe_snapshot() {
     for duplicate in [false, true] {
         let mut prepared = prepared(Arc::new(Provider::default()));
         prepared.config.system_instruction = Some("owned".into());
-        prepared.config.transform_context = Some(Arc::new(move |messages| {
-            if duplicate {
-                messages.push(ChatMessage::system("owned".into()));
-            } else {
-                for message in messages {
-                    if message.text_content() == "owned" {
-                        *message = ChatMessage::system("rewritten".into());
-                    }
-                }
-            }
-        }));
+        prepared
+            .config
+            .hooks
+            .add(Arc::new(PreambleMutator { duplicate }));
         assert!(capture(prepared, &[])
             .await
             .get("app:rig_checkpoint")

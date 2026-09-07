@@ -3,7 +3,8 @@ use super::{
     tool_results::{SharedToolResults, ToolOutcome},
     SharedToolContext,
 };
-use crate::{AfterToolCallHook, BeforeToolCallHook, ToolCallDecision, ToolResultContextConfig};
+use crate::engine::hooks::{HookSet, ToolDecision};
+use crate::ToolResultContextConfig;
 use agent_primitives::CallbackContext;
 use rig::{
     agent::{AgentHook, Flow, StepEvent},
@@ -13,8 +14,7 @@ use serde_json::{json, Value};
 
 pub(super) struct RigExecutionHook {
     pub ctx: SharedToolContext,
-    pub before: Option<BeforeToolCallHook>,
-    pub after: Option<AfterToolCallHook>,
+    pub hooks: std::sync::Arc<HookSet>,
     pub results: SharedToolResults,
     pub context_config: ToolResultContextConfig,
 }
@@ -32,15 +32,13 @@ impl<M: CompletionModel> AgentHook<M> for RigExecutionHook {
                     .set_function_call_id(tool_call_id.unwrap_or(internal_call_id).to_owned());
                 let args = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
                 let decision = if self.results.peer_influenced() && tool_name != "respond" {
-                    ToolCallDecision::Block {
+                    ToolDecision::Block {
                         reason: "peer_data_authority_boundary".into(),
                     }
                 } else {
-                    self.before
-                        .as_ref()
-                        .map_or(ToolCallDecision::Allow, |hook| hook(tool_name, &args))
+                    self.hooks.before_tool(tool_name, &args).await
                 };
-                if let ToolCallDecision::Block { reason } = decision {
+                if let ToolDecision::Block { reason } = decision {
                     let context = json!({"blocked":true,"reason":reason}).to_string();
                     self.results.record(ToolOutcome {
                         raw: Some("[blocked by hook]".into()),
@@ -64,16 +62,21 @@ impl<M: CompletionModel> AgentHook<M> for RigExecutionHook {
                     .as_deref()
                     .and_then(|args| serde_json::from_str::<Value>(args).ok())
                     .unwrap_or(Value::Null);
-                let context = self.shape_result(
-                    &call.tool_name,
-                    &args,
-                    ToolOutcome {
-                        raw: Some(String::new()),
-                        error: Some(format!("Tool not found or not allowed: {}", call.tool_name)),
-                        rejected_call: Some((call.tool_name.clone(), args.clone())),
-                        ..ToolOutcome::default()
-                    },
-                );
+                let context = self
+                    .shape_result(
+                        &call.tool_name,
+                        &args,
+                        ToolOutcome {
+                            raw: Some(String::new()),
+                            error: Some(format!(
+                                "Tool not found or not allowed: {}",
+                                call.tool_name
+                            )),
+                            rejected_call: Some((call.tool_name.clone(), args.clone())),
+                            ..ToolOutcome::default()
+                        },
+                    )
+                    .await;
                 // Rig validates against its actual registered/allowed inventory
                 // before dispatch. Skip supplies model feedback, never repairs
                 // an unauthorized name into an executable capability.
@@ -88,7 +91,7 @@ impl<M: CompletionModel> AgentHook<M> for RigExecutionHook {
                 let mut outcome = self.results.snapshot();
                 outcome.raw.get_or_insert_with(|| result.to_owned());
                 let args = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                let context = self.shape_result(tool_name, &args, outcome);
+                let context = self.shape_result(tool_name, &args, outcome).await;
                 // Always rewrite verbatim: Rig must not reinterpret JSON-shaped
                 // context as its own multimodal result protocol.
                 Flow::rewrite_result(context)
@@ -99,7 +102,12 @@ impl<M: CompletionModel> AgentHook<M> for RigExecutionHook {
 }
 
 impl RigExecutionHook {
-    fn shape_result(&self, tool_name: &str, args: &Value, mut outcome: ToolOutcome) -> String {
+    async fn shape_result(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        mut outcome: ToolOutcome,
+    ) -> String {
         let succeeded = outcome.error.is_none();
         let context = if succeeded {
             crate::prepare_tool_result_for_context(
@@ -111,9 +119,9 @@ impl RigExecutionHook {
             json!({"error":outcome.error}).to_string()
         };
         let context = self
-            .after
-            .as_ref()
-            .and_then(|hook| hook(tool_name, args, &context, succeeded))
+            .hooks
+            .after_tool(tool_name, args, &context, succeeded)
+            .await
             .unwrap_or(context);
         outcome.context = Some(context.clone());
         self.results.record(outcome);

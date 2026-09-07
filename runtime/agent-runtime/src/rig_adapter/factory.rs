@@ -14,6 +14,20 @@ mod live_context_tests;
 mod mcp_tests;
 #[cfg(test)]
 mod progress_tests;
+/// Test fixture hook: blocks every tool call.
+#[cfg(test)]
+mod test_hooks {
+    pub struct DenyAllHook;
+    #[async_trait::async_trait]
+    impl crate::EngineHook for DenyAllHook {
+        async fn before_tool(&self, _name: &str, _args: &serde_json::Value) -> crate::ToolDecision {
+            crate::ToolDecision::Block {
+                reason: "fixture denial".into(),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod result_tests;
 #[cfg(test)]
@@ -44,6 +58,7 @@ pub fn build_engine(
         cfg.skills,
         cfg.initial_state,
     ));
+    let hooks_arc = std::sync::Arc::new(cfg.hooks.clone());
     let policy = Arc::new(super::context_policy::ContextPolicy::new(
         super::context_policy::ContextPolicyConfig {
             provider_id: cfg.provider_id,
@@ -61,32 +76,25 @@ pub fn build_engine(
         prepared.middleware_pipeline,
         shared.clone(),
         super::context_inputs::ContextInputs::new(
-            prepared.recall,
+            hooks_arc.clone(),
+            prepared.recall_schedule.clone(),
             prepared.steering_queue,
-            cfg.transform_context,
         ),
         restored,
     ));
     let model = LlmCompletionModel::new(prepared.llm_client, cfg.model)
         .with_single_action_mode(cfg.single_action_mode)
         .with_context_policy(policy.clone());
-    RigAgentEngine::with_tool_hooks(
-        rig_config,
-        model,
-        tools,
-        shared,
-        cfg.before_tool_call,
-        cfg.after_tool_call,
-    )
-    .with_execution_turn_limit(cfg.max_turns)
-    .with_context_policy(policy)
-    .with_result_context(crate::ToolResultContextConfig {
-        max_tool_result_chars: cfg.max_tool_result_chars,
-        offload_large_results: cfg.offload_large_results,
-        offload_threshold_chars: cfg.offload_threshold_chars,
-        offload_dir: cfg.offload_dir,
-    })
-    .with_mcp_session(prepared.mcp_manager)
+    RigAgentEngine::with_hooks(rig_config, model, tools, shared, hooks_arc)
+        .with_execution_turn_limit(cfg.max_turns)
+        .with_context_policy(policy)
+        .with_result_context(crate::ToolResultContextConfig {
+            max_tool_result_chars: cfg.max_tool_result_chars,
+            offload_large_results: cfg.offload_large_results,
+            offload_threshold_chars: cfg.offload_threshold_chars,
+            offload_dir: cfg.offload_dir,
+        })
+        .with_mcp_session(prepared.mcp_manager)
 }
 
 #[cfg(test)]
@@ -206,9 +214,7 @@ mod tests {
         registry.register(Arc::new(crate::tools::RespondTool::new()));
         let mut config = ExecutorConfig::new("agent".into(), "test".into(), "test".into());
         if deny {
-            config.before_tool_call = Some(Arc::new(|_, _| crate::ToolCallDecision::Block {
-                reason: "fixture denial".into(),
-            }));
+            config.hooks.add(Arc::new(test_hooks::DenyAllHook));
         }
         let prepared = PreparedExecution::new(
             config,

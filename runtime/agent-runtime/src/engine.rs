@@ -19,8 +19,7 @@ use crate::types::{ChatMessage, StreamEvent};
 pub use config::ExecutorConfig;
 pub use error::ExecutorError;
 pub use hooks::{
-    AfterToolCallHook, BeforeToolCallHook, RecallHook, RecallHookResult, ToolCallDecision,
-    ToolExecutionMode, TransformContextHook,
+    EngineHook, HookError, HookSet, RecallPacket, RecallSchedule, ToolDecision, ToolExecutionMode,
 };
 pub use prepared::PreparedExecution;
 

@@ -10,7 +10,7 @@ use agent_runtime::{
     DelegateTool, ExecutorConfig, KeepPolicy, LlmClient, LlmConfig, McpManager, MiddlewarePipeline,
     OpenAiClient, PlanBlockMiddleware, PreparedExecution, RespondTool, RetryPolicy,
     RetryingLlmClient, RigAgentConfig, RigModelConfig, SummarizationConfig,
-    SummarizationMiddleware, ToolCallDecision, ToolRegistry, TriggerCondition,
+    SummarizationMiddleware, ToolRegistry, TriggerCondition,
 };
 use agent_tools::{
     ConnectorInvokeTool,
@@ -118,6 +118,60 @@ fn resolve_effective_max_input(agent: &Agent, provider: &Provider) -> u64 {
         agent.max_input_tokens
     } else {
         provider_max_input.unwrap_or(DEFAULT_MAX_INPUT_TOKENS)
+    }
+}
+
+/// Delegated-executor guard hooks: block shell-as-file-writer bypass and
+/// inject failure guidance to reduce fix-retry loops. Behavior preserved
+/// verbatim from the previous closure hooks.
+struct SubagentGuardHook;
+
+#[async_trait::async_trait]
+impl agent_runtime::EngineHook for SubagentGuardHook {
+    async fn before_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> agent_runtime::ToolDecision {
+        if tool_name == "shell" {
+            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            // Block shell commands that create/write files — use write_file instead
+            if cmd.contains("> ")
+                || cmd.contains("cat <<")
+                || cmd.contains("heredoc")
+                || cmd.contains("echo \"") && cmd.contains("> ")
+                || cmd.contains("printf") && cmd.contains("> ")
+                || cmd.contains("tee ")
+            {
+                return agent_runtime::ToolDecision::Block {
+                    reason: "Use write_file to create files, not shell redirects. Shell is for running commands and reading output.".to_string(),
+                };
+            }
+        }
+        agent_runtime::ToolDecision::Allow
+    }
+
+    async fn after_tool(
+        &self,
+        tool_name: &str,
+        _args: &serde_json::Value,
+        result: &str,
+        succeeded: bool,
+    ) -> Option<String> {
+        if !succeeded && tool_name == "shell" {
+            Some(format!(
+                "{}\n\n[SYSTEM: Command failed. Read the error. Fix the ROOT CAUSE in your code, \
+                         not the symptom. Do not retry the same command — fix the file first with edit_file.]",
+                result
+            ))
+        } else if !succeeded {
+            Some(format!(
+                "{}\n\n[SYSTEM: Tool failed. Read the error carefully before retrying.]",
+                result
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -1375,45 +1429,7 @@ impl ExecutorBuilder {
 
         // Wire execution hooks for subagents (code-agent, research-agent, etc.)
         if self.actor_kind.is_delegated_execution() {
-            // beforeToolCall: block shell-as-file-writer bypass
-            executor_config.before_tool_call = Some(Arc::new(|tool_name, args| {
-                if tool_name == "shell" {
-                    let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                    // Block shell commands that create/write files — use write_file instead
-                    if cmd.contains("> ")
-                        || cmd.contains("cat <<")
-                        || cmd.contains("heredoc")
-                        || cmd.contains("echo \"") && cmd.contains("> ")
-                        || cmd.contains("printf") && cmd.contains("> ")
-                        || cmd.contains("tee ")
-                    {
-                        return ToolCallDecision::Block {
-                            reason: "Use write_file to create files, not shell redirects. Shell is for running commands and reading output.".to_string()
-                        };
-                    }
-                }
-                ToolCallDecision::Allow
-            }));
-
-            // afterToolCall: inject guidance after errors to reduce fix-retry loops
-            executor_config.after_tool_call = Some(Arc::new(
-                |tool_name, _args, result, succeeded| {
-                    if !succeeded && tool_name == "shell" {
-                        Some(format!(
-                            "{}\n\n[SYSTEM: Command failed. Read the error. Fix the ROOT CAUSE in your code, \
-                         not the symptom. Do not retry the same command — fix the file first with edit_file.]",
-                            result
-                        ))
-                    } else if !succeeded {
-                        Some(format!(
-                            "{}\n\n[SYSTEM: Tool failed. Read the error carefully before retrying.]",
-                            result
-                        ))
-                    } else {
-                        None // Pass through unchanged
-                    }
-                },
-            ));
+            executor_config.hooks.add(Arc::new(SubagentGuardHook));
         }
 
         // Configure tool result offload settings

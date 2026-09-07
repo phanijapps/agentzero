@@ -29,6 +29,26 @@ impl RecallPacket {
     }
 }
 
+/// Mid-session recall policy: when to refresh and what was already injected.
+/// The recall *behavior* lives in an [`EngineHook`]; this is the schedule.
+#[derive(Debug, Clone)]
+pub struct RecallSchedule {
+    /// Call the recall hook every N model turns.
+    pub every_n_turns: u32,
+    /// Fact keys already injected this session (dedup tracking).
+    pub injected_keys: HashSet<String>,
+}
+
+/// Tool execution mode within a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ToolExecutionMode {
+    /// Execute all tools concurrently.
+    #[default]
+    Parallel,
+    /// Execute tools one at a time, in order.
+    Sequential,
+}
+
 /// A tool-call gate decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDecision {
@@ -264,10 +284,7 @@ mod tests {
     async fn defaulted_hooks_are_noops() {
         let set = HookSet::new();
         assert!(set.is_empty());
-        assert_eq!(
-            set.before_tool("x", &json!({})).await,
-            ToolDecision::Allow
-        );
+        assert_eq!(set.before_tool("x", &json!({})).await, ToolDecision::Allow);
         assert_eq!(set.after_tool("x", &json!({}), "", false).await, None);
         let empty = set.recall("q", &HashSet::new()).await.unwrap();
         assert!(empty.is_empty());

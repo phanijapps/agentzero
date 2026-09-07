@@ -1,8 +1,8 @@
 //! Resolved execution inputs, independent of the selected execution loop.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
-use super::{ExecutorConfig, RecallHook};
+use super::{ExecutorConfig, RecallSchedule};
 use crate::steering::{SteeringHandle, SteeringQueue};
 use crate::{llm::LlmClient, mcp::McpManager, middleware::MiddlewarePipeline, tools::ToolRegistry};
 mod mcp_tools;
@@ -16,7 +16,7 @@ pub struct PreparedExecution {
     pub tool_registry: Arc<ToolRegistry>,
     pub mcp_manager: Arc<McpManager>,
     pub middleware_pipeline: Arc<MiddlewarePipeline>,
-    pub recall: Option<(RecallHook, u32, HashSet<String>)>,
+    pub recall_schedule: Option<RecallSchedule>,
     pub steering_queue: Option<SteeringQueue>,
     mcp_tools: Vec<Arc<dyn agent_primitives::Tool>>,
 }
@@ -36,7 +36,7 @@ impl PreparedExecution {
             tool_registry,
             mcp_manager,
             middleware_pipeline,
-            recall: None,
+            recall_schedule: None,
             steering_queue: None,
             mcp_tools: Vec::new(),
         }
@@ -71,13 +71,8 @@ impl PreparedExecution {
         Ok(())
     }
 
-    pub fn set_recall_hook(
-        &mut self,
-        hook: RecallHook,
-        every_n_turns: u32,
-        initial_keys: HashSet<String>,
-    ) {
-        self.recall = Some((hook, every_n_turns, initial_keys));
+    pub fn set_recall_schedule(&mut self, schedule: RecallSchedule) {
+        self.recall_schedule = Some(schedule);
     }
 
     pub fn enable_steering(&mut self) -> SteeringHandle {

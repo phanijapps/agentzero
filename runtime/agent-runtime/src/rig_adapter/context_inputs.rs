@@ -1,7 +1,8 @@
 //! Live input injection; canonical cursor and budgets remain in ContextPolicy.
 use super::tool_results::ToolResults;
-use crate::{ChatMessage, RecallHook, TransformContextHook};
-use std::{collections::HashSet, sync::Mutex};
+use crate::engine::hooks::{HookSet, RecallSchedule};
+use crate::ChatMessage;
+use std::{collections::HashSet, sync::Arc, sync::Mutex};
 
 /// Resolve persisted attachments before the final request-budget check. Pass
 /// the resolved bytes onward so provider rehydration cannot enlarge a checked
@@ -43,21 +44,21 @@ pub(super) async fn resolve_attachments(
 }
 
 pub(super) struct ContextInputs {
-    pub recall: Option<(RecallHook, u32, HashSet<String>)>,
+    hooks: Arc<HookSet>,
+    pub(super) schedule: Option<RecallSchedule>,
     steering: Mutex<Option<crate::steering::SteeringQueue>>,
-    transform: Option<TransformContextHook>,
 }
 
 impl ContextInputs {
     pub fn new(
-        recall: Option<(RecallHook, u32, HashSet<String>)>,
+        hooks: Arc<HookSet>,
+        schedule: Option<RecallSchedule>,
         steering: Option<crate::steering::SteeringQueue>,
-        transform: Option<TransformContextHook>,
     ) -> Self {
         Self {
-            recall,
+            hooks,
+            schedule,
             steering: Mutex::new(steering),
-            transform,
         }
     }
 
@@ -68,15 +69,15 @@ impl ContextInputs {
         turn: usize,
         results: &ToolResults,
     ) -> Vec<tokio::sync::oneshot::Sender<()>> {
-        if let Some((hook, every, _)) = &self.recall {
-            if *every > 0 && turn.is_multiple_of(*every as usize) {
+        if let Some(schedule) = &self.schedule {
+            if schedule.every_n_turns > 0 && turn.is_multiple_of(schedule.every_n_turns as usize) {
                 let query = messages
                     .iter()
                     .rev()
                     .find(|m| m.role == "user")
                     .map(ChatMessage::text_content)
                     .unwrap_or_default();
-                match hook(&query, keys).await {
+                match self.hooks.recall(&query, keys).await {
                     Ok(result) if !result.system_message.is_empty() => {
                         messages.push(ChatMessage::system(result.system_message));
                         keys.extend(result.fact_keys);
@@ -103,9 +104,7 @@ impl ContextInputs {
             }
         }
         crate::context_management::sanitize_messages(messages);
-        if let Some(transform) = &self.transform {
-            transform(messages);
-        }
+        self.hooks.transform_context(messages).await;
         if crate::tool_visibility::contains_persisted_peer_result(messages) {
             results.mark_peer_influenced();
         }

@@ -212,69 +212,79 @@ pub(super) fn attach_mid_session_recall_hook(
         );
         return;
     };
-    let goals = goals.cloned();
-    let agent_id = agent_id.to_string();
-    let ward = ward_id.map(String::from);
-    let min_novelty = mid_cfg.min_novelty_score;
-    let every_n = mid_cfg.every_n_turns as u32;
-
-    executor.set_recall_hook(
-        Box::new(
-            move |query: &str, already_injected: &std::collections::HashSet<String>| {
-                let recall = Arc::clone(&recall);
-                let goals = goals.clone();
-                let authorization = authorization.clone();
-                let agent_id = agent_id.clone();
-                let ward = ward.clone();
-                let query = query.to_string();
-                let already_injected = already_injected.clone();
-                Box::pin(async move {
-                    let mut response =
-                        crate::invoke::unified_recall_adapter::automatic_unified_recall(
-                            recall,
-                            goals,
-                            authorization,
-                            query,
-                            5,
-                        )
-                        .await
-                        .map_err(|error| error.safe_message().to_string())?;
-                    // Source-qualified generic IDs keep every unified source
-                    // deduplicated without treating coincident IDs from two
-                    // different source families as the same record.
-                    retain_novel_unified_items(&mut response, &already_injected, min_novelty);
-                    if response.results.is_empty() {
-                        return Ok(agent_runtime::RecallHookResult {
-                            system_message: String::new(),
-                            fact_keys: Vec::new(),
-                        });
-                    }
-                    let keys = response
-                        .results
-                        .iter()
-                        .map(crate::recall::unified_item_dedup_key)
-                        .collect();
-                    let formatted = crate::recall::format_unified_recall_response_with_options(
-                        &response,
-                        crate::recall::ContextPacketBuildOptions::new(
-                            format!("{agent_id}:mid-session-recall"),
-                            agent_id,
-                            ContextActorKind::Root,
-                            900,
-                        )
-                        .with_ward_id(ward),
-                    );
-                    Ok(agent_runtime::RecallHookResult {
-                        system_message: format_mid_session_recall_message(&formatted),
-                        fact_keys: keys,
-                    })
-                })
-            },
-        ),
-        every_n,
-        initial_recall_keys,
+    let hook = MidSessionRecallHook {
+        recall: Arc::clone(&recall),
+        goals: goals.cloned(),
+        authorization,
+        agent_id: agent_id.to_string(),
+        ward: ward_id.map(String::from),
+        min_novelty: mid_cfg.min_novelty_score,
+    };
+    executor.config.hooks.add(Arc::new(hook));
+    executor.set_recall_schedule(agent_runtime::RecallSchedule {
+        every_n_turns: mid_cfg.every_n_turns as u32,
+        injected_keys: initial_recall_keys,
+    });
+    tracing::debug!(
+        every_n_turns = mid_cfg.every_n_turns,
+        "Mid-session recall hook wired"
     );
-    tracing::debug!(every_n_turns = every_n, "Mid-session recall hook wired");
+}
+
+/// Mid-session unified recall as an engine hook. Holds the recall machinery;
+/// the cadence lives in the RecallSchedule set beside it.
+struct MidSessionRecallHook {
+    recall: Arc<crate::recall::MemoryRecall>,
+    goals: Option<Arc<dyn agent_tools::GoalAccess>>,
+    authorization: agent_tools::RecallAuthorizationContext,
+    agent_id: String,
+    ward: Option<String>,
+    min_novelty: f64,
+}
+
+#[async_trait::async_trait]
+impl agent_runtime::EngineHook for MidSessionRecallHook {
+    async fn recall(
+        &self,
+        query: &str,
+        already_injected: &std::collections::HashSet<String>,
+    ) -> Result<agent_runtime::RecallPacket, agent_runtime::HookError> {
+        let mut response = crate::invoke::unified_recall_adapter::automatic_unified_recall(
+            Arc::clone(&self.recall),
+            self.goals.clone(),
+            self.authorization.clone(),
+            query.to_string(),
+            5,
+        )
+        .await
+        .map_err(|error| agent_runtime::HookError::new(error.safe_message().to_string()))?;
+        // Source-qualified generic IDs keep every unified source deduplicated
+        // without treating coincident IDs from two source families as the
+        // same record.
+        retain_novel_unified_items(&mut response, already_injected, self.min_novelty);
+        if response.results.is_empty() {
+            return Ok(agent_runtime::RecallPacket::default());
+        }
+        let keys = response
+            .results
+            .iter()
+            .map(crate::recall::unified_item_dedup_key)
+            .collect();
+        let formatted = crate::recall::format_unified_recall_response_with_options(
+            &response,
+            crate::recall::ContextPacketBuildOptions::new(
+                format!("{}:mid-session-recall", self.agent_id),
+                self.agent_id.clone(),
+                ContextActorKind::Root,
+                900,
+            )
+            .with_ward_id(self.ward.clone()),
+        );
+        Ok(agent_runtime::RecallPacket {
+            system_message: format_mid_session_recall_message(&formatted),
+            fact_keys: keys,
+        })
+    }
 }
 
 fn retain_novel_unified_items(

@@ -159,6 +159,100 @@ async fn run_requested(
     (events, provider, calls.load(Ordering::SeqCst))
 }
 
+// ---- test hooks ----
+struct RewriteEffectHook {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for RewriteEffectHook {
+    async fn after_tool(
+        &self,
+        name: &str,
+        args: &Value,
+        output: &str,
+        succeeded: bool,
+    ) -> Option<String> {
+        if name != "effect" {
+            return None;
+        }
+        assert_eq!(args["input"], "raw-argument");
+        self.seen
+            .lock()
+            .unwrap()
+            .push((output.to_owned(), succeeded));
+        Some("rewritten-context".into())
+    }
+}
+
+struct SafeContextEffectHook;
+#[async_trait::async_trait]
+impl crate::EngineHook for SafeContextEffectHook {
+    async fn after_tool(
+        &self,
+        name: &str,
+        _args: &Value,
+        _output: &str,
+        _ok: bool,
+    ) -> Option<String> {
+        (name == "effect").then(|| "safe context".into())
+    }
+}
+
+struct DenyEffectHook;
+#[async_trait::async_trait]
+impl crate::EngineHook for DenyEffectHook {
+    async fn before_tool(&self, name: &str, _args: &Value) -> crate::ToolDecision {
+        if name == "effect" {
+            crate::ToolDecision::Block {
+                reason: "denied \"quoted\" reason".into(),
+            }
+        } else {
+            crate::ToolDecision::Allow
+        }
+    }
+}
+
+struct CountEffectAfterHook {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[async_trait::async_trait]
+impl crate::EngineHook for CountEffectAfterHook {
+    async fn after_tool(
+        &self,
+        name: &str,
+        _args: &Value,
+        _output: &str,
+        _ok: bool,
+    ) -> Option<String> {
+        if name == "effect" {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        None
+    }
+}
+
+struct RecoverFailureHook;
+#[async_trait::async_trait]
+impl crate::EngineHook for RecoverFailureHook {
+    async fn after_tool(
+        &self,
+        name: &str,
+        _args: &Value,
+        output: &str,
+        succeeded: bool,
+    ) -> Option<String> {
+        if name != "effect" {
+            return None;
+        }
+        assert!(!succeeded);
+        assert!(serde_json::from_str::<Value>(output).unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("raw-failure"));
+        Some("safe recovery instructions".into())
+    }
+}
+
 #[tokio::test]
 async fn tool_error_is_recoverable_and_carries_error_duration_and_context() {
     let cfg = ExecutorConfig::new("actor".into(), "fixture".into(), "fixture".into());
@@ -203,17 +297,8 @@ async fn successful_raw_output_is_distinct_from_processed_after_hook_context() {
     let hook_seen = seen.clone();
     let mut cfg = ExecutorConfig::new("actor".into(), "fixture".into(), "fixture".into());
     cfg.max_tool_result_chars = 100;
-    cfg.after_tool_call = Some(Arc::new(move |name, args, output, succeeded| {
-        if name != "effect" {
-            return None;
-        }
-        assert_eq!(args["input"], "raw-argument");
-        hook_seen
-            .lock()
-            .unwrap()
-            .push((output.to_owned(), succeeded));
-        Some("rewritten-context".into())
-    }));
+    cfg.hooks
+        .add(Arc::new(RewriteEffectHook { seen: hook_seen }));
     let (events, provider, calls) = run(cfg, Ok(raw.clone()), &[]).await;
     assert_eq!(calls, 1);
     assert!(
@@ -236,21 +321,9 @@ async fn blocked_hook_has_zero_effects_zero_duration_and_valid_model_json() {
     let after_calls = Arc::new(AtomicUsize::new(0));
     let after = after_calls.clone();
     let mut cfg = ExecutorConfig::new("actor".into(), "fixture".into(), "fixture".into());
-    cfg.before_tool_call = Some(Arc::new(|name, _| {
-        if name == "effect" {
-            crate::ToolCallDecision::Block {
-                reason: "denied \"quoted\" reason".into(),
-            }
-        } else {
-            crate::ToolCallDecision::Allow
-        }
-    }));
-    cfg.after_tool_call = Some(Arc::new(move |name, _, _, _| {
-        if name == "effect" {
-            after.fetch_add(1, Ordering::SeqCst);
-        }
-        None
-    }));
+    cfg.hooks.add(Arc::new(DenyEffectHook));
+    cfg.hooks
+        .add(Arc::new(CountEffectAfterHook { calls: after }));
     let (events, provider, calls) = run(cfg, Ok("should-not-run".into()), &[]).await;
     assert_eq!(calls, 0);
     assert_eq!(after_calls.load(Ordering::SeqCst), 0);
@@ -270,17 +343,7 @@ async fn blocked_hook_has_zero_effects_zero_duration_and_valid_model_json() {
 #[tokio::test]
 async fn failed_tool_after_hook_receives_false_and_rewrites_error_context_only() {
     let mut cfg = ExecutorConfig::new("actor".into(), "fixture".into(), "fixture".into());
-    cfg.after_tool_call = Some(Arc::new(|name, _, output, succeeded| {
-        if name != "effect" {
-            return None;
-        }
-        assert!(!succeeded);
-        assert!(serde_json::from_str::<Value>(output).unwrap()["error"]
-            .as_str()
-            .unwrap()
-            .contains("raw-failure"));
-        Some("safe recovery instructions".into())
-    }));
+    cfg.hooks.add(Arc::new(RecoverFailureHook));
     let (events, provider, _) = run(cfg, Err("raw-failure".into()), &[]).await;
     assert!(events.iter().any(|event| matches!(event, StreamEvent::ToolResult { result, context_result: Some(context), error: Some(error), .. } if result.is_empty() && context == "safe recovery instructions" && error.contains("raw-failure"))));
     assert_eq!(
@@ -349,9 +412,7 @@ async fn actual_rig_diagnostics_do_not_bypass_runtime_payload_filter() {
                 .with_writer(move || sink.clone()),
         );
     let mut cfg = ExecutorConfig::new("actor".into(), "fixture".into(), "fixture".into());
-    cfg.after_tool_call = Some(Arc::new(|name, _, _, _| {
-        (name == "effect").then(|| "safe context".into())
-    }));
+    cfg.hooks.add(Arc::new(SafeContextEffectHook));
     async {
         tracing::info!("application-log-sentinel");
         run(cfg, Ok("peer-result-canary".into()), &[]).await;
@@ -398,8 +459,7 @@ async fn host_peer_outcome_plumbing_blocks_real_rig_effects_before_dispatch() {
         ])
         .add_hook(RigExecutionHook {
             ctx: context.clone(),
-            before: None,
-            after: None,
+            hooks: std::sync::Arc::new(crate::HookSet::new()),
             results: outcomes.clone(),
             context_config: Default::default(),
         })

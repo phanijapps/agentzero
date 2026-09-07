@@ -1,11 +1,4 @@
-//! Intent routing: classify a request into an orchestration decision.
-//!
-//! Three paths, cheapest first:
-//! 1. Trivial messages (greetings) — no LLM, default analysis.
-//! 2. Deterministic procedure name match — a request naming a learned
-//!    procedure is a macro invocation: route `simple`, pin the procedure.
-//! 3. Intent agent — one Rig turn with discovery tools + submit_intent.
-//!    The model reasons, queries resources, then submits.
+//! Intent routing: the intent agent searches the index and submits an analysis.
 
 use super::agent::{run_intent_agent, IntentAgentDeps};
 use super::contract::{
@@ -69,53 +62,6 @@ pub(crate) fn simple_analysis(message: &str) -> IntentAnalysis {
     }
 }
 
-fn fallback_analysis(wards: &[(String, String)]) -> IntentAnalysis {
-    let mut analysis = simple_analysis("");
-    analysis.primary_intent = String::new();
-    match wards.first() {
-        Some((top_ward, _)) => {
-            analysis.ward_recommendation = WardRecommendation {
-                action: WardAction::UseExisting,
-                ward_name: top_ward.clone(),
-                subdirectory: None,
-                structure: std::collections::HashMap::new(),
-                reason: "Intent agent unavailable — warm-routing via top ward".to_string(),
-            };
-        }
-        None => {
-            analysis.ward_recommendation.action = WardAction::CreateNew;
-            analysis.ward_recommendation.reason =
-                "Intent agent unavailable and no ward matched — create_new".to_string();
-        }
-    }
-    analysis
-}
-
-/// List wards on disk as (name, purpose) pairs.
-pub(crate) fn list_wards(paths: &SharedVaultPaths) -> Vec<(String, String)> {
-    let wards_dir = paths.wards_dir();
-    let Ok(entries) = std::fs::read_dir(&wards_dir) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let purpose = std::fs::read_to_string(entry.path().join("AGENTS.md"))
-                .ok()
-                .and_then(|content| {
-                    content
-                        .lines()
-                        .find(|l| !l.trim().is_empty() && !l.starts_with('#'))
-                        .map(|l| l.trim().to_string())
-                })
-                .unwrap_or_default();
-            (name, purpose)
-        })
-        .collect()
-}
-
 /// Deterministic global procedure match.
 async fn match_procedure_by_name(
     procedure_store: Option<&dyn ProcedureStore>,
@@ -142,6 +88,52 @@ async fn match_procedure_by_name(
         .map(|(name, ward_id)| PinnedProcedure { name, ward_id })
 }
 
+/// List wards on disk as (name, purpose) pairs — used by the fallback.
+fn list_wards(paths: &SharedVaultPaths) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(paths.wards_dir()) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let purpose = std::fs::read_to_string(entry.path().join("AGENTS.md"))
+                .ok()
+                .and_then(|content| {
+                    content
+                        .lines()
+                        .find(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                        .map(|l| l.trim().to_string())
+                })
+                .unwrap_or_default();
+            (name, purpose)
+        })
+        .collect()
+}
+
+fn fallback_analysis(wards: &[(String, String)]) -> IntentAnalysis {
+    let mut analysis = simple_analysis("");
+    analysis.primary_intent = String::new();
+    match wards.first() {
+        Some((top_ward, _)) => {
+            analysis.ward_recommendation = WardRecommendation {
+                action: WardAction::UseExisting,
+                ward_name: top_ward.clone(),
+                subdirectory: None,
+                structure: std::collections::HashMap::new(),
+                reason: "Intent agent unavailable — warm-routing via top ward".to_string(),
+            };
+        }
+        None => {
+            analysis.ward_recommendation.action = WardAction::CreateNew;
+            analysis.ward_recommendation.reason =
+                "Intent agent unavailable and no ward matched — create_new".to_string();
+        }
+    }
+    analysis
+}
+
 /// Classify one user request. Never fails — the worst case is the fallback.
 pub async fn analyze_intent(deps: &IntentAgentDeps, user_message: &str) -> IntentAnalysis {
     if is_simple_message(user_message) {
@@ -164,11 +156,10 @@ pub async fn analyze_intent(deps: &IntentAgentDeps, user_message: &str) -> Inten
         return analysis;
     }
 
-    // Intent agent: one Rig turn, model reasons + submits
     tracing::info!("Intent router — running intent agent");
     let wards = list_wards(&deps.paths);
 
-    match run_intent_agent(deps, user_message, |_event| {}).await {
+    match run_intent_agent(deps, user_message).await {
         Some(mut analysis) => {
             analysis.pinned_procedure = None;
             tracing::info!(
@@ -180,34 +171,17 @@ pub async fn analyze_intent(deps: &IntentAgentDeps, user_message: &str) -> Inten
             analysis
         }
         None => {
-            // The model gathered info but wrote text instead of calling
-            // submit_intent (common with thinking models). Try to extract
-            // the analysis from the text response.
-            tracing::warn!("Intent agent did not submit via tool — extracting from text");
-            match extract_analysis_from_text(&deps, user_message).await {
-                Some(a) => a,
-                None => fallback_analysis(&wards),
-            }
+            tracing::warn!("Intent agent did not submit — falling back");
+            fallback_analysis(&wards)
         }
     }
 }
 
-/// Fallback: when the model writes its analysis as text instead of calling
-/// submit_intent, run a second lightweight prompt that converts the text
-/// into the structured format. This handles thinking models that prefer
-/// prose over tool calls.
-async fn extract_analysis_from_text(
-    deps: &IntentAgentDeps,
-    message: &str,
-) -> Option<IntentAnalysis> {
-    // Run the agent again but with a simpler, more forceful prompt
-    let extract_prompt = format!(
-        "Analyze this request and respond ONLY with a JSON object matching this schema. No prose, no explanation, just the JSON.\n\nRequest: {}",
-        message
-    );
-    let result = run_intent_agent(deps, &extract_prompt, |_e| {}).await;
-    if result.is_some() {
-        tracing::info!("Intent extracted via second-pass prompt");
+/// Load the intent prompt, preferring the vault-local override.
+pub fn load_intent_analysis_prompt(paths: &SharedVaultPaths) -> String {
+    let override_path = paths.config_dir().join("intent-analysis-prompt.md");
+    match std::fs::read_to_string(&override_path) {
+        Ok(content) if !content.trim().is_empty() => content,
+        _ => super::prompt::INTENT_AGENT_PROMPT.to_string(),
     }
-    result
 }

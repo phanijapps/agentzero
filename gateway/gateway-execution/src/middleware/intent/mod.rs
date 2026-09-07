@@ -1,5 +1,4 @@
-//! Intent routing: the intent agent reasons about a request and produces
-//! an orchestration decision via submit_intent.
+//! Intent routing: the intent agent searches the index and submits an analysis.
 
 pub mod agent;
 pub mod contract;
@@ -12,7 +11,5 @@ pub use contract::{
     WardRecommendation,
 };
 pub use inject::{format_intent_injection, format_planner_task};
-pub use prompt::{
-    load_intent_analysis_prompt, INTENT_AGENT_PROMPT as DEFAULT_INTENT_ANALYSIS_PROMPT,
-};
-pub use router::analyze_intent;
+pub use prompt::INTENT_AGENT_PROMPT as DEFAULT_INTENT_ANALYSIS_PROMPT;
+pub use router::{analyze_intent, load_intent_analysis_prompt};

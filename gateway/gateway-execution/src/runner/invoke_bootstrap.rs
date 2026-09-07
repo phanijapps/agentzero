@@ -1765,10 +1765,8 @@ impl InvokeBootstrap {
         let intent_max_tokens = intent_cfg.max_tokens.unwrap_or(agent.max_tokens);
 
         let deps = crate::middleware::intent::agent::IntentAgentDeps {
-            skill_service: self.ctx.skill_service.clone(),
-            agent_service: self.ctx.agent_service.clone(),
-            procedure_store: self.ctx.procedure_store.clone(),
             fact_store: fs.clone(),
+            procedure_store: self.ctx.procedure_store.clone(),
             paths: self.ctx.paths.clone(),
             provider: intent_provider,
             model: intent_model,

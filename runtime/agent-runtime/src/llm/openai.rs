@@ -536,7 +536,7 @@ impl OpenAiClient {
                         "json_schema": {
                             "name": "structured_output",
                             "strict": true,
-                            "schema": schema,
+                            "schema": strict_json_schema(schema),
                         }
                     }),
                 );
@@ -686,6 +686,50 @@ impl OpenAiClient {
         }
         Vec::new()
     }
+}
+
+/// Normalize a generated JSON schema to the strict structured-output
+/// contract before it goes on the wire with `"strict": true`.
+///
+/// Providers that honor OpenAI strict semantics (OpenAI, GLM, DeepSeek)
+/// require every object to set `additionalProperties: false`, every property
+/// to appear in `required`, and reject `default`/`$schema` keywords.
+/// `schemars` emits none of that: an unmodified schema claiming strict makes
+/// the provider silently degrade — empty content or free-form JSON that
+/// fails to deserialize (the intent-analysis double-failure this fixes).
+///
+/// Optionality is preserved the strict way: properties stay required, so the
+/// model must emit them; `Option`/`#[serde(default)]` fields already accept
+/// the values strict produces (null / empty collections).
+fn strict_json_schema(schema: Value) -> Value {
+    fn walk(node: Value) -> Value {
+        match node {
+            Value::Object(mut map) => {
+                // Strict mode rejects these keywords.
+                map.remove("$schema");
+                map.remove("default");
+                let is_object = map.get("type") == Some(&Value::String("object".into()));
+                if is_object {
+                    if let Some(properties) = map.get("properties").and_then(|p| p.as_object()) {
+                        let required: Vec<Value> = properties
+                            .keys()
+                            .map(|key| Value::String(key.clone()))
+                            .collect();
+                        map.insert("required".into(), Value::Array(required));
+                    }
+                    map.insert("additionalProperties".into(), Value::Bool(false));
+                }
+                let transformed: serde_json::Map<String, Value> = map
+                    .into_iter()
+                    .map(|(key, value)| (key, walk(value)))
+                    .collect();
+                Value::Object(transformed)
+            }
+            Value::Array(items) => Value::Array(items.into_iter().map(walk).collect()),
+            other => other,
+        }
+    }
+    walk(schema)
 }
 
 #[async_trait]
@@ -1638,7 +1682,7 @@ mod tests {
         });
 
         let body = client
-            .build_request_body(fixture_messages(), None, Some(schema.clone()))
+            .build_request_body(fixture_messages(), None, Some(schema))
             .expect("structured request");
 
         assert_eq!(
@@ -1651,9 +1695,99 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        // The wire schema is the strict-normalized form: additionalProperties
+        // pinned false and required covering every property.
         assert_eq!(
-            body.pointer("/response_format/json_schema/schema"),
-            Some(&schema)
+            body.pointer("/response_format/json_schema/schema/additionalProperties"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            body.pointer("/response_format/json_schema/schema/required"),
+            Some(&json!(["intent"]))
+        );
+    }
+
+    #[test]
+    fn strict_schema_normalization_satisfies_the_strict_contract_everywhere() {
+        // A schemars-shaped schema: nested objects, $defs, optional unions,
+        // defaults, $schema — none of which are strict-legal as generated.
+        let generated = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "primary_intent": { "type": "string" },
+                "optional_list": {
+                    "type": "array", "default": [], "items": { "type": "string" }
+                },
+                "strategy": { "$ref": "#/$defs/Strategy" },
+                "graph": {
+                    "anyOf": [{ "$ref": "#/$defs/Graph" }, { "type": "null" }]
+                }
+            },
+            "required": ["primary_intent"],
+            "$defs": {
+                "Strategy": {
+                    "type": "object",
+                    "properties": {
+                        "approach": { "type": "string" },
+                        "graph": { "type": "null" }
+                    },
+                    "required": ["approach"]
+                },
+                "Graph": {
+                    "type": "object",
+                    "properties": { "nodes": { "type": "array", "default": [] } }
+                }
+            }
+        });
+
+        let strict = strict_json_schema(generated);
+
+        fn audit(node: &Value, path: String, issues: &mut Vec<String>) {
+            if let Value::Object(map) = node {
+                if map.get("type") == Some(&Value::String("object".into())) {
+                    if map.get("additionalProperties") != Some(&Value::Bool(false)) {
+                        issues.push(format!("{path}: additionalProperties not false"));
+                    }
+                    let props = map.get("properties").and_then(|p| p.as_object());
+                    let required: Vec<&str> = map
+                        .get("required")
+                        .and_then(|r| r.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
+                        .unwrap_or_default();
+                    if let Some(props) = props {
+                        for key in props.keys() {
+                            if !required.contains(&key.as_str()) {
+                                issues.push(format!("{path}: {key} missing from required"));
+                            }
+                        }
+                    }
+                }
+                if map.contains_key("default") {
+                    issues.push(format!("{path}: default survives"));
+                }
+                if map.contains_key("$schema") {
+                    issues.push(format!("{path}: $schema survives"));
+                }
+                for (key, value) in map {
+                    audit(value, format!("{path}.{key}"), issues);
+                }
+            } else if let Value::Array(items) = node {
+                for (i, item) in items.iter().enumerate() {
+                    audit(item, format!("{path}[{i}]"), issues);
+                }
+            }
+        }
+
+        let mut issues = Vec::new();
+        audit(&strict, "$".to_string(), &mut issues);
+        assert!(issues.is_empty(), "strict-contract violations: {issues:?}");
+
+        // Optionality survives as a nullable union; the null branch is not
+        // turned into an object with additionalProperties.
+        assert_eq!(
+            strict.pointer("/properties/graph/anyOf/1/type"),
+            Some(&json!("null"))
         );
     }
 

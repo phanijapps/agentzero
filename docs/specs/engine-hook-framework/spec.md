@@ -1,6 +1,6 @@
 # Spec: Engine hook framework
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Branch:** `op_clean_crap`
 - **Shape:** refactor (behavior-preserving) + framework extension point
 
@@ -38,12 +38,12 @@ Support types: `ToolDecision { Allow, Block { reason } }`, `RecallPacket { syste
 
 ## Acceptance Criteria
 
-- [ ] AC1: `EngineHook` is the only hook abstraction; `HookSet` composes multiple hooks with the documented ordering semantics; unit tests in `hooks.rs` pass.
-- [ ] AC2: Zero references remain to `RecallHook`, `BeforeToolCallHook`, `AfterToolCallHook`, `TransformContextHook`, `ToolCallDecision`, `RecallHookResult` (crate-wide grep, tests included).
-- [ ] AC3: `ExecutorConfig` carries `pub hooks: HookSet` (no per-hook `Option` fields); the engine, factory, and tool dispatch consume the set — not individual hooks.
-- [ ] AC4: Mid-session recall schedule becomes an explicit `RecallSchedule { every_n_turns: u32, injected_keys: HashSet<String> }` on `PreparedExecution`; the recall *behavior* lives in a hook (registered by the gateway), the *schedule* is policy state.
-- [ ] AC5: Existing behaviors preserved verbatim: gateway tool audit + result-context rewrite (executor.rs closures → one `EngineHook` impl), mid-session unified recall (boxed closure → one `EngineHook` impl), context transform in snapshot/live tests.
-- [ ] AC6: Gates: `cargo test -p agent-runtime --locked`, `cargo test -p gateway-execution --features test-stubs --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all` — all green.
+- [x] AC1: `EngineHook` is the only hook abstraction; `HookSet` composes multiple hooks with the documented ordering semantics; unit tests in `hooks.rs` pass.
+- [x] AC2: Zero references remain to `RecallHook`, `BeforeToolCallHook`, `AfterToolCallHook`, `TransformContextHook`, `ToolCallDecision`, `RecallHookResult` (crate-wide grep, tests included).
+- [x] AC3: `ExecutorConfig` carries `pub hooks: HookSet` (no per-hook `Option` fields); the engine, factory, and tool dispatch consume the set — not individual hooks.
+- [x] AC4: Mid-session recall schedule becomes an explicit `RecallSchedule { every_n_turns: u32, injected_keys: HashSet<String> }` on `PreparedExecution`; the recall *behavior* lives in a hook (registered by the gateway), the *schedule* is policy state.
+- [x] AC5: Existing behaviors preserved verbatim: gateway tool audit + result-context rewrite (executor.rs closures → one `EngineHook` impl), mid-session unified recall (boxed closure → one `EngineHook` impl), context transform in snapshot/live tests.
+- [x] AC6: Gates: `cargo test -p agent-runtime --locked`, `cargo test -p gateway-execution --features test-stubs --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all` — all green.
 
 ## Boundaries
 

@@ -1,8 +1,6 @@
 //! Execution policy shared by runtime adapters.
 
-use super::hooks::{
-    AfterToolCallHook, BeforeToolCallHook, ToolExecutionMode, TransformContextHook,
-};
+use super::hooks::{HookSet, ToolExecutionMode};
 use serde_json::Value;
 use std::{collections::HashSet, fmt};
 
@@ -93,20 +91,13 @@ pub struct ExecutorConfig {
     /// Set to 0 to disable.
     pub max_turns: u32,
 
-    /// Hook called before each tool execution. Can block the call.
-    /// Default: None (all tools allowed).
-    pub before_tool_call: Option<BeforeToolCallHook>,
-
-    /// Hook called after each tool execution. Can transform the result.
-    /// Default: None (results passed through unchanged).
-    pub after_tool_call: Option<AfterToolCallHook>,
+    /// Ordered engine hooks (tool gates, result rewrites, context transforms).
+    /// Compose freely; see [`HookSet`].
+    pub hooks: HookSet,
 
     /// Tool execution mode: parallel (default) or sequential.
     pub tool_execution_mode: ToolExecutionMode,
 
-    /// Hook called before every LLM call to transform the message context.
-    /// Default: None (messages passed through unchanged).
-    pub transform_context: Option<TransformContextHook>,
 
     /// Task complexity level: "S", "M", "L", "XL".
     /// When set, applies complexity-based iteration budgets:
@@ -148,10 +139,8 @@ impl ExecutorConfig {
             compaction_warn_pct: 80,        // Warn at 80% by default
             turn_budget: 25,                // Soft nudge at 25 turns
             max_turns: 50,                  // Hard stop at 50 turns
-            before_tool_call: None,
-            after_tool_call: None,
+            hooks: HookSet::new(),
             tool_execution_mode: ToolExecutionMode::default(),
-            transform_context: None,
             complexity: None,
             single_action_mode: false,
         }

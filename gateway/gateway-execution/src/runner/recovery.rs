@@ -68,6 +68,11 @@ pub(crate) fn compose_continuation_history(
     let Some(checkpoint) = checkpoint else {
         return replay_display_history(messages, session_id);
     };
+    if checkpoint.session_id != session_id {
+        // Defense in depth: a checkpoint row addressed to this execution but
+        // another session must never contribute session-scoped seq cursors.
+        return Err("continuation_checkpoint_session_mismatch".to_owned());
+    }
     let context = checkpoint
         .context_state
         .as_deref()

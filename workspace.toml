@@ -27,6 +27,14 @@ open = [
   # delegating nested builders, but policy #206 (2026-06-03) removed AgentDelegate from
   # DelegatedExecutor. Re-record the fixture under the current contract (root delegates).
   { slug = "pre-existing-aapl-fixture-rerecord", source = "spec/rig-only-execution AC12" },
+  # deferred (security review, defense-in-depth): checkpoint cursor/snapshot has no
+  # tamper-evidence (digest/MAC); parseable-but-edited cursors silently omit rows from
+  # restored context. Parity with pre-existing messages-table exposure, not a regression.
+  { slug = "checkpoint-recovery-tamper-evidence", source = "spec/rig-only-execution security review" },
+  # deferred (security review nits): thread SessionContinuationReady.root_execution_id through
+  # ContinuationSpawner instead of re-fetching (empty id on lookup failure); broadcast Lagged
+  # can drop a continuation wake (availability) — re-check request_continuation on lag.
+  { slug = "continuation-wake-resilience", source = "spec/rig-only-execution security review" },
   # deferred: full-daemon Mode Full scenario covering root+MCP+skill through the shipped
   # UI. Requires seeding mcps.json (stdio probe exists at runtime/agent-runtime/tests/
   # fixtures/mcp_stdio_probe.py) and a skill into the harness data-dir. In-crate real

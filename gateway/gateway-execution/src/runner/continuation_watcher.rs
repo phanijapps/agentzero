@@ -144,6 +144,11 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
                 .flatten()
                 .map(|execution| execution.id)
                 .unwrap_or_default();
+            // Publish the same constant safe message the initial-invocation
+            // failure path uses; the raw error (SQL/IO text that can embed
+            // local paths) stays in the tracing log above, not on the bus,
+            // the session-end log, or the executions row.
+            const SAFE_CONTINUATION_ERROR: &str = "Unable to resume this session";
             crate::lifecycle::crash_execution(crate::lifecycle::CrashExecution {
                 state_service: &self.state_service,
                 log_service: &self.log_service,
@@ -152,7 +157,7 @@ impl ContinuationSpawner for RunnerContinuationInvoker {
                 session_id: &session_id,
                 agent_id: &root_agent_id,
                 conversation_id: &session_id,
-                error: &error,
+                error: SAFE_CONTINUATION_ERROR,
                 crash_session: true,
             })
             .await;

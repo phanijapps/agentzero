@@ -496,6 +496,8 @@ impl ExecutionRunner {
 #[cfg(test)]
 mod delegation_flow_tests;
 #[cfg(test)]
+mod golden_trace_tests;
+#[cfg(test)]
 mod mid_session_recall_tests;
 #[cfg(test)]
 mod model_registry_late_binding_tests;

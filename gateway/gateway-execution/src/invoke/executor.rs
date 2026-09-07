@@ -8,6 +8,7 @@ pub use super::builder::{
 };
 pub use super::policy::RuntimeActorKind;
 
+use crate::errors::ExecutionError;
 use agent_runtime::{BoxedAgentEngine, PreparedExecution};
 
 /// Resolve the effective thinking flag for an agent execution.
@@ -34,12 +35,14 @@ pub fn resolve_thinking_flag(user_flag: bool, _model: &str) -> bool {
 /// before/after-tool hooks. There is no engine-selection environment flag
 /// and no fallback; a session whose required Rig configuration cannot be
 /// resolved fails explicitly.
-pub fn build_execution_engine(executor: PreparedExecution) -> Result<BoxedAgentEngine, String> {
+pub fn build_execution_engine(
+    executor: PreparedExecution,
+) -> Result<BoxedAgentEngine, ExecutionError> {
     let agent_id = executor.config().agent_id.clone();
     let Some(rig_config) = executor.rig_config.clone() else {
-        return Err(format!(
+        return Err(ExecutionError::from(format!(
             "rig_execution_config_unresolved: agent {agent_id} resolved no engine configuration"
-        ));
+        )));
     };
     tracing::info!(
         target: "rig_cutover",

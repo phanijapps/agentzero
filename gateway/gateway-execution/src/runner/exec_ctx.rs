@@ -7,6 +7,7 @@ use super::integrations::SharedIntegrations;
 use super::session_control::SessionControl;
 use crate::agent_pool::AgentResultBus;
 use crate::delegation::DelegationRequest;
+use crate::errors::ExecutionError;
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::EventBus;
@@ -73,7 +74,7 @@ impl super::session_invoker::ContinuationSpawner for ExecCtx {
         &self,
         session_id: String,
         root_agent_id: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         if let Err(error) = self.state_service.clear_continuation(&session_id) {
             tracing::warn!(%session_id, %error, "Failed to clear continuation flag");
         }
@@ -121,7 +122,7 @@ impl super::session_invoker::DelegationSpawner for ExecCtx {
         &self,
         request: crate::delegation::DelegationRequest,
         permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         use crate::delegation::spawn::spawn_delegated_agent;
 
         // Bump per-ward usage telemetry before any locking; best-effort.

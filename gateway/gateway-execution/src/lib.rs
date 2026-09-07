@@ -31,6 +31,7 @@ pub mod conversation_history;
 pub mod curator;
 pub mod delegation;
 pub mod distillation;
+pub mod errors;
 pub mod events;
 pub mod handle;
 pub mod indexer;

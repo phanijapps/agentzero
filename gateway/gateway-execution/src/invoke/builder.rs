@@ -3,6 +3,7 @@
 //! Tool capability gating lives in [`super::policy`]; per-tool metadata is
 //! data in [`super::tool_catalog`].
 
+use crate::errors::ExecutionError;
 use agent_primitives::{ConnectorResourceProvider, FileSystemContext};
 use agent_runtime::{
     ContextCapability, ContextCapabilityCatalog, ContextCapabilityHealth, ContextCapabilityKind,
@@ -496,7 +497,7 @@ impl ExecutorBuilder {
         hook_context: Option<&serde_json::Value>,
         mcp_service: &McpService,
         ward_id: Option<&str>,
-    ) -> Result<PreparedExecution, String> {
+    ) -> Result<PreparedExecution, ExecutionError> {
         let remote_prompt = if matches!(self.actor_kind, RuntimeActorKind::RemotePeer) {
             Some(
                 self.remote_peer_prompt
@@ -548,7 +549,9 @@ impl ExecutorBuilder {
         if remote_prompt.is_none() {
             let is_planner = agent.id == "planner-agent";
             if is_planner && ward_id.is_none() {
-                return Err("planner_template_unavailable".to_string());
+                return Err(ExecutionError::from(
+                    "planner_template_unavailable".to_string(),
+                ));
             }
             if let Some(ward) = ward_id {
                 executor_config = executor_config
@@ -576,7 +579,9 @@ impl ExecutorBuilder {
                         })
                         .state(ward, session_id, &root_context_id);
                     if is_planner && layout.context.is_none() {
-                        return Err("planner_template_unavailable".to_string());
+                        return Err(ExecutionError::from(
+                            "planner_template_unavailable".to_string(),
+                        ));
                     }
                     ward_template_prompt = layout.context;
                     executor_config = executor_config

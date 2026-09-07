@@ -256,7 +256,10 @@ impl RuntimeService {
             config = config.with_session_id(sid);
         }
 
-        runner.invoke(config, message.to_string()).await
+        runner
+            .invoke(config, message.to_string())
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Start a fresh execution for a server-validated decision-thread packet.
@@ -286,8 +289,7 @@ impl RuntimeService {
                 config,
                 "Continue the explicitly selected approved decision thread using the saved next action."
                     .to_string(),
-            )
-            .await
+            ).await.map_err(|e| e.to_string())
     }
 
     /// Invoke an agent with a message and hook context.
@@ -322,7 +324,10 @@ impl RuntimeService {
             config = config.with_session_id(sid);
         }
 
-        runner.invoke(config, message.to_string()).await
+        runner
+            .invoke(config, message.to_string())
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Invoke an agent with hook context and a session-ready callback.
@@ -353,6 +358,7 @@ impl RuntimeService {
             false,
         )
         .await
+        .map_err(|e| e.to_string())
     }
 
     /// Invoke a durable task through the ordinary bootstrap while keeping
@@ -381,6 +387,7 @@ impl RuntimeService {
             true,
         )
         .await
+        .map_err(|e| e.to_string())
     }
 
     /// Invoke authenticated remote A2A work through the isolated RemotePeer
@@ -417,6 +424,7 @@ impl RuntimeService {
         runner
             .invoke_redacted_with_callback(config, message.to_string(), None)
             .await
+            .map_err(|e| e.to_string())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -464,10 +472,12 @@ impl RuntimeService {
             runner
                 .invoke_redacted_with_callback(config, message.to_string(), on_session_ready)
                 .await
+                .map_err(|e| e.to_string())
         } else {
             runner
                 .invoke_with_callback(config, message.to_string(), on_session_ready)
                 .await
+                .map_err(|e| e.to_string())
         }
     }
 
@@ -513,6 +523,7 @@ impl RuntimeService {
                 on_session_ready,
             )
             .await
+            .map_err(|e| e.to_string())
     }
 
     /// Resume an A2A execution while preserving the same isolated prompt and
@@ -557,6 +568,7 @@ impl RuntimeService {
                 None,
             )
             .await
+            .map_err(|e| e.to_string())
     }
 
     /// Invoke with a placeholder response (for testing without LLM).
@@ -609,7 +621,10 @@ impl RuntimeService {
     /// Stop an agent execution.
     pub async fn stop(&self, conversation_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.stop(conversation_id).await
+            runner
+                .stop(conversation_id)
+                .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -625,6 +640,7 @@ impl RuntimeService {
             runner
                 .continue_execution(conversation_id, additional_iterations)
                 .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -633,7 +649,7 @@ impl RuntimeService {
     /// Pause an agent execution.
     pub async fn pause(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.pause(session_id).await
+            runner.pause(session_id).await.map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -642,7 +658,7 @@ impl RuntimeService {
     /// Resume a paused agent execution.
     pub async fn resume(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.resume(session_id).await
+            runner.resume(session_id).await.map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -651,7 +667,7 @@ impl RuntimeService {
     /// Cancel an agent execution.
     pub async fn cancel(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.cancel(session_id).await
+            runner.cancel(session_id).await.map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -665,7 +681,10 @@ impl RuntimeService {
         conversation_id: &str,
     ) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.cancel_exact(session_id, conversation_id).await
+            runner
+                .cancel_exact(session_id, conversation_id)
+                .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -676,7 +695,10 @@ impl RuntimeService {
     /// Called when user explicitly ends a session via /end, /new, or +new button.
     pub async fn end_session(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.end_session(session_id).await
+            runner
+                .end_session(session_id)
+                .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }

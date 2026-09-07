@@ -17,6 +17,7 @@
 //! on restore, which is exactly how a racing callback that landed before the
 //! parent's final own row survives without duplicating parent output.
 
+use crate::errors::ExecutionError;
 use execution_state::StateService;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,24 +62,24 @@ pub(crate) fn compose_continuation_history(
     messages: &Arc<dyn MessageStore>,
     execution_id: &str,
     session_id: &str,
-) -> Result<ComposedHistory, String> {
-    let checkpoint = checkpoints
-        .latest(execution_id)
-        .map_err(|error| format!("continuation_checkpoint_read_failed: {error}"))?;
+) -> Result<ComposedHistory, ExecutionError> {
+    let checkpoint = checkpoints.latest(execution_id).map_err(|error| {
+        ExecutionError::Store(format!("continuation_checkpoint_read_failed: {error}"))
+    })?;
     let Some(checkpoint) = checkpoint else {
         return replay_display_history(messages, session_id);
     };
     if checkpoint.session_id != session_id {
         // Defense in depth: a checkpoint row addressed to this execution but
         // another session must never contribute session-scoped seq cursors.
-        return Err("continuation_checkpoint_session_mismatch".to_owned());
+        return Err(ExecutionError::Continuation("session_mismatch".into()));
     }
     let context = checkpoint
         .context_state
         .as_deref()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
     let Some(context) = context else {
-        return Err("continuation_checkpoint_invalid".to_owned());
+        return Err(ExecutionError::Continuation("checkpoint_invalid".into()));
     };
     let cursor = cursor_from_value(&context)?;
 
@@ -99,7 +100,7 @@ pub(crate) fn compose_continuation_history(
         Some(tape) => {
             let rows = messages
                 .replay(session_id, Some(cursor.input_cursor), 200)
-                .map_err(|_| "continuation_history_read_failed".to_owned())?;
+                .map_err(|_| ExecutionError::Store("continuation_history_read_failed".into()))?;
             let (tails, tail_cursor) = tail_rows(rows, &cursor.represented_output_ids);
             let mut history = strip_stale_context_packets(tape);
             history.extend(crate::conversation_history::messages_to_chat_format(&tails));
@@ -120,14 +121,16 @@ pub(crate) fn compose_continuation_history(
 /// closed, and a snapshot without its cursor cannot identify represented rows
 /// (replaying against it would duplicate the whole conversation), so it fails
 /// too. No snapshot and no cursor is the legacy display-replay default.
-fn cursor_from_value(context: &serde_json::Value) -> Result<RecoveryCursor, String> {
+fn cursor_from_value(context: &serde_json::Value) -> Result<RecoveryCursor, ExecutionError> {
     let has_snapshot = context
         .get(agent_runtime::engine::snapshot::CHECKPOINT_KEY)
         .is_some();
     match context.get(GATEWAY_RECOVERY_KEY) {
         Some(value) => serde_json::from_value(value.clone())
-            .map_err(|_| "continuation_cursor_invalid".to_owned()),
-        None if has_snapshot => Err("continuation_cursor_invalid".to_owned()),
+            .map_err(|_| ExecutionError::Continuation("continuation_cursor_invalid".into())),
+        None if has_snapshot => Err(ExecutionError::Continuation(
+            "continuation_cursor_invalid".into(),
+        )),
         None => Ok(RecoveryCursor::default()),
     }
 }
@@ -157,10 +160,10 @@ fn strip_stale_context_packets(
 fn replay_display_history(
     messages: &Arc<dyn MessageStore>,
     session_id: &str,
-) -> Result<ComposedHistory, String> {
+) -> Result<ComposedHistory, ExecutionError> {
     let rows = messages
         .replay(session_id, None, 200)
-        .map_err(|_| "continuation_history_read_failed".to_owned())?;
+        .map_err(|_| ExecutionError::Store("continuation_history_read_failed".into()))?;
     let scanned_cursor = rows.last().map(|row| row.seq).unwrap_or(0);
     Ok(ComposedHistory {
         history: crate::conversation_history::messages_to_chat_format(&rows),
@@ -409,10 +412,10 @@ mod tests {
             serde_json::json!({"version": 1, "messages": [], "mutable_state": {}}),
         );
         // Missing cursor with a present snapshot → explicit failure.
-        assert_eq!(
+        assert!(matches!(
             cursor_from_value(&serde_json::Value::Object(context.clone())).unwrap_err(),
-            "continuation_cursor_invalid"
-        );
+            ExecutionError::Continuation(msg) if msg == "continuation_cursor_invalid"
+        ));
         // Unparseable cursor → explicit failure.
         context.insert(
             GATEWAY_RECOVERY_KEY.to_owned(),
@@ -420,7 +423,7 @@ mod tests {
         );
         assert_eq!(
             cursor_from_value(&serde_json::Value::Object(context)).unwrap_err(),
-            "continuation_cursor_invalid"
+            ExecutionError::Continuation("continuation_cursor_invalid".into())
         );
         // No snapshot, no cursor → default (legacy display replay).
         assert_eq!(

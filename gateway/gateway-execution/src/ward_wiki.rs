@@ -6,6 +6,7 @@
 //! structured wiki articles per ward. Articles accumulate and evolve
 //! across sessions, creating a compiled knowledge base.
 
+use crate::errors::ExecutionError;
 use agent_runtime::llm::client::LlmClient;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use agent_runtime::types::ChatMessage;
@@ -48,7 +49,7 @@ pub async fn compile_ward_wiki(
     wiki_store: &dyn WikiStore,
     llm_client: &dyn LlmClient,
     embedding_client: Option<&dyn EmbeddingClient>,
-) -> Result<usize, String> {
+) -> Result<usize, ExecutionError> {
     if new_facts.is_empty() {
         tracing::debug!(ward = %ward_id, "No new facts — skipping wiki compilation");
         return Ok(0);
@@ -270,7 +271,7 @@ fn build_compilation_prompt(existing: &[WikiArticle], new_facts: &[FactSummary])
     prompt
 }
 
-fn parse_compilation_response(text: &str) -> Result<CompilationResponse, String> {
+fn parse_compilation_response(text: &str) -> Result<CompilationResponse, ExecutionError> {
     // Try to extract JSON from response (may have markdown fences)
     let json_text = if let Some(start) = text.find('{') {
         if let Some(end) = text.rfind('}') {
@@ -283,10 +284,13 @@ fn parse_compilation_response(text: &str) -> Result<CompilationResponse, String>
     };
 
     serde_json::from_str(json_text)
-        .map_err(|e| format!("Failed to parse compilation response: {e}"))
+        .map_err(|e| ExecutionError::from(format!("Failed to parse compilation response: {e}")))
 }
 
-async fn build_index_content(ward_id: &str, wiki_store: &dyn WikiStore) -> Result<String, String> {
+async fn build_index_content(
+    ward_id: &str,
+    wiki_store: &dyn WikiStore,
+) -> Result<String, ExecutionError> {
     let articles = wiki_store.list_articles_typed(ward_id).await?;
     let mut index = format!("# {} Wiki Index\n\n", ward_id);
     for article in &articles {
@@ -536,7 +540,7 @@ mod tests {
         let err = compile_ward_wiki("w1", "root", &facts, &repo, &llm, None)
             .await
             .unwrap_err();
-        assert!(err.contains("parse"));
+        assert!(err.to_string().contains("parse"));
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@
 //! (POD `Message` → `agent_runtime::ChatMessage`) lives here as
 //! `messages_to_chat_format`.
 
+use crate::errors::ExecutionError;
 use std::sync::Arc;
 
 use agent_runtime::ChatMessage;
@@ -56,7 +57,7 @@ pub struct HandoffInput {
 /// Mockable LLM interface for generating 3-5 sentence handoff summaries.
 #[async_trait]
 pub trait HandoffLlm: Send + Sync {
-    async fn summarize(&self, input: &HandoffInput) -> Result<String, String>;
+    async fn summarize(&self, input: &HandoffInput) -> Result<String, ExecutionError>;
 }
 
 /// Returns false if the entry is older than `HANDOFF_MAX_AGE_DAYS` or unparseable.
@@ -190,7 +191,7 @@ pub fn format_conversation_for_summary(messages: &[ChatMessage]) -> String {
 
 #[async_trait]
 impl HandoffLlm for LlmHandoffWriter {
-    async fn summarize(&self, input: &HandoffInput) -> Result<String, String> {
+    async fn summarize(&self, input: &HandoffInput) -> Result<String, ExecutionError> {
         let client = self
             .factory
             .build_client(LlmClientConfig::new(0.2, 256))
@@ -278,7 +279,7 @@ impl HandoffWriter {
         agent_id: &str,
         ward_id: &str,
         messages: Vec<ChatMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         let turns = messages.iter().filter(|m| m.role == "user").count() as u32;
         let correction_count = self
             .fact_store
@@ -307,7 +308,7 @@ impl HandoffWriter {
         self.persist(session_id, &entry).await
     }
 
-    async fn persist(&self, session_id: &str, entry: &HandoffEntry) -> Result<(), String> {
+    async fn persist(&self, session_id: &str, entry: &HandoffEntry) -> Result<(), ExecutionError> {
         let json = serde_json::to_string(entry).map_err(|e| format!("serialize entry: {e}"))?;
         let ctx_ward = if entry.ward_id.trim().is_empty() {
             HANDOFF_WARD
@@ -799,7 +800,7 @@ mod tests {
     // ---- Mock LLM ----
 
     struct MockLlm {
-        response: Mutex<Result<String, String>>,
+        response: Mutex<Result<String, ExecutionError>>,
         calls: Mutex<u32>,
     }
 
@@ -812,7 +813,7 @@ mod tests {
         }
         fn err() -> Arc<Self> {
             Arc::new(Self {
-                response: Mutex::new(Err("mock LLM error".to_string())),
+                response: Mutex::new(Err(ExecutionError::from("mock LLM error".to_string()))),
                 calls: Mutex::new(0),
             })
         }
@@ -823,7 +824,7 @@ mod tests {
 
     #[async_trait]
     impl HandoffLlm for MockLlm {
-        async fn summarize(&self, _input: &HandoffInput) -> Result<String, String> {
+        async fn summarize(&self, _input: &HandoffInput) -> Result<String, ExecutionError> {
             *self.calls.lock().unwrap() += 1;
             self.response.lock().unwrap().clone()
         }

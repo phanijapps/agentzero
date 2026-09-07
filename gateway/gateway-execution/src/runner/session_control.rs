@@ -1,6 +1,7 @@
 //! Live execution control, separate from invocation and persisted-subagent recovery.
 //! The registry is shared with bootstrap/streaming; never construct a second map.
 
+use crate::errors::ExecutionError;
 use crate::{DelegationRegistry, ExecutionHandle};
 use execution_state::StateService;
 use std::{collections::HashMap, sync::Arc};
@@ -15,7 +16,7 @@ pub(super) struct SessionControl {
 }
 
 impl SessionControl {
-    pub(super) async fn stop(&self, conversation_id: &str) -> Result<(), String> {
+    pub(super) async fn stop(&self, conversation_id: &str) -> Result<(), ExecutionError> {
         let handles = self.handles.read().await;
         let stopped_root = handles.get(conversation_id).is_some();
         if let Some(handle) = handles.get(conversation_id) {
@@ -34,10 +35,10 @@ impl SessionControl {
         if stopped_root {
             Ok(())
         } else {
-            Err(format!(
+            Err(ExecutionError::from(format!(
                 "No active execution for conversation: {}",
                 conversation_id
-            ))
+            )))
         }
     }
 
@@ -45,22 +46,24 @@ impl SessionControl {
         &self,
         conversation_id: &str,
         additional_iterations: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         let handles = self.handles.read().await;
         if let Some(handle) = handles.get(conversation_id) {
             handle.add_iterations(additional_iterations);
             Ok(())
         } else {
-            Err(format!(
+            Err(ExecutionError::from(format!(
                 "No active execution for conversation: {}",
                 conversation_id
-            ))
+            )))
         }
     }
 
-    pub(super) async fn pause(&self, session_id: &str) -> Result<(), String> {
+    pub(super) async fn pause(&self, session_id: &str) -> Result<(), ExecutionError> {
         // First update the database state
-        self.state_service.pause_session(session_id)?;
+        self.state_service
+            .pause_session(session_id)
+            .map_err(ExecutionError::from)?;
 
         // Preserve the legacy broad handle signaling used by this entry point.
         let handles = self.handles.read().await;
@@ -71,9 +74,11 @@ impl SessionControl {
         Ok(())
     }
 
-    pub(super) async fn cancel(&self, session_id: &str) -> Result<(), String> {
+    pub(super) async fn cancel(&self, session_id: &str) -> Result<(), ExecutionError> {
         // First update the database state
-        self.state_service.cancel_session(session_id)?;
+        self.state_service
+            .cancel_session(session_id)
+            .map_err(ExecutionError::from)?;
 
         // Then cancel any running execution
         let handles = self.handles.read().await;
@@ -88,8 +93,10 @@ impl SessionControl {
         &self,
         session_id: &str,
         conversation_id: &str,
-    ) -> Result<(), String> {
-        self.state_service.cancel_session(session_id)?;
+    ) -> Result<(), ExecutionError> {
+        self.state_service
+            .cancel_session(session_id)
+            .map_err(ExecutionError::from)?;
 
         cancel_execution_tree(
             &*self.handles.read().await,
@@ -100,7 +107,7 @@ impl SessionControl {
         Ok(())
     }
 
-    pub(super) async fn end_session(&self, session_id: &str) -> Result<(), String> {
+    pub(super) async fn end_session(&self, session_id: &str) -> Result<(), ExecutionError> {
         tracing::info!(session_id = %session_id, "User requested session end");
 
         // Stop any running executions gracefully
@@ -110,7 +117,9 @@ impl SessionControl {
         }
 
         // Mark session as completed
-        self.state_service.complete_session(session_id)?;
+        self.state_service
+            .complete_session(session_id)
+            .map_err(ExecutionError::from)?;
 
         tracing::info!(session_id = %session_id, "Session ended by user request");
         Ok(())
@@ -121,8 +130,10 @@ impl SessionControl {
         handles.get(conversation_id).cloned()
     }
 
-    pub(super) async fn resume_live(&self, session_id: &str) -> Result<(), String> {
-        self.state_service.resume_session(session_id)?;
+    pub(super) async fn resume_live(&self, session_id: &str) -> Result<(), ExecutionError> {
+        self.state_service
+            .resume_session(session_id)
+            .map_err(ExecutionError::from)?;
 
         let handles = self.handles.read().await;
         for handle in handles.values() {
@@ -164,7 +175,7 @@ impl ExecutionRunner {
     /// boundary. The cascade is one-level (parent → direct children) —
     /// extend to a BFS over `get_children` if multi-level delegation
     /// becomes common.
-    pub async fn stop(&self, conversation_id: &str) -> Result<(), String> {
+    pub async fn stop(&self, conversation_id: &str) -> Result<(), ExecutionError> {
         self.ctx.control.stop(conversation_id).await
     }
 
@@ -173,7 +184,7 @@ impl ExecutionRunner {
         &self,
         conversation_id: &str,
         additional_iterations: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.ctx
             .control
             .continue_execution(conversation_id, additional_iterations)
@@ -184,7 +195,7 @@ impl ExecutionRunner {
     ///
     /// Pausing sets a flag that the executor will check. The execution
     /// will complete the current operation and then wait for resume.
-    pub async fn pause(&self, session_id: &str) -> Result<(), String> {
+    pub async fn pause(&self, session_id: &str) -> Result<(), ExecutionError> {
         self.ctx.control.pause(session_id).await
     }
 
@@ -193,7 +204,7 @@ impl ExecutionRunner {
     /// For crashed sessions with a crashed subagent: re-spawns only the crashed
     /// subagent using its child session's message history, avoiding root re-evaluation.
     /// For paused sessions or root-only crashes: falls through to current behavior.
-    pub async fn resume(&self, session_id: &str) -> Result<(), String> {
+    pub async fn resume(&self, session_id: &str) -> Result<(), ExecutionError> {
         // Rebuild a persisted delegated execution before falling back to live
         // handles. After either a crash or graceful daemon shutdown there are
         // no in-memory handles to wake, and durable peer work still targets the
@@ -241,7 +252,7 @@ impl ExecutionRunner {
     /// Cancel an execution by session ID.
     ///
     /// Cancellation immediately stops the execution and marks it as cancelled.
-    pub async fn cancel(&self, session_id: &str) -> Result<(), String> {
+    pub async fn cancel(&self, session_id: &str) -> Result<(), ExecutionError> {
         self.ctx.control.cancel(session_id).await
     }
 
@@ -252,7 +263,7 @@ impl ExecutionRunner {
         &self,
         session_id: &str,
         conversation_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.ctx
             .control
             .cancel_exact(session_id, conversation_id)
@@ -263,7 +274,7 @@ impl ExecutionRunner {
     ///
     /// Called when user explicitly ends a session via /end, /new, or +new button.
     /// This marks the session as completed regardless of running executions.
-    pub async fn end_session(&self, session_id: &str) -> Result<(), String> {
+    pub async fn end_session(&self, session_id: &str) -> Result<(), ExecutionError> {
         self.ctx.control.end_session(session_id).await
     }
 
@@ -315,14 +326,18 @@ mod tests {
         assert_eq!(handle.max_iterations(), 15);
         assert!(!handle.is_stop_requested());
         assert!(control.get_handle("missing").await.is_none());
-        assert_eq!(
-            control.stop("missing").await.unwrap_err(),
-            "No active execution for conversation: missing"
-        );
-        assert_eq!(
-            control.continue_execution("missing", 5).await.unwrap_err(),
-            "No active execution for conversation: missing"
-        );
+        assert!(control
+            .stop("missing")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("No active execution"));
+        assert!(control
+            .continue_execution("missing", 5)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("No active execution"));
     }
 
     #[tokio::test]

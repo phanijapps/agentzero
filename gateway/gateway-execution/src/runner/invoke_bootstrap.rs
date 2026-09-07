@@ -12,6 +12,7 @@
 //! `get_rate_limiter`) are implemented here directly because they operate
 //! exclusively on the bootstrap's own field set.
 
+use crate::errors::ExecutionError;
 use std::collections::HashSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -530,13 +531,17 @@ fn is_trivial_chat_prompt(message: &str) -> bool {
     )
 }
 
-fn ledger_resume_system_context(config: &ExecutionConfig) -> Result<Option<String>, String> {
+fn ledger_resume_system_context(
+    config: &ExecutionConfig,
+) -> Result<Option<String>, ExecutionError> {
     config
         .ledger_resume_packet()
         .map(|packet| {
-            packet
-                .render_system_context()
-                .map_err(|_| "Unable to construct approved decision-thread context".to_string())
+            packet.render_system_context().map_err(|_| {
+                ExecutionError::Resource(
+                    "Unable to construct approved decision-thread context".into(),
+                )
+            })
         })
         .transpose()
 }
@@ -610,7 +615,7 @@ impl InvokeBootstrap {
         config: &mut ExecutionConfig,
         message: &str,
         on_session_ready: Option<OnSessionReady>,
-    ) -> Result<PartialSetup, String> {
+    ) -> Result<PartialSetup, ExecutionError> {
         let handle = ExecutionHandle::new(config.max_iterations);
         let root_message_id = client_message_id(config);
 
@@ -797,7 +802,7 @@ impl InvokeBootstrap {
         expected_execution_id: &str,
         expected_message_id: &str,
         on_session_ready: Option<OnSessionReady>,
-    ) -> Result<PartialSetup, String> {
+    ) -> Result<PartialSetup, ExecutionError> {
         let session_id = config
             .session_id
             .clone()
@@ -809,7 +814,9 @@ impl InvokeBootstrap {
             .map_err(|_| "durable_resume_session_read_failed".to_string())?
             .ok_or_else(|| "durable_resume_session_missing".to_string())?;
         if session.root_agent_id != config.agent_id {
-            return Err("durable_resume_identity_mismatch".to_string());
+            return Err(ExecutionError::from(
+                "durable_resume_identity_mismatch".to_string(),
+            ));
         }
         let execution = self
             .ctx
@@ -818,7 +825,9 @@ impl InvokeBootstrap {
             .map_err(|_| "durable_resume_execution_read_failed".to_string())?
             .ok_or_else(|| "durable_resume_execution_missing".to_string())?;
         if execution.id != expected_execution_id || execution.agent_id != config.agent_id {
-            return Err("durable_resume_identity_mismatch".to_string());
+            return Err(ExecutionError::from(
+                "durable_resume_identity_mismatch".to_string(),
+            ));
         }
         let persisted = self
             .ctx
@@ -831,7 +840,9 @@ impl InvokeBootstrap {
             || persisted.role != "user"
             || persisted.content != message
         {
-            return Err("durable_resume_message_mismatch".to_string());
+            return Err(ExecutionError::from(
+                "durable_resume_message_mismatch".to_string(),
+            ));
         }
 
         if let Some(ref persisted_mode) = session.mode {
@@ -896,7 +907,7 @@ impl InvokeBootstrap {
         config: &ExecutionConfig,
         message: &str,
         partial: PartialSetup,
-    ) -> Result<SetupResult, String> {
+    ) -> Result<SetupResult, ExecutionError> {
         let PartialSetup {
             session_id,
             execution_id,
@@ -928,11 +939,11 @@ impl InvokeBootstrap {
             Ok(result) => result,
             Err(e) => {
                 let client_error = if config.redact_diagnostics() {
-                    "Unable to start this request"
+                    "Unable to start this request".to_string()
                 } else {
-                    &e
+                    e.to_string()
                 };
-                self.emit_error(&config.conversation_id, &config.agent_id, client_error)
+                self.emit_error(&config.conversation_id, &config.agent_id, &client_error)
                     .await;
                 return Err(e);
             }
@@ -1138,11 +1149,11 @@ impl InvokeBootstrap {
             Ok(result) => result,
             Err(e) => {
                 let client_error = if config.redact_diagnostics() {
-                    "Unable to start this request"
+                    "Unable to start this request".to_string()
                 } else {
-                    &e
+                    e.to_string()
                 };
-                self.emit_error(&config.conversation_id, &config.agent_id, client_error)
+                self.emit_error(&config.conversation_id, &config.agent_id, &client_error)
                     .await;
                 return Err(e);
             }
@@ -1221,7 +1232,7 @@ impl InvokeBootstrap {
     async fn create_executor(
         &self,
         args: CreateExecutorArgs<'_>,
-    ) -> Result<(PreparedExecution, Vec<String>, Option<String>), String> {
+    ) -> Result<(PreparedExecution, Vec<String>, Option<String>), ExecutionError> {
         let CreateExecutorArgs {
             agent,
             provider,
@@ -2444,7 +2455,9 @@ mod tests {
                 Some(on_failed_ready),
             )
             .await;
-        assert!(matches!(failed, Err(ref error) if error == "Unable to start this request"));
+        assert!(
+            matches!(&failed, Err(error) if error.to_string().contains("Unable to start this request"))
+        );
         assert!(!failure_callback_called.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(bootstrap.ctx.control.handles.read().await.len(), 1);
         let after_failure = bootstrap

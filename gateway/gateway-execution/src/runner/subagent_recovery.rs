@@ -3,6 +3,7 @@
 
 use super::core::ExecutionRunner;
 use crate::delegation::{spawn_delegated_agent, DelegationRequest};
+use crate::errors::ExecutionError;
 
 impl ExecutionRunner {
     /// Re-spawn a crashed or gracefully paused subagent without re-running root.
@@ -10,7 +11,7 @@ impl ExecutionRunner {
         &self,
         session_id: &str,
         crashed_exec: &execution_state::AgentExecution,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         let child_session_id = crashed_exec
             .child_session_id
             .as_ref()

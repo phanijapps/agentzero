@@ -1,5 +1,6 @@
 //! Continuation preparation; shared stream observation lives in ExecutionStream.
 use super::core::attach_mid_session_recall_hook;
+use crate::errors::ExecutionError;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
     build_execution_engine, collect_agents_summary, collect_skills_summary, AgentLoader,
@@ -174,7 +175,7 @@ pub(super) async fn invoke_continuation(
     ctx: &super::exec_ctx::ExecCtx,
     session_id: &str,
     root_agent_id: &str,
-) -> Result<(), String> {
+) -> Result<(), ExecutionError> {
     let super::exec_ctx::ExecCtx {
         event_bus,
         agent_service,
@@ -302,7 +303,9 @@ pub(super) async fn invoke_continuation(
         .map_err(|_| "continuation_session_read_failed".to_string())?
         .ok_or_else(|| "continuation_session_missing".to_string())?;
     if session.root_agent_id != root_agent_id {
-        return Err("continuation_identity_mismatch".to_string());
+        return Err(ExecutionError::from(
+            "continuation_identity_mismatch".to_string(),
+        ));
     }
     let session_ward_id = session.ward_id;
     let session_plan = state_service

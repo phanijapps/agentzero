@@ -12,6 +12,7 @@
 //! SQLite (and any future alternate backend). Adding a new datastore plugs in with zero
 //! changes to this module.
 
+use crate::errors::ExecutionError;
 use crate::indexer::relationship_rules;
 use gateway_services::SharedVaultPaths;
 use knowledge_graph::{Entity, EntityType, Relationship};
@@ -162,7 +163,7 @@ async fn index_one_file(
     episode_store: &Arc<dyn KgEpisodeStore>,
     kg_store: &Arc<dyn KnowledgeGraphStore>,
     opts: IndexOptions,
-) -> Result<usize, String> {
+) -> Result<usize, ExecutionError> {
     let content = std::fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read {:?}: {e}", file_path))?;
 

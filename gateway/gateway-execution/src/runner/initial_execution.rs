@@ -7,6 +7,7 @@
 use super::core::ExecutionRunner;
 use super::OnSessionReady;
 use crate::config::ExecutionConfig;
+use crate::errors::ExecutionError;
 use crate::handle::ExecutionHandle;
 use crate::lifecycle::{crash_execution, CrashExecution};
 
@@ -27,7 +28,7 @@ impl ExecutionRunner {
         &self,
         config: ExecutionConfig,
         message: String,
-    ) -> Result<(ExecutionHandle, String), String> {
+    ) -> Result<(ExecutionHandle, String), ExecutionError> {
         self.invoke_with_callback(config, message, None).await
     }
 
@@ -52,7 +53,7 @@ impl ExecutionRunner {
         mut config: ExecutionConfig,
         message: String,
         on_session_ready: Option<OnSessionReady>,
-    ) -> Result<(ExecutionHandle, String), String> {
+    ) -> Result<(ExecutionHandle, String), ExecutionError> {
         // Phase 1: create session + handle, BEFORE any events fire.
         let partial = self
             .bootstrap
@@ -70,7 +71,7 @@ impl ExecutionRunner {
         mut config: ExecutionConfig,
         message: String,
         on_session_ready: Option<OnSessionReady>,
-    ) -> Result<(ExecutionHandle, String), String> {
+    ) -> Result<(ExecutionHandle, String), ExecutionError> {
         config = config.with_redacted_diagnostics();
         let partial = self
             .bootstrap
@@ -90,7 +91,7 @@ impl ExecutionRunner {
         execution_id: String,
         message_id: String,
         on_session_ready: Option<OnSessionReady>,
-    ) -> Result<(ExecutionHandle, String), String> {
+    ) -> Result<(ExecutionHandle, String), ExecutionError> {
         config = config.with_redacted_diagnostics();
         let partial = self
             .bootstrap
@@ -112,7 +113,7 @@ impl ExecutionRunner {
         message: String,
         partial: super::invoke_bootstrap::PartialSetup,
         log_internal_error: bool,
-    ) -> Result<(ExecutionHandle, String), String> {
+    ) -> Result<(ExecutionHandle, String), ExecutionError> {
         let partial_execution_id = partial.execution_id.clone();
         let partial_session_id = partial.session_id.clone();
         let partial_handle = partial.handle.clone();
@@ -153,7 +154,7 @@ impl ExecutionRunner {
                     crash_session: true,
                 })
                 .await;
-                return Err(SAFE_SETUP_ERROR.to_owned());
+                return Err(ExecutionError::Config(SAFE_SETUP_ERROR.to_owned()));
             }
         };
 

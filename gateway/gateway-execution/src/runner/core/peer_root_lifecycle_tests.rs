@@ -495,7 +495,9 @@ async fn malformed_private_snapshot_fails_continuation_explicitly() {
         .await
         .unwrap_err();
     assert!(
-        error.contains("Unsupported execution checkpoint version"),
+        error
+            .to_string()
+            .contains("Unsupported execution checkpoint version"),
         "malformed snapshot must fail explicitly: {error}"
     );
 }
@@ -583,7 +585,9 @@ async fn checkpoint_read_error_fails_continuation_explicitly() {
         .await
         .unwrap_err();
     assert!(
-        error.contains("continuation_checkpoint_read_failed"),
+        error
+            .to_string()
+            .contains("continuation_checkpoint_read_failed"),
         "checkpoint query errors are not an absent checkpoint: {error}"
     );
 }

@@ -71,7 +71,7 @@ async fn post_start_setup_failure_crashes_the_session_and_removes_its_handle() {
 
     assert!(matches!(
         result,
-        Err(ref message) if message == "Unable to start this request"
+        Err(ref e) if e.client_message() == "Unable to start this request"
     ));
     let session_id = session_id
         .lock()

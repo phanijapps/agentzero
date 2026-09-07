@@ -5,6 +5,7 @@
 use super::callback::{handle_delegation_failure, handle_delegation_success};
 use super::context::{infer_delegation_mode, DelegationContext, DelegationMode, DelegationRequest};
 use super::registry::DelegationRegistry;
+use crate::errors::ExecutionError;
 use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig};
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::{SessionWardClaim, StateService};
@@ -78,7 +79,7 @@ pub async fn spawn_delegated_agent(
     goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     steering_registry: Arc<agent_runtime::SteeringRegistry>,
     agent_result_bus: Arc<AgentResultBus>,
-) -> Result<String, String> {
+) -> Result<String, ExecutionError> {
     // Generate the child conversation identity before validation so even an
     // assignment rejected prior to child-session creation can use the common
     // failure callback and delegation-completion path.
@@ -138,7 +139,7 @@ pub async fn spawn_delegated_agent(
             agent_result_bus: &agent_result_bus,
         })
         .await;
-        return Err(error.to_string());
+        return Err(ExecutionError::from(error.to_string()));
     }
 
     // A ward-agent target is an authoritative execution workspace. Persist it
@@ -248,7 +249,7 @@ pub async fn spawn_delegated_agent(
                 request,
                 child_conversation_id: &child_conversation_id,
                 child_session_id: Some(&child_session_id),
-                error: &e,
+                error: &e.to_string(),
                 messages: messages.as_ref(),
                 state_service: &state_service,
                 log_service: &log_service,
@@ -610,7 +611,7 @@ pub async fn spawn_delegated_agent(
                 request,
                 child_conversation_id: &child_conversation_id,
                 child_session_id: Some(&child_session_id),
-                error: &e,
+                error: &e.to_string(),
                 messages: messages.as_ref(),
                 state_service: &state_service,
                 log_service: &log_service,
@@ -732,7 +733,7 @@ pub async fn spawn_delegated_agent(
                 request,
                 child_conversation_id: &child_conversation_id,
                 child_session_id: Some(&child_session_id),
-                error: &error,
+                error: &error.to_string(),
                 messages: messages.as_ref(),
                 state_service: &state_service,
                 log_service: &log_service,
@@ -2243,10 +2244,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            result.unwrap_err(),
-            "Dynamic capability assignment target rejected"
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Dynamic capability assignment target rejected"));
         let session_after = state_service
             .get_session(&session.id)
             .expect("read parent session")
@@ -2383,7 +2384,11 @@ mod tests {
         .await
         .expect_err("missing provider must fail spawn");
         assert!(
-            error.to_ascii_lowercase().contains("provider"),
+            error
+                .to_string()
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("provider"),
             "unexpected loader failure: {error}"
         );
         assert!(

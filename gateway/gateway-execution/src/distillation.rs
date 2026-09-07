@@ -17,6 +17,7 @@
 //! 4. Upsert each fact into `memory_facts` with embedding
 //! 5. Cache the embedding for hash-based dedup
 
+use crate::errors::ExecutionError;
 use std::sync::Arc;
 
 use agent_runtime::llm::client::LlmClient;
@@ -362,14 +363,14 @@ impl SessionDistiller {
     /// entry when the repository is available — optimistic-failure pattern:
     /// insert with `status = 'failed'` up front, then update to `'success'`
     /// or `'skipped'` when the outcome is known.
-    pub async fn distill(&self, session_id: &str, agent_id: &str) -> Result<usize, String> {
+    pub async fn distill(&self, session_id: &str, agent_id: &str) -> Result<usize, ExecutionError> {
         let started = std::time::Instant::now();
 
         // 1. Load session messages
         let messages = self
             .messages
             .replay(session_id, None, MAX_MESSAGES_FOR_DISTILLATION)
-            .map_err(|e| format!("Failed to load session messages: {}", e))?;
+            .map_err(|e| ExecutionError::from(format!("Failed to load session messages: {}", e)))?;
 
         if messages.len() < MIN_MESSAGES_FOR_DISTILLATION {
             tracing::debug!(
@@ -400,7 +401,7 @@ impl SessionDistiller {
             Ok(resp) => resp,
             Err(e) => {
                 // The initial 'failed' record stays — update with error message
-                self.record_error(session_id, &e).await;
+                self.record_error(session_id, &e.to_string()).await;
                 return Err(e);
             }
         };
@@ -565,12 +566,11 @@ impl SessionDistiller {
             if let Some(ref existing) = existing_fact {
                 if existing.content != ef.content && !existing.pinned {
                     let supersede_res = match self.memory_store.as_ref() {
-                        Some(store) => {
-                            store
-                                .supersede_fact(&existing.id, &fact_id, chrono::Utc::now())
-                                .await
-                        }
-                        None => Err("no memory store wired".to_string()),
+                        Some(store) => store
+                            .supersede_fact(&existing.id, &fact_id, chrono::Utc::now())
+                            .await
+                            .map_err(ExecutionError::Store),
+                        None => Err(ExecutionError::Resource("no memory store wired".into())),
                     };
                     if let Err(e) = supersede_res {
                         tracing::warn!(
@@ -813,14 +813,14 @@ impl SessionDistiller {
     }
 
     /// Build an LLM client for wiki compilation using the distillation provider.
-    fn build_llm_client(&self) -> Result<Arc<dyn LlmClient>, String> {
+    fn build_llm_client(&self) -> Result<Arc<dyn LlmClient>, ExecutionError> {
         let providers = self
             .provider_service
             .list()
-            .map_err(|e| format!("Failed to list providers: {e}"))?;
+            .map_err(|e| ExecutionError::from(format!("Failed to list providers: {e}")))?;
 
         if providers.is_empty() {
-            return Err("No providers configured".to_string());
+            return Err(ExecutionError::from("No providers configured".to_string()));
         }
 
         let (target_provider_id, target_model, max_tokens) = self.resolve_distillation_target();
@@ -849,8 +849,8 @@ impl SessionDistiller {
         .with_temperature(0.3)
         .with_max_tokens(max_tokens);
 
-        let client =
-            OpenAiClient::new(config).map_err(|e| format!("Failed to create LLM client: {e}"))?;
+        let client = OpenAiClient::new(config)
+            .map_err(|e| ExecutionError::from(format!("Failed to create LLM client: {e}")))?;
 
         Ok(Arc::new(client) as Arc<dyn LlmClient>)
     }
@@ -859,14 +859,16 @@ impl SessionDistiller {
     ///
     /// Implements a provider fallback chain: tries the default provider first,
     /// then iterates through remaining providers if the LLM call fails.
-    async fn extract_all(&self, transcript: &str) -> Result<DistillationResponse, String> {
+    async fn extract_all(&self, transcript: &str) -> Result<DistillationResponse, ExecutionError> {
         let providers = self
             .provider_service
             .list()
-            .map_err(|e| format!("Failed to list providers: {}", e))?;
+            .map_err(|e| ExecutionError::from(format!("Failed to list providers: {}", e)))?;
 
         if providers.is_empty() {
-            return Err("No providers configured — cannot distill session".to_string());
+            return Err(ExecutionError::from(
+                "No providers configured — cannot distill session".to_string(),
+            ));
         }
 
         // Load prompt once (shared across attempts)
@@ -1028,10 +1030,10 @@ impl SessionDistiller {
             }
         }
 
-        Err(format!(
+        Err(ExecutionError::from(format!(
             "All providers failed for distillation. Last error: {}",
             last_error
-        ))
+        )))
     }
 
     // =========================================================================
@@ -1048,7 +1050,7 @@ impl SessionDistiller {
         agent_id: &str,
         extracted: &ExtractedEpisode,
         now: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, ExecutionError> {
         // Episode storage runs through the trait surface.
         if self.episode_store.is_none() {
             return Ok(false);
@@ -1122,7 +1124,7 @@ impl SessionDistiller {
         episode: &SessionEpisode,
         embedding: Option<&[f32]>,
         now: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         if self.episode_store.is_none() {
             return Ok(());
         }
@@ -1220,12 +1222,11 @@ impl SessionDistiller {
         if let Some(ref existing) = existing_strategy {
             if existing.content != strategy_description && !existing.pinned {
                 let supersede_res = match self.memory_store.as_ref() {
-                    Some(store) => {
-                        store
-                            .supersede_fact(&existing.id, &strategy_fact_id, chrono::Utc::now())
-                            .await
-                    }
-                    None => Err("no memory store wired".to_string()),
+                    Some(store) => store
+                        .supersede_fact(&existing.id, &strategy_fact_id, chrono::Utc::now())
+                        .await
+                        .map_err(ExecutionError::Store),
+                    None => Err(ExecutionError::Resource("no memory store wired".into())),
                 };
                 if let Err(e) = supersede_res {
                     tracing::warn!(
@@ -1246,10 +1247,11 @@ impl SessionDistiller {
 
         match self.memory_store.as_ref() {
             Some(store) => {
-                let v = serde_json::to_value(&fact).map_err(|e| format!("encode fact: {e}"))?;
+                let v = serde_json::to_value(&fact)
+                    .map_err(|e| ExecutionError::from(format!("encode fact: {e}")))?;
                 store.upsert_typed_fact(v, fact.embedding.clone()).await?;
             }
-            None => return Err("no memory store wired".to_string()),
+            None => return Err(ExecutionError::Resource("no memory store wired".into())),
         }
 
         Ok(())
@@ -1264,7 +1266,7 @@ impl SessionDistiller {
         agent_id: &str,
         episode: &SessionEpisode,
         ward_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         if self.episode_store.is_none() {
             return Ok(());
         }
@@ -1371,12 +1373,11 @@ impl SessionDistiller {
         if let Some(ref existing) = existing_correction {
             if existing.content != correction_content && !existing.pinned {
                 let supersede_res = match self.memory_store.as_ref() {
-                    Some(store) => {
-                        store
-                            .supersede_fact(&existing.id, &correction_fact_id, chrono::Utc::now())
-                            .await
-                    }
-                    None => Err("no memory store wired".to_string()),
+                    Some(store) => store
+                        .supersede_fact(&existing.id, &correction_fact_id, chrono::Utc::now())
+                        .await
+                        .map_err(ExecutionError::Store),
+                    None => Err(ExecutionError::Resource("no memory store wired".into())),
                 };
                 if let Err(e) = supersede_res {
                     tracing::warn!(
@@ -1397,10 +1398,11 @@ impl SessionDistiller {
 
         match self.memory_store.as_ref() {
             Some(store) => {
-                let v = serde_json::to_value(&fact).map_err(|e| format!("encode fact: {e}"))?;
+                let v = serde_json::to_value(&fact)
+                    .map_err(|e| ExecutionError::from(format!("encode fact: {e}")))?;
                 store.upsert_typed_fact(v, fact.embedding.clone()).await?;
             }
-            None => return Err("no memory store wired".to_string()),
+            None => return Err(ExecutionError::Resource("no memory store wired".into())),
         }
 
         Ok(())
@@ -1413,13 +1415,21 @@ impl SessionDistiller {
     /// Insert a session episode. Trait-routed when `episode_store` is set;
     /// falls back to the SQLite `episode_repo`. Returns Err only when both
     /// are unwired (caller is expected to gate on availability beforehand).
-    async fn insert_episode_internal(&self, episode: &SessionEpisode) -> Result<(), String> {
+    async fn insert_episode_internal(
+        &self,
+        episode: &SessionEpisode,
+    ) -> Result<(), ExecutionError> {
         if let Some(store) = &self.episode_store {
-            let v = serde_json::to_value(episode).map_err(|e| format!("encode episode: {e}"))?;
+            let v = serde_json::to_value(episode)
+                .map_err(|e| ExecutionError::Resource(format!("encode episode: {e}")))?;
             let emb = episode.embedding.clone();
-            store.insert_episode(v, emb).await.map(|_| ())
+            store
+                .insert_episode(v, emb)
+                .await
+                .map(|_| ())
+                .map_err(ExecutionError::Store)
         } else {
-            Err("no episode store wired".to_string())
+            Err(ExecutionError::from("no episode store wired".to_string()))
         }
     }
 
@@ -1432,7 +1442,7 @@ impl SessionDistiller {
         embedding: &[f32],
         threshold: f64,
         limit: usize,
-    ) -> Result<Vec<(SessionEpisode, f64)>, String> {
+    ) -> Result<Vec<(SessionEpisode, f64)>, ExecutionError> {
         let store = match &self.episode_store {
             Some(s) => s,
             None => return Ok(Vec::new()),
@@ -1726,10 +1736,14 @@ async fn find_entity_by_normalized_name(
 async fn upsert_distilled_fact(
     store: Option<&dyn zbot_stores::MemoryFactStore>,
     fact: &MemoryFact,
-) -> Result<(), String> {
-    let store = store.ok_or_else(|| "no memory store wired".to_string())?;
-    let value = serde_json::to_value(fact).map_err(|error| format!("encode fact: {error}"))?;
-    store.upsert_typed_fact(value, fact.embedding.clone()).await
+) -> Result<(), ExecutionError> {
+    let store = store.ok_or_else(|| ExecutionError::Resource("no memory store wired".into()))?;
+    let value = serde_json::to_value(fact)
+        .map_err(|error| ExecutionError::Resource(format!("encode fact: {error}")))?;
+    store
+        .upsert_typed_fact(value, fact.embedding.clone())
+        .await
+        .map_err(ExecutionError::Store)
 }
 
 /// Resolve a relationship endpoint only when it is an extracted candidate or
@@ -2114,11 +2128,13 @@ fn summarize_tool_result(content: &str) -> String {
 ///
 /// Returns Err if the response cannot be parsed at all — this is a real failure,
 /// not "nothing worth remembering".
-fn parse_distillation_response(content: &str) -> Result<DistillationResponse, String> {
+fn parse_distillation_response(content: &str) -> Result<DistillationResponse, ExecutionError> {
     let trimmed = content.trim();
 
     if trimmed.is_empty() {
-        return Err("LLM returned empty response".to_string());
+        return Err(ExecutionError::from(
+            "LLM returned empty response".to_string(),
+        ));
     }
 
     // Try parsing as full distillation response (object with facts/entities/relationships)
@@ -2165,15 +2181,17 @@ fn parse_distillation_response(content: &str) -> Result<DistillationResponse, St
     } else {
         trimmed
     };
-    Err(format!(
+    Err(ExecutionError::from(format!(
         "Failed to parse distillation response. Preview: {}",
         preview
-    ))
+    )))
 }
 
 /// Try to extract a DistillationResponse from an arbitrary JSON Value.
 /// Handles cases where the LLM uses slightly different field names or structures.
-fn parse_distillation_from_value(val: &serde_json::Value) -> Result<DistillationResponse, String> {
+fn parse_distillation_from_value(
+    val: &serde_json::Value,
+) -> Result<DistillationResponse, ExecutionError> {
     let obj = val.as_object().ok_or("Response is not a JSON object")?;
 
     let facts: Vec<ExtractedFact> = obj
@@ -2312,7 +2330,7 @@ mod tests {
         // Unparseable text should now return Err, not Ok(empty)
         let result = parse_distillation_response("No facts to extract from this session.");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Failed to parse"));
+        assert!(result.unwrap_err().to_string().contains("Failed to parse"));
     }
 
     #[test]

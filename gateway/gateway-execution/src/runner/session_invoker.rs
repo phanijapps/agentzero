@@ -14,6 +14,7 @@
 //! implement
 //! exactly ONE trait each — no more typed-error stubs.
 
+use crate::errors::ExecutionError;
 use async_trait::async_trait;
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -33,7 +34,7 @@ pub trait ContinuationSpawner: Send + Sync {
         &self,
         session_id: String,
         root_agent_id: String,
-    ) -> Result<(), String>;
+    ) -> Result<(), ExecutionError>;
 }
 
 /// Spawn a delegated subagent. `permit` is the already-acquired global
@@ -45,7 +46,7 @@ pub trait DelegationSpawner: Send + Sync {
         &self,
         request: DelegationRequest,
         permit: Option<OwnedSemaphorePermit>,
-    ) -> Result<(), String>;
+    ) -> Result<(), ExecutionError>;
 }
 
 // ============================================================================
@@ -85,7 +86,7 @@ impl StubSessionInvoker {
         &self,
         config: ExecutionConfig,
         message: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.calls.lock().unwrap().push((config, message));
         Ok(())
     }
@@ -105,7 +106,7 @@ impl ContinuationSpawner for StubSessionInvoker {
         &self,
         session_id: String,
         root_agent_id: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.continuation_calls
             .lock()
             .unwrap()
@@ -121,7 +122,7 @@ impl DelegationSpawner for StubSessionInvoker {
         &self,
         request: DelegationRequest,
         _permit: Option<OwnedSemaphorePermit>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.delegation_calls.lock().unwrap().push(request);
         Ok(())
     }
@@ -139,7 +140,7 @@ impl ContinuationSpawner for ExecutionRunner {
         &self,
         session_id: String,
         root_agent_id: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.ctx.spawn_continuation(session_id, root_agent_id).await
     }
 }
@@ -150,7 +151,7 @@ impl DelegationSpawner for ExecutionRunner {
         &self,
         request: DelegationRequest,
         permit: Option<OwnedSemaphorePermit>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.ctx.spawn_delegation(request, permit).await
     }
 }

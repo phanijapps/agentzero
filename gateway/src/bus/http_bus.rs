@@ -140,7 +140,7 @@ impl GatewayBus for HttpGatewayBus {
             .runner
             .invoke(config, request.message.clone())
             .await
-            .map_err(BusError::Internal)?;
+            .map_err(|e| BusError::Internal(e.to_string()))?;
 
         // Get the most recent execution for this session to retrieve its ID
         let execution_id = self
@@ -166,7 +166,7 @@ impl GatewayBus for HttpGatewayBus {
     async fn status(&self, session_id: &str) -> Result<SessionStatus, BusError> {
         self.state_service
             .get_session(session_id)
-            .map_err(BusError::Internal)?
+            .map_err(|e| BusError::Internal(e.to_string()))?
             .map(|s| s.status)
             .ok_or_else(|| BusError::SessionNotFound(session_id.to_string()))
     }
@@ -175,21 +175,21 @@ impl GatewayBus for HttpGatewayBus {
         self.runner
             .cancel(session_id)
             .await
-            .map_err(BusError::Internal)
+            .map_err(|e| BusError::Internal(e.to_string()))
     }
 
     async fn pause(&self, session_id: &str) -> Result<(), BusError> {
         self.runner
             .pause(session_id)
             .await
-            .map_err(BusError::Internal)
+            .map_err(|e| BusError::Internal(e.to_string()))
     }
 
     async fn resume(&self, session_id: &str) -> Result<(), BusError> {
         self.runner
             .resume(session_id)
             .await
-            .map_err(BusError::Internal)
+            .map_err(|e| BusError::Internal(e.to_string()))
     }
 }
 

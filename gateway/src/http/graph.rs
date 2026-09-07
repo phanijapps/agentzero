@@ -578,7 +578,7 @@ pub async fn trigger_distillation(
             session_id,
             status: "failed".to_string(),
             facts_upserted: 0,
-            error: Some(e),
+            error: Some(e.to_string()),
         })),
     }
 }

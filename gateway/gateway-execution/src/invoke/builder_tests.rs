@@ -752,7 +752,7 @@ async fn planner_executor_fails_closed_when_selected_ward_is_missing() {
         Err(error) => error,
     };
 
-    assert_eq!(error, "planner_template_unavailable");
+    assert!(error.to_string().contains("planner_template_unavailable"));
 }
 
 #[tokio::test]
@@ -789,7 +789,7 @@ async fn planner_executor_fails_closed_when_selected_template_is_invalid() {
         Err(error) => error,
     };
 
-    assert_eq!(error, "planner_template_unavailable");
+    assert!(error.to_string().contains("planner_template_unavailable"));
 }
 
 #[test]
@@ -941,7 +941,9 @@ async fn missing_rig_config_fails_explicitly_instead_of_falling_back() {
         Ok(_) => panic!("missing rig config must fail explicitly"),
     };
     assert!(
-        error.contains("rig_execution_config_unresolved"),
+        error
+            .to_string()
+            .contains("rig_execution_config_unresolved"),
         "explicit failure, got: {error}"
     );
 }

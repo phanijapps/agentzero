@@ -298,7 +298,7 @@ impl ExecutionRunner {
                     .control
                     .delegation_registry
                     .remove(&child_conversation_id);
-                Err(e)
+                Err(e.to_string())
             }
         }
     }

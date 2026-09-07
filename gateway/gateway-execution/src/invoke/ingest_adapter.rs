@@ -216,6 +216,7 @@ fn trusted_graph_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::ExecutionError;
     use crate::ingest::extractor::Extractor;
     use gateway_services::VaultPaths;
     use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
@@ -235,7 +236,7 @@ mod tests {
             _episode_id: &str,
             _chunk_text: &str,
             _kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
-        ) -> std::result::Result<(), String> {
+        ) -> Result<(), ExecutionError> {
             Ok(())
         }
     }

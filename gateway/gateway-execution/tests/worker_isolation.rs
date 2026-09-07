@@ -33,7 +33,7 @@ impl Extractor for PanicExtractor {
         _episode_id: &str,
         _chunk_text: &str,
         _kg_store: &Arc<dyn KnowledgeGraphStore>,
-    ) -> Result<(), String> {
+    ) -> Result<(), gateway_execution::errors::ExecutionError> {
         let n = self.invocations.fetch_add(1, Ordering::SeqCst) + 1;
         if n == self.panic_on {
             panic!("simulated extractor panic (invocation {n})");

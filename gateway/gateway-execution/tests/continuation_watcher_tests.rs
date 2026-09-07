@@ -119,9 +119,9 @@ async fn watcher_continues_after_invoker_error() {
 
     #[async_trait::async_trait]
     impl ContinuationSpawner for FailingInvoker {
-        async fn spawn_continuation(&self, _: String, _: String) -> Result<(), String> {
+        async fn spawn_continuation(&self, _: String, _: String) -> Result<(), gateway_execution::errors::ExecutionError> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Err("simulated".into())
+            Err(gateway_execution::errors::ExecutionError::Session("simulated".into()))
         }
     }
 

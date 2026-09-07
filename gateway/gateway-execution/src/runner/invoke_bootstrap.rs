@@ -106,6 +106,19 @@ struct CreateExecutorArgs<'a> {
     initial_recall_keys: std::collections::HashSet<String>,
 }
 
+/// Per-request services and settings gathered by
+/// [`InvokeBootstrap::collect_execution_inputs`].
+struct ExecutionInputs {
+    available_agents: Vec<serde_json::Value>,
+    available_skills: Vec<serde_json::Value>,
+    tool_settings: agent_tools::ToolSettings,
+    hook_context: Option<serde_json::Value>,
+    fact_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    fact_store_for_indexing: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    connector_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>>,
+    rate_limiter: Arc<agent_runtime::ProviderRateLimiter>,
+}
+
 /// Borrowed inputs for [`InvokeBootstrap::run_intent_analysis`].
 struct IntentAnalysisCtx<'a> {
     agent: &'a gateway_services::agents::Agent,
@@ -1252,25 +1265,14 @@ impl InvokeBootstrap {
     // HELPER METHODS (verbatim from ExecutionRunner, operating on bootstrap fields)
     // =========================================================================
 
-    /// Prepare execution inputs from the given args. Mirrors the same-named
-    /// method on `ExecutionRunner`.
-    async fn create_executor(
+    /// Prepare execution inputs: gather the per-request services the
+    /// builder chain needs. Pure collection — no mutation of agent or
+    /// builder state.
+    async fn collect_execution_inputs(
         &self,
-        args: CreateExecutorArgs<'_>,
-    ) -> Result<(PreparedExecution, Vec<String>, Option<String>), ExecutionError> {
-        let CreateExecutorArgs {
-            agent,
-            provider,
-            config,
-            session_id,
-            ward_id,
-            is_root,
-            user_message,
-            execution_id,
-            initial_recall_keys,
-        } = args;
-
-        // Collect available agents and skills for executor state
+        config: &ExecutionConfig,
+        provider: &gateway_services::providers::Provider,
+    ) -> ExecutionInputs {
         let (available_agents, available_skills) = if config.is_remote_peer() {
             (Vec::new(), Vec::new())
         } else {
@@ -1279,12 +1281,8 @@ impl InvokeBootstrap {
                 collect_skills_summary(&self.ctx.skill_service).await,
             )
         };
-
-        // Get tool settings
         let settings_service = gateway_services::SettingsService::new(self.ctx.paths.clone());
         let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
-
-        // Build hook context if present
         let hook_context = (!config.is_remote_peer())
             .then(|| {
                 config
@@ -1293,15 +1291,11 @@ impl InvokeBootstrap {
                     .and_then(|ctx| serde_json::to_value(ctx).ok())
             })
             .flatten();
-
-        // Trait-routed fact store wired by AppState. None only in
-        // stripped-down test fixtures that don't drive save_fact / recall paths.
         let fact_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
             self.ctx.memory_store.clone();
-        // Clone for resource indexing (before fact_store is moved into builder)
         let fact_store_for_indexing = fact_store.clone();
 
-        // Build connector resource provider (HTTP + bridge composite)
+        // Connector resource provider (HTTP + bridge composite)
         let http_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> =
             self.ctx.connector_registry.as_ref().map(|registry| {
                 Arc::new(crate::resource_provider::GatewayResourceProvider::new(
@@ -1319,43 +1313,65 @@ impl InvokeBootstrap {
                     outbox.clone(),
                 )) as Arc<dyn agent_primitives::ConnectorResourceProvider>
             });
-        let connector_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> =
-            if http_provider.is_some() || bridge_provider.is_some() {
-                Some(
-                    Arc::new(crate::composite_provider::CompositeResourceProvider::new(
-                        http_provider,
-                        bridge_provider,
-                    )) as Arc<dyn agent_primitives::ConnectorResourceProvider>,
-                )
-            } else {
-                None
-            };
+        let connector_provider = if http_provider.is_some() || bridge_provider.is_some() {
+            Some(
+                Arc::new(crate::composite_provider::CompositeResourceProvider::new(
+                    http_provider,
+                    bridge_provider,
+                )) as Arc<dyn agent_primitives::ConnectorResourceProvider>,
+            )
+        } else {
+            None
+        };
 
-        // Get or create shared rate limiter for this provider
         let rate_limiter = self.get_rate_limiter(provider);
         tracing::debug!(provider = %provider.name, "Using shared rate limiter for provider");
 
-        // Use ExecutorBuilder to create the executor
-        let mut builder = ExecutorBuilder::new(self.ctx.paths.vault_dir().clone(), tool_settings)
-            .with_rate_limiter(rate_limiter)
-            .with_chat_mode(config.is_chat_mode())
-            .with_mcp_startup_failure_observer(mcp_startup_failure_observer(
-                self.ctx.log_service.clone(),
-                execution_id,
-                session_id,
-                &agent.id,
-            ));
+        ExecutionInputs {
+            available_agents,
+            available_skills,
+            tool_settings,
+            hook_context,
+            fact_store,
+            fact_store_for_indexing,
+            connector_provider,
+            rate_limiter,
+        }
+    }
+
+    /// Wire every optional service into the ExecutorBuilder chain. Pure
+    /// builder construction — no domain logic.
+    fn wire_builder_services(
+        &self,
+        config: &ExecutionConfig,
+        agent_id: &str,
+        session_id: &str,
+        execution_id: &str,
+        inputs: &ExecutionInputs,
+    ) -> ExecutorBuilder {
+        let mut builder = ExecutorBuilder::new(
+            self.ctx.paths.vault_dir().clone(),
+            inputs.tool_settings.clone(),
+        )
+        .with_rate_limiter(inputs.rate_limiter.clone())
+        .with_chat_mode(config.is_chat_mode())
+        .with_mcp_startup_failure_observer(mcp_startup_failure_observer(
+            self.ctx.log_service.clone(),
+            execution_id,
+            session_id,
+            agent_id,
+        ));
         if let Some(prompt) = config.remote_peer_prompt().cloned() {
             builder = builder.with_remote_peer_prompt(prompt);
         }
         if let Some(registry) = self.ctx.model_registry.load_full() {
             builder = builder.with_model_registry(registry);
         }
-        if let Some(fs) = fact_store {
-            builder = builder.with_fact_store(fs);
+        if let Some(ref fs) = inputs.fact_store {
+            builder = builder.with_fact_store(fs.clone());
         }
-        if let Some(cp) = connector_provider {
-            builder = builder.with_connector_provider(cp);
+        if let Some(ref cp) = inputs.connector_provider {
+            builder = builder.with_connector_provider(cp.clone());
         }
         let integrations = self.ctx.integrations.snapshot();
         if let Some(ks) = integrations.kg_store {
@@ -1368,8 +1384,7 @@ impl InvokeBootstrap {
             builder = builder.with_goal_adapter(a);
         }
         // Ward-curator observer — bumps `created_by=agent` whenever the
-        // `ward` tool creates a new ward dir. Always wired in production
-        // (WardUsage is a required ExecutionRunnerConfig field).
+        // `ward` tool creates a new ward dir.
         {
             let observer =
                 std::sync::Arc::new(crate::invoke::ward_usage_adapter::WardUsageAdapter::new(
@@ -1380,14 +1395,10 @@ impl InvokeBootstrap {
                 .with_ward_usage_service(self.ctx.ward_usage.clone());
         }
         builder = builder.with_state_service(self.ctx.state_service.clone());
-        if let Some(sr) = Some(&self.ctx.steering_registry) {
-            builder = builder.with_steering_registry(sr.clone());
-        }
-        if let Some(bus) = Some(&self.ctx.agent_result_bus) {
-            builder = builder
-                .with_agent_result_bus(bus.clone())
-                .with_message_store(self.ctx.messages.clone());
-        }
+        builder = builder.with_steering_registry(self.ctx.steering_registry.clone());
+        builder = builder
+            .with_agent_result_bus(self.ctx.agent_result_bus.clone())
+            .with_message_store(self.ctx.messages.clone());
         if let Some(ref ps) = self.ctx.procedure_store {
             builder = builder.with_procedure_store(ps.clone());
         }
@@ -1400,42 +1411,36 @@ impl InvokeBootstrap {
         if let Some(ref service) = self.ctx.a2a_delegation {
             builder = builder.with_a2a_delegation(service.clone());
         }
+        builder
+    }
 
-        // Intent analysis for root agent first turns only.
-        // Note: execution_logs stores execution_id in the session_id column,
-        // so we query by execution_id to find prior intent logs.
-        let mut agent_for_build = agent.clone();
-        let mut recommended_skills: Vec<String> = Vec::new();
-        let outcome = self
-            .run_intent_analysis(IntentAnalysisCtx {
-                agent,
-                provider,
-                config,
-                session_id,
-                execution_id,
-                is_root,
-                user_message,
-                fact_store: fact_store_for_indexing.as_ref(),
-            })
-            .await;
-        let intent_title_hint = outcome.as_ref().map(|out| out.title_hint.as_str());
-        self.derive_and_publish_session_title(
-            session_id,
-            user_message,
-            intent_title_hint,
-            config.redact_diagnostics(),
-        )
-        .await;
-        let mut effective_ward_id = ward_id.map(str::to_owned);
+    /// Apply the intent outcome to the agent and builder: capability
+    /// assignment resolution, planning gate, instructions injection, and
+    /// placeholder-spec detection.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_intent_outcome(
+        &self,
+        outcome: Option<IntentOutcome>,
+        agent_for_build: &mut gateway_services::agents::Agent,
+        mut builder: ExecutorBuilder,
+        config: &ExecutionConfig,
+        is_root: bool,
+        session_id: &str,
+        execution_id: &str,
+        user_message: Option<&str>,
+        effective_ward_id: &mut Option<String>,
+        fact_store_for_indexing: Option<&Arc<dyn zbot_stores::MemoryFactStore>>,
+    ) -> Result<(Vec<String>, ExecutorBuilder), ExecutionError> {
+        let mut recommended_skills = Vec::new();
         if let Some(out) = outcome {
             if effective_ward_id.is_none() {
-                effective_ward_id = out.existing_ward_id.clone();
+                *effective_ward_id = out.existing_ward_id.clone();
             }
 
             // The snapshot is a sidecar for subagents, so it must use the
             // persisted active ward rather than the intent model's proposal.
             if let (Some(fs), Some(ward_id), Some(message)) = (
-                fact_store_for_indexing.as_ref(),
+                fact_store_for_indexing,
                 effective_ward_id.as_deref(),
                 user_message,
             ) {
@@ -1451,9 +1456,11 @@ impl InvokeBootstrap {
 
             recommended_skills = out.recommended_skills;
             if is_root && !out.is_graph {
-                if let Some(assignment) = out.recommended_capabilities.iter().find(|assignment| {
-                    assignment.agent_id == "root" || assignment.agent_id == agent_for_build.id
-                }) {
+                if let Some(assignment) = out
+                    .recommended_capabilities
+                    .iter()
+                    .find(|a| a.agent_id == "root" || a.agent_id == agent_for_build.id)
+                {
                     match self
                         .ctx
                         .mcp_service
@@ -1466,7 +1473,7 @@ impl InvokeBootstrap {
                             let rejection_codes = resolution
                                 .rejections
                                 .iter()
-                                .map(|reason| reason.as_str())
+                                .map(|r| r.as_str())
                                 .collect::<Vec<_>>();
                             let entry = api_logs::ExecutionLog::new(
                                 execution_id,
@@ -1488,8 +1495,6 @@ impl InvokeBootstrap {
                             let _ = self.ctx.log_service.log(entry);
                         }
                         Err(_) => {
-                            // An explicit root assignment fails closed and
-                            // never falls back to static MCP configuration.
                             agent_for_build.mcps.clear();
                             let entry = api_logs::ExecutionLog::new(
                                 execution_id,
@@ -1538,11 +1543,74 @@ impl InvokeBootstrap {
             agent_for_build.instructions.push_str("\n\n");
             agent_for_build.instructions.push_str(&context);
         }
+        Ok((recommended_skills, builder))
+    }
 
-        // Flag if placeholder specs exist — delegate tool uses this to block
-        // ad-hoc delegations. Single source of truth lives in
-        // `agent_tools::tools::guards::specs_dir_has_placeholders` so this
-        // path agrees with the same check used by load_skill / update_plan.
+    /// Prepare execution inputs from the given args. Orchestrates the three
+    /// phases: collect inputs → wire builder → apply intent outcome.
+    async fn create_executor(
+        &self,
+        args: CreateExecutorArgs<'_>,
+    ) -> Result<(PreparedExecution, Vec<String>, Option<String>), ExecutionError> {
+        let CreateExecutorArgs {
+            agent,
+            provider,
+            config,
+            session_id,
+            ward_id,
+            is_root,
+            user_message,
+            execution_id,
+            initial_recall_keys,
+        } = args;
+
+        // Phase 1: gather per-request services and settings.
+        let inputs = self.collect_execution_inputs(config, provider).await;
+
+        // Phase 2: construct the builder with every optional service wired.
+        let builder =
+            self.wire_builder_services(config, &agent.id, session_id, execution_id, &inputs);
+
+        // Phase 3: intent analysis + agent/builder mutation.
+        let outcome = self
+            .run_intent_analysis(IntentAnalysisCtx {
+                agent,
+                provider,
+                config,
+                session_id,
+                execution_id,
+                is_root,
+                user_message,
+                fact_store: inputs.fact_store_for_indexing.as_ref(),
+            })
+            .await;
+        let intent_title_hint = outcome.as_ref().map(|out| out.title_hint.as_str());
+        self.derive_and_publish_session_title(
+            session_id,
+            user_message,
+            intent_title_hint,
+            config.redact_diagnostics(),
+        )
+        .await;
+        let mut agent_for_build = agent.clone();
+        let mut effective_ward_id = ward_id.map(str::to_owned);
+        let (recommended_skills, builder) = self
+            .apply_intent_outcome(
+                outcome,
+                &mut agent_for_build,
+                builder,
+                config,
+                is_root,
+                session_id,
+                execution_id,
+                user_message,
+                &mut effective_ward_id,
+                inputs.fact_store_for_indexing.as_ref(),
+            )
+            .await?;
+        let mut builder = builder;
+
+        // Placeholder-spec detection (delegate gate).
         if is_root {
             if let Some(wid) = effective_ward_id.as_deref() {
                 let specs_dir = self
@@ -1572,9 +1640,9 @@ impl InvokeBootstrap {
                 provider,
                 &config.conversation_id,
                 session_id,
-                &available_agents,
-                &available_skills,
-                hook_context.as_ref(),
+                &inputs.available_agents,
+                &inputs.available_skills,
+                inputs.hook_context.as_ref(),
                 &self.ctx.mcp_service,
                 effective_ward_id.as_deref(),
             )

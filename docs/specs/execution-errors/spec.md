@@ -1,6 +1,6 @@
 # Spec: Execution error taxonomy (Wave 5)
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Branch:** `op_clean_crap`
 - **Shape:** refactor (typed errors replace stringly results)
 
@@ -33,13 +33,13 @@ replacing per-site safe-string constants.
 
 ## Acceptance Criteria
 
-- [ ] AC1: Zero `Result<_, String>` in gateway-execution/src (grep;
+- [x] AC1: Zero `Result<_, String>` in gateway-execution/src (grep;
       `Result<ExecutionError>` and typed alternatives only).
-- [ ] AC2: The 5 upstream `.contains(...)` string-matches in gateway/src +
+- [x] AC2: The 5 upstream `.contains(...)` string-matches in gateway/src +
       apps/ become variant matches.
-- [ ] AC3: Crash-event redaction flows through `client_message()`; no raw
+- [x] AC3: Crash-event redaction flows through `client_message()`; no raw
       error strings published to the event bus.
-- [ ] AC4: Full suites green (600 + 453 + parity), clippy -D warnings, fmt.
+- [x] AC4: Full suites green (600 + 453 + parity), clippy -D warnings, fmt.
 
 ## Non-goals
 

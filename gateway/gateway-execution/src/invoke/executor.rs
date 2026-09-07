@@ -2268,7 +2268,6 @@ mod tests {
         );
     }
 
-    // STUB: AC1, AC2, AC8, AC9
     #[tokio::test]
     async fn planner_executor_receives_selected_template_packet_and_prompt() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2329,7 +2328,6 @@ mod tests {
         assert!(!instruction.contains(dir.path().to_string_lossy().as_ref()));
     }
 
-    // STUB: AC3, AC7
     #[tokio::test]
     async fn planner_refinement_tool_replay_persists_required_roles_only_in_selected_ward() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2610,7 +2608,6 @@ extensions: {}
         );
     }
 
-    // STUB: AC6
     #[tokio::test]
     async fn planner_executor_fails_closed_when_selected_ward_is_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2644,7 +2641,6 @@ extensions: {}
         assert_eq!(error, "planner_template_unavailable");
     }
 
-    // STUB: AC6
     #[tokio::test]
     async fn planner_executor_fails_closed_when_selected_template_is_invalid() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3166,7 +3162,7 @@ extensions: {}
         }
     }
 
-    // STUB: A2A AC8/AC15 — remote peers receive no local side-effect surface.
+    // A2A AC8/AC15 — remote peers receive no local side-effect surface.
     #[test]
     fn remote_peer_inventory_is_exactly_respond() {
         assert_eq!(
@@ -3185,7 +3181,6 @@ extensions: {}
         );
     }
 
-    // STUB: AC1, AC2, AC3, AC4 — raw actor inventories remain stable and unique.
     #[test]
     fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories() {
         for actor_kind in [
@@ -3304,7 +3299,6 @@ extensions: {}
         }
     }
 
-    // STUB: AC2, AC3 — valid create/update calls emit bounded surface markers
     #[tokio::test]
     async fn present_surface_emits_bounded_create_and_update_markers() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3440,7 +3434,6 @@ extensions: {}
         }
     }
 
-    // STUB: AC5, AC9, AC11 — reject actions/executable fields without payload echo
     #[tokio::test]
     async fn present_surface_rejects_actionable_or_executable_descriptors_without_echo() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3570,7 +3563,6 @@ extensions: {}
         assert_eq!(response.message, "The canonical answer remains available.");
     }
 
-    // STUB: AC6, AC9 — presentation is limited to user-facing actors
     #[test]
     fn present_surface_is_limited_to_user_facing_actors() {
         assert_has(

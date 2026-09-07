@@ -905,3 +905,29 @@ No production engine has been retired yet. No AC is marked complete.
   pre-existing exceptions only), release binaries build
   (daemon + cli), git diff --check clean, no-legacy audit re-verified on
   the final tree.
+
+### Final review round — closure
+
+- Adversarial re-review of the whole cutover diff: zero blockers; both P2s
+  applied (stop-and-continue final assertion scoped to the last turn —
+  the stop-loses outcome legitimately renders two answers — and four
+  stale post-cutover comments updated to sole-engine wording).
+- Security review (OWASP/LLM-top-10/ASVS lens): zero blockers. Applied:
+  the continuation crash path now publishes the constant safe message the
+  initial-invocation path uses (raw error stays in tracing), and
+  checkpoint restore rejects session-mismatched rows before reading any
+  cursor. Deferred with backlog entries: checkpoint tamper evidence
+  (defense-in-depth; parity with pre-existing messages-table exposure)
+  and continuation-wake resilience (root_execution_id threading, broadcast
+  lag recovery).
+- Quality review (whole-spec journey, test honesty, observability,
+  reliability, maintainability): zero blockers. Applied: delegated engine
+  construction failure now routes through handle_early_spawn_failure
+  (no RUNNING child row / hung parent if the choke ever fails), stale
+  STUB markers on real passing tests removed, and the cutover env test
+  serializes its process-global mutation behind a static mutex. Deferred:
+  the pre-existing dead subagent_non_streaming setting (dead before the
+  cutover; wiring or deleting it is a product-surface call) and recovery
+  tail pagination beyond the 200-row replay cap.
+- All three reviewers returned OK-with-notes; every finding is applied or
+  carries a resolvable backlog entry.

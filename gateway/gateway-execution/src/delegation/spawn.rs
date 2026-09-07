@@ -716,16 +716,36 @@ pub async fn spawn_delegated_agent(
     // can query ctx.state.* rows when building the ward_snapshot preamble.
     let memory_store_for_snapshot = memory_store.clone();
 
-    // Spawn the execution task
-    spawn_execution_task(SpawnContext {
-        executor: build_execution_engine(executor).map_err(|error| {
+    // Spawn the execution task. Engine construction is unconditional and its
+    // config is always resolved today, but if the choke ever fails the child
+    // must go through the same early-failure cleanup as the builder above —
+    // never leak a RUNNING child row, a registered handle, or a hung parent.
+    let executor = match build_execution_engine(executor) {
+        Ok(engine) => engine,
+        Err(error) => {
             tracing::error!(
                 child = %request.child_agent_id,
                 %error,
                 "Delegated engine construction failed"
             );
-            error
-        })?,
+            handle_early_spawn_failure(EarlySpawnFailure {
+                request,
+                child_conversation_id: &child_conversation_id,
+                child_session_id: Some(&child_session_id),
+                error: &error,
+                messages: messages.as_ref(),
+                state_service: &state_service,
+                log_service: &log_service,
+                event_bus: &event_bus,
+                delegation_registry: &delegation_registry,
+                agent_result_bus: &agent_result_bus,
+            })
+            .await;
+            return Err(error);
+        }
+    };
+    spawn_execution_task(SpawnContext {
+        executor,
         handle: handle_clone,
         request: request.clone(),
         execution_id: execution_id.clone(),

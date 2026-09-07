@@ -27,6 +27,13 @@ open = [
   # delegating nested builders, but policy #206 (2026-06-03) removed AgentDelegate from
   # DelegatedExecutor. Re-record the fixture under the current contract (root delegates).
   { slug = "pre-existing-aapl-fixture-rerecord", source = "spec/rig-only-execution AC12" },
+  # pre-existing (QE review): settings API exposes subagent_non_streaming but no production
+  # path reads it (dead before the cutover too — legacy had only a NOTE comment). Wire it
+  # into Rig construction or delete the setting; product-surface call, not cutover scope.
+  { slug = "dead-subagent-non-streaming-setting", source = "spec/rig-only-execution QE review" },
+  # deferred (QE review): recovery tail composition caps replay at 200 rows; more-than-200
+  # new durable rows are truncated from that turn's model input (re-scanned next turn).
+  { slug = "recovery-tail-pagination", source = "spec/rig-only-execution QE review" },
   # deferred (security review, defense-in-depth): checkpoint cursor/snapshot has no
   # tamper-evidence (digest/MAC); parseable-but-edited cursors silently omit rows from
   # restored context. Parity with pre-existing messages-table exposure, not a regression.

@@ -614,7 +614,7 @@ impl OpenAiClient {
 
     /// Parse the API response
     fn parse_response(&self, response: Value) -> ChatResponse {
-        let content = response
+        let mut content = response
             .pointer("/choices/0/message/content")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -625,6 +625,16 @@ impl OpenAiClient {
             .pointer("/choices/0/message/reasoning_content")
             .and_then(|v| v.as_str())
             .map(std::string::ToString::to_string);
+
+        // Thinking models (GLM, DeepSeek) sometimes put the final answer in
+        // reasoning_content with an empty content field. For structured
+        // output calls, the JSON lands there too — fall back so the caller
+        // doesn't see EmptyResponse on a model that actually answered.
+        if content.is_empty() {
+            if let Some(ref r) = reasoning {
+                content = r.clone();
+            }
+        }
 
         // Parse tool calls if present
         let tool_calls = self.parse_tool_calls(&response);

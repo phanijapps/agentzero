@@ -180,8 +180,34 @@ pub async fn analyze_intent(deps: &IntentAgentDeps, user_message: &str) -> Inten
             analysis
         }
         None => {
-            tracing::warn!("Intent agent did not submit — falling back");
-            fallback_analysis(&wards)
+            // The model gathered info but wrote text instead of calling
+            // submit_intent (common with thinking models). Try to extract
+            // the analysis from the text response.
+            tracing::warn!("Intent agent did not submit via tool — extracting from text");
+            match extract_analysis_from_text(&deps, user_message).await {
+                Some(a) => a,
+                None => fallback_analysis(&wards),
+            }
         }
     }
+}
+
+/// Fallback: when the model writes its analysis as text instead of calling
+/// submit_intent, run a second lightweight prompt that converts the text
+/// into the structured format. This handles thinking models that prefer
+/// prose over tool calls.
+async fn extract_analysis_from_text(
+    deps: &IntentAgentDeps,
+    message: &str,
+) -> Option<IntentAnalysis> {
+    // Run the agent again but with a simpler, more forceful prompt
+    let extract_prompt = format!(
+        "Analyze this request and respond ONLY with a JSON object matching this schema. No prose, no explanation, just the JSON.\n\nRequest: {}",
+        message
+    );
+    let result = run_intent_agent(deps, &extract_prompt, |_e| {}).await;
+    if result.is_some() {
+        tracing::info!("Intent extracted via second-pass prompt");
+    }
+    result
 }

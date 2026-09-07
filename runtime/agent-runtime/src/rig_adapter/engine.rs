@@ -31,11 +31,9 @@ use futures::StreamExt;
 use rig::agent::{
     Agent, AgentBuilder, AgentHook, Flow, MultiTurnStreamItem, StepEvent, StreamingError,
 };
-use rig::completion::message::{ToolResult as RigToolResult, ToolResultContent};
 use rig::completion::{CompletionModel, Message};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
 use rig::tool::{ToolCallExtensions, ToolDyn};
-use serde_json::Value;
 
 use super::resources::SessionResources;
 use super::tool_hook::RigExecutionHook;
@@ -44,7 +42,6 @@ use crate::engine::hooks::HookSet;
 use crate::engine::ExecutorError;
 use crate::engine::{AgentEngine, StreamEventSink};
 use crate::rig_adapter::{RigAgentConfig, SharedToolContext};
-use crate::tool_visibility::{externally_visible_tool_args, externally_visible_tool_result};
 use crate::types::events::current_timestamp;
 use crate::types::{ChatMessage, StreamEvent};
 
@@ -291,8 +288,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
         let mut tool_names_by_call_id = HashMap::new();
-        let mut stopped_for_delegation = false;
-        let mut responded = false;
+        let mut signal = super::turn_signal::TurnSignal::Continue;
         let mut stop_poll = tokio::time::interval(std::time::Duration::from_millis(100));
         let mut heartbeat = tokio::time::interval_at(
             tokio::time::Instant::now() + std::time::Duration::from_secs(10),
@@ -345,43 +341,23 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             match item {
                 MultiTurnStreamItem::StreamAssistantItem(content) => match content {
                     StreamedAssistantContent::Text(text) => {
-                        if let Some(policy) = &self.context_policy {
-                            policy.text(&text.text);
-                        }
-                        final_message.push_str(&text.text);
-                        on_event(StreamEvent::Token {
-                            timestamp: current_timestamp(),
-                            content: text.text,
-                        });
+                        super::turn_events::map_assistant_text(
+                            self.context_policy.as_ref(),
+                            &text.text,
+                            &mut final_message,
+                            on_event,
+                        );
                     }
                     StreamedAssistantContent::ToolCall { tool_call, .. } => {
-                        let tool_id = tool_call
-                            .call_id
-                            .clone()
-                            .unwrap_or_else(|| tool_call.id.clone());
-                        tool_names_by_call_id.insert(
-                            tool_id.clone(),
-                            (
-                                tool_call.function.name.clone(),
-                                tool_call.function.arguments.clone(),
-                            ),
+                        super::turn_events::map_assistant_tool_call(
+                            &tool_call,
+                            &mut tool_names_by_call_id,
+                            results.peer_influenced(),
+                            on_event,
                         );
-                        on_event(StreamEvent::ToolCallStart {
-                            timestamp: current_timestamp(),
-                            tool_id,
-                            tool_name: tool_call.function.name.clone(),
-                            args: externally_visible_tool_args(
-                                &tool_call.function.name,
-                                &tool_call.function.arguments,
-                                results.peer_influenced(),
-                            ),
-                        });
                     }
                     StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
-                        on_event(StreamEvent::Reasoning {
-                            timestamp: current_timestamp(),
-                            content: reasoning,
-                        });
+                        super::turn_events::map_reasoning(reasoning, on_event);
                     }
                     other => {
                         // Deltas / complete-reasoning / unknown low-level items
@@ -392,216 +368,24 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 },
                 MultiTurnStreamItem::StreamUserItem(user_content) => match user_content {
                     StreamedUserContent::ToolResult { tool_result, .. } => {
-                        let outcome = results.take();
-                        let context_text = outcome
-                            .context
-                            .unwrap_or_else(|| tool_result_text(&tool_result));
-                        let result_text = outcome.raw.unwrap_or_else(|| context_text.clone());
-                        if let Some((name, args)) = &outcome.rejected_call {
-                            // Rig's invalid-call recovery omits a dispatch-start
-                            // item because no tool ran; retain our attempt trace.
-                            on_event(StreamEvent::ToolCallStart {
-                                timestamp: current_timestamp(),
-                                tool_id: tool_result.id.clone(),
-                                tool_name: name.clone(),
-                                args: externally_visible_tool_args(
-                                    name,
-                                    args,
-                                    results.peer_influenced(),
-                                ),
-                            });
-                        }
-                        let tool_info = tool_names_by_call_id
-                            .remove(&tool_result.id)
-                            .or(outcome.rejected_call);
-                        let is_surface_tool = tool_info
-                            .as_ref()
-                            .is_some_and(|(name, _)| name == "present_surface");
-                        if let (Some(policy), Some((name, args))) =
-                            (&self.context_policy, &tool_info)
-                        {
-                            policy.record_tool(name, args, outcome.error.as_deref());
-                            policy.completed(&tool_result.id, name, args, &context_text);
-                        }
-                        let (event_result, event_context, event_error) =
-                            externally_visible_tool_result(
-                                results.peer_influenced(),
-                                result_text.clone(),
-                                Some(context_text),
-                                outcome.error,
-                            );
-                        // Surface tool side-effects set on the shared context
-                        // (delegate/respond), mirroring the legacy executor. Without
-                        // ActionDelegate, delegate_to_agent would not spawn a child
-                        // and wait_agent would hang forever on the Rig path.
-                        let actions = self.shared_context.take_actions();
-                        if let Some(delegate) = actions.delegate {
-                            stopped_for_delegation = !delegate.parallel;
-                            on_event(StreamEvent::ActionDelegate {
-                                timestamp: current_timestamp(),
-                                agent_id: delegate.agent_id,
-                                task: delegate.task,
-                                context: delegate.context,
-                                wait_for_result: delegate.wait_for_result,
-                                max_iterations: delegate.max_iterations,
-                                output_schema: delegate.output_schema,
-                                skills: delegate.skills,
-                                capability_assignment: delegate.capability_assignment,
-                                planning_capability_catalog: delegate.planning_capability_catalog,
-                                complexity: delegate.complexity,
-                                mode: delegate.mode,
-                                parallel: delegate.parallel,
-                                child_execution_id: delegate.child_execution_id,
-                            });
-                        }
-                        if let Some(respond) = actions.respond {
-                            responded = true;
-                            if let Some(policy) = &self.context_policy {
-                                policy.record_respond();
-                            }
-                            on_event(StreamEvent::ActionRespond {
-                                timestamp: current_timestamp(),
-                                message: respond.message,
-                                format: respond.format,
-                                conversation_id: respond.conversation_id,
-                                session_id: respond.session_id,
-                                artifacts: respond.artifacts,
-                            });
-                        }
-                        // Surface result-value markers. Ward/update_plan/title
-                        // marker producers signal via their return JSON
-                        // (`__ward_changed__`/`__plan_update`/`__session_title_changed__`
-                        // + payload fields); the legacy executor parses the tool
-                        // output. Without this, legacy marker producers never
-                        // publish the corresponding stream events.
-                        if let Ok(parsed) = serde_json::from_str::<Value>(&result_text) {
-                            if is_surface_tool {
-                                if parsed
-                                    .get("__work_surface")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface) = parsed
-                                        .get("surface")
-                                        .cloned()
-                                        .and_then(|value| serde_json::from_value(value).ok())
-                                    {
-                                        on_event(StreamEvent::WorkSurface {
-                                            timestamp: current_timestamp(),
-                                            surface,
-                                        });
-                                    }
-                                }
-                                if parsed
-                                    .get("__work_surface_updated")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface) = parsed
-                                        .get("surface")
-                                        .cloned()
-                                        .and_then(|value| serde_json::from_value(value).ok())
-                                    {
-                                        on_event(StreamEvent::WorkSurfaceUpdated {
-                                            timestamp: current_timestamp(),
-                                            surface,
-                                        });
-                                    }
-                                }
-                                if parsed
-                                    .get("__work_surface_deleted")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface_id) = parsed
-                                        .get("surface_id")
-                                        .and_then(Value::as_str)
-                                        .filter(|id| !id.is_empty() && id.len() <= 128)
-                                    {
-                                        on_event(StreamEvent::WorkSurfaceDeleted {
-                                            timestamp: current_timestamp(),
-                                            surface_id: surface_id.to_owned(),
-                                        });
-                                    }
-                                }
-                            }
-                            if parsed
-                                .get("__session_title_changed__")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                if let Some(title) = parsed.get("title").and_then(Value::as_str) {
-                                    on_event(StreamEvent::SessionTitleChanged {
-                                        timestamp: current_timestamp(),
-                                        title: title.to_string(),
-                                    });
-                                }
-                            }
-                            if parsed
-                                .get("__ward_changed__")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                if let Some(ward_id) = parsed.get("ward_id").and_then(Value::as_str)
-                                {
-                                    on_event(StreamEvent::WardChanged {
-                                        timestamp: current_timestamp(),
-                                        ward_id: ward_id.to_string(),
-                                    });
-                                }
-                            }
-                            if parsed
-                                .get("__plan_update")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                let plan = parsed
-                                    .get("plan")
-                                    .cloned()
-                                    .unwrap_or_else(|| Value::Array(Vec::new()));
-                                let explanation = parsed
-                                    .get("explanation")
-                                    .and_then(Value::as_str)
-                                    .map(std::string::ToString::to_string);
-                                on_event(StreamEvent::ActionPlanUpdate {
-                                    timestamp: current_timestamp(),
-                                    plan,
-                                    explanation,
-                                });
-                            }
-                        }
-                        on_event(StreamEvent::ToolResult {
-                            timestamp: current_timestamp(),
-                            tool_id: tool_result.id.clone(),
-                            result: event_result,
-                            context_result: event_context,
-                            error: event_error,
-                            duration_ms: Some(outcome.duration_ms),
-                        });
-                        if let Some((tool_name, args)) = tool_info {
-                            on_event(StreamEvent::ToolCallEnd {
-                                timestamp: current_timestamp(),
-                                tool_id: tool_result.id.clone(),
-                                args: externally_visible_tool_args(
-                                    &tool_name,
-                                    &args,
-                                    results.peer_influenced(),
-                                ),
-                                tool_name,
-                            });
-                        }
+                        signal = super::turn_events::map_tool_result(
+                            &tool_result,
+                            &results,
+                            self.context_policy.as_ref(),
+                            &self.shared_context,
+                            &mut tool_names_by_call_id,
+                            on_event,
+                        );
                     }
                 },
                 MultiTurnStreamItem::CompletionCall(cc) => {
-                    // Emit token usage (cumulative) so the gateway records
-                    // per-execution token counts via TokenUpdate → batch_writer.
-                    total_input += cc.usage.input_tokens;
-                    total_output += cc.usage.output_tokens;
-                    on_event(StreamEvent::TokenUpdate {
-                        timestamp: current_timestamp(),
-                        tokens_in: total_input,
-                        tokens_out: total_output,
-                    });
+                    super::turn_events::map_completion_call(
+                        cc.usage.input_tokens,
+                        cc.usage.output_tokens,
+                        &mut total_input,
+                        &mut total_output,
+                        on_event,
+                    );
                 }
                 MultiTurnStreamItem::FinalResponse(response) => {
                     if let (Some(policy), Some(history)) =
@@ -619,12 +403,12 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             // Delegation yields to the child; a successful respond completes
             // this execution. Neither permits another model or tool call.
             // A denied/failed respond has no action and remains recoverable.
-            if stopped_for_delegation || responded {
+            if signal != super::turn_signal::TurnSignal::Continue {
                 break;
             }
         }
 
-        if !stopped_for_delegation {
+        if signal != super::turn_signal::TurnSignal::DelegationYield {
             on_event(StreamEvent::Done {
                 timestamp: current_timestamp(),
                 final_message,
@@ -674,19 +458,6 @@ fn convert_history(history: &[ChatMessage]) -> Vec<Message> {
             _ => None,
         })
         .collect()
-}
-
-/// Extract the model-visible text from a rig tool result.
-fn tool_result_text(tool_result: &RigToolResult) -> String {
-    tool_result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            ToolResultContent::Text(text) => Some(text.text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[async_trait::async_trait]
@@ -749,6 +520,7 @@ mod tests {
     };
     use rig::one_or_many::OneOrMany;
     use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse};
+    use serde_json::Value;
     use std::sync::atomic::AtomicU32;
     use std::sync::Mutex;
 
@@ -927,7 +699,6 @@ mod tests {
     async fn llm_completion_model_drives_engine_end_to_end() {
         use crate::llm::{ChatResponse, LlmClient, LlmError, StreamCallback, StreamChunk};
         use crate::rig_adapter::model::LlmCompletionModel;
-        use serde_json::Value;
 
         struct StubLlm {
             chunks: Vec<String>,
@@ -1205,7 +976,6 @@ mod tests {
     async fn rig_engine_forwards_history_to_llm_unchanged() {
         use crate::llm::{ChatResponse, LlmClient, LlmError, StreamCallback, StreamChunk};
         use crate::rig_adapter::model::LlmCompletionModel;
-        use serde_json::Value;
 
         let sent: Arc<Mutex<Vec<Vec<ChatMessage>>>> = Arc::new(Mutex::new(Vec::new()));
         struct RecordingLlm {

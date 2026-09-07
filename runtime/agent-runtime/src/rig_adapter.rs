@@ -17,6 +17,8 @@ pub mod structured;
 pub mod tool;
 mod tool_hook;
 mod tool_results;
+mod turn_events;
+mod turn_signal;
 
 #[cfg(test)]
 mod capability_tests;

@@ -3,12 +3,10 @@
   "run_id": "fb320581-90fd-4785-8474-bd587f006a21",
   "feature": "rig-only-execution",
   "mode": "code",
-  "state": "CODE-IMPLEMENTATION",
-  "last_event": "wave-passed",
-  "last_event_context": {
-    "completed_wave_index": 9
-  },
-  "transition_sequence": 27,
-  "last_transition_at": "2026-09-07T00:27:50Z",
+  "state": "CODE-REVIEW",
+  "last_event": "gates-clean",
+  "last_event_context": null,
+  "transition_sequence": 29,
+  "last_transition_at": "2026-09-07T00:47:15Z",
   "gate_question": null
 }

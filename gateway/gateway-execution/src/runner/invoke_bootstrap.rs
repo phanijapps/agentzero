@@ -261,7 +261,6 @@ fn history_before_current_prompt(
 /// reflected here. Drift is non-fatal — an absent name simply blocks
 /// promotion of procedures that reference that tool (legacy advisory text
 /// still fires), so correctness is preserved, just opportunity is lost.
-
 const MAX_INTENT_MCP_DESCRIPTION_CHARS: usize = 512;
 const MAX_INTENT_CAPABILITY_NAME_CHARS: usize = 128;
 
@@ -299,6 +298,7 @@ fn safe_capability_name(value: &str) -> String {
 ///
 /// Runtime configuration, auth tokens, URLs, command lines, headers, and
 /// environment values never cross this boundary.
+#[allow(dead_code)]
 fn safe_intent_mcp_catalog(mcp_service: &McpService) -> Vec<serde_json::Value> {
     let mut candidates = mcp_service
         .list_summaries()
@@ -332,12 +332,10 @@ fn safe_intent_mcp_catalog(mcp_service: &McpService) -> Vec<serde_json::Value> {
 /// Keep model output on the narrow capability transport boundary. Invalid
 /// targets and unknown IDs are silently discarded here and revalidated again
 /// immediately before child/root executor construction.
-
 /// Root assignments are part of the same intent contract as legacy
 /// `recommended_skills`. Materialize their already-sanitized skill IDs into
 /// that recommendation list before rendering the root prompt, so Quick Chat
 /// gets the same lazy `load_skill` guidance as a delegated agent.
-
 /// Build the complete, pager-backed planner catalog. It is kept in host state
 /// and reaches the model only through `lookup_capabilities`; the planner prompt
 /// receives just intent guidance.
@@ -1741,6 +1739,7 @@ impl InvokeBootstrap {
     /// Build the LLM client for intent analysis, honoring the per-task
     /// override (`settings.intent_analysis.{provider_id,model}`). Returns
     /// a retrying client or None (with fallback event emitted).
+    #[allow(dead_code)]
     async fn build_intent_llm_client(
         &self,
         agent: &gateway_services::agents::Agent,
@@ -1881,6 +1880,7 @@ impl InvokeBootstrap {
     /// off mid-string) leaves no intent log even though analysis ran and
     /// used the normal scratch fallback — which looked identical to
     /// "intent analysis off" on the /research info icon and in replay.
+    #[allow(dead_code)]
     async fn emit_intent_fallback_complete(
         &self,
         session_id: &str,

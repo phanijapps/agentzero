@@ -44,12 +44,12 @@ test.describe("regression: stop mid-session, continue, root completes", () => {
     const sessionId = page.url().match(/sess-[a-zA-Z0-9-]+/)?.[0];
     expect(sessionId).toBeTruthy();
 
-    // Consume the fixture's first response before the best-effort stop when
-    // the stop loses the race. When the stop WINS (the session was still
-    // running and the cancel landed before the response rendered), the first
-    // FIFO response is consumed invisibly and the continuation consumes the
-    // second — exactly the documented best-effort race below. Either way the
-    // continuation turn must complete; only that is asserted strictly.
+    // Settle the first turn before the best-effort stop. When the stop LOSES
+    // the race, turn 1 renders "First response before stop." and the
+    // continuation later renders the second response. When the stop WINS, turn
+    // 1 is cancelled mid-flight and the continuation consumes the FIRST
+    // fixture response instead — the documented best-effort race. Either way
+    // the continuation turn must complete; only that is asserted strictly.
     await expect
       .poll(async () => {
         try {
@@ -132,11 +132,11 @@ test.describe("regression: stop mid-session, continue, root completes", () => {
       }
     }, { timeout: 30_000, intervals: [500, 1000, 2000] }).toBe("completed");
 
-    // The continuation's answer is whichever FIFO response the race left it:
-    // when the stop wins pre-request, the continuation consumes the FIRST
-    // fixture response (the spec's documented best-effort race); when it
-    // loses, it gets the second. Either way exactly one continuation answer
-    // must render and be attributable to this session.
+    // The continuation's answer is whichever FIFO response the race left it
+    // (first when the stop won pre-request, second when it lost). Assert on
+    // the FINAL turn's answer only: in the stop-loses outcome both turns
+    // legitimately render an answer on reload, so a page-wide count would
+    // over-count. Each turn renders exactly one assistant answer.
     const stateRes = await fetch(
       handle.gatewayUrl(`/api/executions/v2/sessions/full?limit=200`)
     );
@@ -164,10 +164,12 @@ test.describe("regression: stop mid-session, continue, root completes", () => {
     // durable session URL. This is equivalent to a browser refresh while
     // avoiding any incidental landing-page navigation from the stop flow.
     await page.goto(handle.uiUrl(`/research/${sessionId}`));
-    const finalResponses = page
+    const lastTurnAnswer = page
+      .locator(".session-turn")
+      .last()
       .locator(".research-msg--assistant")
       .filter({ hasText: /Done after continuation\.|First response before stop\./ });
-    await expect(finalResponses).toHaveCount(1, { timeout: 15_000 });
-    await expect(finalResponses.first()).toContainText(/Done after continuation\.|First response before stop\./);
+    await expect(lastTurnAnswer).toHaveCount(1, { timeout: 15_000 });
+    await expect(lastTurnAnswer.first()).toContainText(/Done after continuation\.|First response before stop\./);
   });
 });

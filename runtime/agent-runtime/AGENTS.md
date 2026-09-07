@@ -40,7 +40,7 @@ implementation behind that facade:
 
 ## Event Contract
 
-Both engine paths must emit existing `StreamEvent` variants so gateway conversion and UI reducers remain unchanged: token/reasoning deltas, tool lifecycle, respond/delegate actions, ward changes, token updates, completion, errors, and UI interactions.
+The engine must emit the existing `StreamEvent` variants so gateway conversion and UI reducers remain unchanged: token/reasoning deltas, tool lifecycle, respond/delegate actions, ward changes, token updates, completion, errors, and UI interactions.
 
 ## Code Style
 

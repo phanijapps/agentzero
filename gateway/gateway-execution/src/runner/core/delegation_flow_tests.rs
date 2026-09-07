@@ -1,8 +1,8 @@
 //! Full root → child → callback → continuation flow through the shared
 //! execution factory (T8 / AC7). One scripted provider serves all three
 //! model turns: the root's delegate tool call, the child's respond, and the
-//! parent's final continuation answer. The flow is engine-agnostic and is
-//! verified on the Rig engine via the `ZBOT_ENGINE=rig` suite run.
+//! parent's final continuation answer. The flow runs on the sole Rig engine
+//! (construction is unconditional since the cutover).
 
 use super::test_support::*;
 use super::*;

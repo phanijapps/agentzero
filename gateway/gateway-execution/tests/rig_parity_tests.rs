@@ -271,8 +271,9 @@ async fn parity_error() {
 #[tokio::test]
 async fn parity_stop_cancel() {
     // Fixture expected_events: AgentStopped, SessionCancelled (gateway-lifecycle).
-    // Rig-path parity: the stop flag halts streaming cleanly and the run
-    // finalizes (Done -> TurnComplete) without orphaned tokens.
+    // Rig-path parity: a user stop aborts the stream and surfaces
+    // Err(Stopped) with exactly the pre-stop tokens — the engine never
+    // emits Done/TurnComplete itself; the gateway lifecycle finalizes.
     let client: Arc<dyn LlmClient> = Arc::new(ScriptedLlm {
         chunks: vec!["a".to_string(), "b".to_string(), "c".to_string()],
         first_turn_tool_calls: vec![],

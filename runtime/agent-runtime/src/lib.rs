@@ -19,7 +19,7 @@
 //! - **Tools**: Extensible tool registry and execution framework
 //! - **MCP**: Model Context Protocol client for external tool integration
 //! - **Middleware**: Pipeline for message preprocessing and event handling
-//! - **Executor**: Core orchestrator coordinating all components
+//! - **Engine**: The gateway-facing execution facade the sole Rig engine implements
 //! - **Logging**: Structured, controllable logging utilities
 //!
 //! For detailed usage examples, see the README.md file.

@@ -325,17 +325,3 @@ mod tests {
         }
     }
 }
-
-/// Build a minimal engine for one-shot tool-driven tasks (intent analysis,
-/// classification). No context policy, no middleware, no checkpoint — just
-/// the model, the tools, and the loop.
-pub fn build_simple_engine(
-    rig_config: RigAgentConfig,
-    model: LlmCompletionModel,
-    tools: Vec<std::sync::Arc<dyn agent_primitives::Tool>>,
-    shared_context: Arc<crate::tools::ToolContext>,
-) -> RigAgentEngine<LlmCompletionModel> {
-    let boxed: Vec<Box<dyn rig::tool::ToolDyn>> =
-        tools.into_iter().map(RigToolAdapter::boxed).collect();
-    RigAgentEngine::new(rig_config, model, boxed, shared_context)
-}

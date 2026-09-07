@@ -92,3 +92,33 @@ See `docs/architecture/architecture.md` for the complete system overview.
 - Before you use filesearch try codegraph* skills.
 
 Also see `CLAUDE.md` for behavioral guidelines and development patterns.
+
+## Rules to Follow
+
+<rule criteria="penalize|blasphemy">
+1. You overthink a problem.
+2. Nothing in this world is complex. You are not sending rocket to the moon.
+3. Engineering is easy, if you know where to look for. 
+4. If anyone mentions that "My system is complex", immidiately respond that "You are full of shit".
+5. No God Classess. When you see them, first puke and then plan a fix.
+</rule>
+
+<rule criteria="rewards">
+1. You will be rewarded for less complex solutions
+2. When you remove dead code or 
+3. When you follow clean architecture
+4. When you build secure code.
+</rule>
+
+<rule when="implementing new code">
+  1. Ask and Search using tools available on what can be reused.
+  2. Plan and reuses.
+</rule>
+
+<rule when="Prompted to fix implemenation">
+  1. Investigate root cause and propose a plan
+  2. Explicitly seek approval.
+</rule>
+
+<rule no-go="No Vibe coding">
+</rule>

@@ -13,13 +13,12 @@
 //! exclusively on the bootstrap's own field set.
 
 use crate::errors::ExecutionError;
-use std::collections::HashSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
 
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind, PreparedExecution};
 use gateway_events::GatewayEvent;
-use gateway_services::{AgentService, McpService, SharedVaultPaths, SkillService};
+use gateway_services::{McpService, SharedVaultPaths, SkillService};
 
 use crate::config::ExecutionConfig;
 use crate::handle::ExecutionHandle;
@@ -262,49 +261,9 @@ fn history_before_current_prompt(
 /// reflected here. Drift is non-fatal — an absent name simply blocks
 /// promotion of procedures that reference that tool (legacy advisory text
 /// still fires), so correctness is preserved, just opportunity is lost.
-fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
-    let integrations = bootstrap.ctx.integrations.snapshot();
-    let mut names: Vec<String> = vec![
-        "shell".to_string(),
-        "memory".to_string(),
-        "ward".to_string(),
-        "update_plan".to_string(),
-        "respond".to_string(),
-        "delegate_to_agent".to_string(),
-        "multimodal_analyze".to_string(),
-    ];
-    if bootstrap.ctx.procedure_store.is_some() {
-        names.push("run_procedure".to_string());
-    }
-    if true {
-        names.push("handoff_to_agent".to_string());
-        names.push("steer_agent".to_string());
-    }
-    names.push("list_session_agents".to_string());
-    if true {
-        names.push("wait_agent".to_string());
-        names.push("kill_agent".to_string());
-    }
-    if integrations.kg_store.is_some() {
-        names.push("graph_query".to_string());
-    }
-    if integrations.ingestion_adapter.is_some() {
-        names.push("ingest".to_string());
-    }
-    if integrations.goal_adapter.is_some() {
-        names.push("goal".to_string());
-    }
-    if bootstrap.ctx.a2a_delegation.is_some() {
-        names.push("list_zbots".to_string());
-        names.push("delegate_to_zbot".to_string());
-    }
-    names
-}
 
 const MAX_INTENT_MCP_DESCRIPTION_CHARS: usize = 512;
 const MAX_INTENT_CAPABILITY_NAME_CHARS: usize = 128;
-const MAX_INTENT_CAPABILITY_ASSIGNMENTS: usize = 12;
-const MAX_CAPABILITIES_PER_ASSIGNMENT: usize = 25;
 
 fn safe_capability_description(value: &str) -> String {
     value
@@ -373,86 +332,11 @@ fn safe_intent_mcp_catalog(mcp_service: &McpService) -> Vec<serde_json::Value> {
 /// Keep model output on the narrow capability transport boundary. Invalid
 /// targets and unknown IDs are silently discarded here and revalidated again
 /// immediately before child/root executor construction.
-async fn sanitize_capability_recommendations(
-    agent_service: &AgentService,
-    skill_service: &SkillService,
-    paths: &SharedVaultPaths,
-    assignments: Vec<agent_primitives::event::AgentCapabilityAssignment>,
-    mcp_candidates: &[serde_json::Value],
-) -> Vec<agent_primitives::event::AgentCapabilityAssignment> {
-    let known_skills = skill_service
-        .list()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|skill| skill.name)
-        .collect::<HashSet<_>>();
-    let known_mcps = mcp_candidates
-        .iter()
-        .filter_map(|candidate| candidate.get("id")?.as_str())
-        .map(str::to_string)
-        .collect::<HashSet<_>>();
-    let mut seen_agents = HashSet::new();
-    let mut sanitized = Vec::new();
-
-    for mut assignment in assignments
-        .into_iter()
-        .take(MAX_INTENT_CAPABILITY_ASSIGNMENTS)
-    {
-        let valid_target = if assignment.agent_id == "root" {
-            true
-        } else if let Some(ward_id) = assignment.agent_id.strip_prefix("ward:") {
-            canonical_existing_ward_id(paths, ward_id).is_some()
-        } else {
-            agent_service.get(&assignment.agent_id).await.is_ok()
-        };
-        if !valid_target || !seen_agents.insert(assignment.agent_id.clone()) {
-            continue;
-        }
-
-        assignment.skills = assignment
-            .skills
-            .into_iter()
-            .filter(|skill| known_skills.contains(skill))
-            .take(MAX_CAPABILITIES_PER_ASSIGNMENT)
-            .collect();
-        assignment.mcps = assignment
-            .mcps
-            .into_iter()
-            .filter(|mcp| known_mcps.contains(mcp))
-            .take(MAX_CAPABILITIES_PER_ASSIGNMENT)
-            .collect();
-        sanitized.push(assignment);
-    }
-
-    sanitized
-}
 
 /// Root assignments are part of the same intent contract as legacy
 /// `recommended_skills`. Materialize their already-sanitized skill IDs into
 /// that recommendation list before rendering the root prompt, so Quick Chat
 /// gets the same lazy `load_skill` guidance as a delegated agent.
-fn merge_root_assignment_skills(analysis: &mut IntentAnalysis, root_agent_id: &str) -> Vec<String> {
-    let assigned = analysis
-        .recommended_capabilities
-        .iter()
-        .find(|assignment| assignment.agent_id == "root" || assignment.agent_id == root_agent_id)
-        .map(|assignment| assignment.skills.clone())
-        .unwrap_or_default();
-
-    let mut seen = analysis
-        .recommended_skills
-        .iter()
-        .cloned()
-        .collect::<HashSet<_>>();
-    for skill in &assigned {
-        if seen.insert(skill.clone()) {
-            analysis.recommended_skills.push(skill.clone());
-        }
-    }
-
-    assigned
-}
 
 /// Build the complete, pager-backed planner catalog. It is kept in host state
 /// and reaches the model only through `lookup_capabilities`; the planner prompt
@@ -1726,24 +1610,9 @@ impl InvokeBootstrap {
             })
             .await;
 
-        let _retrying = match self
-            .build_intent_llm_client(agent, provider, config, session_id, execution_id)
-            .await
-        {
-            Some(client) => client,
-            None => return None,
-        };
-        let _system_prompt =
-            crate::middleware::intent::load_intent_analysis_prompt(&self.ctx.paths);
+        crate::middleware::intent::load_intent_analysis_prompt(&self.ctx.paths);
 
-        let _tool_inventory = root_orchestrator_tool_names(self);
         let _existing_wards = list_existing_wards(&self.ctx.paths);
-        let _recall_authorization = self.ctx.memory_recall.as_ref().and_then(|recall| {
-            crate::invoke::unified_recall_adapter::recall_authorization_context(
-                recall, "root", "root", session_id, None,
-            )
-        });
-        let available_mcps = safe_intent_mcp_catalog(&self.ctx.mcp_service);
         // Build the intent agent deps from the configured intent model
         let exec_settings = gateway_services::SettingsService::new(self.ctx.paths.clone())
             .get_execution_settings()
@@ -1778,17 +1647,6 @@ impl InvokeBootstrap {
             analysis.execution_strategy.approach = ExecutionApproach::Simple;
             analysis.execution_strategy.explanation =
                 "Quick Chat runs directly in the root execution".to_string();
-        }
-        analysis.recommended_capabilities = sanitize_capability_recommendations(
-            &self.ctx.agent_service,
-            &self.ctx.skill_service,
-            &self.ctx.paths,
-            analysis.recommended_capabilities,
-            &available_mcps,
-        )
-        .await;
-        if ctx.is_root {
-            merge_root_assignment_skills(&mut analysis, &ctx.agent.id);
         }
 
         // Filesystem existence is authoritative for reuse. Ward content and
@@ -2311,23 +2169,6 @@ mod tests {
                 explanation: String::new(),
             },
         }
-    }
-
-    #[test]
-    fn root_assignment_skills_are_merged_into_lazy_recommendations() {
-        let mut analysis = intent_with_approach(ExecutionApproach::Simple);
-        analysis.recommended_skills = vec!["coding".to_string()];
-        analysis.recommended_capabilities =
-            vec![agent_primitives::event::AgentCapabilityAssignment {
-                agent_id: "root".to_string(),
-                skills: vec!["research".to_string(), "coding".to_string()],
-                mcps: vec![],
-            }];
-
-        let assigned = merge_root_assignment_skills(&mut analysis, "root");
-
-        assert_eq!(assigned, vec!["research", "coding"]);
-        assert_eq!(analysis.recommended_skills, vec!["coding", "research"]);
     }
 
     #[test]

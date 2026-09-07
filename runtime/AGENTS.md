@@ -7,7 +7,7 @@ Shared primitives, Rig-backed execution, and built-in tools.
 | Crate | Purpose |
 |-------|---------|
 | `agent-primitives` | Shared tool/context/event/content/error primitives used by runtime, tools, gateway, and stores. No agent engine lives here. |
-| `agent-runtime` | LLM client, middleware, tool registry, legacy executor facade, and Rig adapter/engine selection. |
+| `agent-runtime` | LLM client, middleware, tool registry, neutral engine facade, and the Rig adapter/engine. |
 | `agent-tools` | Built-in tool implementations exposed through `agent_primitives::Tool`. |
 
 ## agent-runtime
@@ -19,7 +19,7 @@ The runtime keeps zbot's gateway-facing execution contract stable while Rig owns
 - **Engine**: Rig is the sole engine. `gateway-execution` constructs `RigAgentEngine` unconditionally from prepared session inputs; there is no engine-selection flag.
 - **Provider bridge**: `rig_adapter::LlmCompletionModel` adapts Rig completion calls onto zbot's existing OpenAI-compatible `LlmClient`, retry, and rate-limit stack.
 - **Tool bridge**: `rig_adapter::RigToolAdapter` adapts `agent_primitives::Tool` into Rig tool dispatch and carries hidden runtime context through Rig extensions.
-- **Fallback limits**: sessions with MCP servers still use the legacy executor path until MCP lifecycle cleanup is bridged.
+- **MCP**: configured MCP sessions are owned by the Rig engine's session resources (bounded shutdown, per-session isolation).
 - **Middleware**: summarization, context editing, token counting, recall, and gateway-owned orchestration remain zbot-owned.
 
 Key files:

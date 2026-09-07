@@ -863,3 +863,45 @@ No production engine has been retired yet. No AC is marked complete.
   flake (passes in isolation); agent-runtime 448 tests; gateway 625;
   release binaries build; Mode Full simple-qa + stop-and-continue +
   ward-archetypes pass on the daemon (3/3, 30.4s).
+
+### T11 execution record — release evidence and documentation
+
+- Active documentation now states the sole-engine truth with no engine
+  switch: runtime/AGENTS.md, runtime/agent-runtime/AGENTS.md (engine
+  shape table, module map), runtime/agent-runtime/README.md (ownership
+  list + architecture diagram). The gateway AGENTS files and
+  docs/architecture required no changes (already Rig-worded; no stale
+  fallback guidance found).
+- Full Mode Full suite on the Rig-only daemon: 5/6 pass — simple-qa
+  answer/reload, stop-and-continue (race-tolerant per its own documented
+  contract), ward-archetypes, new-research-url (spec updated to the
+  canonical /research route; the session URL flip itself was always
+  working), unified-recall.
+- mock-llm no longer serves non-streaming (distillation/wiki) requests
+  from the recorded FIFO — those calls burned fixture records and derailed
+  the agent sequence; they now fail fast and the caller's provider
+  fallback engages (the seeded environment's Ollama distiller works).
+- The one failing spec (aapl-peer-valuation) is pre-existing since policy
+  #206 (2026-06-03) removed planner nested delegation; the fixture was
+  recorded 2026-04-20 under the older contract. Deferred as
+  pre-existing-aapl-fixture-rerecord; not a cutover regression.
+- Deferred with backlog entries: full-daemon root+MCP+skill Mode Full
+  scenario (full-daemon-mcp-skill-e2e). Existing coverage: 11 real MCP
+  transport lifecycle tests, MCP display-name dispatch through a real Rig
+  turn against the stdio probe, and the rig_tool_contracts MCP suites —
+  engine-level, not daemon-level.
+- AC disposition (evidence): AC1 cutover tests + static audit; AC2 MCP
+  lifecycle suites; AC3 skill contracts; AC4 event parity + exactly-once
+  terminals (flagship delegation test proves per-execution singularity
+  and child-before-root ordering); AC5 stop/interrupt tests; AC6 budget
+  fail-closed (observed live in T8) + context suites; AC7 root→child→
+  callback→continuation through one factory (nested delegation is policy-
+  disabled for ordinary subagents per #206; WardAgent delegation rides
+  the same path); AC8 checkpoint recovery suites; AC9/AC13 confinement
+  and secret-canary suites from T4-T6; AC10 single construction choke;
+  AC11 retirement ledger (T10 record); AC12 mandatory E2E green except
+  the two backlog deferrals above.
+- Release gates: workspace check/test/clippy locked green (tracked
+  pre-existing exceptions only), release binaries build
+  (daemon + cli), git diff --check clean, no-legacy audit re-verified on
+  the final tree.

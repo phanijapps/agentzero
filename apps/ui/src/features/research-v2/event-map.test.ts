@@ -67,6 +67,14 @@ describe("mapGatewayEventToResearchAction", () => {
     } as any)).toEqual({ type: "TOKEN", turnId: "exec-1", text: "abc" });
   });
 
+  it("Heartbeat maps to a HEARTBEAT action keyed by execution id", () => {
+    const a = mapGatewayEventToResearchAction({
+      type: "heartbeat", execution_id: "exec-1",
+    } as any);
+    expect(a).toMatchObject({ type: "HEARTBEAT", turnId: "exec-1" });
+    expect(typeof (a as any).at).toBe("number");
+  });
+
   it("Token with no delta and no content returns null", () => {
     expect(mapGatewayEventToResearchAction({ type: "token", execution_id: "exec-1" } as any)).toBeNull();
   });

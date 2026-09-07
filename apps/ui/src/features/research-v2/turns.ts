@@ -285,6 +285,7 @@ export function buildSessionTurns(input: BuildSessionTurnsInput): SessionTurn[] 
       assistantText,
       assistantStreaming: "",
       timeline,
+      lastHeartbeatAt: null,
       status,
       startedAt: b.startedAt,
       endedAt: b.endedAt,

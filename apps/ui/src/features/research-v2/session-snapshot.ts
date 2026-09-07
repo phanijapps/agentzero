@@ -236,6 +236,7 @@ export function turnFromLogRow(
     wardId: null,
     request: null,
     timeline: [],
+    lastHeartbeatAt: null,
     tokenCount: row.token_count ?? 0,
     respond: null,
     respondStreaming: "",

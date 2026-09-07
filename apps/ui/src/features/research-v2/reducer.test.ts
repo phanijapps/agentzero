@@ -166,6 +166,26 @@ describe("reduceResearch", () => {
     expect(sub.timeline[0].toolName).toBe("write_file");
   });
 
+  it("HEARTBEAT stamps the running root turn", () => {
+    let s = withRootTurn();
+    const at = Date.now();
+    s = reduceResearch(s, { type: "HEARTBEAT", turnId: ROOT_EXEC, at });
+    expect(s.turns[0].lastHeartbeatAt).toBe(at);
+    // A later heartbeat advances the stamp (the ticker re-renders per beat).
+    s = reduceResearch(s, { type: "HEARTBEAT", turnId: ROOT_EXEC, at: at + 10_000 });
+    expect(s.turns[0].lastHeartbeatAt).toBe(at + 10_000);
+  });
+
+  it("HEARTBEAT on a subagent stamps that subagent only", () => {
+    let s = withRootTurn();
+    s = withSubagent(s, { turnId: SUB_EXEC });
+    const at = Date.now();
+    s = reduceResearch(s, { type: "HEARTBEAT", turnId: SUB_EXEC, at });
+    const sub = s.turns[0].subagents.find((x) => x.id === SUB_EXEC)!;
+    expect(sub.lastHeartbeatAt).toBe(at);
+    expect(s.turns[0].lastHeartbeatAt).toBeNull();
+  });
+
   it("TOKEN on the root execution streams into assistantStreaming", () => {
     let s = withRootTurn();
     s = reduceResearch(s, { type: "TOKEN", turnId: ROOT_EXEC, text: "par" });

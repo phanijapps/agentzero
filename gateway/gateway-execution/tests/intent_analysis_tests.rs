@@ -354,3 +354,30 @@ async fn test_skills_recommended() {
         ExecutionApproach::Graph
     );
 }
+
+/// Prompt-contract: the rubric must route in-depth/multi-source research to
+/// the orchestrated ("graph") approach and reserve "simple" for bounded
+/// lookups. Regression for the session where a heavyweight research brief
+/// ("expert economic and institutional historian… in-depth, rigorous") was
+/// classified `simple`, leaving root to shoulder the whole research context
+/// in slow monolithic turns with no decomposition.
+#[test]
+fn rubric_routes_in_depth_research_to_graph_and_reserves_simple_for_bounded_lookups() {
+    let prompt = DEFAULT_INTENT_ANALYSIS_PROMPT;
+
+    // In-depth / multi-source research must appear as a graph trigger...
+    assert!(
+        prompt.contains("in-depth or multi-source research"),
+        "rubric must name in-depth/multi-source research as a graph trigger"
+    );
+    // ...explicitly overriding the old greedy wording that pushed research
+    // tasks toward simple.
+    assert!(
+        !prompt.contains("calculations, research, or a skill"),
+        "the anti-overreach line must not list bare 'research' as a non-graph reason"
+    );
+    // Quick lookups stay simple, and deep single-domain research briefs are
+    // called out as graph.
+    assert!(prompt.contains("bounded single-domain lookups"));
+    assert!(prompt.contains("Long research briefs are graph even in a single domain"));
+}

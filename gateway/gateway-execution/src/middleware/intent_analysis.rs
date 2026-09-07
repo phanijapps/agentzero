@@ -205,9 +205,9 @@ The runtime supplies the structured response schema. Return exactly one schema-c
 - The "Existing Wards" list shows wards that ALREADY EXIST, with their scope. If one
   covers this task's domain, set action "use_existing" and ward_name to its EXACT listed
   name — never invent a near-duplicate. Use "create_new" only when no listed ward fits.
-- approach "simple" for greetings, quick questions, one-shot answers, and single-domain analyses that root can finish with memory, graph, tools, or one relevant skill.
-- Do NOT choose "graph" merely because the answer needs current data, calculations, research, or a skill.
-- approach "graph" only when the task needs multiple agents, reusable code or pipeline work, spec/plan artifacts, user-requested files, or explicit multi-step orchestration.
+- approach "simple" for greetings, quick questions, one-shot answers, and bounded single-domain lookups or short analyses that root can finish directly with memory, graph, tools, or one relevant skill.
+- Do NOT choose "graph" merely because the answer needs current data, quick calculations, a single lookup, or one skill.
+- approach "graph" when the task is in-depth or multi-source research — sustained investigation, comparative or historiographical analysis, literature review, research reports with sections and citations, or any request explicitly asking for rigorous/comprehensive/in-depth treatment — or when it needs multiple agents or delegations, reusable code or pipeline work, spec/plan artifacts, user-requested files, or explicit multi-step orchestration. Long research briefs are graph even in a single domain: root working alone on a large research context produces slow, monolithic turns instead of decomposed subtasks.
 - When approach is "graph", ALWAYS include "coding" in recommended_skills — it provides the ward structure and task runner.
 
 ## Structured Response Contract

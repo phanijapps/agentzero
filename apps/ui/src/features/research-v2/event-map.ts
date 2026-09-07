@@ -219,6 +219,7 @@ export function mapGatewayEventToResearchAction(ev: ConversationEvent): Research
     case "tool_call":                return mapToolCall(e, now);
     case "tool_result":              return mapToolResult(e, now);
     case "token":                    return mapToken(e);
+    case "heartbeat":                return { type: "HEARTBEAT", turnId: turnIdOf(e), at: now };
     case "respond":                  return mapRespond(e);
     case "turn_complete":            return mapTurnComplete(e);
     case "session_title_changed":    return { type: "TITLE_CHANGED", title: (e["title"] as string) ?? "" };

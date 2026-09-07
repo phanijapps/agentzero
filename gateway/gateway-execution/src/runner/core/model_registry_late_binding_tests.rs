@@ -1,7 +1,7 @@
 //! Regression tests for the capture-before-init bug that caused
 //! `context_window_tokens = 8192` on the continuation path.
 //!
-//! The failure mode: `RunnerContinuationInvoker` clones
+//! The failure mode: the pre-captured context clones
 //! `self.model_registry` (the ArcSwap handle) inside `with_config`
 //! BEFORE `set_model_registry` runs. When the field was a plain
 //! `Option<Arc<_>>`, the captured clone froze as `None` and every
@@ -28,7 +28,7 @@ fn pre_captured_clone_sees_late_store() {
     // Step 1: field initialized empty (mirrors `ExecutionRunner::new`).
     let field: Arc<ArcSwapOption<ModelRegistry>> = Arc::new(ArcSwapOption::from(None));
 
-    // Step 2: `RunnerContinuationInvoker` clones the handle inside
+    // Step 2: the pre-captured context clones the handle inside
     // `with_config` BEFORE the setter runs.
     let captured = field.clone();
     assert!(captured.load_full().is_none(), "field starts empty");

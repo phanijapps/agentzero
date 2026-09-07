@@ -11,7 +11,7 @@
 //!
 //! [`ExecutionRunner`] implements all three so it can be passed wherever
 //! any of the traits is required. The companion structs
-//! (`RunnerContinuationInvoker`, `RunnerDelegationInvoker`) implement
+//! implement
 //! exactly ONE trait each — no more typed-error stubs.
 
 use async_trait::async_trait;

@@ -9,8 +9,6 @@
 //! `DelegationDispatcher` is a 3-field struct: it holds only the concurrency
 //! semaphore, the inbound request channel, and a [`DelegationSpawner`]. Everything
 //! else (the 21 deps that `spawn_delegated_agent` needs) lives inside the
-//! `RunnerDelegationInvoker` companion, which is constructed by
-//! `ExecutionRunner::make_delegation_invoker()` and injected at wire-up time.
 //!
 //! This keeps the dispatcher testable with a `StubSessionInvoker` (one trait
 //! method per stub) while keeping the production path complete.
@@ -187,7 +185,6 @@ impl DelegationDispatcher {
 }
 
 // ============================================================================
-// RunnerDelegationInvoker
 // ============================================================================
 
 /// Per-ward serialization locks: ward name → an async mutex held for the

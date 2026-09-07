@@ -1055,7 +1055,6 @@ impl InvokeBootstrap {
         })
     }
 
-
     /// Load session history and inject first-message + handoff recall.
     /// Returns (history, scanned_input_cursor, initial_recall_keys).
     async fn load_history_with_recall(
@@ -1074,8 +1073,8 @@ impl InvokeBootstrap {
             } else {
                 self.ctx
                     .messages
-                    .replay(&session_id, None, 200)
-                    .map(|rows| history_before_current_prompt(rows, &root_message_id))
+                    .replay(session_id, None, 200)
+                    .map(|rows| history_before_current_prompt(rows, root_message_id))
                     .unwrap_or_default()
             };
         let mut initial_recall_keys = std::collections::HashSet::new();
@@ -1659,72 +1658,13 @@ impl InvokeBootstrap {
             })
             .await;
 
-        // Build temporary LLM client for analysis. Per-task override:
-        // `settings.intent_analysis.{provider_id,model}` swaps the
-        // root-agent provider/model used for analysis. Empty values
-        // inherit (= what the root agent already resolved to). Lets
-        // users route this every-prompt call to a cheaper/faster model.
-        let exec_settings = gateway_services::SettingsService::new(self.ctx.paths.clone())
-            .get_execution_settings()
-            .unwrap_or_default();
-        let intent_cfg = exec_settings.intent_analysis;
-
-        let target_provider =
-            if let Some(id) = intent_cfg.provider_id.as_deref().filter(|s| !s.is_empty()) {
-                self.ctx
-                    .provider_service
-                    .get(id)
-                    .unwrap_or_else(|_| provider.clone())
-            } else {
-                provider.clone()
-            };
-        let target_model = intent_cfg
-            .model
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| agent.model.clone());
-        let max_tokens = intent_cfg.max_tokens.unwrap_or(agent.max_tokens);
-
-        let llm_config = agent_runtime::LlmConfig::new(
-            target_provider.base_url.clone(),
-            target_provider.api_key.clone(),
-            target_model,
-            target_provider
-                .id
-                .clone()
-                .unwrap_or_else(|| target_provider.name.clone()),
-        )
-        .with_max_tokens(max_tokens);
-
-        let raw_client = match agent_runtime::OpenAiClient::new(llm_config) {
-            Ok(c) => c,
-            Err(e) => {
-                if config.redact_diagnostics() {
-                    tracing::warn!(
-                        session_id,
-                        execution_id,
-                        reason_code = "intent_client_unavailable",
-                        "Intent analysis unavailable"
-                    );
-                } else {
-                    tracing::warn!("Failed to create LLM client for intent analysis: {}", e);
-                }
-                self.emit_intent_fallback_complete(
-                    session_id,
-                    execution_id,
-                    &config.agent_id,
-                    "LLM client creation failed — workspace selection unavailable",
-                    "Intent analysis unavailable (no LLM client)",
-                )
-                .await;
-                return None;
-            }
+        let retrying = match self
+            .build_intent_llm_client(agent, provider, config, session_id, execution_id)
+            .await
+        {
+            Some(client) => client,
+            None => return None,
         };
-
-        let retrying: std::sync::Arc<dyn agent_runtime::LlmClient> =
-            std::sync::Arc::new(agent_runtime::RetryingLlmClient::new(
-                std::sync::Arc::new(raw_client),
-                agent_runtime::RetryPolicy::default(),
-            ));
         let system_prompt = crate::middleware::intent::load_intent_analysis_prompt(&self.ctx.paths);
 
         let _tool_inventory = root_orchestrator_tool_names(self);
@@ -1853,6 +1793,86 @@ impl InvokeBootstrap {
             planning_capability_catalog,
             intent_snapshot: intent_json,
         })
+    }
+
+    /// Build the LLM client for intent analysis, honoring the per-task
+    /// override (`settings.intent_analysis.{provider_id,model}`). Returns
+    /// a retrying client or None (with fallback event emitted).
+    async fn build_intent_llm_client(
+        &self,
+        agent: &gateway_services::agents::Agent,
+        provider: &gateway_services::providers::Provider,
+        config: &ExecutionConfig,
+        session_id: &str,
+        execution_id: &str,
+    ) -> Option<std::sync::Arc<dyn agent_runtime::LlmClient>> {
+        // Build temporary LLM client for analysis. Per-task override:
+        // `settings.intent_analysis.{provider_id,model}` swaps the
+        // root-agent provider/model used for analysis. Empty values
+        // inherit (= what the root agent already resolved to). Lets
+        // users route this every-prompt call to a cheaper/faster model.
+        let exec_settings = gateway_services::SettingsService::new(self.ctx.paths.clone())
+            .get_execution_settings()
+            .unwrap_or_default();
+        let intent_cfg = exec_settings.intent_analysis;
+
+        let target_provider =
+            if let Some(id) = intent_cfg.provider_id.as_deref().filter(|s| !s.is_empty()) {
+                self.ctx
+                    .provider_service
+                    .get(id)
+                    .unwrap_or_else(|_| provider.clone())
+            } else {
+                provider.clone()
+            };
+        let target_model = intent_cfg
+            .model
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| agent.model.clone());
+        let max_tokens = intent_cfg.max_tokens.unwrap_or(agent.max_tokens);
+
+        let llm_config = agent_runtime::LlmConfig::new(
+            target_provider.base_url.clone(),
+            target_provider.api_key.clone(),
+            target_model,
+            target_provider
+                .id
+                .clone()
+                .unwrap_or_else(|| target_provider.name.clone()),
+        )
+        .with_max_tokens(max_tokens);
+
+        let raw_client = match agent_runtime::OpenAiClient::new(llm_config) {
+            Ok(c) => c,
+            Err(e) => {
+                if config.redact_diagnostics() {
+                    tracing::warn!(
+                        session_id,
+                        execution_id,
+                        reason_code = "intent_client_unavailable",
+                        "Intent analysis unavailable"
+                    );
+                } else {
+                    tracing::warn!("Failed to create LLM client for intent analysis: {}", e);
+                }
+                self.emit_intent_fallback_complete(
+                    session_id,
+                    execution_id,
+                    &config.agent_id,
+                    "LLM client creation failed — workspace selection unavailable",
+                    "Intent analysis unavailable (no LLM client)",
+                )
+                .await;
+                return None;
+            }
+        };
+
+        let retrying: std::sync::Arc<dyn agent_runtime::LlmClient> =
+            std::sync::Arc::new(agent_runtime::RetryingLlmClient::new(
+                std::sync::Arc::new(raw_client),
+                agent_runtime::RetryPolicy::default(),
+            ));
+        Some(retrying)
     }
 
     async fn derive_and_publish_session_title(

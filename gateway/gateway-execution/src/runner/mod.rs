@@ -13,13 +13,13 @@ mod continuation_execution;
 mod continuation_watcher;
 pub(super) mod core;
 mod delegation_dispatcher;
-mod exec_ctx;
+pub(crate) mod exec_ctx;
 mod execution_stream;
 mod initial_execution;
-mod integrations;
+pub(crate) mod integrations;
 mod invoke_bootstrap;
 pub(crate) mod recovery;
-mod session_control;
+pub(crate) mod session_control;
 mod session_invoker;
 mod subagent_recovery;
 

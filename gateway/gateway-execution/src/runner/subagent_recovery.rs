@@ -136,38 +136,7 @@ impl ExecutionRunner {
         };
 
         // 7. Re-spawn the subagent
-        let integrations = self.ctx.integrations.snapshot();
-        let ctx = &self.ctx;
-        spawn_delegated_agent(
-            &request,
-            ctx.event_bus.clone(),
-            ctx.agent_service.clone(),
-            ctx.provider_service.clone(),
-            ctx.mcp_service.clone(),
-            ctx.skill_service.clone(),
-            ctx.paths.clone(),
-            ctx.messages.clone(),
-            ctx.session_meta.clone(),
-            ctx.checkpoints.clone(),
-            ctx.control.handles.clone(),
-            ctx.control.delegation_registry.clone(),
-            ctx.delegation_tx.clone(),
-            ctx.log_service.clone(),
-            ctx.state_service.clone(),
-            None,
-            ctx.memory_store.clone(),
-            ctx.distiller.clone(),
-            ctx.memory_recall.clone(),
-            ctx.peer_messages.clone(),
-            ctx.a2a_delegation.clone(),
-            ctx.rate_limiters.clone(),
-            integrations.kg_store,
-            integrations.ingestion_adapter,
-            integrations.goal_adapter,
-            ctx.steering_registry.clone(),
-            ctx.agent_result_bus.clone(),
-        )
-        .await?;
+        spawn_delegated_agent(&self.ctx, &request, None).await?;
 
         Ok(())
     }

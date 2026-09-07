@@ -2,7 +2,7 @@
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Default)]
-pub(super) struct RunnerIntegrations {
+pub struct RunnerIntegrations {
     pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
@@ -10,7 +10,7 @@ pub(super) struct RunnerIntegrations {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct SharedIntegrations(Arc<RwLock<RunnerIntegrations>>);
+pub struct SharedIntegrations(Arc<RwLock<RunnerIntegrations>>);
 impl SharedIntegrations {
     /// Clone current handles; no lock guard escapes into async execution.
     pub fn snapshot(&self) -> RunnerIntegrations {

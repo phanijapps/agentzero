@@ -10,11 +10,17 @@ use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig}
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::{SessionWardClaim, StateService};
 use gateway_events::{EventBus, GatewayEvent};
-use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths, SkillService};
-use std::collections::{HashMap, HashSet};
+use gateway_services::{AgentService, SharedVaultPaths, SkillService};
+#[cfg(test)]
+use gateway_services::{McpService, ProviderService};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock};
+#[cfg(test)]
+use tokio::sync::RwLock;
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::agent_pool::{AgentResultBus, AgentWaitError};
@@ -32,7 +38,6 @@ use crate::lifecycle::{
     complete_execution, crash_execution, emit_delegation_completed, emit_delegation_started,
     start_execution, CompleteExecution, CrashExecution, DelegationCompletedEvent,
 };
-use crate::recall::MemoryRecall;
 
 /// Spawn a delegated agent.
 ///
@@ -48,38 +53,38 @@ use crate::recall::MemoryRecall;
 /// - Marking execution as CRASHED if spawn fails
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_delegated_agent(
+    ctx: &crate::runner::exec_ctx::ExecCtx,
     request: &DelegationRequest,
-    event_bus: Arc<EventBus>,
-    agent_service: Arc<AgentService>,
-    provider_service: Arc<ProviderService>,
-    mcp_service: Arc<McpService>,
-    skill_service: Arc<SkillService>,
-    paths: SharedVaultPaths,
-    messages: Arc<dyn zbot_conversation::MessageStore>,
-    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
-    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
-    handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    delegation_registry: Arc<DelegationRegistry>,
-    delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
-    log_service: Arc<LogService<DatabaseManager>>,
-    state_service: Arc<StateService<DatabaseManager>>,
     delegation_permit: Option<OwnedSemaphorePermit>,
-    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    distiller: Option<Arc<crate::distillation::SessionDistiller>>,
-    memory_recall: Option<Arc<MemoryRecall>>,
-    peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
-    a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
-    rate_limiters: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
-        >,
-    >,
-    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
-    steering_registry: Arc<agent_runtime::SteeringRegistry>,
-    agent_result_bus: Arc<AgentResultBus>,
 ) -> Result<String, ExecutionError> {
+    let event_bus = ctx.event_bus.clone();
+    let agent_service = ctx.agent_service.clone();
+    let provider_service = ctx.provider_service.clone();
+    let mcp_service = ctx.mcp_service.clone();
+    let skill_service = ctx.skill_service.clone();
+    let paths = ctx.paths.clone();
+    let messages = ctx.messages.clone();
+    let session_meta = ctx.session_meta.clone();
+    let checkpoints = ctx.checkpoints.clone();
+    let handles = ctx.control.handles.clone();
+    let delegation_registry = ctx.control.delegation_registry.clone();
+    let delegation_tx = ctx.delegation_tx.clone();
+    let log_service = ctx.log_service.clone();
+    let state_service = ctx.state_service.clone();
+    let memory_store = ctx.memory_store.clone();
+    let distiller = ctx.distiller.clone();
+    let memory_recall = ctx.memory_recall.clone();
+    let peer_messages = ctx.peer_messages.clone();
+    let a2a_delegation = ctx.a2a_delegation.clone();
+    let rate_limiters = ctx.rate_limiters.clone();
+    let integrations_snapshot = ctx.integrations.snapshot();
+    let kg_store = integrations_snapshot.kg_store;
+    let ingestion_adapter = integrations_snapshot.ingestion_adapter;
+    #[allow(unused_variables)]
+    let goal_adapter = integrations_snapshot.goal_adapter;
+    let steering_registry = ctx.steering_registry.clone();
+    let agent_result_bus = ctx.agent_result_bus.clone();
+
     // Generate the child conversation identity before validation so even an
     // assignment rejected prior to child-session creation can use the common
     // failure callback and delegation-completion path.
@@ -1921,6 +1926,81 @@ fn walkdir_simple(dir: &Path) -> std::io::Result<Vec<String>> {
 mod tests {
     use super::*;
 
+    /// Build a minimal ExecCtx from the individual services tests construct.
+    #[allow(clippy::too_many_arguments)]
+    fn test_exec_ctx(
+        event_bus: Arc<EventBus>,
+        agent_service: Arc<AgentService>,
+        provider_service: Arc<ProviderService>,
+        mcp_service: Arc<McpService>,
+        skill_service: Arc<SkillService>,
+        paths: SharedVaultPaths,
+        messages: Arc<dyn zbot_conversation::MessageStore>,
+        session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+        checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
+        handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
+        delegation_registry: Arc<DelegationRegistry>,
+        delegation_tx: tokio::sync::mpsc::UnboundedSender<DelegationRequest>,
+        log_service: Arc<LogService<DatabaseManager>>,
+        state_service: Arc<StateService<DatabaseManager>>,
+        memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+        distiller: Option<Arc<crate::distillation::SessionDistiller>>,
+        memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+        peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+        a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
+        rate_limiters: Arc<
+            std::sync::RwLock<
+                std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
+            >,
+        >,
+        _kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+        _ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
+        _goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
+        steering_registry: Arc<agent_runtime::SteeringRegistry>,
+        agent_result_bus: Arc<AgentResultBus>,
+    ) -> Arc<crate::runner::exec_ctx::ExecCtx> {
+        Arc::new(crate::runner::exec_ctx::ExecCtx {
+            event_bus,
+            agent_service,
+            provider_service,
+            mcp_service,
+            skill_service,
+            paths,
+            log_service,
+            state_service: state_service.clone(),
+            messages,
+            session_meta,
+            checkpoints,
+            control: crate::runner::session_control::SessionControl {
+                handles,
+                delegation_registry,
+                state_service,
+            },
+            delegation_tx,
+            delegation_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            connector_registry: None,
+            bridge_registry: None,
+            bridge_outbox: None,
+            memory_store,
+            embedding_client: None,
+            distiller,
+            handoff_writer: None,
+            memory_recall,
+            peer_messages,
+            a2a_delegation,
+            procedure_store: None,
+            ward_usage: Arc::new(gateway_services::WardUsage::new(std::path::PathBuf::from(
+                "/tmp/test-wards",
+            ))),
+            model_registry: Arc::new(arc_swap::ArcSwapOption::from(None)),
+            rate_limiters,
+            integrations: crate::runner::integrations::SharedIntegrations::default(),
+            steering_registry,
+            agent_result_bus,
+            ward_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        })
+    }
+
     struct AppendObserverMessageStore {
         inner: Arc<dyn zbot_conversation::MessageStore>,
         on_append: Arc<dyn Fn(&zbot_conversation::Message) + Send + Sync>,
@@ -2213,8 +2293,7 @@ mod tests {
         let steering_registry = Arc::new(agent_runtime::SteeringRegistry::new());
         let agent_result_bus = Arc::new(AgentResultBus::new());
 
-        let result = spawn_delegated_agent(
-            &request,
+        let result_ctx = test_exec_ctx(
             event_bus.clone(),
             agent_service.clone(),
             provider_service.clone(),
@@ -2234,15 +2313,14 @@ mod tests {
             None,
             None,
             None,
-            None,
             rate_limiters.clone(),
             None,
             None,
             None,
             steering_registry.clone(),
             agent_result_bus.clone(),
-        )
-        .await;
+        );
+        let result = spawn_delegated_agent(&result_ctx, &request, None).await;
 
         assert!(result
             .unwrap_err()
@@ -2352,8 +2430,7 @@ mod tests {
                 }),
             });
 
-        let error = spawn_delegated_agent(
-            &broken_request,
+        let error_ctx = test_exec_ctx(
             event_bus.clone(),
             agent_service,
             provider_service,
@@ -2373,16 +2450,16 @@ mod tests {
             None,
             None,
             None,
-            None,
             rate_limiters,
             None,
             None,
             None,
-            steering_registry,
+            steering_registry.clone(),
             agent_result_bus.clone(),
-        )
-        .await
-        .expect_err("missing provider must fail spawn");
+        );
+        let error = spawn_delegated_agent(&error_ctx, &broken_request, None)
+            .await
+            .expect_err("missing provider must fail spawn");
         assert!(
             error
                 .to_string()

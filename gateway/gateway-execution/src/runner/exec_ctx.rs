@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, Semaphore};
 /// [`ExecutionRunner::with_config`](super::ExecutionRunner::with_config);
 /// every orchestration path receives `&ExecCtx` or `Arc<ExecCtx>`.
 #[derive(Clone)]
-pub(crate) struct ExecCtx {
+pub struct ExecCtx {
     // --- Core services ---
     pub event_bus: Arc<EventBus>,
     pub agent_service: Arc<AgentService>,
@@ -141,38 +141,8 @@ impl super::session_invoker::DelegationSpawner for ExecCtx {
             }
             None => None,
         };
-        let integrations = self.integrations.snapshot();
-        let ctx = self;
-        spawn_delegated_agent(
-            &request,
-            ctx.event_bus.clone(),
-            ctx.agent_service.clone(),
-            ctx.provider_service.clone(),
-            ctx.mcp_service.clone(),
-            ctx.skill_service.clone(),
-            ctx.paths.clone(),
-            ctx.messages.clone(),
-            ctx.session_meta.clone(),
-            ctx.checkpoints.clone(),
-            ctx.control.handles.clone(),
-            ctx.control.delegation_registry.clone(),
-            ctx.delegation_tx.clone(),
-            ctx.log_service.clone(),
-            ctx.state_service.clone(),
-            permit,
-            ctx.memory_store.clone(),
-            ctx.distiller.clone(),
-            ctx.memory_recall.clone(),
-            ctx.peer_messages.clone(),
-            ctx.a2a_delegation.clone(),
-            ctx.rate_limiters.clone(),
-            integrations.kg_store,
-            integrations.ingestion_adapter,
-            integrations.goal_adapter,
-            ctx.steering_registry.clone(),
-            ctx.agent_result_bus.clone(),
-        )
-        .await
-        .map(|_| ())
+        spawn_delegated_agent(self, &request, permit)
+            .await
+            .map(|_| ())
     }
 }

@@ -9,10 +9,10 @@ use tokio::sync::RwLock;
 use zbot_runtime_sqlite::DatabaseManager;
 
 #[derive(Clone)]
-pub(super) struct SessionControl {
-    pub(super) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    pub(super) delegation_registry: Arc<DelegationRegistry>,
-    pub(super) state_service: Arc<StateService<DatabaseManager>>,
+pub struct SessionControl {
+    pub(crate) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
+    pub(crate) delegation_registry: Arc<DelegationRegistry>,
+    pub(crate) state_service: Arc<StateService<DatabaseManager>>,
 }
 
 impl SessionControl {

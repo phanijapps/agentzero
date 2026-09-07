@@ -17,7 +17,6 @@
 use async_trait::async_trait;
 use tokio::sync::OwnedSemaphorePermit;
 
-use crate::config::ExecutionConfig;
 use crate::delegation::DelegationRequest;
 
 // ============================================================================
@@ -56,6 +55,8 @@ pub trait DelegationSpawner: Send + Sync {
 /// Test-only stub that records every call. Implements all three traits so
 /// it can be injected into any handler under test without booting the real
 /// executor pipeline.
+#[cfg(any(test, feature = "test-stubs"))]
+use crate::config::ExecutionConfig;
 #[cfg(any(test, feature = "test-stubs"))]
 use std::sync::Mutex;
 

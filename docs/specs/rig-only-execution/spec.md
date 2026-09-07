@@ -1,6 +1,6 @@
 # Spec: Rig-only execution
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [plan.md](plan.md)
 - **Constrained by:** runtime/AGENTS.md; runtime/agent-runtime/AGENTS.md; gateway/gateway-execution/AGENTS.md; gateway/gateway-execution/src/runner/AGENTS.md; [Runtime Context Control](../runtime-context-control/spec.md); [MCP OAuth](../mcp-oauth/spec.md); [Subagent Role Gating](../subagent-role-gating/spec.md); [Agent Handoff Notes](../agent-handoff-notes/spec.md); [Builder Delegation Hygiene](../builder-delegation-hygiene/spec.md); [Provider Configuration](../simplified-provider-model-configuration/spec.md)

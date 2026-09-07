@@ -1,6 +1,6 @@
 # Spec: Turn loop decomposition (Wave 4)
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Branch:** `op_clean_crap`
 - **Shape:** refactor (behavior-preserving), gated by golden traces
 
@@ -36,12 +36,12 @@ inline parsing/mapping bodies that bloat the loop, not the loop itself.
 
 ## Acceptance Criteria
 
-- [ ] AC1: `TurnSignal` is the sole terminal-state carrier; no bare
+- [x] AC1: `TurnSignal` is the sole terminal-state carrier; no bare
       `stopped_for_delegation`/`responded` booleans escape the loop body.
-- [ ] AC2: The item-mapping arms are pure functions, unit-testable without
+- [x] AC2: The item-mapping arms are pure functions, unit-testable without
       a live engine.
-- [ ] AC3: Golden traces replay byte-identical (3 fixtures).
-- [ ] AC4: agent-runtime suite (was 449+ new hook tests), gateway-execution
+- [x] AC3: Golden traces replay byte-identical (3 fixtures).
+- [x] AC4: agent-runtime suite (was 449+ new hook tests), gateway-execution
       600 lib tests, parity suites, clippy -D warnings, fmt — all green.
 
 ## Gate

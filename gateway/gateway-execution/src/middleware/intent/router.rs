@@ -281,6 +281,42 @@ pub async fn analyze_intent(
     };
 
     analysis.pinned_procedure = None;
+
+    // Deterministic override: the classifier (a thinking model reading a
+    // long rubric) under-routes research prompts to simple. If either the
+    // user's message or the classified intent contains explicit depth
+    // signals, force graph — the rubric already says these ARE graph; this
+    // just enforces what the LLM reads but doesn't follow.
+    const DEPTH_SIGNALS: &[&str] = &[
+        "comprehensive",
+        "in-depth",
+        "in depth",
+        "deep analysis",
+        "deep research",
+        "critical analysis",
+        "comparative analysis",
+        "literature review",
+        "research report",
+        "multi-source",
+        "rigorous",
+        "extensive",
+        "thorough",
+        "detailed analysis",
+    ];
+    let haystack = format!("{} {}", user_message, analysis.primary_intent).to_lowercase();
+    let has_depth_signal = DEPTH_SIGNALS.iter().any(|s| haystack.contains(s));
+    if has_depth_signal && analysis.execution_strategy.approach == ExecutionApproach::Simple {
+        tracing::info!(
+            primary_intent = %analysis.primary_intent,
+            "Depth-signal override: research prompt classified simple → graph"
+        );
+        analysis.execution_strategy.approach = ExecutionApproach::Graph;
+        if analysis.execution_strategy.explanation.is_empty() {
+            analysis.execution_strategy.explanation =
+                "Research-depth signals in the request require orchestrated execution".to_string();
+        }
+    }
+
     tracing::info!(
         primary_intent = %analysis.primary_intent,
         ward = %analysis.ward_recommendation.ward_name,

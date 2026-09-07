@@ -1,6 +1,6 @@
 # Spec: Junkyard audit + CI laws + Wave 2 revision (Wave 7)
 
-- **Status:** Implementing
+- **Status:** Shipped
 - **Branch:** `op_clean_crap`
 
 ## Wave 2 revision — architectural decision
@@ -50,3 +50,24 @@ Add to gateway-execution's Cargo.toml `[lints]` or workspace lints:
 
 Record the net line-count delta for the entire branch op_clean_crap
 vs. its merge-base with the previous shipped branch.
+
+## Final branch receipts (op_clean_crap, 18 commits)
+
+- 8,973 insertions / 9,567 deletions = **net -594 lines** while adding
+  the hook framework, golden traces, typed errors, and ExecCtx
+- executor.rs: 4,442 → 52 lines
+- intent_analysis.rs: 2,950 → deleted (replaced by ~1,170 in intent/)
+- ContinuationArgs (30 fields) + RunnerContinuationInvoker (25 clones) + 3 spawner traits → deleted
+- 4 single-slot hook aliases → extensible EngineHook trait + HookSet
+- 155 Result<_, String> → typed ExecutionError enum
+- rig_adapter/engine.rs: 1,659 → 511 production lines (TurnSignal + pure mapping)
+- distill(): 380-line monolith → 81-line orchestrator + 5 phase methods
+- Golden trace oracle: 3 fixtures, byte-identical replays
+
+## Remaining (future work, documented not deferred)
+
+- 15 files still over 800 lines (spawn 2,655; invoke_bootstrap 2,623;
+  session_state 1,167) — decomposition targets, tracked in the 800-line
+  CI ratchet
+- Wave 2 REVISED: crate boundary between runtime and gateway-execution
+  is architecturally sound; boundary tightening (not merge) is future work

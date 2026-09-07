@@ -39,6 +39,10 @@ impl ProgressPolicy {
             self.tracker.record_error(error);
         }
     }
+    /// A respond action was emitted — the agent is finishing.
+    pub fn respond(&mut self) {
+        self.tracker.record_respond();
+    }
     pub fn prepare(
         &mut self,
         cfg: &ProgressConfig,

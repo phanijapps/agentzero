@@ -19,7 +19,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use agent_runtime::executor::ExecutorError;
 use agent_runtime::llm::{ChatResponse, LlmClient, LlmError, StreamCallback, StreamChunk};
 use agent_runtime::rig_adapter::engine::RigAgentEngine;
 use agent_runtime::rig_adapter::model::LlmCompletionModel;
@@ -27,6 +26,7 @@ use agent_runtime::rig_adapter::RigToolAdapter;
 use agent_runtime::tools::ToolContext;
 use agent_runtime::types::{ChatMessage, StreamEvent};
 use agent_runtime::AgentEngine;
+use agent_runtime::ExecutorError;
 use agent_runtime::{RigAgentConfig, RigModelConfig, ToolCall as AgentToolCall};
 use async_trait::async_trait;
 use gateway_events::GatewayEvent;

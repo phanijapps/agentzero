@@ -3351,10 +3351,9 @@ extensions: {}
     async fn real_present_surface_tool_reaches_validated_gateway_events() {
         for (update, valid) in [(false, true), (true, true), (false, false)] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
-            let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
-                .with_actor_kind(RuntimeActorKind::Root)
-                .build_tool_registry(fs_context);
+            let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+            paths.ensure_dirs_exist().expect("vault dirs");
+            let service = McpService::new(paths.clone());
             let arguments = if valid {
                 serde_json::json!({
                     "surface_id": "integrated-surface",
@@ -3377,22 +3376,36 @@ extensions: {}
                     "data": {}
                 })
             };
-            let config =
-                agent_runtime::ExecutorConfig::new("root".into(), "test".into(), "test".into());
-            let executor = agent_runtime::AgentExecutor::new(
-                config,
-                Arc::new(SurfaceJourneyLlm {
-                    calls: Arc::new(AtomicUsize::new(0)),
-                    arguments,
-                }),
-                registry,
-                Arc::new(agent_runtime::McpManager::new()),
-                Arc::new(agent_runtime::MiddlewarePipeline::new()),
-            )
-            .expect("executor");
+            // T10: the sole engine constructs through the unconditional
+            // factory; the surface journey runs on Rig like every other turn.
+            let mut agent = sample_agent();
+            agent.mcps.clear();
+            agent.skills.clear();
+            let mut prepared =
+                ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
+                    .with_actor_kind(RuntimeActorKind::Root)
+                    .build(
+                        &agent,
+                        &sample_provider(),
+                        "conversation",
+                        "session",
+                        &[],
+                        &[],
+                        None,
+                        &service,
+                        None,
+                    )
+                    .await
+                    .expect("prepared execution");
+            prepared.llm_client = Arc::new(SurfaceJourneyLlm {
+                calls: Arc::new(AtomicUsize::new(0)),
+                arguments,
+            });
+            let executor = build_execution_engine(prepared).expect("rig engine");
             let mut runtime_events = Vec::new();
+            let mut sink = |event: agent_runtime::StreamEvent| runtime_events.push(event);
             executor
-                .execute_stream("show the metrics", &[], |event| runtime_events.push(event))
+                .execute_stream("show the metrics", &[], &mut sink)
                 .await
                 .expect("execution");
             let gateway_events = runtime_events

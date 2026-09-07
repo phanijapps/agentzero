@@ -57,9 +57,9 @@ pub trait AgentEngine: Send + Sync {
         history: &[ChatMessage],
     ) -> Result<String, ExecutorError>;
 
-    /// Identifier for which engine implementation is driving — for observability
-    /// and for testing the Rig cutover selector.
+    /// Identifier for which engine implementation is driving — for
+    /// observability. The default covers loop-free boundary fakes.
     fn engine_name(&self) -> &'static str {
-        "agent-executor"
+        "engine"
     }
 }

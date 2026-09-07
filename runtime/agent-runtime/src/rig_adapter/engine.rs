@@ -457,6 +457,9 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                         }
                         if let Some(respond) = actions.respond {
                             responded = true;
+                            if let Some(policy) = &self.context_policy {
+                                policy.record_respond();
+                            }
                             on_event(StreamEvent::ActionRespond {
                                 timestamp: current_timestamp(),
                                 message: respond.message,

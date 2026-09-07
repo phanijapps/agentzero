@@ -35,7 +35,6 @@ serde_yaml = { workspace = true }
 schemars = { workspace = true }
 
 # Error handling
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Logging
@@ -58,10 +57,6 @@ sse-stream = "0.2"
 # Utilities
 uuid = { workspace = true }
 chrono = { workspace = true }
-regex = { workspace = true }
-glob = { workspace = true }
-rust-embed = { workspace = true }
-lazy_static = { workspace = true }
 base64 = { workspace = true }
 dirs = "5.0"
 sha2 = "0.10"

@@ -255,5 +255,5 @@ mod tests {
         assert_eq!(ToolExecutionMode::default(), ToolExecutionMode::Parallel);
     }
 
-    // ------------- AgentExecutor builder methods -------------
+    // ------------- Execution builder methods -------------
 }

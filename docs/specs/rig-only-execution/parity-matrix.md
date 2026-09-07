@@ -827,3 +827,39 @@ No production engine has been retired yet. No AC is marked complete.
   tolerate the race it documents, keeping the strict completion contract.
   4 consecutive green runs plus simple-qa and ward-archetypes on the
   flag-less Rig daemon.
+
+### T10 execution record — legacy retirement
+
+- runtime/agent-runtime/src/executor.rs (3118 lines) is deleted whole:
+  the AgentExecutor loop, its factory (create_executor), the
+  AgentEngine impl and all 43 of its tests. lib.rs drops the module and
+  exports. The engine_name default in the neutral facade is now
+  "engine" (loop-free boundary fakes); the stale builder-methods comment
+  in engine/config.rs no longer names the retired symbol.
+- The one gateway test still constructing the legacy engine
+  (real_present_surface_tool_reaches_validated_gateway_events) is ported
+  to build_execution_engine — the surface create/update/rejection journey
+  now proves validated gateway events through the Rig path.
+- Progress parity: record_respond (respond boosts the stuck-agent score
+  in the retired loop) is re-wired through ContextPolicy/ProgressPolicy
+  where the Rig engine observes a respond action; its unit test lives on
+  in the neutral progress owner.
+- Proven-unused dependencies removed from agent-runtime: anyhow, regex,
+  glob, rust-embed, lazy_static (each verified with zero live uses in
+  src/; base64 stays — rmcp upstream defaults note).
+- Static audit (source, tests, examples, scripts, package.json):
+  AgentExecutor — absent; select_engine — absent;
+  execute_with_tools_loop — absent; ZBOT_ENGINE — only the cutover test
+  that asserts the obsolete flag cannot change engine selection
+  (explicitly permitted). gateway/examples (query_session,
+  rig_parity_event_capture) reference no legacy engine.
+- Gross deletion: 3118 legacy lines + ~60 selector/A-B lines. Moved/kept:
+  ExecutorConfig/hooks/PreparedExecution/snapshot (neutral engine/
+  module owners), ExecutorBuilder (gateway neutral owner), parity
+  harness (Rig-only oracle). New adapter code: 15 lines (respond
+  progress re-wire + surface-test port wiring).
+- Gates: workspace check/test/clippy locked green except the tracked
+  pre-existing saved-surfaces envelope and the recorded agent-runtime
+  flake (passes in isolation); agent-runtime 448 tests; gateway 625;
+  release binaries build; Mode Full simple-qa + stop-and-continue +
+  ward-archetypes pass on the daemon (3/3, 30.4s).

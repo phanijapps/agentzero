@@ -48,9 +48,6 @@ pub mod mcp;
 /// Middleware pipeline
 pub mod middleware;
 
-/// Executor core
-pub mod executor;
-
 /// Gateway-facing execution facade
 pub mod engine;
 
@@ -123,7 +120,6 @@ pub use engine::{
     ExecutorError, PreparedExecution, RecallHook, RecallHookResult, StreamEventSink,
     ToolCallDecision, ToolExecutionMode, TransformContextHook,
 };
-pub use executor::{create_executor, AgentExecutor};
 pub use rig_adapter::{CompletionClient, RigAgentConfig, RigConfigError, RigModelConfig};
 
 pub use steering::{

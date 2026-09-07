@@ -132,6 +132,12 @@ impl ContextPolicy {
         self.progress.lock().unwrap().tool(name, args, error);
     }
 
+    /// Record a respond action — the agent is finishing (progress boost
+    /// parity with the retired loop's stuck-agent scoring).
+    pub fn record_respond(&self) {
+        self.progress.lock().unwrap().respond();
+    }
+
     pub fn text(&self, text: &str) {
         if let Some(run) = self.run.lock().unwrap().as_mut() {
             run.tail.text(text);

@@ -13,6 +13,7 @@ mod continuation_execution;
 mod continuation_watcher;
 pub(super) mod core;
 mod delegation_dispatcher;
+mod exec_ctx;
 mod execution_stream;
 mod initial_execution;
 mod integrations;
@@ -27,7 +28,7 @@ pub use core::*;
 pub use delegation_dispatcher::DelegationDispatcher;
 #[cfg(any(test, feature = "test-stubs"))]
 pub use session_invoker::StubSessionInvoker;
-pub use session_invoker::{ContinuationSpawner, DelegationSpawner, SessionSpawner};
+pub use session_invoker::{ContinuationSpawner, DelegationSpawner};
 
 pub(crate) fn prompt_safe_tool_result_config(
     tool_settings: &ToolSettings,

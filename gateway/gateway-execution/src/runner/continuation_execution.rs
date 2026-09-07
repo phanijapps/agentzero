@@ -1,6 +1,5 @@
 //! Continuation preparation; shared stream observation lives in ExecutionStream.
 use super::core::attach_mid_session_recall_hook;
-use crate::delegation::{DelegationRegistry, DelegationRequest};
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
     build_execution_engine, collect_agents_summary, collect_skills_summary, AgentLoader,
@@ -8,48 +7,11 @@ use crate::invoke::{
 };
 use crate::lifecycle::emit_agent_started;
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind};
-use api_logs::LogService;
-use execution_state::{SessionPlanSnapshot, StateService};
-use gateway_events::EventBus;
-use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths};
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, RwLock};
-use zbot_runtime_sqlite::DatabaseManager;
+use execution_state::SessionPlanSnapshot;
+use gateway_services::SharedVaultPaths;
+use std::sync::Arc;
 
 /// Explicit inputs for a single continuation invocation.
-pub(super) struct ContinuationArgs<'a> {
-    pub(super) session_id: &'a str,
-    pub(super) root_agent_id: &'a str,
-    pub(super) event_bus: Arc<EventBus>,
-    pub(super) agent_service: Arc<AgentService>,
-    pub(super) provider_service: Arc<ProviderService>,
-    pub(super) mcp_service: Arc<McpService>,
-    pub(super) skill_service: Arc<gateway_services::SkillService>,
-    pub(super) paths: SharedVaultPaths,
-    pub(super) messages: Arc<dyn zbot_conversation::MessageStore>,
-    pub(super) checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
-    pub(super) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    pub(super) delegation_registry: Arc<DelegationRegistry>,
-    pub(super) delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
-    pub(super) log_service: Arc<LogService<DatabaseManager>>,
-    pub(super) state_service: Arc<StateService<DatabaseManager>>,
-    pub(super) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    pub(super) embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
-    pub(super) distiller: Option<Arc<crate::distillation::SessionDistiller>>,
-    pub(super) handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
-    pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
-    pub(super) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
-    pub(super) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
-    pub(super) steering_registry: Arc<agent_runtime::SteeringRegistry>,
-    pub(super) model_registry: Option<Arc<gateway_services::models::ModelRegistry>>,
-    pub(super) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    pub(super) kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
-    pub(super) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    pub(super) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
-    pub(super) procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
-    pub(super) ward_usage: Arc<gateway_services::WardUsage>,
-}
-
 /// Prepend scoped, sanitized unified recall to `history` as a system message
 /// at position 0.
 ///
@@ -208,10 +170,12 @@ fn render_session_plan_for_continuation(snapshot: &SessionPlanSnapshot) -> Strin
 /// - Original user message
 /// - Previous assistant responses
 /// - Callback messages from completed subagents (as system messages)
-pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<(), String> {
-    let ContinuationArgs {
-        session_id,
-        root_agent_id,
+pub(super) async fn invoke_continuation(
+    ctx: &super::exec_ctx::ExecCtx,
+    session_id: &str,
+    root_agent_id: &str,
+) -> Result<(), String> {
+    let super::exec_ctx::ExecCtx {
         event_bus,
         agent_service,
         provider_service,
@@ -220,13 +184,11 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         paths,
         messages,
         checkpoints,
-        handles,
-        delegation_registry,
+        control,
         delegation_tx,
         log_service,
         state_service,
         memory_store,
-        embedding_client: _embedding_client,
         distiller,
         handoff_writer,
         memory_recall,
@@ -234,13 +196,47 @@ pub(super) async fn invoke_continuation(args: ContinuationArgs<'_>) -> Result<()
         a2a_delegation,
         steering_registry,
         model_registry,
+        integrations,
+        procedure_store,
+        ward_usage,
+        ..
+    } = ctx;
+    let super::integrations::RunnerIntegrations {
         kg_store,
         kg_episode_store,
         ingestion_adapter,
         goal_adapter,
-        procedure_store,
-        ward_usage,
-    } = args;
+        ..
+    } = integrations.snapshot();
+    let _embedding_client = ctx.embedding_client.clone();
+    let super::session_control::SessionControl {
+        handles,
+        delegation_registry,
+        ..
+    } = control;
+    let handles = handles.clone();
+    let delegation_registry = delegation_registry.clone();
+    let event_bus = event_bus.clone();
+    let agent_service = agent_service.clone();
+    let provider_service = provider_service.clone();
+    let mcp_service = mcp_service.clone();
+    let skill_service = skill_service.clone();
+    let paths = paths.clone();
+    let messages = messages.clone();
+    let checkpoints = checkpoints.clone();
+    let delegation_tx = delegation_tx.clone();
+    let log_service = log_service.clone();
+    let state_service = state_service.clone();
+    let memory_store = memory_store.clone();
+    let distiller = distiller.clone();
+    let handoff_writer = handoff_writer.clone();
+    let memory_recall = memory_recall.clone();
+    let peer_messages = peer_messages.clone();
+    let a2a_delegation = a2a_delegation.clone();
+    let steering_registry = steering_registry.clone();
+    let procedure_store = procedure_store.clone();
+    let ward_usage = ward_usage.clone();
+    let model_registry = model_registry.load_full();
     // Generate a new conversation ID for this continuation turn
     let conversation_id = format!(
         "{}-cont-{}",

@@ -49,7 +49,7 @@ async fn delegated_child_callback_and_continuation_run_through_shared_factory() 
     });
 
     let harness = build_harness(base_url).await;
-    let mut events = harness.runner.event_bus.subscribe_all();
+    let mut events = harness.runner.ctx.event_bus.subscribe_all();
     let (_, session_id) = harness
         .runner
         .invoke_with_callback(
@@ -136,6 +136,7 @@ async fn delegated_child_callback_and_continuation_run_through_shared_factory() 
     // continuation ran (its request came after the callback row).
     let root_rows = harness
         .runner
+        .ctx
         .messages
         .replay(&session_id, None, 100)
         .unwrap();

@@ -1,4 +1,4 @@
-use super::super::continuation_execution::{invoke_continuation, ContinuationArgs};
+use super::super::continuation_execution::invoke_continuation;
 use super::test_support::*;
 use super::*;
 use agent_runtime::SteerResult;
@@ -14,8 +14,8 @@ async fn captured_invokers_observe_stores_installed_after_construction() {
         KnowledgeDatabase,
     };
     let mut harness = build_harness("http://unused".into()).await;
-    let continuation = harness.runner.make_continuation_invoker();
-    let delegation = harness.runner.make_delegation_invoker();
+    let continuation = harness.runner.ctx.clone();
+    let delegation = harness.runner.ctx.clone();
     let graph: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(
         EngramKnowledgeGraphStore::open(AdapterConfig::engram_for_data_root(
             harness._temp.path(),
@@ -49,7 +49,7 @@ async fn captured_invokers_observe_stores_installed_after_construction() {
     for snapshot in [
         continuation.integrations.snapshot(),
         delegation.integrations.snapshot(),
-        harness.runner.bootstrap.integrations.snapshot(),
+        harness.runner.ctx.integrations.snapshot(),
     ] {
         assert!(snapshot
             .kg_store
@@ -69,20 +69,20 @@ async fn captured_invokers_observe_stores_installed_after_construction() {
             .is_some_and(|adapter| Arc::ptr_eq(adapter, &goals)));
     }
     assert!(Arc::ptr_eq(
-        &continuation.handles,
-        &harness.runner.control.handles
+        &continuation.control.handles,
+        &harness.runner.ctx.control.handles
     ));
     assert!(Arc::ptr_eq(
-        &delegation.delegation_registry,
-        &harness.runner.control.delegation_registry
+        &delegation.control.delegation_registry,
+        &harness.runner.ctx.control.delegation_registry
     ));
     assert!(Arc::ptr_eq(
         &delegation.rate_limiters,
-        &harness.runner.rate_limiters
+        &harness.runner.ctx.rate_limiters
     ));
     assert!(Arc::ptr_eq(
         &continuation.steering_registry,
-        &harness.runner.steering_registry
+        &harness.runner.ctx.steering_registry
     ));
 }
 
@@ -101,7 +101,7 @@ async fn assert_respond_persisted_before_completion(continuation: bool) {
         write_sse(&mut socket, &body).await;
     });
     let harness = build_harness(base_url).await;
-    let mut events = harness.runner.event_bus.subscribe_all();
+    let mut events = harness.runner.ctx.event_bus.subscribe_all();
     let session_id;
     if continuation {
         let (session, root) = harness.state.create_session("root").unwrap();
@@ -109,40 +109,9 @@ async fn assert_respond_persisted_before_completion(continuation: bool) {
         harness.state.complete_execution(&root.id).unwrap();
         harness.state.complete_session(&session.id).unwrap();
         session_id = session.id;
-        invoke_continuation(ContinuationArgs {
-            session_id: &session_id,
-            root_agent_id: "root",
-            event_bus: harness.runner.event_bus.clone(),
-            agent_service: harness.runner.agent_service.clone(),
-            provider_service: harness.runner.provider_service.clone(),
-            mcp_service: harness.runner.mcp_service.clone(),
-            skill_service: harness.runner.skill_service.clone(),
-            paths: harness.runner.paths.clone(),
-            messages: harness.runner.messages.clone(),
-            checkpoints: harness.runner.checkpoints.clone(),
-            handles: harness.runner.control.handles.clone(),
-            delegation_registry: harness.runner.control.delegation_registry.clone(),
-            delegation_tx: harness.runner.delegation_tx.clone(),
-            log_service: harness.runner.log_service.clone(),
-            state_service: harness.runner.control.state_service.clone(),
-            memory_store: None,
-            embedding_client: None,
-            distiller: None,
-            handoff_writer: None,
-            memory_recall: None,
-            peer_messages: harness.runner.peer_messages.clone(),
-            a2a_delegation: harness.runner.a2a_delegation.clone(),
-            steering_registry: harness.steering.clone(),
-            model_registry: None,
-            kg_store: None,
-            kg_episode_store: None,
-            ingestion_adapter: None,
-            goal_adapter: None,
-            procedure_store: None,
-            ward_usage: harness.runner.ward_usage.clone(),
-        })
-        .await
-        .unwrap();
+        invoke_continuation(&harness.runner.ctx, &session_id, "root")
+            .await
+            .unwrap();
     } else {
         (_, session_id) = harness
             .runner
@@ -175,6 +144,7 @@ async fn assert_respond_persisted_before_completion(continuation: bool) {
     // Read immediately at the public completion boundary, without polling the store.
     let rows = harness
         .runner
+        .ctx
         .messages
         .replay(&session_id, None, 100)
         .unwrap();
@@ -234,7 +204,7 @@ async fn turn_checkpoint_records_cursor_and_represented_outputs() {
         )
         .await
         .unwrap();
-    let mut events = harness.runner.event_bus.subscribe_all();
+    let mut events = harness.runner.ctx.event_bus.subscribe_all();
     timeout(Duration::from_secs(10), async {
         loop {
             match events.recv().await.unwrap() {
@@ -255,6 +225,7 @@ async fn turn_checkpoint_records_cursor_and_represented_outputs() {
         .id;
     let checkpoint = harness
         .runner
+        .ctx
         .checkpoints
         .latest(&execution_id)
         .unwrap()
@@ -274,6 +245,7 @@ async fn turn_checkpoint_records_cursor_and_represented_outputs() {
     );
     let rows = harness
         .runner
+        .ctx
         .messages
         .replay(&session_id, None, 100)
         .unwrap();
@@ -313,7 +285,7 @@ async fn continuation_restores_tape_with_racing_callback_and_advances_cursor() {
     let (session, root_exec) = harness.state.create_session("root").unwrap();
     let session_id = session.id.clone();
     let execution_id = root_exec.id.clone();
-    let messages = harness.runner.messages.clone();
+    let messages = harness.runner.ctx.messages.clone();
     let prior_user = zbot_conversation::Message {
         id: "msg-prior-user".to_owned(),
         execution_id: None,
@@ -377,6 +349,7 @@ async fn continuation_restores_tape_with_racing_callback_and_advances_cursor() {
     );
     harness
         .runner
+        .ctx
         .checkpoints
         .write(&zbot_conversation::Checkpoint {
             id: "cp-restore".to_owned(),
@@ -395,42 +368,11 @@ async fn continuation_restores_tape_with_racing_callback_and_advances_cursor() {
     harness.state.start_execution(&execution_id).unwrap();
     harness.state.complete_execution(&execution_id).unwrap();
     harness.state.complete_session(&session_id).unwrap();
-    let mut events = harness.runner.event_bus.subscribe_all();
+    let mut events = harness.runner.ctx.event_bus.subscribe_all();
     let mut completed_count = 0_usize;
-    invoke_continuation(ContinuationArgs {
-        session_id: &session_id,
-        root_agent_id: "root",
-        event_bus: harness.runner.event_bus.clone(),
-        agent_service: harness.runner.agent_service.clone(),
-        provider_service: harness.runner.provider_service.clone(),
-        mcp_service: harness.runner.mcp_service.clone(),
-        skill_service: harness.runner.skill_service.clone(),
-        paths: harness.runner.paths.clone(),
-        messages: harness.runner.messages.clone(),
-        checkpoints: harness.runner.checkpoints.clone(),
-        handles: harness.runner.control.handles.clone(),
-        delegation_registry: harness.runner.control.delegation_registry.clone(),
-        delegation_tx: harness.runner.delegation_tx.clone(),
-        log_service: harness.runner.log_service.clone(),
-        state_service: harness.runner.control.state_service.clone(),
-        memory_store: None,
-        embedding_client: None,
-        distiller: None,
-        handoff_writer: None,
-        memory_recall: None,
-        peer_messages: harness.runner.peer_messages.clone(),
-        a2a_delegation: None,
-        steering_registry: harness.steering.clone(),
-        model_registry: None,
-        kg_store: None,
-        kg_episode_store: None,
-        ingestion_adapter: None,
-        goal_adapter: None,
-        procedure_store: None,
-        ward_usage: harness.runner.ward_usage.clone(),
-    })
-    .await
-    .unwrap();
+    invoke_continuation(&harness.runner.ctx, &session_id, "root")
+        .await
+        .unwrap();
     timeout(Duration::from_secs(10), async {
         loop {
             match events.recv().await.unwrap() {
@@ -476,6 +418,7 @@ async fn continuation_restores_tape_with_racing_callback_and_advances_cursor() {
     // are represented outputs.
     let next = harness
         .runner
+        .ctx
         .checkpoints
         .latest(&execution_id)
         .unwrap()
@@ -501,6 +444,7 @@ async fn continuation_restores_tape_with_racing_callback_and_advances_cursor() {
     );
     let rows = harness
         .runner
+        .ctx
         .messages
         .replay(&session_id, None, 100)
         .unwrap();
@@ -532,6 +476,7 @@ async fn malformed_private_snapshot_fails_continuation_explicitly() {
     );
     harness
         .runner
+        .ctx
         .checkpoints
         .write(&zbot_conversation::Checkpoint {
             id: "cp-bad".to_owned(),
@@ -546,40 +491,9 @@ async fn malformed_private_snapshot_fails_continuation_explicitly() {
             created_at: chrono::Utc::now().to_rfc3339(),
         })
         .unwrap();
-    let error = invoke_continuation(ContinuationArgs {
-        session_id: &session_id,
-        root_agent_id: "root",
-        event_bus: harness.runner.event_bus.clone(),
-        agent_service: harness.runner.agent_service.clone(),
-        provider_service: harness.runner.provider_service.clone(),
-        mcp_service: harness.runner.mcp_service.clone(),
-        skill_service: harness.runner.skill_service.clone(),
-        paths: harness.runner.paths.clone(),
-        messages: harness.runner.messages.clone(),
-        checkpoints: harness.runner.checkpoints.clone(),
-        handles: harness.runner.control.handles.clone(),
-        delegation_registry: harness.runner.control.delegation_registry.clone(),
-        delegation_tx: harness.runner.delegation_tx.clone(),
-        log_service: harness.runner.log_service.clone(),
-        state_service: harness.runner.control.state_service.clone(),
-        memory_store: None,
-        embedding_client: None,
-        distiller: None,
-        handoff_writer: None,
-        memory_recall: None,
-        peer_messages: harness.runner.peer_messages.clone(),
-        a2a_delegation: None,
-        steering_registry: harness.steering.clone(),
-        model_registry: None,
-        kg_store: None,
-        kg_episode_store: None,
-        ingestion_adapter: None,
-        goal_adapter: None,
-        procedure_store: None,
-        ward_usage: harness.runner.ward_usage.clone(),
-    })
-    .await
-    .unwrap_err();
+    let error = invoke_continuation(&harness.runner.ctx, &session_id, "root")
+        .await
+        .unwrap_err();
     assert!(
         error.contains("Unsupported execution checkpoint version"),
         "malformed snapshot must fail explicitly: {error}"
@@ -604,6 +518,7 @@ async fn continuation_spawn_failure_crashes_session_with_terminal_event() {
     let context_state = serde_json::Value::Object(engine_state).to_string();
     harness
         .runner
+        .ctx
         .checkpoints
         .write(&zbot_conversation::Checkpoint {
             id: "cp-no-cursor".to_owned(),
@@ -618,8 +533,8 @@ async fn continuation_spawn_failure_crashes_session_with_terminal_event() {
             created_at: chrono::Utc::now().to_rfc3339(),
         })
         .unwrap();
-    let mut events = harness.runner.event_bus.subscribe_all();
-    let invoker = harness.runner.make_continuation_invoker();
+    let mut events = harness.runner.ctx.event_bus.subscribe_all();
+    let invoker = harness.runner.ctx.clone();
     use crate::runner::ContinuationSpawner as _;
     invoker
         .spawn_continuation(session_id.clone(), "root".to_owned())
@@ -662,40 +577,11 @@ async fn checkpoint_read_error_fails_continuation_explicitly() {
     let harness = build_harness("http://127.0.0.1:1/v1".to_owned()).await;
     let (session, _root_exec) = harness.state.create_session("root").unwrap();
     let session_id = session.id.clone();
-    let error = invoke_continuation(ContinuationArgs {
-        session_id: &session_id,
-        root_agent_id: "root",
-        event_bus: harness.runner.event_bus.clone(),
-        agent_service: harness.runner.agent_service.clone(),
-        provider_service: harness.runner.provider_service.clone(),
-        mcp_service: harness.runner.mcp_service.clone(),
-        skill_service: harness.runner.skill_service.clone(),
-        paths: harness.runner.paths.clone(),
-        messages: harness.runner.messages.clone(),
-        checkpoints: std::sync::Arc::new(FailingCheckpoints),
-        handles: harness.runner.control.handles.clone(),
-        delegation_registry: harness.runner.control.delegation_registry.clone(),
-        delegation_tx: harness.runner.delegation_tx.clone(),
-        log_service: harness.runner.log_service.clone(),
-        state_service: harness.runner.control.state_service.clone(),
-        memory_store: None,
-        embedding_client: None,
-        distiller: None,
-        handoff_writer: None,
-        memory_recall: None,
-        peer_messages: harness.runner.peer_messages.clone(),
-        a2a_delegation: None,
-        steering_registry: harness.steering.clone(),
-        model_registry: None,
-        kg_store: None,
-        kg_episode_store: None,
-        ingestion_adapter: None,
-        goal_adapter: None,
-        procedure_store: None,
-        ward_usage: harness.runner.ward_usage.clone(),
-    })
-    .await
-    .unwrap_err();
+    let mut ctx = (*harness.runner.ctx).clone();
+    ctx.checkpoints = Arc::new(FailingCheckpoints);
+    let error = invoke_continuation(&ctx, &session_id, "root")
+        .await
+        .unwrap_err();
     assert!(
         error.contains("continuation_checkpoint_read_failed"),
         "checkpoint query errors are not an absent checkpoint: {error}"
@@ -776,40 +662,9 @@ async fn continuation_registers_root_for_peer_only_delivery_and_cleans_up() {
     harness.state.complete_execution(&root.id).unwrap();
     harness.state.complete_session(&session.id).unwrap();
 
-    invoke_continuation(ContinuationArgs {
-        session_id: &session.id,
-        root_agent_id: "root",
-        event_bus: harness.runner.event_bus.clone(),
-        agent_service: harness.runner.agent_service.clone(),
-        provider_service: harness.runner.provider_service.clone(),
-        mcp_service: harness.runner.mcp_service.clone(),
-        skill_service: harness.runner.skill_service.clone(),
-        paths: harness.runner.paths.clone(),
-        messages: harness.runner.messages.clone(),
-        checkpoints: harness.runner.checkpoints.clone(),
-        handles: harness.runner.control.handles.clone(),
-        delegation_registry: harness.runner.control.delegation_registry.clone(),
-        delegation_tx: harness.runner.delegation_tx.clone(),
-        log_service: harness.runner.log_service.clone(),
-        state_service: harness.runner.control.state_service.clone(),
-        memory_store: None,
-        embedding_client: None,
-        distiller: None,
-        handoff_writer: None,
-        memory_recall: None,
-        peer_messages: harness.runner.peer_messages.clone(),
-        a2a_delegation: harness.runner.a2a_delegation.clone(),
-        steering_registry: harness.steering.clone(),
-        model_registry: None,
-        kg_store: None,
-        kg_episode_store: None,
-        ingestion_adapter: None,
-        goal_adapter: None,
-        procedure_store: None,
-        ward_usage: harness.runner.ward_usage.clone(),
-    })
-    .await
-    .unwrap();
+    invoke_continuation(&harness.runner.ctx, &session.id, "root")
+        .await
+        .unwrap();
 
     deliver_during_first_turn(harness.steering, root.id, first_seen, release_first).await;
 }
@@ -837,7 +692,7 @@ async fn graceful_restart_resume_rebuilds_paused_peer_target_with_same_id() {
         .state
         .set_child_session_id(&child.id, &child_session.id)
         .unwrap();
-    let peer_messages = harness.runner.peer_messages.as_ref().unwrap();
+    let peer_messages = harness.runner.ctx.peer_messages.as_ref().unwrap();
     let receipt = peer_messages
         .enqueue_message(
             crate::peer_messaging::PeerMessageContext {

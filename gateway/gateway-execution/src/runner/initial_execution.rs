@@ -132,7 +132,7 @@ impl ExecutionRunner {
                     );
                 }
                 {
-                    let mut handles = self.control.handles.write().await;
+                    let mut handles = self.ctx.control.handles.write().await;
                     if handles
                         .get(&config.conversation_id)
                         .is_some_and(|handle| handle.is_same_execution(&partial_handle))
@@ -142,9 +142,9 @@ impl ExecutionRunner {
                 }
                 const SAFE_SETUP_ERROR: &str = "Unable to start this request";
                 crash_execution(CrashExecution {
-                    state_service: &self.control.state_service,
-                    log_service: &self.log_service,
-                    event_bus: &self.event_bus,
+                    state_service: &self.ctx.control.state_service,
+                    log_service: &self.ctx.log_service,
+                    event_bus: &self.ctx.event_bus,
                     execution_id: &partial_execution_id,
                     session_id: &partial_session_id,
                     agent_id: &config.agent_id,
@@ -157,26 +157,26 @@ impl ExecutionRunner {
             }
         };
 
-        let integrations = self.integrations.snapshot();
+        let integrations = self.ctx.integrations.snapshot();
         let stream = super::execution_stream::ExecutionStream {
-            event_bus: self.event_bus.clone(),
-            state_service: self.control.state_service.clone(),
-            log_service: self.log_service.clone(),
-            messages: self.messages.clone(),
-            checkpoints: self.checkpoints.clone(),
-            delegation_tx: self.delegation_tx.clone(),
-            delegation_registry: self.control.delegation_registry.clone(),
-            handles: self.control.handles.clone(),
-            distiller: self.distiller.clone(),
-            handoff_writer: self.handoff_writer.clone(),
+            event_bus: self.ctx.event_bus.clone(),
+            state_service: self.ctx.control.state_service.clone(),
+            log_service: self.ctx.log_service.clone(),
+            messages: self.ctx.messages.clone(),
+            checkpoints: self.ctx.checkpoints.clone(),
+            delegation_tx: self.ctx.delegation_tx.clone(),
+            delegation_registry: self.ctx.control.delegation_registry.clone(),
+            handles: self.ctx.control.handles.clone(),
+            distiller: self.ctx.distiller.clone(),
+            handoff_writer: self.ctx.handoff_writer.clone(),
             kg_episode_store: integrations.kg_episode_store,
-            paths: self.paths.clone(),
+            paths: self.ctx.paths.clone(),
             kg_store: integrations.kg_store,
             ingestion_adapter: integrations.ingestion_adapter,
-            memory_store: self.memory_store.clone(),
-            connector_registry: self.connector_registry.clone(),
-            bridge_registry: self.bridge_registry.clone(),
-            bridge_outbox: self.bridge_outbox.clone(),
+            memory_store: self.ctx.memory_store.clone(),
+            connector_registry: self.ctx.connector_registry.clone(),
+            bridge_registry: self.ctx.bridge_registry.clone(),
+            bridge_outbox: self.ctx.bridge_outbox.clone(),
         };
         let ctx = super::execution_stream::ExecutionContext {
             mode: super::execution_stream::ExecutionMode::Root,
@@ -193,7 +193,7 @@ impl ExecutionRunner {
             history: setup.history,
             recommended_skills: setup.recommended_skills,
         };
-        let peer_registry = self.steering_registry.clone();
+        let peer_registry = self.ctx.steering_registry.clone();
         let peer_execution_id = ctx.execution_id.clone();
         tokio::spawn(async move {
             let _ = stream.run(ctx, setup.executor).await;

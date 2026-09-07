@@ -191,7 +191,7 @@ pub(super) async fn build_harness(base_url: String) -> Harness {
         max_parallel_agents: 1,
     });
     Harness {
-        steering: runner.steering_registry.clone(),
+        steering: runner.ctx.steering_registry.clone(),
         _temp: temp,
         runner,
         state,

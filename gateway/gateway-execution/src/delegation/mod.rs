@@ -13,8 +13,7 @@
 mod callback;
 mod context;
 mod registry;
-mod spawn;
-
+pub mod spawn;
 // Re-export public types
 pub use callback::{
     extract_structured_result, format_agent_display_name, format_callback_message,

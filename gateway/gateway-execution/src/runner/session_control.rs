@@ -7,6 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use zbot_runtime_sqlite::DatabaseManager;
 
+#[derive(Clone)]
 pub(super) struct SessionControl {
     pub(super) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
     pub(super) delegation_registry: Arc<DelegationRegistry>,
@@ -164,7 +165,7 @@ impl ExecutionRunner {
     /// extend to a BFS over `get_children` if multi-level delegation
     /// becomes common.
     pub async fn stop(&self, conversation_id: &str) -> Result<(), String> {
-        self.control.stop(conversation_id).await
+        self.ctx.control.stop(conversation_id).await
     }
 
     /// Continue an execution after max iterations.
@@ -173,7 +174,8 @@ impl ExecutionRunner {
         conversation_id: &str,
         additional_iterations: u32,
     ) -> Result<(), String> {
-        self.control
+        self.ctx
+            .control
             .continue_execution(conversation_id, additional_iterations)
             .await
     }
@@ -183,7 +185,7 @@ impl ExecutionRunner {
     /// Pausing sets a flag that the executor will check. The execution
     /// will complete the current operation and then wait for resume.
     pub async fn pause(&self, session_id: &str) -> Result<(), String> {
-        self.control.pause(session_id).await
+        self.ctx.control.pause(session_id).await
     }
 
     /// Resume a paused or crashed execution by session ID.
@@ -197,12 +199,14 @@ impl ExecutionRunner {
         // no in-memory handles to wake, and durable peer work still targets the
         // original execution ID.
         let resumable_subagent = match self
+            .ctx
             .control
             .state_service
             .get_last_crashed_subagent(session_id)?
         {
             some @ Some(_) => some,
             None => self
+                .ctx
                 .control
                 .state_service
                 .list_executions(&execution_state::ExecutionFilter {
@@ -231,14 +235,14 @@ impl ExecutionRunner {
         }
 
         // Fallback: standard resume (paused sessions or root-only crashes)
-        self.control.resume_live(session_id).await
+        self.ctx.control.resume_live(session_id).await
     }
 
     /// Cancel an execution by session ID.
     ///
     /// Cancellation immediately stops the execution and marks it as cancelled.
     pub async fn cancel(&self, session_id: &str) -> Result<(), String> {
-        self.control.cancel(session_id).await
+        self.ctx.control.cancel(session_id).await
     }
 
     /// Cancel one session and signal its exact conversation's delegation tree.
@@ -249,7 +253,10 @@ impl ExecutionRunner {
         session_id: &str,
         conversation_id: &str,
     ) -> Result<(), String> {
-        self.control.cancel_exact(session_id, conversation_id).await
+        self.ctx
+            .control
+            .cancel_exact(session_id, conversation_id)
+            .await
     }
 
     /// End a session (mark as completed).
@@ -257,22 +264,22 @@ impl ExecutionRunner {
     /// Called when user explicitly ends a session via /end, /new, or +new button.
     /// This marks the session as completed regardless of running executions.
     pub async fn end_session(&self, session_id: &str) -> Result<(), String> {
-        self.control.end_session(session_id).await
+        self.ctx.control.end_session(session_id).await
     }
 
     /// Get execution handle for a conversation.
     pub async fn get_handle(&self, conversation_id: &str) -> Option<ExecutionHandle> {
-        self.control.get_handle(conversation_id).await
+        self.ctx.control.get_handle(conversation_id).await
     }
 
     /// Get the delegation registry.
     pub fn delegation_registry(&self) -> Arc<DelegationRegistry> {
-        self.control.delegation_registry.clone()
+        self.ctx.control.delegation_registry.clone()
     }
 
     /// Get the state service for execution state management.
     pub fn state_service(&self) -> Arc<StateService<DatabaseManager>> {
-        self.control.state_service.clone()
+        self.ctx.control.state_service.clone()
     }
 }
 

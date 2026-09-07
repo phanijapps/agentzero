@@ -18,17 +18,27 @@ impl ExecutionRunner {
 
         // 1. Reactivate root session and execution.
         if self
+            .ctx
             .control
             .state_service
             .get_session(session_id)?
             .is_some_and(|session| session.status == execution_state::SessionStatus::Paused)
         {
-            self.control.state_service.resume_session(session_id)?;
+            self.ctx.control.state_service.resume_session(session_id)?;
         } else {
-            self.control.state_service.reactivate_session(session_id)?;
+            self.ctx
+                .control
+                .state_service
+                .reactivate_session(session_id)?;
         }
-        if let Ok(Some(root_exec)) = self.control.state_service.get_root_execution(session_id) {
-            self.control
+        if let Ok(Some(root_exec)) = self
+            .ctx
+            .control
+            .state_service
+            .get_root_execution(session_id)
+        {
+            self.ctx
+                .control
                 .state_service
                 .reactivate_execution(&root_exec.id)?;
         }
@@ -36,22 +46,26 @@ impl ExecutionRunner {
         // 2. Preserve and reactivate the crashed execution identity. Durable
         // peer work is addressed to an execution ID; replacing that ID during
         // smart resume would orphan already-accepted messages.
-        self.control
+        self.ctx
+            .control
             .state_service
             .reactivate_execution(&crashed_exec.id)?;
 
         // 3. Reactivate the child session.
         if self
+            .ctx
             .control
             .state_service
             .get_session(child_session_id)?
             .is_some_and(|session| session.status == execution_state::SessionStatus::Paused)
         {
-            self.control
+            self.ctx
+                .control
                 .state_service
                 .resume_session(child_session_id)?;
         } else {
-            self.control
+            self.ctx
+                .control
                 .state_service
                 .reactivate_session(child_session_id)?;
         }
@@ -59,16 +73,21 @@ impl ExecutionRunner {
         // 4. Ensure pending_delegations is at least 1 without double-counting
         // a gracefully paused delegation whose bookkeeping stayed durable.
         let parent_session = self
+            .ctx
             .control
             .state_service
             .get_session(session_id)?
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         if !parent_session.has_pending_delegations() {
-            self.control.state_service.register_delegation(session_id)?;
+            self.ctx
+                .control
+                .state_service
+                .register_delegation(session_id)?;
         }
 
         // 5. Request continuation so root agent processes the callback when subagent finishes
-        self.control
+        self.ctx
+            .control
             .state_service
             .request_continuation(session_id)?;
 
@@ -85,6 +104,7 @@ impl ExecutionRunner {
 
         // Get root agent ID for parent_agent_id
         let root_agent_id = self
+            .ctx
             .control
             .state_service
             .get_root_execution(session_id)?
@@ -115,35 +135,35 @@ impl ExecutionRunner {
         };
 
         // 7. Re-spawn the subagent
-        let integrations = self.integrations.snapshot();
+        let integrations = self.ctx.integrations.snapshot();
         spawn_delegated_agent(
             &request,
-            self.event_bus.clone(),
-            self.agent_service.clone(),
-            self.provider_service.clone(),
-            self.mcp_service.clone(),
-            self.skill_service.clone(),
-            self.paths.clone(),
-            self.messages.clone(),
-            self.session_meta.clone(),
-            self.checkpoints.clone(),
-            self.control.handles.clone(),
-            self.control.delegation_registry.clone(),
-            self.delegation_tx.clone(),
-            self.log_service.clone(),
-            self.control.state_service.clone(),
+            self.ctx.event_bus.clone(),
+            self.ctx.agent_service.clone(),
+            self.ctx.provider_service.clone(),
+            self.ctx.mcp_service.clone(),
+            self.ctx.skill_service.clone(),
+            self.ctx.paths.clone(),
+            self.ctx.messages.clone(),
+            self.ctx.session_meta.clone(),
+            self.ctx.checkpoints.clone(),
+            self.ctx.control.handles.clone(),
+            self.ctx.control.delegation_registry.clone(),
+            self.ctx.delegation_tx.clone(),
+            self.ctx.log_service.clone(),
+            self.ctx.control.state_service.clone(),
             None, // No delegation permit needed for resume
-            self.memory_store.clone(),
-            self.distiller.clone(),
-            self.memory_recall.clone(),
-            self.peer_messages.clone(),
-            self.a2a_delegation.clone(),
-            self.rate_limiters.clone(),
+            self.ctx.memory_store.clone(),
+            self.ctx.distiller.clone(),
+            self.ctx.memory_recall.clone(),
+            self.ctx.peer_messages.clone(),
+            self.ctx.a2a_delegation.clone(),
+            self.ctx.rate_limiters.clone(),
             integrations.kg_store,
             integrations.ingestion_adapter,
             integrations.goal_adapter,
-            self.steering_registry.clone(),
-            self.agent_result_bus.clone(),
+            self.ctx.steering_registry.clone(),
+            self.ctx.agent_result_bus.clone(),
         )
         .await?;
 

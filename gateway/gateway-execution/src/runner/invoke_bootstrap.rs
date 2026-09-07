@@ -12,22 +12,14 @@
 //! `get_rate_limiter`) are implemented here directly because they operate
 //! exclusively on the bootstrap's own field set.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
 
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind, PreparedExecution};
-use api_logs::LogService;
-use arc_swap::ArcSwapOption;
-use execution_state::StateService;
-use gateway_events::{EventBus, GatewayEvent};
-use gateway_services::{
-    AgentService, McpService, ModelRegistry, ProviderService, SharedVaultPaths, SkillService,
-};
-use tokio::sync::RwLock;
-use zbot_runtime_sqlite::DatabaseManager;
+use gateway_events::GatewayEvent;
+use gateway_services::{AgentService, McpService, SharedVaultPaths, SkillService};
 
-use crate::agent_pool::AgentResultBus;
 use crate::config::ExecutionConfig;
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
@@ -52,41 +44,13 @@ use super::OnSessionReady;
 /// `invoke_with_callback`. Built once in `ExecutionRunner::with_config` and
 /// stored as a field so the runner delegates the bootstrap work here.
 pub(super) struct InvokeBootstrap {
-    pub(super) agent_service: Arc<AgentService>,
-    pub(super) provider_service: Arc<ProviderService>,
-    pub(super) mcp_service: Arc<McpService>,
-    pub(super) skill_service: Arc<SkillService>,
-    pub(super) state_service: Arc<StateService<DatabaseManager>>,
-    pub(super) log_service: Arc<LogService<DatabaseManager>>,
-    pub(super) messages: Arc<dyn zbot_conversation::MessageStore>,
-    pub(super) paths: SharedVaultPaths,
-    /// Trait-routed memory store used to build the executor's fact_store.
-    pub(super) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    pub(super) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
-    pub(super) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
-    pub(super) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
-    pub(super) model_registry: Arc<ArcSwapOption<ModelRegistry>>,
-    pub(super) rate_limiters: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
-        >,
-    >,
-    pub(super) connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
-    pub(super) bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
-    pub(super) bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
-    pub(super) integrations: super::integrations::SharedIntegrations,
-    pub(super) steering_registry: Option<Arc<agent_runtime::SteeringRegistry>>,
-    pub(super) agent_result_bus: Option<Arc<AgentResultBus>>,
-    /// Trait-routed procedure store used to build the executor's run_procedure tool.
-    pub(super) procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
-    /// Per-ward usage telemetry — feeds the curator and gets a
-    /// `created_by = "agent"` mark whenever the `ward` tool creates a new ward.
-    pub(super) ward_usage: Arc<gateway_services::WardUsage>,
-    /// Procedure recommendation tier thresholds. Threaded from settings.json
-    /// at AppState wiring time; default tiers if absent. See
-    /// `gateway_memory::ProcedureRecommendationConfig`.
-    pub(super) event_bus: Arc<EventBus>,
-    pub(super) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
+    pub(super) ctx: std::sync::Arc<super::exec_ctx::ExecCtx>,
+}
+
+impl InvokeBootstrap {
+    pub(super) fn from_ctx(ctx: std::sync::Arc<super::exec_ctx::ExecCtx>) -> Self {
+        Self { ctx }
+    }
 }
 
 /// Output of [`InvokeBootstrap::begin_setup`]. Carries the state that phase 2
@@ -285,7 +249,7 @@ fn history_before_current_prompt(
 /// promotion of procedures that reference that tool (legacy advisory text
 /// still fires), so correctness is preserved, just opportunity is lost.
 fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
-    let integrations = bootstrap.integrations.snapshot();
+    let integrations = bootstrap.ctx.integrations.snapshot();
     let mut names: Vec<String> = vec![
         "shell".to_string(),
         "memory".to_string(),
@@ -295,15 +259,15 @@ fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
         "delegate_to_agent".to_string(),
         "multimodal_analyze".to_string(),
     ];
-    if bootstrap.procedure_store.is_some() {
+    if bootstrap.ctx.procedure_store.is_some() {
         names.push("run_procedure".to_string());
     }
-    if bootstrap.steering_registry.is_some() {
+    if true {
         names.push("handoff_to_agent".to_string());
         names.push("steer_agent".to_string());
     }
     names.push("list_session_agents".to_string());
-    if bootstrap.agent_result_bus.is_some() {
+    if true {
         names.push("wait_agent".to_string());
         names.push("kill_agent".to_string());
     }
@@ -316,7 +280,7 @@ fn root_orchestrator_tool_names(bootstrap: &InvokeBootstrap) -> Vec<String> {
     if integrations.goal_adapter.is_some() {
         names.push("goal".to_string());
     }
-    if bootstrap.a2a_delegation.is_some() {
+    if bootstrap.ctx.a2a_delegation.is_some() {
         names.push("list_zbots".to_string());
         names.push("delegate_to_zbot".to_string());
     }
@@ -641,17 +605,6 @@ impl InvokeBootstrap {
     /// Phase 1: create or resume the session, persist routing, start the
     /// execution record, store the handle, and invoke the session-ready
     /// callback. Returns BEFORE any agent or intent events fire.
-    ///
-    /// # Ordering contract
-    ///
-    /// ```text
-    /// begin_setup  [get_or_create_session, persist_routing,
-    ///               persist_root_message, start_execution, store_handle]
-    /// → on_session_ready CALLBACK
-    /// → finish_setup [emit_agent_started, load_agent, run_intent_analysis,
-    ///                 inject_placeholder, build executor]
-    /// → tokio::spawn
-    /// ```
     pub(super) async fn begin_setup(
         &self,
         config: &mut ExecutionConfig,
@@ -663,7 +616,7 @@ impl InvokeBootstrap {
 
         // Get or create session and execution
         let session_setup = get_or_create_session(
-            &self.state_service,
+            &self.ctx.state_service,
             &config.agent_id,
             config.session_id.as_deref(),
             config.source,
@@ -674,13 +627,11 @@ impl InvokeBootstrap {
         let redact_diagnostics = config.redact_diagnostics();
 
         // If session has a persisted mode, use it (overrides invoke mode).
-        // Otherwise persist the effective invoke mode so replay/monitoring can
-        // explain why intent analysis did or did not run for this session.
-        if let Ok(Some(session)) = self.state_service.get_session(&session_id) {
+        if let Ok(Some(session)) = self.ctx.state_service.get_session(&session_id) {
             if let Some(ref persisted_mode) = session.mode {
                 config.mode = Some(persisted_mode.clone());
             } else if let Some(ref mode) = config.mode {
-                if let Err(e) = self.state_service.set_session_mode(&session_id, mode) {
+                if let Err(e) = self.ctx.state_service.set_session_mode(&session_id, mode) {
                     if redact_diagnostics {
                         tracing::warn!(
                             session_id = %session_id,
@@ -704,7 +655,7 @@ impl InvokeBootstrap {
             || config.connector_id.is_some()
             || config.respond_to.is_some()
         {
-            if let Err(e) = self.state_service.update_session_routing(
+            if let Err(e) = self.ctx.state_service.update_session_routing(
                 &session_id,
                 config.thread_id.as_deref(),
                 config.connector_id.as_deref(),
@@ -724,7 +675,8 @@ impl InvokeBootstrap {
 
         // This must happen before the session-ready callback below: Research
         // can take a snapshot as soon as it learns the session id.
-        self.messages
+        self.ctx
+            .messages
             .append(&zbot_conversation::Message {
                 id: root_message_id.clone(),
                 execution_id: Some(execution_id.clone()),
@@ -760,7 +712,8 @@ impl InvokeBootstrap {
         // durable. If persistence failed above, neither status nor delegation
         // bookkeeping is changed. Treat a reactivation failure as an invoke
         // failure rather than allowing lifecycle/model work to continue.
-        self.state_service
+        self.ctx
+            .state_service
             .reactivate_session(&session_id)
             .map_err(|error| {
                 if redact_diagnostics {
@@ -778,7 +731,8 @@ impl InvokeBootstrap {
                 }
                 "Unable to start this request".to_string()
             })?;
-        self.state_service
+        self.ctx
+            .state_service
             .reactivate_execution(&execution_id)
             .map_err(|error| {
                 if redact_diagnostics {
@@ -803,8 +757,8 @@ impl InvokeBootstrap {
         // A failed append therefore cannot leave an ordinary running execution
         // behind or reach lifecycle publication/model work.
         start_execution(
-            &self.state_service,
-            &self.log_service,
+            &self.ctx.state_service,
+            &self.ctx.log_service,
             &execution_id,
             &session_id,
             &config.agent_id,
@@ -813,7 +767,7 @@ impl InvokeBootstrap {
 
         // Store handle
         {
-            let mut handles = self.handles.write().await;
+            let mut handles = self.ctx.control.handles.write().await;
             handles.insert(config.conversation_id.clone(), handle.clone());
         }
 
@@ -849,6 +803,7 @@ impl InvokeBootstrap {
             .clone()
             .ok_or_else(|| "durable_resume_session_missing".to_string())?;
         let session = self
+            .ctx
             .state_service
             .get_session(&session_id)
             .map_err(|_| "durable_resume_session_read_failed".to_string())?
@@ -857,6 +812,7 @@ impl InvokeBootstrap {
             return Err("durable_resume_identity_mismatch".to_string());
         }
         let execution = self
+            .ctx
             .state_service
             .get_root_execution(&session_id)
             .map_err(|_| "durable_resume_execution_read_failed".to_string())?
@@ -865,6 +821,7 @@ impl InvokeBootstrap {
             return Err("durable_resume_identity_mismatch".to_string());
         }
         let persisted = self
+            .ctx
             .messages
             .get(expected_message_id)
             .map_err(|_| "durable_resume_message_read_failed".to_string())?
@@ -880,26 +837,30 @@ impl InvokeBootstrap {
         if let Some(ref persisted_mode) = session.mode {
             config.mode = Some(persisted_mode.clone());
         } else if let Some(ref mode) = config.mode {
-            self.state_service
+            self.ctx
+                .state_service
                 .set_session_mode(&session_id, mode)
                 .map_err(|_| "durable_resume_mode_write_failed".to_string())?;
         }
 
         if session.status == execution_state::SessionStatus::Paused {
-            self.state_service
+            self.ctx
+                .state_service
                 .resume_session(&session_id)
                 .map_err(|_| "durable_resume_state_failed".to_string())?;
         } else {
-            self.state_service
+            self.ctx
+                .state_service
                 .reactivate_session(&session_id)
                 .map_err(|_| "durable_resume_state_failed".to_string())?;
         }
-        self.state_service
+        self.ctx
+            .state_service
             .reactivate_execution(expected_execution_id)
             .map_err(|_| "durable_resume_state_failed".to_string())?;
         start_execution(
-            &self.state_service,
-            &self.log_service,
+            &self.ctx.state_service,
+            &self.ctx.log_service,
             expected_execution_id,
             &session_id,
             &config.agent_id,
@@ -908,7 +869,7 @@ impl InvokeBootstrap {
 
         let handle = ExecutionHandle::new(config.max_iterations);
         {
-            let mut handles = self.handles.write().await;
+            let mut handles = self.ctx.control.handles.write().await;
             handles.insert(config.conversation_id.clone(), handle.clone());
         }
         if let Some(callback) = on_session_ready {
@@ -946,7 +907,7 @@ impl InvokeBootstrap {
 
         // Emit start event — subscriber is already registered at this point.
         emit_agent_started(
-            &self.event_bus,
+            &self.ctx.event_bus,
             &config.agent_id,
             &config.conversation_id,
             &session_id,
@@ -955,11 +916,11 @@ impl InvokeBootstrap {
         .await;
 
         // Load agent configuration (or create default for "root" agent)
-        let settings_for_loader = gateway_services::SettingsService::new(self.paths.clone());
+        let settings_for_loader = gateway_services::SettingsService::new(self.ctx.paths.clone());
         let agent_loader = AgentLoader::new(
-            &self.agent_service,
-            &self.provider_service,
-            self.paths.clone(),
+            &self.ctx.agent_service,
+            &self.ctx.provider_service,
+            self.ctx.paths.clone(),
         )
         .with_settings(&settings_for_loader)
         .with_chat_mode(config.is_chat_mode());
@@ -982,7 +943,8 @@ impl InvokeBootstrap {
             if config.is_remote_peer() {
                 (Vec::new(), 0)
             } else {
-                self.messages
+                self.ctx
+                    .messages
                     .replay(&session_id, None, 200)
                     .map(|rows| history_before_current_prompt(rows, &root_message_id))
                     .unwrap_or_default()
@@ -1004,7 +966,7 @@ impl InvokeBootstrap {
         // mode skips this for obvious small talk so greetings don't pay the
         // memory/graph round-trip or prompt-token cost.
         if !skip_eager_context {
-            if let Some(recall) = &self.memory_recall {
+            if let Some(recall) = &self.ctx.memory_recall {
                 let top_k = if config.is_chat_mode() { 5 } else { 10 };
                 let authorization =
                     crate::invoke::unified_recall_adapter::recall_authorization_context(
@@ -1017,7 +979,7 @@ impl InvokeBootstrap {
                 if let Some(authorization) = authorization {
                     match crate::invoke::unified_recall_adapter::automatic_unified_recall(
                         recall.clone(),
-                        self.integrations.snapshot().goal_adapter,
+                        self.ctx.integrations.snapshot().goal_adapter,
                         authorization,
                         message,
                         top_k,
@@ -1077,7 +1039,7 @@ impl InvokeBootstrap {
         // Targeted unified recall from the last session summary surfaces
         // scoped, policy-sanitized related context before the first message.
         if !skip_eager_context {
-            if let (Some(recall), Some(store)) = (&self.memory_recall, &self.memory_store) {
+            if let (Some(recall), Some(store)) = (&self.ctx.memory_recall, &self.ctx.memory_store) {
                 use crate::sleep::handoff_writer::{
                     HANDOFF_AGENT_SENTINEL, HANDOFF_SCOPE, HANDOFF_WARD,
                 };
@@ -1106,7 +1068,7 @@ impl InvokeBootstrap {
                             if let Some(authorization) = authorization {
                                 match crate::invoke::unified_recall_adapter::automatic_unified_recall(
                                     recall.clone(),
-                                    self.integrations.snapshot().goal_adapter,
+                                    self.ctx.integrations.snapshot().goal_adapter,
                                     authorization,
                                     entry.summary,
                                     5,
@@ -1188,7 +1150,13 @@ impl InvokeBootstrap {
 
         // Inject mandatory first action for graph tasks with placeholder specs
         if let Some(ref wid) = effective_ward_id {
-            let specs_dir = self.paths.vault_dir().join("wards").join(wid).join("specs");
+            let specs_dir = self
+                .ctx
+                .paths
+                .vault_dir()
+                .join("wards")
+                .join(wid)
+                .join("specs");
             if specs_dir.exists() {
                 let has_placeholders = std::fs::read_dir(&specs_dir)
                     .ok()
@@ -1224,8 +1192,9 @@ impl InvokeBootstrap {
             }
         }
 
-        if self.peer_messages.is_some() {
-            if let Some(registry) = &self.steering_registry {
+        if self.ctx.peer_messages.is_some() {
+            {
+                let registry = &self.ctx.steering_registry;
                 let steering_handle = executor.enable_steering();
                 registry.register_peer_only(&execution_id, steering_handle);
             }
@@ -1270,13 +1239,13 @@ impl InvokeBootstrap {
             (Vec::new(), Vec::new())
         } else {
             (
-                collect_agents_summary(&self.agent_service, &self.paths).await,
-                collect_skills_summary(&self.skill_service).await,
+                collect_agents_summary(&self.ctx.agent_service, &self.ctx.paths).await,
+                collect_skills_summary(&self.ctx.skill_service).await,
             )
         };
 
         // Get tool settings
-        let settings_service = gateway_services::SettingsService::new(self.paths.clone());
+        let settings_service = gateway_services::SettingsService::new(self.ctx.paths.clone());
         let tool_settings = settings_service.get_tool_settings().unwrap_or_default();
 
         // Build hook context if present
@@ -1291,21 +1260,23 @@ impl InvokeBootstrap {
 
         // Trait-routed fact store wired by AppState. None only in
         // stripped-down test fixtures that don't drive save_fact / recall paths.
-        let fact_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> = self.memory_store.clone();
+        let fact_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
+            self.ctx.memory_store.clone();
         // Clone for resource indexing (before fact_store is moved into builder)
         let fact_store_for_indexing = fact_store.clone();
 
         // Build connector resource provider (HTTP + bridge composite)
         let http_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> =
-            self.connector_registry.as_ref().map(|registry| {
+            self.ctx.connector_registry.as_ref().map(|registry| {
                 Arc::new(crate::resource_provider::GatewayResourceProvider::new(
                     registry.clone(),
                 )) as Arc<dyn agent_primitives::ConnectorResourceProvider>
             });
         let bridge_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> = self
+            .ctx
             .bridge_registry
             .as_ref()
-            .zip(self.bridge_outbox.as_ref())
+            .zip(self.ctx.bridge_outbox.as_ref())
             .map(|(reg, outbox)| {
                 Arc::new(gateway_bridge::BridgeResourceProvider::new(
                     reg.clone(),
@@ -1329,11 +1300,11 @@ impl InvokeBootstrap {
         tracing::debug!(provider = %provider.name, "Using shared rate limiter for provider");
 
         // Use ExecutorBuilder to create the executor
-        let mut builder = ExecutorBuilder::new(self.paths.vault_dir().clone(), tool_settings)
+        let mut builder = ExecutorBuilder::new(self.ctx.paths.vault_dir().clone(), tool_settings)
             .with_rate_limiter(rate_limiter)
             .with_chat_mode(config.is_chat_mode())
             .with_mcp_startup_failure_observer(mcp_startup_failure_observer(
-                self.log_service.clone(),
+                self.ctx.log_service.clone(),
                 execution_id,
                 session_id,
                 &agent.id,
@@ -1341,7 +1312,7 @@ impl InvokeBootstrap {
         if let Some(prompt) = config.remote_peer_prompt().cloned() {
             builder = builder.with_remote_peer_prompt(prompt);
         }
-        if let Some(registry) = self.model_registry.load_full() {
+        if let Some(registry) = self.ctx.model_registry.load_full() {
             builder = builder.with_model_registry(registry);
         }
         if let Some(fs) = fact_store {
@@ -1350,7 +1321,7 @@ impl InvokeBootstrap {
         if let Some(cp) = connector_provider {
             builder = builder.with_connector_provider(cp);
         }
-        let integrations = self.integrations.snapshot();
+        let integrations = self.ctx.integrations.snapshot();
         if let Some(ks) = integrations.kg_store {
             builder = builder.with_kg_store(ks);
         }
@@ -1364,32 +1335,33 @@ impl InvokeBootstrap {
         // `ward` tool creates a new ward dir. Always wired in production
         // (WardUsage is a required ExecutionRunnerConfig field).
         {
-            let observer = std::sync::Arc::new(
-                crate::invoke::ward_usage_adapter::WardUsageAdapter::new(self.ward_usage.clone()),
-            );
+            let observer =
+                std::sync::Arc::new(crate::invoke::ward_usage_adapter::WardUsageAdapter::new(
+                    self.ctx.ward_usage.clone(),
+                ));
             builder = builder
                 .with_ward_usage(observer)
-                .with_ward_usage_service(self.ward_usage.clone());
+                .with_ward_usage_service(self.ctx.ward_usage.clone());
         }
-        builder = builder.with_state_service(self.state_service.clone());
-        if let Some(ref sr) = self.steering_registry {
+        builder = builder.with_state_service(self.ctx.state_service.clone());
+        if let Some(sr) = Some(&self.ctx.steering_registry) {
             builder = builder.with_steering_registry(sr.clone());
         }
-        if let Some(ref bus) = self.agent_result_bus {
+        if let Some(bus) = Some(&self.ctx.agent_result_bus) {
             builder = builder
                 .with_agent_result_bus(bus.clone())
-                .with_message_store(self.messages.clone());
+                .with_message_store(self.ctx.messages.clone());
         }
-        if let Some(ref ps) = self.procedure_store {
+        if let Some(ref ps) = self.ctx.procedure_store {
             builder = builder.with_procedure_store(ps.clone());
         }
-        if let Some(ref recall) = self.memory_recall {
+        if let Some(ref recall) = self.ctx.memory_recall {
             builder = builder.with_memory_recall(recall.clone());
         }
-        if let Some(ref peer_messages) = self.peer_messages {
+        if let Some(ref peer_messages) = self.ctx.peer_messages {
             builder = builder.with_peer_messages(peer_messages.clone());
         }
-        if let Some(ref service) = self.a2a_delegation {
+        if let Some(ref service) = self.ctx.a2a_delegation {
             builder = builder.with_a2a_delegation(service.clone());
         }
 
@@ -1446,10 +1418,13 @@ impl InvokeBootstrap {
                 if let Some(assignment) = out.recommended_capabilities.iter().find(|assignment| {
                     assignment.agent_id == "root" || assignment.agent_id == agent_for_build.id
                 }) {
-                    match self.mcp_service.resolve_dynamic_runtime_ids_with_catalog(
-                        &assignment.mcps,
-                        &assignment.mcps,
-                    ) {
+                    match self
+                        .ctx
+                        .mcp_service
+                        .resolve_dynamic_runtime_ids_with_catalog(
+                            &assignment.mcps,
+                            &assignment.mcps,
+                        ) {
                         Ok(resolution) => {
                             agent_for_build.mcps = resolution.effective_ids.clone();
                             let rejection_codes = resolution
@@ -1474,7 +1449,7 @@ impl InvokeBootstrap {
                                 "unresolved_count": resolution.rejections.len(),
                                 "rejection_codes": rejection_codes,
                             }));
-                            let _ = self.log_service.log(entry);
+                            let _ = self.ctx.log_service.log(entry);
                         }
                         Err(_) => {
                             // An explicit root assignment fails closed and
@@ -1497,7 +1472,7 @@ impl InvokeBootstrap {
                                 "unresolved_count": assignment.mcps.len(),
                                 "rejection_codes": [],
                             }));
-                            let _ = self.log_service.log(entry);
+                            let _ = self.ctx.log_service.log(entry);
                         }
                     }
                 }
@@ -1534,7 +1509,13 @@ impl InvokeBootstrap {
         // path agrees with the same check used by load_skill / update_plan.
         if is_root {
             if let Some(wid) = effective_ward_id.as_deref() {
-                let specs_dir = self.paths.vault_dir().join("wards").join(wid).join("specs");
+                let specs_dir = self
+                    .ctx
+                    .paths
+                    .vault_dir()
+                    .join("wards")
+                    .join(wid)
+                    .join("specs");
                 if agent_tools::guards::specs_dir_has_placeholders(&specs_dir) {
                     builder = builder.with_initial_state(
                         "app:has_placeholder_specs",
@@ -1558,7 +1539,7 @@ impl InvokeBootstrap {
                 &available_agents,
                 &available_skills,
                 hook_context.as_ref(),
-                &self.mcp_service,
+                &self.ctx.mcp_service,
                 effective_ward_id.as_deref(),
             )
             .await?;
@@ -1566,8 +1547,8 @@ impl InvokeBootstrap {
         if !config.is_remote_peer() {
             super::core::attach_mid_session_recall_hook(
                 &mut executor,
-                self.memory_recall.as_ref(),
-                self.integrations.snapshot().goal_adapter.as_ref(),
+                self.ctx.memory_recall.as_ref(),
+                self.ctx.integrations.snapshot().goal_adapter.as_ref(),
                 &agent.id,
                 session_id,
                 effective_ward_id.as_deref(),
@@ -1605,8 +1586,9 @@ impl InvokeBootstrap {
 
         // Already analyzed (e.g. continuation turn): emit Skipped so the
         // UI renders a block, then return.
-        if self.log_service.has_intent_log(execution_id) {
-            self.event_bus
+        if self.ctx.log_service.has_intent_log(execution_id) {
+            self.ctx
+                .event_bus
                 .publish(gateway_events::GatewayEvent::IntentAnalysisSkipped {
                     session_id: session_id.to_string(),
                     execution_id: execution_id.to_string(),
@@ -1623,16 +1605,17 @@ impl InvokeBootstrap {
         // analyze_intent so the analyzer has the latest capability index.
         index_resources(
             fs.as_ref(),
-            &self.skill_service,
-            &self.agent_service,
-            &self.mcp_service,
-            &self.paths,
+            &self.ctx.skill_service,
+            &self.ctx.agent_service,
+            &self.ctx.mcp_service,
+            &self.ctx.paths,
         )
         .await;
         tracing::info!("Resource indexing complete (skills, agents, wards, MCPs)");
 
         // Emit started event so UI can show "Analyzing..."
-        self.event_bus
+        self.ctx
+            .event_bus
             .publish(gateway_events::GatewayEvent::IntentAnalysisStarted {
                 session_id: session_id.to_string(),
                 execution_id: execution_id.to_string(),
@@ -1644,14 +1627,15 @@ impl InvokeBootstrap {
         // root-agent provider/model used for analysis. Empty values
         // inherit (= what the root agent already resolved to). Lets
         // users route this every-prompt call to a cheaper/faster model.
-        let exec_settings = gateway_services::SettingsService::new(self.paths.clone())
+        let exec_settings = gateway_services::SettingsService::new(self.ctx.paths.clone())
             .get_execution_settings()
             .unwrap_or_default();
         let intent_cfg = exec_settings.intent_analysis;
 
         let target_provider =
             if let Some(id) = intent_cfg.provider_id.as_deref().filter(|s| !s.is_empty()) {
-                self.provider_service
+                self.ctx
+                    .provider_service
                     .get(id)
                     .unwrap_or_else(|_| provider.clone())
             } else {
@@ -1704,25 +1688,25 @@ impl InvokeBootstrap {
                 std::sync::Arc::new(raw_client),
                 agent_runtime::RetryPolicy::default(),
             ));
-        let system_prompt = crate::middleware::intent::load_intent_analysis_prompt(&self.paths);
+        let system_prompt = crate::middleware::intent::load_intent_analysis_prompt(&self.ctx.paths);
 
         let _tool_inventory = root_orchestrator_tool_names(self);
-        let existing_wards = list_existing_wards(&self.paths);
-        let recall_authorization = self.memory_recall.as_ref().and_then(|recall| {
+        let existing_wards = list_existing_wards(&self.ctx.paths);
+        let recall_authorization = self.ctx.memory_recall.as_ref().and_then(|recall| {
             crate::invoke::unified_recall_adapter::recall_authorization_context(
                 recall, "root", "root", session_id, None,
             )
         });
-        let available_mcps = safe_intent_mcp_catalog(&self.mcp_service);
+        let available_mcps = safe_intent_mcp_catalog(&self.ctx.mcp_service);
         let mut analysis = analyze_intent(
             retrying.clone(),
             msg,
             fs.as_ref(),
-            self.memory_recall.as_ref(),
-            self.integrations.snapshot().goal_adapter,
+            self.ctx.memory_recall.as_ref(),
+            self.ctx.integrations.snapshot().goal_adapter,
             recall_authorization,
             &system_prompt,
-            self.procedure_store.as_deref(),
+            self.ctx.procedure_store.as_deref(),
             &existing_wards,
             &available_mcps,
         )
@@ -1734,9 +1718,9 @@ impl InvokeBootstrap {
                 "Quick Chat runs directly in the root execution".to_string();
         }
         analysis.recommended_capabilities = sanitize_capability_recommendations(
-            &self.agent_service,
-            &self.skill_service,
-            &self.paths,
+            &self.ctx.agent_service,
+            &self.ctx.skill_service,
+            &self.ctx.paths,
             analysis.recommended_capabilities,
             &available_mcps,
         )
@@ -1749,7 +1733,7 @@ impl InvokeBootstrap {
         // capabilities are governed by the injected template; they are not a
         // second lifecycle gate that can turn an existing ward into a new one.
         let existing_ward_id =
-            reusable_existing_ward_id(&self.paths, &analysis.ward_recommendation.ward_name);
+            reusable_existing_ward_id(&self.ctx.paths, &analysis.ward_recommendation.ward_name);
         let authoritative_action = if existing_ward_id.is_some() {
             WardAction::UseExisting
         } else {
@@ -1773,7 +1757,8 @@ impl InvokeBootstrap {
         );
 
         // Emit IntentAnalysisComplete event with the real analysis.
-        self.event_bus
+        self.ctx
+            .event_bus
             .publish(GatewayEvent::IntentAnalysisComplete {
                 session_id: session_id.to_string(),
                 execution_id: execution_id.to_string(),
@@ -1801,7 +1786,7 @@ impl InvokeBootstrap {
                 format!("Intent: {}", analysis.primary_intent),
             )
             .with_metadata(meta);
-            let _ = self.log_service.log(log_entry);
+            let _ = self.ctx.log_service.log(log_entry);
         }
 
         // Collect spec guidance from recommended skills' ward_setup.
@@ -1809,8 +1794,8 @@ impl InvokeBootstrap {
             if analysis.execution_strategy.approach == ExecutionApproach::Graph {
                 Some(
                     build_planner_capability_catalog(
-                        &self.skill_service,
-                        &self.mcp_service,
+                        &self.ctx.skill_service,
+                        &self.ctx.mcp_service,
                         &analysis.recommended_capabilities,
                     )
                     .await,
@@ -1841,6 +1826,7 @@ impl InvokeBootstrap {
         redact_diagnostics: bool,
     ) {
         if self
+            .ctx
             .state_service
             .get_session(session_id)
             .ok()
@@ -1860,7 +1846,11 @@ impl InvokeBootstrap {
             return;
         };
 
-        if let Err(err) = self.state_service.update_session_title(session_id, &title) {
+        if let Err(err) = self
+            .ctx
+            .state_service
+            .update_session_title(session_id, &title)
+        {
             if redact_diagnostics {
                 tracing::warn!(
                     session_id,
@@ -1873,7 +1863,8 @@ impl InvokeBootstrap {
             return;
         }
 
-        self.event_bus
+        self.ctx
+            .event_bus
             .publish(GatewayEvent::SessionTitleChanged {
                 session_id: session_id.to_string(),
                 title,
@@ -1923,9 +1914,10 @@ impl InvokeBootstrap {
             format!("Intent analysis unavailable: {strategy_explanation}"),
         )
         .with_metadata(metadata);
-        let _ = self.log_service.log(log_entry);
+        let _ = self.ctx.log_service.log(log_entry);
 
-        self.event_bus
+        self.ctx
+            .event_bus
             .publish(GatewayEvent::IntentAnalysisComplete {
                 session_id: session_id.to_string(),
                 execution_id: execution_id.to_string(),
@@ -1949,7 +1941,8 @@ impl InvokeBootstrap {
 
     /// Emit an error event on the conversation.
     async fn emit_error(&self, conversation_id: &str, agent_id: &str, message: &str) {
-        self.event_bus
+        self.ctx
+            .event_bus
             .publish(GatewayEvent::Error {
                 agent_id: Some(agent_id.to_string()),
                 session_id: None,
@@ -1969,7 +1962,7 @@ impl InvokeBootstrap {
         let rate_limits = provider.effective_rate_limits();
 
         // Check if exists (fast path — read lock)
-        if let Ok(guard) = self.rate_limiters.read() {
+        if let Ok(guard) = self.ctx.rate_limiters.read() {
             if let Some(limiter) = guard.get(&provider_id) {
                 return limiter.clone();
             }
@@ -1981,7 +1974,7 @@ impl InvokeBootstrap {
             rate_limits.requests_per_minute,
         ));
 
-        if let Ok(mut guard) = self.rate_limiters.write() {
+        if let Ok(mut guard) = self.ctx.rate_limiters.write() {
             // Use entry API to avoid overwriting if another thread raced us
             guard.entry(provider_id).or_insert_with(|| limiter.clone());
         }
@@ -2000,6 +1993,71 @@ mod tests {
     use crate::middleware::intent::{ExecutionStrategy, WardRecommendation};
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// Test helper: build an InvokeBootstrap around a fresh ExecCtx carrying
+    /// exactly the fields a test configures; everything else defaults.
+    #[allow(clippy::too_many_arguments)]
+    fn test_bootstrap(
+        paths: Arc<VaultPaths>,
+        _db: Arc<zbot_runtime_sqlite::DatabaseManager>,
+        messages: Arc<dyn zbot_conversation::MessageStore>,
+        handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
+        state_service: Arc<StateService<zbot_runtime_sqlite::DatabaseManager>>,
+        log_service: Arc<LogService<zbot_runtime_sqlite::DatabaseManager>>,
+        memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+        peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+        memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+        procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
+        steering_registry: Option<Arc<agent_runtime::SteeringRegistry>>,
+        agent_result_bus: Option<Arc<crate::agent_pool::AgentResultBus>>,
+        meta_store: Arc<dyn zbot_conversation::SessionMetaStore>,
+        checkpoint_store: Arc<dyn zbot_conversation::CheckpointStore>,
+    ) -> InvokeBootstrap {
+        use crate::delegation::DelegationRegistry;
+        let state_service2 = state_service.clone();
+        InvokeBootstrap::from_ctx(Arc::new(super::super::exec_ctx::ExecCtx {
+            event_bus: Arc::new(EventBus::new()),
+            agent_service: Arc::new(gateway_services::AgentService::new(paths.agents_dir())),
+            provider_service: Arc::new(gateway_services::ProviderService::new(paths.clone())),
+            mcp_service: Arc::new(gateway_services::McpService::new(paths.clone())),
+            skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
+            paths,
+            log_service,
+            state_service,
+            messages,
+            session_meta: meta_store.clone(),
+            checkpoints: checkpoint_store.clone(),
+            control: super::super::session_control::SessionControl {
+                handles,
+                delegation_registry: Arc::new(DelegationRegistry::new()),
+                state_service: state_service2,
+            },
+            delegation_tx: tokio::sync::mpsc::unbounded_channel().0,
+            delegation_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            connector_registry: None,
+            bridge_registry: None,
+            bridge_outbox: None,
+            memory_store,
+            embedding_client: None,
+            distiller: None,
+            handoff_writer: None,
+            memory_recall,
+            peer_messages,
+            a2a_delegation: None,
+            procedure_store,
+            ward_usage: Arc::new(gateway_services::WardUsage::new(
+                std::env::temp_dir().join("zbot-test-wards"),
+            )),
+            model_registry: Arc::new(ArcSwapOption::empty()),
+            rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            integrations: super::super::integrations::SharedIntegrations::default(),
+            steering_registry: steering_registry
+                .unwrap_or_else(|| Arc::new(agent_runtime::SteeringRegistry::new())),
+            agent_result_bus: agent_result_bus
+                .unwrap_or_else(|| Arc::new(crate::agent_pool::AgentResultBus::new())),
+            ward_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }))
+    }
 
     use api_logs::LogService;
     use arc_swap::ArcSwapOption;
@@ -2254,34 +2312,23 @@ mod tests {
         let handles: Arc<RwLock<HashMap<String, ExecutionHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
-        let _ = InvokeBootstrap {
-            agent_service: Arc::new(gateway_services::AgentService::new(paths.agents_dir())),
-            provider_service: Arc::new(gateway_services::ProviderService::new(paths.clone())),
-            mcp_service: Arc::new(gateway_services::McpService::new(paths.clone())),
-            skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
-            state_service: Arc::new(StateService::new(db.clone())),
-            log_service: Arc::new(LogService::new(db.clone())),
-            messages,
-            paths,
-            memory_store: None,
-            memory_recall: None,
-            peer_messages: None,
-            a2a_delegation: None,
-            model_registry: Arc::new(ArcSwapOption::empty()),
-            rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            connector_registry: None,
-            bridge_registry: None,
-            bridge_outbox: None,
-            integrations: super::super::integrations::SharedIntegrations::default(),
-            steering_registry: None,
-            agent_result_bus: None,
-            procedure_store: None,
-            ward_usage: Arc::new(gateway_services::WardUsage::new(
-                std::env::temp_dir().join("zbot-test-wards"),
-            )),
-            event_bus: Arc::new(EventBus::new()),
-            handles,
-        };
+        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
+        let _ = test_bootstrap(
+            paths.clone(),
+            db.clone(),
+            messages.clone(),
+            handles.clone(),
+            Arc::new(StateService::new(db.clone())),
+            Arc::new(LogService::new(db.clone())),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
+            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool)),
+        );
     }
 
     #[tokio::test]
@@ -2298,34 +2345,23 @@ mod tests {
             ));
         let handles: Arc<RwLock<HashMap<String, ExecutionHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let bootstrap = InvokeBootstrap {
-            agent_service: Arc::new(gateway_services::AgentService::new(paths.agents_dir())),
-            provider_service: Arc::new(gateway_services::ProviderService::new(paths.clone())),
-            mcp_service: Arc::new(gateway_services::McpService::new(paths.clone())),
-            skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
-            state_service: Arc::new(StateService::new(db.clone())),
-            log_service: Arc::new(LogService::new(db)),
-            messages: messages.clone(),
-            paths: paths.clone(),
-            memory_store: None,
-            memory_recall: None,
-            peer_messages: None,
-            a2a_delegation: None,
-            model_registry: Arc::new(ArcSwapOption::empty()),
-            rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            connector_registry: None,
-            bridge_registry: None,
-            bridge_outbox: None,
-            integrations: super::super::integrations::SharedIntegrations::default(),
-            steering_registry: None,
-            agent_result_bus: None,
-            procedure_store: None,
-            ward_usage: Arc::new(gateway_services::WardUsage::new(
-                std::env::temp_dir().join("zbot-test-wards-root-message"),
-            )),
-            event_bus: Arc::new(EventBus::new()),
-            handles,
-        };
+        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
+        let bootstrap = test_bootstrap(
+            paths.clone(),
+            db.clone(),
+            messages.clone(),
+            handles.clone(),
+            Arc::new(StateService::new(db.clone())),
+            Arc::new(LogService::new(db)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
+            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool)),
+        );
         let client_message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
         let mut config = ExecutionConfig::new(
             "root".to_string(),
@@ -2373,14 +2409,17 @@ mod tests {
         }
 
         bootstrap
+            .ctx
             .state_service
             .complete_execution(&setup.execution_id)
             .expect("complete root execution before retry");
         bootstrap
+            .ctx
             .state_service
             .try_complete_session(&setup.session_id)
             .expect("complete session before retry");
         let terminal_session = bootstrap
+            .ctx
             .state_service
             .get_session(&setup.session_id)
             .expect("read terminal session")
@@ -2407,14 +2446,16 @@ mod tests {
             .await;
         assert!(matches!(failed, Err(ref error) if error == "Unable to start this request"));
         assert!(!failure_callback_called.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(bootstrap.handles.read().await.len(), 1);
+        assert_eq!(bootstrap.ctx.control.handles.read().await.len(), 1);
         let after_failure = bootstrap
+            .ctx
             .state_service
             .get_session(&setup.session_id)
             .expect("read session after failed retry")
             .expect("session exists");
         assert_eq!(after_failure.status.as_str(), "completed");
         let after_failure_execution = bootstrap
+            .ctx
             .state_service
             .get_execution(&setup.execution_id)
             .expect("read execution after failed retry")
@@ -2440,6 +2481,7 @@ mod tests {
         assert_eq!(after_resume.len(), 1, "resume must not append the prompt");
         assert_eq!(
             bootstrap
+                .ctx
                 .state_service
                 .get_session(&resumed.session_id)
                 .unwrap()
@@ -2530,34 +2572,23 @@ mod tests {
             Arc::new(RwLock::new(HashMap::new()));
         let log_service = Arc::new(LogService::new(db.clone()));
 
-        let bootstrap = InvokeBootstrap {
-            agent_service: Arc::new(gateway_services::AgentService::new(paths.agents_dir())),
-            provider_service: Arc::new(gateway_services::ProviderService::new(paths.clone())),
-            mcp_service: Arc::new(gateway_services::McpService::new(paths.clone())),
-            skill_service: Arc::new(gateway_services::SkillService::new(paths.skills_dir())),
-            state_service: Arc::new(StateService::new(db.clone())),
-            log_service: log_service.clone(),
-            messages,
-            paths,
-            memory_store: None,
-            memory_recall: None,
-            peer_messages: None,
-            a2a_delegation: None,
-            model_registry: Arc::new(ArcSwapOption::empty()),
-            rate_limiters: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            connector_registry: None,
-            bridge_registry: None,
-            bridge_outbox: None,
-            integrations: super::super::integrations::SharedIntegrations::default(),
-            steering_registry: None,
-            agent_result_bus: None,
-            procedure_store: None,
-            ward_usage: Arc::new(gateway_services::WardUsage::new(
-                std::env::temp_dir().join("zbot-test-wards-fallback"),
-            )),
-            event_bus: Arc::new(EventBus::new()),
-            handles,
-        };
+        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
+        let bootstrap = test_bootstrap(
+            paths.clone(),
+            db.clone(),
+            messages.clone(),
+            handles.clone(),
+            Arc::new(StateService::new(db.clone())),
+            log_service.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
+            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool)),
+        );
 
         let execution_id = "exec-fallback-test";
         bootstrap
@@ -2571,7 +2602,7 @@ mod tests {
             .await;
 
         assert!(
-            bootstrap.log_service.has_intent_log(execution_id),
+            bootstrap.ctx.log_service.has_intent_log(execution_id),
             "fallback path must record an Intent-category log so the session \
              never appears as if intent analysis was skipped"
         );

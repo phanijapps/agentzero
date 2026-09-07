@@ -949,185 +949,17 @@ impl InvokeBootstrap {
             }
         };
 
-        // Load full session conversation (all messages including tool calls/results).
-        let (mut history, scanned_input_cursor): (Vec<ChatMessage>, i64) =
-            if config.is_remote_peer() {
-                (Vec::new(), 0)
-            } else {
-                self.ctx
-                    .messages
-                    .replay(&session_id, None, 200)
-                    .map(|rows| history_before_current_prompt(rows, &root_message_id))
-                    .unwrap_or_default()
-            };
-        let mut initial_recall_keys = std::collections::HashSet::new();
-
-        let skip_eager_context =
-            config.is_remote_peer() || config.is_chat_mode() && is_trivial_chat_prompt(message);
-        if skip_eager_context {
-            tracing::debug!(
-                session_id = %session_id,
-                "Skipping eager chat context for trivial prompt"
-            );
-        }
-
-        // Graph-powered recall for first message — inject remembered facts, episodes, and
-        // entity context before the agent sees the user's message.
-        // Runs in both chat and research modes for substantive prompts. Chat
-        // mode skips this for obvious small talk so greetings don't pay the
-        // memory/graph round-trip or prompt-token cost.
-        if !skip_eager_context {
-            if let Some(recall) = &self.ctx.memory_recall {
-                let top_k = if config.is_chat_mode() { 5 } else { 10 };
-                let authorization =
-                    crate::invoke::unified_recall_adapter::recall_authorization_context(
-                        recall,
-                        config.agent_id.clone(),
-                        "root",
-                        &session_id,
-                        ward_id.as_deref(),
-                    );
-                if let Some(authorization) = authorization {
-                    match crate::invoke::unified_recall_adapter::automatic_unified_recall(
-                        recall.clone(),
-                        self.ctx.integrations.snapshot().goal_adapter,
-                        authorization,
-                        message,
-                        top_k,
-                    )
-                    .await
-                    {
-                        Ok(response) if !response.results.is_empty() => {
-                            let formatted =
-                                crate::recall::format_unified_recall_response_with_options(
-                                    &response,
-                                    crate::recall::ContextPacketBuildOptions::new(
-                                        format!("{execution_id}:first-message-recall"),
-                                        config.agent_id.clone(),
-                                        ContextActorKind::Root,
-                                        if config.is_chat_mode() { 900 } else { 1_500 },
-                                    )
-                                    .with_conversation_id(Some(config.conversation_id.clone()))
-                                    .with_ward_id(ward_id.clone()),
-                                );
-                            if !formatted.is_empty() {
-                                initial_recall_keys.extend(
-                                    response
-                                        .results
-                                        .iter()
-                                        .map(crate::recall::unified_item_dedup_key),
-                                );
-                                history.insert(0, ChatMessage::system(formatted));
-                            }
-                            tracing::info!(
-                                agent_id = %config.agent_id,
-                                count = response.count,
-                                "Recalled unified context for first message"
-                            );
-                        }
-                        Ok(_) => {
-                            tracing::debug!(
-                                "First-message unified recall returned empty — no relevant items"
-                            );
-                        }
-                        Err(e) => {
-                            // Surface the failure so the agent can drill manually instead
-                            // of assuming memory was silently empty. Empty results (Ok case
-                            // above) stay quiet — only genuine errors are reported.
-                            tracing::warn!("First-message unified recall failed: {:?}", e.code);
-                            history.insert(
-                                0,
-                                ChatMessage::system(crate::recall::format_recall_failure_message(
-                                    e.safe_message(),
-                                )),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Targeted unified recall from the last session summary surfaces
-        // scoped, policy-sanitized related context before the first message.
-        if !skip_eager_context {
-            if let (Some(recall), Some(store)) = (&self.ctx.memory_recall, &self.ctx.memory_store) {
-                use crate::sleep::handoff_writer::{
-                    HANDOFF_AGENT_SENTINEL, HANDOFF_SCOPE, HANDOFF_WARD,
-                };
-                if let Ok(Some(fact)) = store
-                    .get_fact_by_key(
-                        HANDOFF_AGENT_SENTINEL,
-                        HANDOFF_SCOPE,
-                        HANDOFF_WARD,
-                        "handoff.latest",
-                    )
-                    .await
-                {
-                    if let Ok(entry) = serde_json::from_str::<
-                        crate::sleep::handoff_writer::HandoffEntry,
-                    >(&fact.content)
-                    {
-                        if !entry.summary.is_empty() {
-                            let authorization =
-                                crate::invoke::unified_recall_adapter::recall_authorization_context(
-                                    recall,
-                                    config.agent_id.clone(),
-                                    "root",
-                                    &session_id,
-                                    ward_id.as_deref(),
-                                );
-                            if let Some(authorization) = authorization {
-                                match crate::invoke::unified_recall_adapter::automatic_unified_recall(
-                                    recall.clone(),
-                                    self.ctx.integrations.snapshot().goal_adapter,
-                                    authorization,
-                                    entry.summary,
-                                    5,
-                                )
-                                .await
-                                {
-                                Ok(response) if !response.results.is_empty() => {
-                                    let formatted = crate::recall::format_unified_recall_response_with_options(
-                                        &response,
-                                        crate::recall::ContextPacketBuildOptions::new(
-                                            format!("{execution_id}:handoff-recall"),
-                                            config.agent_id.clone(),
-                                            ContextActorKind::Root,
-                                            900,
-                                        )
-                                        .with_conversation_id(Some(config.conversation_id.clone()))
-                                        .with_ward_id(ward_id.clone()),
-                                    );
-                                    if !formatted.is_empty() {
-                                        initial_recall_keys.extend(
-                                            response
-                                                .results
-                                                .iter()
-                                                .map(crate::recall::unified_item_dedup_key),
-                                        );
-                                        history.insert(
-                                            0,
-                                            ChatMessage::system(format!(
-                                                "## Context from Last Session\n{formatted}"
-                                            )),
-                                        );
-                                    }
-                                }
-                                Ok(_) => {}
-                                Err(e) => {
-                                    tracing::warn!(
-                                        agent_id = %config.agent_id,
-                                        reason = ?e.code,
-                                        "handoff targeted recall failed"
-                                    );
-                                }
-                            }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let (history, scanned_input_cursor, initial_recall_keys) = self
+            .load_history_with_recall(
+                config,
+                message,
+                &session_id,
+                &execution_id,
+                &root_message_id,
+                ward_id.as_deref(),
+            )
+            .await;
+        let mut history = history;
 
         // Create executor (restore ward_id from existing session if available)
         let (mut executor, recommended_skills, effective_ward_id) = match self
@@ -1221,6 +1053,200 @@ impl InvokeBootstrap {
             scanned_input_cursor,
             recommended_skills,
         })
+    }
+
+
+    /// Load session history and inject first-message + handoff recall.
+    /// Returns (history, scanned_input_cursor, initial_recall_keys).
+    async fn load_history_with_recall(
+        &self,
+        config: &ExecutionConfig,
+        message: &str,
+        session_id: &str,
+        execution_id: &str,
+        root_message_id: &str,
+        ward_id: Option<&str>,
+    ) -> (Vec<ChatMessage>, i64, std::collections::HashSet<String>) {
+        // Load full session conversation (all messages including tool calls/results).
+        let (mut history, scanned_input_cursor): (Vec<ChatMessage>, i64) =
+            if config.is_remote_peer() {
+                (Vec::new(), 0)
+            } else {
+                self.ctx
+                    .messages
+                    .replay(&session_id, None, 200)
+                    .map(|rows| history_before_current_prompt(rows, &root_message_id))
+                    .unwrap_or_default()
+            };
+        let mut initial_recall_keys = std::collections::HashSet::new();
+
+        let skip_eager_context =
+            config.is_remote_peer() || config.is_chat_mode() && is_trivial_chat_prompt(message);
+        if skip_eager_context {
+            tracing::debug!(
+                session_id = %session_id,
+                "Skipping eager chat context for trivial prompt"
+            );
+        }
+
+        // Graph-powered recall for first message — inject remembered facts, episodes, and
+        // entity context before the agent sees the user's message.
+        // Runs in both chat and research modes for substantive prompts. Chat
+        // mode skips this for obvious small talk so greetings don't pay the
+        // memory/graph round-trip or prompt-token cost.
+        if !skip_eager_context {
+            if let Some(recall) = &self.ctx.memory_recall {
+                let top_k = if config.is_chat_mode() { 5 } else { 10 };
+                let authorization =
+                    crate::invoke::unified_recall_adapter::recall_authorization_context(
+                        recall,
+                        config.agent_id.clone(),
+                        "root",
+                        session_id,
+                        ward_id,
+                    );
+                if let Some(authorization) = authorization {
+                    match crate::invoke::unified_recall_adapter::automatic_unified_recall(
+                        recall.clone(),
+                        self.ctx.integrations.snapshot().goal_adapter,
+                        authorization,
+                        message,
+                        top_k,
+                    )
+                    .await
+                    {
+                        Ok(response) if !response.results.is_empty() => {
+                            let formatted =
+                                crate::recall::format_unified_recall_response_with_options(
+                                    &response,
+                                    crate::recall::ContextPacketBuildOptions::new(
+                                        format!("{execution_id}:first-message-recall"),
+                                        config.agent_id.clone(),
+                                        ContextActorKind::Root,
+                                        if config.is_chat_mode() { 900 } else { 1_500 },
+                                    )
+                                    .with_conversation_id(Some(config.conversation_id.clone()))
+                                    .with_ward_id(ward_id.map(|w| w.to_owned())),
+                                );
+                            if !formatted.is_empty() {
+                                initial_recall_keys.extend(
+                                    response
+                                        .results
+                                        .iter()
+                                        .map(crate::recall::unified_item_dedup_key),
+                                );
+                                history.insert(0, ChatMessage::system(formatted));
+                            }
+                            tracing::info!(
+                                agent_id = %config.agent_id,
+                                count = response.count,
+                                "Recalled unified context for first message"
+                            );
+                        }
+                        Ok(_) => {
+                            tracing::debug!(
+                                "First-message unified recall returned empty — no relevant items"
+                            );
+                        }
+                        Err(e) => {
+                            // Surface the failure so the agent can drill manually instead
+                            // of assuming memory was silently empty. Empty results (Ok case
+                            // above) stay quiet — only genuine errors are reported.
+                            tracing::warn!("First-message unified recall failed: {:?}", e.code);
+                            history.insert(
+                                0,
+                                ChatMessage::system(crate::recall::format_recall_failure_message(
+                                    e.safe_message(),
+                                )),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Targeted unified recall from the last session summary surfaces
+        // scoped, policy-sanitized related context before the first message.
+        if !skip_eager_context {
+            if let (Some(recall), Some(store)) = (&self.ctx.memory_recall, &self.ctx.memory_store) {
+                use crate::sleep::handoff_writer::{
+                    HANDOFF_AGENT_SENTINEL, HANDOFF_SCOPE, HANDOFF_WARD,
+                };
+                if let Ok(Some(fact)) = store
+                    .get_fact_by_key(
+                        HANDOFF_AGENT_SENTINEL,
+                        HANDOFF_SCOPE,
+                        HANDOFF_WARD,
+                        "handoff.latest",
+                    )
+                    .await
+                {
+                    if let Ok(entry) = serde_json::from_str::<
+                        crate::sleep::handoff_writer::HandoffEntry,
+                    >(&fact.content)
+                    {
+                        if !entry.summary.is_empty() {
+                            let authorization =
+                                crate::invoke::unified_recall_adapter::recall_authorization_context(
+                                    recall,
+                                    config.agent_id.clone(),
+                                    "root",
+                                    session_id,
+                                    ward_id,
+                                );
+                            if let Some(authorization) = authorization {
+                                match crate::invoke::unified_recall_adapter::automatic_unified_recall(
+                                    recall.clone(),
+                                    self.ctx.integrations.snapshot().goal_adapter,
+                                    authorization,
+                                    entry.summary,
+                                    5,
+                                )
+                                .await
+                                {
+                                Ok(response) if !response.results.is_empty() => {
+                                    let formatted = crate::recall::format_unified_recall_response_with_options(
+                                        &response,
+                                        crate::recall::ContextPacketBuildOptions::new(
+                                            format!("{execution_id}:handoff-recall"),
+                                            config.agent_id.clone(),
+                                            ContextActorKind::Root,
+                                            900,
+                                        )
+                                        .with_conversation_id(Some(config.conversation_id.clone()))
+                                        .with_ward_id(ward_id.map(|w| w.to_owned())),
+                                    );
+                                    if !formatted.is_empty() {
+                                        initial_recall_keys.extend(
+                                            response
+                                                .results
+                                                .iter()
+                                                .map(crate::recall::unified_item_dedup_key),
+                                        );
+                                        history.insert(
+                                            0,
+                                            ChatMessage::system(format!(
+                                                "## Context from Last Session\n{formatted}"
+                                            )),
+                                        );
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::warn!(
+                                        agent_id = %config.agent_id,
+                                        reason = ?e.code,
+                                        "handoff targeted recall failed"
+                                    );
+                                }
+                            }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (history, scanned_input_cursor, initial_recall_keys)
     }
 
     // =========================================================================

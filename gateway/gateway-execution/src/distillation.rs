@@ -366,51 +366,23 @@ impl SessionDistiller {
     pub async fn distill(&self, session_id: &str, agent_id: &str) -> Result<usize, ExecutionError> {
         let started = std::time::Instant::now();
 
-        // 1. Load session messages
-        let messages = self
-            .messages
-            .replay(session_id, None, MAX_MESSAGES_FOR_DISTILLATION)
-            .map_err(|e| ExecutionError::from(format!("Failed to load session messages: {}", e)))?;
-
-        if messages.len() < MIN_MESSAGES_FOR_DISTILLATION {
-            tracing::debug!(
-                session_id = %session_id,
-                message_count = messages.len(),
-                "Skipping distillation — too few messages"
-            );
-            // Record as skipped
-            self.record_skipped(session_id).await;
+        // Load and validate the transcript (records skip if too short).
+        let Some((transcript, tool_outputs)) = self.load_session_transcript(session_id).await?
+        else {
             return Ok(0);
-        }
+        };
 
-        // Insert optimistic-failure record before attempting distillation
-        self.record_pending(session_id).await;
-
-        // Collect tool outputs from transcript for fact verification
-        let tool_outputs: Vec<String> = messages
-            .iter()
-            .filter(|m| m.role == "tool")
-            .map(|m| m.content.clone())
-            .collect();
-
-        // 2. Build transcript for the LLM
-        let transcript = build_transcript(&messages);
-
-        // 3. Call LLM for fact and entity extraction (with provider fallback)
+        // Structured extraction via LLM (records error on failure).
         let response = match self.extract_all(&transcript).await {
             Ok(resp) => resp,
             Err(e) => {
-                // The initial 'failed' record stays — update with error message
                 self.record_error(session_id, &e.to_string()).await;
                 return Err(e);
             }
         };
 
         if response.facts.is_empty() && response.entities.is_empty() && response.episode.is_none() {
-            tracing::info!(
-                session_id = %session_id,
-                "Distillation found nothing worth remembering"
-            );
+            tracing::info!(session_id = %session_id, "Distillation found nothing worth remembering");
             let duration_ms = started.elapsed().as_millis() as i64;
             self.record_success(session_id, 0, 0, 0, false, duration_ms)
                 .await;
@@ -426,252 +398,25 @@ impl SessionDistiller {
             response.facts.len(), response.entities.len(), response.relationships.len()
         );
 
-        // 4. Upsert each fact with embedding — dedup against existing facts first
         let now = chrono::Utc::now().to_rfc3339();
-        let mut upserted = 0;
 
-        // Load existing facts for content-similarity dedup. SQLite-only —
-        // the trait surface uses different listing semantics (paginated by
-        // Trait-routed (Phase E6c). Backends without get_memory_facts
-        // return empty, in which case distillation falls back to
-        // key-equality dedup at upsert time.
-        let existing_contents: Vec<(String, String)> = match self.memory_store.as_ref() {
-            Some(store) => store
-                .get_memory_facts(agent_id, None, 500)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|f| (f.key, f.content))
-                .collect(),
-            None => Vec::new(),
-        };
+        // Phase 4: upsert facts with dedup/firewall/verification.
+        let upserted = self
+            .upsert_facts_with_dedup(session_id, agent_id, &response.facts, &tool_outputs, &now)
+            .await;
 
-        // Reserved key prefixes — only created via UI, never by distillation
-        const RESERVED_PREFIXES: &[&str] = &["policy.", "instruction.", "user.profile"];
+        // Phase 5: project entities/relationships into the knowledge graph.
+        let graph_projection = self
+            .project_knowledge_graph(agent_id, &response.entities, &response.relationships)
+            .await;
 
-        for ef in &response.facts {
-            // Skip reserved keys — these are user-managed via the Memory UI
-            if RESERVED_PREFIXES.iter().any(|p| ef.key.starts_with(p)) {
-                tracing::debug!(key = %ef.key, "Skipping reserved key (user-managed)");
-                continue;
-            }
+        // Phase 6: store episode and procedure.
+        let episode_created = self
+            .store_episode_and_procedure(session_id, agent_id, &response, &now)
+            .await;
 
-            // Phase 5: distillation firewall for the ctx namespace.
-            //
-            // Session ctx facts (intent, prompt, plan, state.<exec>) are
-            // written by runtime hooks, not by the LLM. They capture
-            // SESSION-specific state that must not propagate into
-            // cross-session patterns. If the distiller ever proposes a
-            // category='ctx' fact — either because an LLM hallucinated one
-            // or because the prompt accidentally invited it — reject it
-            // here so it never reaches memory_facts.
-            //
-            // Inverse direction (reading): GatewayMemoryFactStore already
-            // strips category='ctx' from recall results, so the distiller's
-            // harvester never sees them as input. This write-side check is
-            // the belt to that suspenders.
-            if ef.category == "ctx" || ef.key.starts_with("ctx.") {
-                tracing::warn!(
-                    key = %ef.key,
-                    category = %ef.category,
-                    "Distillation firewall: rejected ctx-namespace write (session state must not be distilled)"
-                );
-                continue;
-            }
-
-            let verified_confidence =
-                verify_fact_confidence(&ef.content, ef.confidence, &tool_outputs);
-
-            // Skip facts with very low grounding
-            if verified_confidence < 0.2 {
-                tracing::debug!(key = %ef.key, confidence = verified_confidence, "Skipping ungrounded fact");
-                continue;
-            }
-
-            // Content-similarity dedup: skip if an existing fact has 60%+ word overlap
-            // (even with a different key). Prevents "user holds PTON" appearing 5 times.
-            let new_words: std::collections::HashSet<&str> =
-                ef.content.split_whitespace().collect();
-            let is_duplicate = existing_contents
-                .iter()
-                .any(|(existing_key, existing_content)| {
-                    if existing_key == &ef.key {
-                        return false;
-                    } // Same key = upsert, not dedup
-                    let existing_words: std::collections::HashSet<&str> =
-                        existing_content.split_whitespace().collect();
-                    if new_words.is_empty() || existing_words.is_empty() {
-                        return false;
-                    }
-                    let overlap = new_words.intersection(&existing_words).count();
-                    let smaller = new_words.len().min(existing_words.len());
-                    overlap as f64 / smaller as f64 > 0.6
-                });
-            if is_duplicate {
-                tracing::debug!(key = %ef.key, "Skipping duplicate fact (60%+ content overlap with existing)");
-                continue;
-            }
-
-            let fact_id = format!("fact-{}", uuid::Uuid::new_v4());
-
-            // Embed the fact content
-            let embedding = self.embed_text(&ef.content).await;
-
-            let scope = "agent";
-            let ward_id = "__global__";
-
-            // Check if an active fact with the same key exists and has
-            // different content. Trait-routed via `get_fact_by_key`;
-            // backends without an impl return None and supersede
-            // becomes a no-op (fresh upsert below).
-            let existing_fact = match self.memory_store.as_ref() {
-                Some(store) => store
-                    .get_fact_by_key(agent_id, scope, ward_id, &ef.key)
-                    .await
-                    .ok()
-                    .flatten(),
-                None => None,
-            };
-
-            let fact = MemoryFact {
-                id: fact_id.clone(),
-                session_id: Some(session_id.to_string()),
-                agent_id: agent_id.to_string(),
-                scope: scope.to_string(),
-                category: ef.category.clone(),
-                key: ef.key.clone(),
-                content: ef.content.clone(),
-                confidence: verified_confidence,
-                mention_count: 1,
-                source_summary: Some(format!("Distilled from session {}", session_id)),
-                embedding,
-                ward_id: ward_id.to_string(),
-                contradicted_by: None,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-                expires_at: None,
-                valid_from: Some(now.clone()),
-                valid_until: None,
-                superseded_by: None,
-                pinned: false,
-                epistemic_class: ef
-                    .epistemic_class
-                    .clone()
-                    .or_else(|| Some("current".to_string())),
-                source_episode_id: None,
-                source_ref: None,
-            };
-
-            // Supersede the old fact if content differs
-            if let Some(ref existing) = existing_fact {
-                if existing.content != ef.content && !existing.pinned {
-                    let supersede_res = match self.memory_store.as_ref() {
-                        Some(store) => store
-                            .supersede_fact(&existing.id, &fact_id, chrono::Utc::now())
-                            .await
-                            .map_err(ExecutionError::Store),
-                        None => Err(ExecutionError::Resource("no memory store wired".into())),
-                    };
-                    if let Err(e) = supersede_res {
-                        tracing::warn!(
-                            key = %ef.key,
-                            old_id = %existing.id,
-                            error = %e,
-                            "Failed to supersede old fact"
-                        );
-                    } else {
-                        tracing::debug!(
-                            key = %ef.key,
-                            old_id = %existing.id,
-                            new_id = %fact_id,
-                            "Superseded old fact with new content"
-                        );
-                    }
-                }
-            }
-
-            let upsert_res = upsert_distilled_fact(self.memory_store.as_deref(), &fact).await;
-            if let Err(e) = upsert_res {
-                tracing::warn!(
-                    key = %ef.key,
-                    error = %e,
-                    "Failed to upsert distilled fact"
-                );
-            } else {
-                upserted += 1;
-            }
-        }
-
-        // 5. Store entities and relationships in knowledge graph.
-        //
-        // Phase E6c: trait-routed. Block is a no-op when kg_store
-        // isn't wired (defensive — production composition always
-        // wires it).
-        let graph_projection = match self.kg_store.as_deref() {
-            Some(store) => {
-                project_distilled_graph(
-                    store,
-                    agent_id,
-                    &response.entities,
-                    &response.relationships,
-                )
-                .await
-            }
-            None => GraphProjectionOutcome::default(),
-        };
-        if graph_projection.relationships_dropped_total() > 0 {
-            tracing::warn!(
-                kg_relationship_dropped_ungoverned_count = graph_projection.relationships_dropped_ungoverned,
-                kg_relationship_dropped_unresolved_count = graph_projection.relationships_dropped_unresolved,
-                kg_relationship_stored_count = graph_projection.relationships_stored,
-                "Distillation omitted graph relationships that failed governance or endpoint resolution"
-            );
-        }
-
-        // 6. Store episode if extracted
-        let mut episode_created = false;
-        if let Some(ref extracted_episode) = response.episode {
-            match self
-                .store_episode(session_id, agent_id, extracted_episode, &now)
-                .await
-            {
-                Ok(true) => {
-                    episode_created = true;
-                    tracing::info!(
-                        session_id = %session_id,
-                        outcome = %extracted_episode.outcome,
-                        "Episode created from distillation"
-                    );
-                }
-                Ok(false) => {
-                    tracing::debug!(
-                        session_id = %session_id,
-                        "Episode extraction skipped — no episode repository"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Failed to store episode — continuing with distillation"
-                    );
-                }
-            }
-        }
-
-        // 6b. Store extracted procedure (if any) through the trait surface.
-        if let Some(ref procedure) = response.procedure {
-            let ward_id = self
-                .session_meta
-                .session_ward_id(session_id)
-                .unwrap_or(None);
-            self.process_procedure_upsert(agent_id, ward_id, procedure)
-                .await;
-        }
-
+        // Phase 7: record success.
         let duration_ms = started.elapsed().as_millis() as i64;
-
-        // 7. Record success in distillation_runs
         self.record_success(
             session_id,
             response.facts.len() as i32,
@@ -690,14 +435,268 @@ impl SessionDistiller {
             "Session distillation complete"
         );
 
-        // Ward memory-bank/ward.md is curated manually; distillation no longer
-        // writes an auto-generated summary. Facts remain in the memory_facts DB.
+        // Phase 9: best-effort ward-wiki compilation.
+        self.compile_ward_wiki_best_effort(session_id, agent_id, &response)
+            .await;
+
+        Ok(upserted)
+    }
+
+    /// Load the session transcript and validate it's worth distilling.
+    /// Returns `None` when the session is too short (already recorded as skipped).
+    async fn load_session_transcript(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, Vec<String>)>, ExecutionError> {
+        let messages = self
+            .messages
+            .replay(session_id, None, MAX_MESSAGES_FOR_DISTILLATION)
+            .map_err(|e| ExecutionError::from(format!("Failed to load session messages: {}", e)))?;
+
+        if messages.len() < MIN_MESSAGES_FOR_DISTILLATION {
+            tracing::debug!(
+                session_id = %session_id,
+                message_count = messages.len(),
+                "Skipping distillation — too few messages"
+            );
+            self.record_skipped(session_id).await;
+            return Ok(None);
+        }
+
+        self.record_pending(session_id).await;
+
+        let tool_outputs: Vec<String> = messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .map(|m| m.content.clone())
+            .collect();
+
+        let transcript = build_transcript(&messages);
+        Ok(Some((transcript, tool_outputs)))
+    }
+
+    /// Upsert each extracted fact with embedding, applying the reserved-key
+    /// firewall, ctx-namespace firewall, confidence verification, content-
+    /// similarity dedup, and supersede semantics. Returns the count stored.
+    async fn upsert_facts_with_dedup(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        facts: &[ExtractedFact],
+        tool_outputs: &[String],
+        now: &str,
+    ) -> usize {
+        let mut upserted = 0;
+
+        // Load existing facts for content-similarity dedup.
+        let existing_contents: Vec<(String, String)> = match self.memory_store.as_ref() {
+            Some(store) => store
+                .get_memory_facts(agent_id, None, 500)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| (f.key, f.content))
+                .collect(),
+            None => Vec::new(),
+        };
+
+        const RESERVED_PREFIXES: &[&str] = &["policy.", "instruction.", "user.profile"];
+
+        for ef in facts {
+            if RESERVED_PREFIXES.iter().any(|p| ef.key.starts_with(p)) {
+                tracing::debug!(key = %ef.key, "Skipping reserved key (user-managed)");
+                continue;
+            }
+
+            // Distillation firewall for the ctx namespace: session-scoped
+            // state must not propagate into cross-session patterns.
+            if ef.category == "ctx" || ef.key.starts_with("ctx.") {
+                tracing::warn!(
+                    key = %ef.key,
+                    category = %ef.category,
+                    "Distillation firewall: rejected ctx-namespace write (session state must not be distilled)"
+                );
+                continue;
+            }
+
+            let verified_confidence =
+                verify_fact_confidence(&ef.content, ef.confidence, tool_outputs);
+            if verified_confidence < 0.2 {
+                tracing::debug!(key = %ef.key, confidence = verified_confidence, "Skipping ungrounded fact");
+                continue;
+            }
+
+            // Content-similarity dedup: skip if an existing fact has 60%+ word overlap.
+            let new_words: std::collections::HashSet<&str> =
+                ef.content.split_whitespace().collect();
+            let is_duplicate = existing_contents
+                .iter()
+                .any(|(existing_key, existing_content)| {
+                    if existing_key == &ef.key {
+                        return false;
+                    }
+                    let existing_words: std::collections::HashSet<&str> =
+                        existing_content.split_whitespace().collect();
+                    if new_words.is_empty() || existing_words.is_empty() {
+                        return false;
+                    }
+                    let overlap = new_words.intersection(&existing_words).count();
+                    let smaller = new_words.len().min(existing_words.len());
+                    overlap as f64 / smaller as f64 > 0.6
+                });
+            if is_duplicate {
+                tracing::debug!(key = %ef.key, "Skipping duplicate fact (60%+ content overlap with existing)");
+                continue;
+            }
+
+            let fact_id = format!("fact-{}", uuid::Uuid::new_v4());
+            let embedding = self.embed_text(&ef.content).await;
+
+            let existing_fact = match self.memory_store.as_ref() {
+                Some(store) => store
+                    .get_fact_by_key(agent_id, "agent", "__global__", &ef.key)
+                    .await
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
+
+            let fact = MemoryFact {
+                id: fact_id.clone(),
+                session_id: Some(session_id.to_string()),
+                agent_id: agent_id.to_string(),
+                scope: "agent".to_string(),
+                category: ef.category.clone(),
+                key: ef.key.clone(),
+                content: ef.content.clone(),
+                confidence: verified_confidence,
+                mention_count: 1,
+                source_summary: Some(format!("Distilled from session {}", session_id)),
+                embedding,
+                ward_id: "__global__".to_string(),
+                contradicted_by: None,
+                created_at: now.to_string(),
+                updated_at: now.to_string(),
+                expires_at: None,
+                valid_from: Some(now.to_string()),
+                valid_until: None,
+                superseded_by: None,
+                pinned: false,
+                epistemic_class: ef
+                    .epistemic_class
+                    .clone()
+                    .or_else(|| Some("current".to_string())),
+                source_episode_id: None,
+                source_ref: None,
+            };
+
+            if let Some(ref existing) = existing_fact {
+                if existing.content != ef.content && !existing.pinned {
+                    let supersede_res = match self.memory_store.as_ref() {
+                        Some(store) => store
+                            .supersede_fact(&existing.id, &fact_id, chrono::Utc::now())
+                            .await
+                            .map_err(ExecutionError::Store),
+                        None => Err(ExecutionError::Resource("no memory store wired".into())),
+                    };
+                    if let Err(e) = supersede_res {
+                        tracing::warn!(key = %ef.key, old_id = %existing.id, error = %e, "Failed to supersede old fact");
+                    } else {
+                        tracing::debug!(key = %ef.key, old_id = %existing.id, new_id = %fact_id, "Superseded old fact with new content");
+                    }
+                }
+            }
+
+            let upsert_res = upsert_distilled_fact(self.memory_store.as_deref(), &fact).await;
+            if let Err(e) = upsert_res {
+                tracing::warn!(key = %ef.key, error = %e, "Failed to upsert distilled fact");
+            } else {
+                upserted += 1;
+            }
+        }
+
+        upserted
+    }
+
+    /// Project extracted entities and relationships into the knowledge graph.
+    async fn project_knowledge_graph(
+        &self,
+        agent_id: &str,
+        entities: &[ExtractedEntity],
+        relationships: &[ExtractedRelationship],
+    ) -> GraphProjectionOutcome {
+        let outcome = match self.kg_store.as_deref() {
+            Some(store) => project_distilled_graph(store, agent_id, entities, relationships).await,
+            None => GraphProjectionOutcome::default(),
+        };
+        if outcome.relationships_dropped_total() > 0 {
+            tracing::warn!(
+                kg_relationship_dropped_ungoverned_count = outcome.relationships_dropped_ungoverned,
+                kg_relationship_dropped_unresolved_count = outcome.relationships_dropped_unresolved,
+                kg_relationship_stored_count = outcome.relationships_stored,
+                "Distillation omitted graph relationships that failed governance or endpoint resolution"
+            );
+        }
+        outcome
+    }
+
+    /// Store the extracted episode (if any) and procedure (if any).
+    /// Returns whether an episode was created.
+    async fn store_episode_and_procedure(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        response: &DistillationResponse,
+        now: &str,
+    ) -> bool {
+        let mut episode_created = false;
+
+        if let Some(ref extracted_episode) = response.episode {
+            match self
+                .store_episode(session_id, agent_id, extracted_episode, now)
+                .await
+            {
+                Ok(true) => {
+                    episode_created = true;
+                    tracing::info!(
+                        session_id = %session_id,
+                        outcome = %extracted_episode.outcome,
+                        "Episode created from distillation"
+                    );
+                }
+                Ok(false) => {
+                    tracing::debug!(session_id = %session_id, "Episode extraction skipped — no episode repository");
+                }
+                Err(e) => {
+                    tracing::warn!(session_id = %session_id, error = %e, "Failed to store episode — continuing with distillation");
+                }
+            }
+        }
+
+        if let Some(ref procedure) = response.procedure {
+            let ward_id = self
+                .session_meta
+                .session_ward_id(session_id)
+                .unwrap_or(None);
+            self.process_procedure_upsert(agent_id, ward_id, procedure)
+                .await;
+        }
+
+        episode_created
+    }
+
+    /// Best-effort ward-wiki compilation from the extracted facts.
+    async fn compile_ward_wiki_best_effort(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        response: &DistillationResponse,
+    ) {
         let ward_id = self
             .session_meta
             .session_ward_id(session_id)
             .unwrap_or(None);
 
-        // 9. Compile ward wiki from extracted facts (best-effort)
         if let (Some(wiki_store), Some(ref wid)) = (&self.wiki_store, &ward_id) {
             if wid != "__global__" && wid != "scratch" {
                 let fact_summaries: Vec<crate::ward_wiki::FactSummary> = response
@@ -741,8 +740,6 @@ impl SessionDistiller {
                 }
             }
         }
-
-        Ok(upserted)
     }
 
     // =========================================================================
@@ -1357,8 +1354,8 @@ impl SessionDistiller {
             embedding: embedding.clone(),
             ward_id: ward_id.to_string(),
             contradicted_by: None,
-            created_at: now.clone(),
-            updated_at: now.clone(),
+            created_at: now.to_string(),
+            updated_at: now.to_string(),
             expires_at: None,
             valid_from: Some(now),
             valid_until: None,
@@ -2768,8 +2765,8 @@ mod tests {
             embedding: None,
             ward_id: "__global__".to_string(),
             contradicted_by: None,
-            created_at: now.clone(),
-            updated_at: now.clone(),
+            created_at: now.to_string(),
+            updated_at: now.to_string(),
             expires_at: None,
             valid_from: Some(now),
             valid_until: None,

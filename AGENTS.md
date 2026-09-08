@@ -6,7 +6,7 @@ z-Bot is a multipurpose AI agent that lives on the desktop and connects to any O
 
 ```
 runtime/     — agent-primitives, agent-runtime, agent-tools (shared primitives + execution engine + built-in tools)
-services/    — api-logs, daily-sessions, execution-state, knowledge-graph
+services/    — api-logs, daily-sessions, distillation, execution-state, knowledge-graph
 stores/      — zbot-stores* persistence layer (traits, domain types, SQLite impl)
 gateway/     — gateway-* sub-crates + gateway shell (HTTP/WS network layer)
 discovery/   — LAN mDNS advertisement
@@ -31,7 +31,7 @@ zbot-stores-domain (serde only)
               └── zbot-stores-sqlite (SQLite + rusqlite + sqlite-vec)
                     └── zbot-stores-conformance (test harness)
 
-services/* (execution-state, api-logs, knowledge-graph, daily-sessions)
+services/* (execution-state, api-logs, distillation, knowledge-graph, daily-sessions)
 runtime/* (agent-runtime, agent-tools)
 gateway/* sub-crates
 gateway (shell — wires everything together)

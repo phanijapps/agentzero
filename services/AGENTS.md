@@ -10,6 +10,7 @@ Standalone data services with minimal framework dependencies. Each service is in
 | `api-logs` | Execution logging and tracing with categories and filtering | SQLite (via `DbProvider`) |
 | `knowledge-graph` | Entity/relationship type definitions, extraction, name resolution | Types only; SQLite storage in `zbot-stores-sqlite` |
 | `daily-sessions` | Daily session continuity with message archiving | SQLite + moka cache |
+| `distillation` | Post-session distillation: fact extraction, graph projection, strategy emergence, ward wiki compilation | Uses zbot-stores + agent-runtime |
 
 ## Build & Test
 
@@ -68,6 +69,16 @@ Entity type definitions, extraction, and name resolution. **Storage was relocate
 **Key types**: `Entity`, `Relationship`, `EntityType`, `RelationshipType`, `ExtractedKnowledge`, `ResolveOutcome`
 
 **Public API**: `EntityExtractor::extract_from_message()`, `resolve()`, `normalize_name()`
+
+## distillation
+
+Post-session subsystem that runs after sessions complete. Extracts facts, entities, relationships, episodes, and procedures from session transcripts via LLM, projects into the knowledge graph with governance, emerges strategies from failure patterns, and compiles ward wikis.
+
+**Key types**: `SessionDistiller`, `DistillationResponse`, `ExtractedFact`, `ExtractedEntity`, `ExtractedRelationship`, `ExtractedEpisode`, `ExtractedProcedure`
+
+**Public API**: `SessionDistiller::distill(session_id, agent_id)`
+
+Extracted from gateway-execution in the op_clean_crap branch.
 
 ## daily-sessions
 

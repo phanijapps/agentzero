@@ -692,9 +692,15 @@ Shared primitives, Rig adapter, execution engine, and built-in tools:
 ```
 runtime/
 ├── agent-primitives/    # Tool/context/event/content/filesystem primitives
-├── agent-runtime/       # Rig adapter, executor facade, LLM client, middleware
+├── agent-runtime/       # Rig adapter (sole engine), neutral engine facade, LLM client, hooks, middleware
 └── agent-tools/         # Built-in tool implementations
 ```
+
+The `agent-runtime` crate contains the sole execution engine (`RigAgentEngine`),
+the neutral `AgentEngine` trait, the `EngineHook`/`HookSet` hook framework, and
+the `TurnSignal`-based turn loop. There is no engine-selection flag and no
+fallback. `gateway-execution` constructs the engine unconditionally via
+`build_execution_engine`.
 
 ### Stores (`stores/`)
 
@@ -726,7 +732,8 @@ services/
 ├── execution-state/     # Session/execution state machine (SQLite)
 ├── api-logs/            # Execution logging (SQLite)
 ├── knowledge-graph/     # Entity/relationship storage, GraphTraversal trait (SQLite CTE → Neo4j swappable)
-└── daily-sessions/      # Session management
+├── daily-sessions/      # Session management
+└── distillation/        # Post-session fact extraction, graph projection, wiki compilation
 ```
 
 ### Gateway (`gateway/`)

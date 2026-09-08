@@ -25,16 +25,21 @@ implementation behind that facade:
 
 | File | Purpose |
 |------|---------|
-| `engine/` | Neutral facade: `AgentEngine` trait, `ExecutorConfig`, `ExecutorError`, hooks, `PreparedExecution`, private snapshots. |
-| `rig_adapter/engine.rs` | The engine: hook mapping, stream mapping, stop handling. |
+| `engine/` | Neutral facade: `AgentEngine` trait, `ExecutorConfig`, `ExecutorError`, `EngineHook` + `HookSet`, `PreparedExecution`, private snapshots. |
+| `engine/hooks.rs` | The hook framework: `EngineHook` trait (defaulted methods), `HookSet` (ordered multi-slot fan-out), `ToolDecision`, `RecallPacket`. |
+| `rig_adapter/engine.rs` | The engine: hook mapping, stream mapping, stop handling, turn signal. |
+| `rig_adapter/turn_signal.rs` | `TurnSignal` enum: Continue, Stop, DelegationYield, Responded, TurnLimit. |
+| `rig_adapter/turn_events.rs` | Pure functions mapping `MultiTurnStreamItem` → `StreamEvent`. |
 | `rig_adapter/model.rs` | Rig `CompletionModel` implementation over zbot's `LlmClient`. |
 | `rig_adapter/tool.rs` | Rig `ToolDyn` bridge over `agent_primitives::Tool`. |
 | `rig_adapter/config.rs` | Neutral Rig-facing config resolved from existing zbot settings. |
+| `rig_adapter/factory.rs` | `build_engine()` — constructs Rig from `PreparedExecution`. |
 | `llm/client.rs` | `LlmClient` trait: `chat()` and `chat_stream()`. |
-| `llm/openai.rs` | OpenAI-compatible streaming client and request encoding. |
+| `llm/openai.rs` | OpenAI-compatible streaming client, request encoding, strict JSON schema normalization, reasoning_content fallback. |
 | `llm/retry.rs` | Retrying LLM wrapper. |
 | `types/events.rs` | `StreamEvent` contract consumed by gateway. |
 | `tools/registry.rs` | Runtime tool registry. |
+| `tools/context.rs` | `ToolContext` shared across tool executions. |
 | `mcp/` | MCP transports and session ownership consumed by the Rig engine. |
 | `middleware/` | Summarization, context editing, token counting, and related runtime context control. |
 

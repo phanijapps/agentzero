@@ -3,7 +3,7 @@
 
 use super::contract::IntentAnalysis;
 use agent_runtime::rig_adapter::RigToolAdapter;
-use agent_tools::MemoryTool;
+use agent_tools::MemorySearchTool;
 use gateway_services::providers::Provider;
 use gateway_services::SharedVaultPaths;
 use std::sync::Arc;
@@ -34,12 +34,7 @@ pub async fn run_intent_agent(deps: &IntentAgentDeps, message: &str) -> Option<I
     let client: Arc<dyn agent_runtime::llm::LlmClient> =
         Arc::new(agent_runtime::OpenAiClient::new(llm_config).ok()?);
 
-    let memory_tool = MemoryTool::new(
-        Arc::new(crate::config::GatewayFileSystem::new(
-            deps.paths.vault_dir().clone(),
-        )),
-        Some(deps.fact_store.clone()),
-    );
+    let memory_tool = MemorySearchTool::new(deps.fact_store.clone());
 
     match agent_runtime::rig_adapter::agent_with_tools_and_schema::<IntentAnalysis>(
         client,

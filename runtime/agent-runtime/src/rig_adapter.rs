@@ -90,6 +90,7 @@ where
         .agent(model)
         .preamble(&system_prompt.into())
         .tools(tools)
+        .default_max_turns(10)
         .build();
 
     agent

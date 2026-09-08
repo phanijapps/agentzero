@@ -30,6 +30,11 @@ pub struct SavedSurfaceResponse {
     /// session for subagent-created surfaces. The UI matches subagent turns
     /// by session id (snapshot) or execution id (live), so both keys ride.
     pub session_id: String,
+    /// When the surface was created. Root executions span multiple user
+    /// turns with continuations, so execution ids cannot attribute a
+    /// surface to its turn — the UI places surfaces by time window and
+    /// falls back to the id keys for legacy rows.
+    pub created_at: String,
     pub surface: WorkSurface,
 }
 
@@ -73,6 +78,7 @@ fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<SavedSurface
                 surfaces.push(SavedSurfaceResponse {
                     execution_id: record.execution_id,
                     session_id: record.session_id,
+                    created_at: record.created_at,
                     surface,
                 });
             }
@@ -283,6 +289,7 @@ mod tests {
             vec![SavedSurfaceResponse {
                 execution_id: "exec-1".to_owned(),
                 session_id: "sess-1".to_owned(),
+                created_at: "2026-07-28T00:00:00Z".to_owned(),
                 surface: display,
             }]
         );

@@ -49,7 +49,7 @@ pub struct ExecutionStream {
     pub delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     pub delegation_registry: Arc<DelegationRegistry>,
     pub handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    pub distiller: Option<Arc<crate::distillation::SessionDistiller>>,
+    pub distiller: Option<Arc<distillation::SessionDistiller>>,
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub paths: SharedVaultPaths,
     pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
@@ -65,6 +65,7 @@ pub struct ExecutionStream {
 /// Constructed by callers as part of session setup and passed verbatim to
 /// [`ExecutionStream::run`].
 pub struct ExecutionContext {
+    pub mode: ExecutionMode,
     pub execution_id: String,
     pub session_id: String,
     pub agent_id: String,
@@ -73,8 +74,23 @@ pub struct ExecutionContext {
     pub respond_to: Option<Vec<String>>,
     pub thread_id: Option<String>,
     pub message: String,
+    /// Max durable `seq` of rows composed into this invocation's input.
+    /// Advanced into the next checkpoint's `gateway_recovery.input_cursor`.
+    pub scanned_input_cursor: i64,
+    /// Durable row ID of the prompt row written outside the batch writer
+    /// (the root's persisted client message); its content is the engine's
+    /// `message`, so replay must omit it.
+    pub authored_prompt_id: Option<String>,
     pub history: Vec<ChatMessage>,
     pub recommended_skills: Vec<String>,
+}
+
+/// The two callers share persistence and lifecycle ordering, but not routing,
+/// working-memory enrichment, response logs, or orphan-delegation cleanup.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    Root,
+    Continuation,
 }
 
 // ============================================================================
@@ -96,6 +112,7 @@ struct EventAccumulator {
 /// Borrowed dependencies the stream-event handlers need to observe but not
 /// mutate. Constructed once per spawn, passed by reference into each handler.
 struct EventHandlerDeps<'a> {
+    mode: ExecutionMode,
     batch_writer: &'a BatchWriterHandle,
     session_id: &'a str,
     execution_id: &'a str,
@@ -182,13 +199,15 @@ fn handle_tool_result(
     );
 
     // Update working memory from tool result
-    working_memory_middleware::process_tool_result(
-        &mut acc.working_memory,
-        &acc.current_tool_name,
-        result,
-        error,
-        deps.handle.current_iteration(),
-    );
+    if deps.mode == ExecutionMode::Root {
+        working_memory_middleware::process_tool_result(
+            &mut acc.working_memory,
+            &acc.current_tool_name,
+            result,
+            error,
+            deps.handle.current_iteration(),
+        );
+    }
 
     // Phase 6d: real-time graph extraction from tool output.
     // Non-blocking — fires in a background task so the execution
@@ -219,6 +238,9 @@ fn handle_tool_result(
         });
     }
 
+    if deps.mode == ExecutionMode::Continuation {
+        return;
+    }
     // Detect micro-recall triggers (sync) — executed after stream completes
     let triggers = working_memory_middleware::detect_recall_triggers(
         &acc.working_memory,
@@ -238,17 +260,14 @@ fn handle_tool_result(
 // ============================================================================
 
 impl ExecutionStream {
-    /// Per-execution entry point. Body is the verbatim contents of the old
-    /// `ExecutionRunner::spawn_execution_task` (the inside of the
-    /// `tokio::spawn(async move { … })` block), with `self.<field>`
-    /// replacing every captured-runner-field access and `ctx.<field>`
-    /// replacing every `args.<field>` access.
+    /// Observe, persist and finalize either a root invocation or continuation.
     pub async fn run(
         &self,
         ctx: ExecutionContext,
         executor: BoxedAgentEngine,
     ) -> Result<(), String> {
         let ExecutionContext {
+            mode,
             execution_id,
             session_id,
             agent_id,
@@ -257,6 +276,8 @@ impl ExecutionStream {
             respond_to,
             thread_id,
             message,
+            scanned_input_cursor,
+            authored_prompt_id,
             mut history,
             recommended_skills,
         } = ctx;
@@ -268,6 +289,17 @@ impl ExecutionStream {
             self.paths.traces_dir(),
             self.messages.clone(),
         );
+
+        if mode == ExecutionMode::Continuation {
+            batch_writer.session_message(
+                &session_id,
+                &execution_id,
+                "system",
+                &message,
+                None,
+                None,
+            );
+        }
 
         // Create stream context for event processing
         let stream_ctx = StreamContext::new(
@@ -307,82 +339,84 @@ impl ExecutionStream {
         // Pass 1: scan tool messages for delegate_to_agent results → mark as "running"
         // Pass 2: scan system messages for callbacks → mark as "completed" + decrement pending
         // Also seed corrections from recalled system messages.
-        for msg in &history {
-            match msg.role.as_str() {
-                "tool" => {
-                    let content = msg.text_content();
-                    // Detect delegate_to_agent returns — sentinel is "status":"delegated"
-                    if content.contains("\"status\":\"delegated\"")
-                        || content.contains("\"status\": \"delegated\"")
-                    {
-                        working_memory_middleware::process_tool_result(
-                            &mut acc.working_memory,
-                            "delegate_to_agent",
-                            &content,
-                            None,
-                            0,
-                        );
+        if mode == ExecutionMode::Root {
+            for msg in &history {
+                match msg.role.as_str() {
+                    "tool" => {
+                        let content = msg.text_content();
+                        // Detect delegate_to_agent returns — sentinel is "status":"delegated"
+                        if content.contains("\"status\":\"delegated\"")
+                            || content.contains("\"status\": \"delegated\"")
+                        {
+                            working_memory_middleware::process_tool_result(
+                                &mut acc.working_memory,
+                                "delegate_to_agent",
+                                &content,
+                                None,
+                                0,
+                            );
+                        }
                     }
-                }
-                "system" => {
-                    let content = msg.text_content();
-                    // Seed corrections from recall messages
-                    if content.contains("Recalled") || content.contains("correction") {
-                        for line in content.lines() {
-                            let trimmed = line.trim().trim_start_matches("- ");
-                            if trimmed.starts_with("[correction]")
-                                || trimmed.starts_with("[pattern]")
+                    "system" => {
+                        let content = msg.text_content();
+                        // Seed corrections from recall messages
+                        if content.contains("Recalled") || content.contains("correction") {
+                            for line in content.lines() {
+                                let trimmed = line.trim().trim_start_matches("- ");
+                                if trimmed.starts_with("[correction]")
+                                    || trimmed.starts_with("[pattern]")
+                                {
+                                    acc.working_memory.add_correction(trimmed);
+                                }
+                            }
+                        }
+                        // Detect delegation callbacks and mark agents as completed.
+                        // Structured path: <!-- structured-result {"agent":"...", ...} -->
+                        if let Some(envelope) = extract_structured_result(&content) {
+                            if let Some(agent_id) = envelope
+                                .get("agent")
+                                .and_then(|v: &serde_json::Value| v.as_str())
                             {
-                                acc.working_memory.add_correction(trimmed);
+                                let result_str = envelope
+                                    .get("data")
+                                    .map(|d: &serde_json::Value| d.to_string())
+                                    .unwrap_or_default();
+                                working_memory_middleware::process_callback_message(
+                                    &mut acc.working_memory,
+                                    agent_id,
+                                    &result_str,
+                                );
+                            }
+                        } else if content.contains("## From ")
+                            || content.starts_with("## Delegation Failed")
+                        {
+                            // Plain-text callback: "## From Research Agent\n..."
+                            // Error callback: "## Delegation Failed\n**Agent:** Research Agent\n..."
+                            let agent_id = if let Some(line) =
+                                content.lines().find(|l| l.starts_with("## From "))
+                            {
+                                let display = line.trim_start_matches("## From ").trim();
+                                // Reverse format_agent_display_name: "Research Agent" → "research-agent"
+                                display.to_lowercase().replace(' ', "-")
+                            } else if let Some(line) =
+                                content.lines().find(|l| l.starts_with("**Agent:**"))
+                            {
+                                let display = line.trim_start_matches("**Agent:**").trim();
+                                display.to_lowercase().replace(' ', "-")
+                            } else {
+                                String::new()
+                            };
+                            if !agent_id.is_empty() {
+                                working_memory_middleware::process_callback_message(
+                                    &mut acc.working_memory,
+                                    &agent_id,
+                                    &content,
+                                );
                             }
                         }
                     }
-                    // Detect delegation callbacks and mark agents as completed.
-                    // Structured path: <!-- structured-result {"agent":"...", ...} -->
-                    if let Some(envelope) = extract_structured_result(&content) {
-                        if let Some(agent_id) = envelope
-                            .get("agent")
-                            .and_then(|v: &serde_json::Value| v.as_str())
-                        {
-                            let result_str = envelope
-                                .get("data")
-                                .map(|d: &serde_json::Value| d.to_string())
-                                .unwrap_or_default();
-                            working_memory_middleware::process_callback_message(
-                                &mut acc.working_memory,
-                                agent_id,
-                                &result_str,
-                            );
-                        }
-                    } else if content.contains("## From ")
-                        || content.starts_with("## Delegation Failed")
-                    {
-                        // Plain-text callback: "## From Research Agent\n..."
-                        // Error callback: "## Delegation Failed\n**Agent:** Research Agent\n..."
-                        let agent_id = if let Some(line) =
-                            content.lines().find(|l| l.starts_with("## From "))
-                        {
-                            let display = line.trim_start_matches("## From ").trim();
-                            // Reverse format_agent_display_name: "Research Agent" → "research-agent"
-                            display.to_lowercase().replace(' ', "-")
-                        } else if let Some(line) =
-                            content.lines().find(|l| l.starts_with("**Agent:**"))
-                        {
-                            let display = line.trim_start_matches("**Agent:**").trim();
-                            display.to_lowercase().replace(' ', "-")
-                        } else {
-                            String::new()
-                        };
-                        if !agent_id.is_empty() {
-                            working_memory_middleware::process_callback_message(
-                                &mut acc.working_memory,
-                                &agent_id,
-                                &content,
-                            );
-                        }
-                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -411,6 +445,7 @@ impl ExecutionStream {
         // which we handle as a graceful exit below (stop_execution,
         // not crash_execution).
         let stop_sig = Some(handle.stop_signal());
+        let mut last_engine_state: Option<serde_json::Value> = None;
         let mut on_event = |event| {
             if handle.is_stop_requested() {
                 return;
@@ -419,6 +454,7 @@ impl ExecutionStream {
             handle.increment();
 
             let deps = EventHandlerDeps {
+                mode,
                 batch_writer: &batch_writer_inner,
                 session_id: &session_id_inner,
                 execution_id: &execution_id_inner,
@@ -454,6 +490,11 @@ impl ExecutionStream {
                 ),
                 agent_runtime::StreamEvent::Token { content, .. } => {
                     acc.turn_text.push_str(content);
+                }
+                // The engine's final context state carries the private
+                // checkpoint snapshot; stashed for the turn-boundary write.
+                agent_runtime::StreamEvent::ContextState { state, .. } => {
+                    last_engine_state = Some(state.clone());
                 }
                 _ => {}
             }
@@ -516,35 +557,45 @@ impl ExecutionStream {
             );
 
             // Log the response for session replay
-            let response_log = api_logs::ExecutionLog::new(
-                &execution_id,
-                &session_id,
-                &agent_id,
-                api_logs::LogLevel::Info,
-                api_logs::LogCategory::Response,
-                &accumulated_response,
-            );
-            batch_writer.log(response_log);
+            if mode == ExecutionMode::Root {
+                let response_log = api_logs::ExecutionLog::new(
+                    &execution_id,
+                    &session_id,
+                    &agent_id,
+                    api_logs::LogLevel::Info,
+                    api_logs::LogCategory::Response,
+                    &accumulated_response,
+                );
+                batch_writer.log(response_log);
+            }
         }
 
-        // Turn-boundary checkpoint — write a versioned snapshot of the
-        // agent's context state so session_state can read it in O(1)
-        // (T12) instead of replaying execution_logs.
-        super::core::write_turn_checkpoint(
-            &self.checkpoints,
-            &self.state_service,
-            &execution_id,
-            &session_id,
-            handle.current_iteration(),
-            &accumulated_response,
-        );
-
-        // `agent_completed` causes Research to refresh its durable snapshot.
-        // Make the assistant row visible before that lifecycle event can win
-        // the race against the periodic batch flush.
-        if result.is_ok() {
-            batch_writer.flush().await;
+        // Confirm this invocation's queued rows are durable before the
+        // checkpoint records them as represented outputs. The flush ack alone
+        // does not prove per-row success — `written_message_ids` records only
+        // appends the store accepted, which is what recovery relies on. This
+        // also keeps the final assistant row visible before `agent_completed`
+        // can race the periodic flush (Research snapshot refresh).
+        batch_writer.flush().await;
+        let mut represented_output_ids = batch_writer.written_message_ids();
+        if let Some(prompt_id) = authored_prompt_id.as_deref() {
+            represented_output_ids.push(prompt_id.to_owned());
         }
+
+        // Turn-boundary checkpoint — the display snapshot plus the engine's
+        // private checkpoint (carried by the final ContextState event) and the
+        // gateway-owned input cursor / represented-output IDs beside it.
+        super::recovery::write_turn_checkpoint(super::recovery::TurnCheckpoint {
+            checkpoints: &self.checkpoints,
+            state_service: &self.state_service,
+            execution_id: &execution_id,
+            session_id: &session_id,
+            llm_turn: handle.current_iteration(),
+            response: &accumulated_response,
+            engine_state: last_engine_state.as_ref(),
+            input_cursor: scanned_input_cursor,
+            represented_output_ids: &represented_output_ids,
+        });
 
         // Handle completion
         match result {
@@ -565,7 +616,7 @@ impl ExecutionStream {
                     // The continuation callback will handle completion.
                     tracing::info!(
                         session_id = %session_id,
-                        "Root paused for delegation — skipping execution completion"
+                        "Execution paused for delegation — skipping execution completion"
                     );
 
                     // Request continuation so the session resumes when delegations complete
@@ -588,11 +639,20 @@ impl ExecutionStream {
                         agent_id: &agent_id,
                         conversation_id: &conversation_id,
                         response: Some(accumulated_response),
-                        connector_registry: self.connector_registry.as_ref(),
-                        respond_to: respond_to.as_ref(),
-                        thread_id: thread_id.as_deref(),
-                        bridge_registry: self.bridge_registry.as_ref(),
-                        bridge_outbox: self.bridge_outbox.as_ref(),
+                        connector_registry: self
+                            .connector_registry
+                            .as_ref()
+                            .filter(|_| mode == ExecutionMode::Root),
+                        respond_to: respond_to.as_ref().filter(|_| mode == ExecutionMode::Root),
+                        thread_id: thread_id.as_deref().filter(|_| mode == ExecutionMode::Root),
+                        bridge_registry: self
+                            .bridge_registry
+                            .as_ref()
+                            .filter(|_| mode == ExecutionMode::Root),
+                        bridge_outbox: self
+                            .bridge_outbox
+                            .as_ref()
+                            .filter(|_| mode == ExecutionMode::Root),
                     })
                     .await;
                 }
@@ -621,7 +681,7 @@ impl ExecutionStream {
                         if let Err(e) = distiller.distill(&sid, &aid).await {
                             tracing::warn!("Session distillation failed: {}", e);
                         }
-                        super::core::run_ward_artifact_indexer(
+                        crate::ward_artifact_indexer::run_session_index(
                             &ward_id_for_indexer,
                             &sid,
                             &aid,
@@ -659,13 +719,15 @@ impl ExecutionStream {
                 );
 
                 // Cancel any orphaned delegations spawned before the stop.
-                cancel_session_delegations(
-                    &session_id,
-                    &self.delegation_registry,
-                    &self.handles,
-                    &self.state_service,
-                )
-                .await;
+                if mode == ExecutionMode::Root {
+                    cancel_session_delegations(
+                        &session_id,
+                        &self.delegation_registry,
+                        &self.handles,
+                        &self.state_service,
+                    )
+                    .await;
+                }
             }
             Err(e) => {
                 // Crash execution and emit events
@@ -683,13 +745,15 @@ impl ExecutionStream {
                 .await;
 
                 // Cancel any orphaned delegations for this session
-                cancel_session_delegations(
-                    &session_id,
-                    &self.delegation_registry,
-                    &self.handles,
-                    &self.state_service,
-                )
-                .await;
+                if mode == ExecutionMode::Root {
+                    cancel_session_delegations(
+                        &session_id,
+                        &self.delegation_registry,
+                        &self.handles,
+                        &self.state_service,
+                    )
+                    .await;
+                }
             }
         }
 

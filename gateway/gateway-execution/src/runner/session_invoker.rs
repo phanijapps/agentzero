@@ -11,24 +11,18 @@
 //!
 //! [`ExecutionRunner`] implements all three so it can be passed wherever
 //! any of the traits is required. The companion structs
-//! (`RunnerContinuationInvoker`, `RunnerDelegationInvoker`) implement
+//! implement
 //! exactly ONE trait each — no more typed-error stubs.
 
+use crate::errors::ExecutionError;
 use async_trait::async_trait;
 use tokio::sync::OwnedSemaphorePermit;
 
-use crate::config::ExecutionConfig;
 use crate::delegation::DelegationRequest;
 
 // ============================================================================
 // Narrow traits
 // ============================================================================
-
-/// Spawn a fresh root session.
-#[async_trait]
-pub trait SessionSpawner: Send + Sync {
-    async fn spawn_session(&self, config: ExecutionConfig, message: String) -> Result<(), String>;
-}
 
 /// Resume an existing root execution (continuation path).
 ///
@@ -40,7 +34,7 @@ pub trait ContinuationSpawner: Send + Sync {
         &self,
         session_id: String,
         root_agent_id: String,
-    ) -> Result<(), String>;
+    ) -> Result<(), ExecutionError>;
 }
 
 /// Spawn a delegated subagent. `permit` is the already-acquired global
@@ -52,7 +46,7 @@ pub trait DelegationSpawner: Send + Sync {
         &self,
         request: DelegationRequest,
         permit: Option<OwnedSemaphorePermit>,
-    ) -> Result<(), String>;
+    ) -> Result<(), ExecutionError>;
 }
 
 // ============================================================================
@@ -62,6 +56,8 @@ pub trait DelegationSpawner: Send + Sync {
 /// Test-only stub that records every call. Implements all three traits so
 /// it can be injected into any handler under test without booting the real
 /// executor pipeline.
+#[cfg(any(test, feature = "test-stubs"))]
+use crate::config::ExecutionConfig;
 #[cfg(any(test, feature = "test-stubs"))]
 use std::sync::Mutex;
 
@@ -84,18 +80,22 @@ impl StubSessionInvoker {
 }
 
 #[cfg(any(test, feature = "test-stubs"))]
-impl Default for StubSessionInvoker {
-    fn default() -> Self {
-        Self::new()
+impl StubSessionInvoker {
+    /// Record a session spawn (test recording surface).
+    pub async fn spawn_session(
+        &self,
+        config: ExecutionConfig,
+        message: String,
+    ) -> Result<(), ExecutionError> {
+        self.calls.lock().unwrap().push((config, message));
+        Ok(())
     }
 }
 
 #[cfg(any(test, feature = "test-stubs"))]
-#[async_trait]
-impl SessionSpawner for StubSessionInvoker {
-    async fn spawn_session(&self, config: ExecutionConfig, message: String) -> Result<(), String> {
-        self.calls.lock().unwrap().push((config, message));
-        Ok(())
+impl Default for StubSessionInvoker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -106,7 +106,7 @@ impl ContinuationSpawner for StubSessionInvoker {
         &self,
         session_id: String,
         root_agent_id: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.continuation_calls
             .lock()
             .unwrap()
@@ -122,7 +122,7 @@ impl DelegationSpawner for StubSessionInvoker {
         &self,
         request: DelegationRequest,
         _permit: Option<OwnedSemaphorePermit>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         self.delegation_calls.lock().unwrap().push(request);
         Ok(())
     }
@@ -135,22 +135,13 @@ impl DelegationSpawner for StubSessionInvoker {
 use super::core::ExecutionRunner;
 
 #[async_trait]
-impl SessionSpawner for ExecutionRunner {
-    async fn spawn_session(&self, config: ExecutionConfig, message: String) -> Result<(), String> {
-        self.invoke(config, message).await.map(|_| ())
-    }
-}
-
-#[async_trait]
 impl ContinuationSpawner for ExecutionRunner {
     async fn spawn_continuation(
         &self,
         session_id: String,
         root_agent_id: String,
-    ) -> Result<(), String> {
-        self.make_continuation_invoker()
-            .spawn_continuation(session_id, root_agent_id)
-            .await
+    ) -> Result<(), ExecutionError> {
+        self.ctx.spawn_continuation(session_id, root_agent_id).await
     }
 }
 
@@ -160,9 +151,7 @@ impl DelegationSpawner for ExecutionRunner {
         &self,
         request: DelegationRequest,
         permit: Option<OwnedSemaphorePermit>,
-    ) -> Result<(), String> {
-        self.make_delegation_invoker()
-            .spawn_delegation(request, permit)
-            .await
+    ) -> Result<(), ExecutionError> {
+        self.ctx.spawn_delegation(request, permit).await
     }
 }

@@ -134,7 +134,9 @@ async fn worker_loop(
                     error = %err_msg,
                     "extractor failed; marking episode failed",
                 );
-                episode_store.mark_failed(&episode_id, &err_msg).await
+                episode_store
+                    .mark_failed(&episode_id, &err_msg.to_string())
+                    .await
             }
         };
 

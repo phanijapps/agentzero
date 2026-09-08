@@ -143,6 +143,9 @@ function updateSurfaces(
     const next: SavedSurface = {
       execution_id: typeof raw.execution_id === "string" ? raw.execution_id : "",
       session_id: typeof raw.session_id === "string" ? raw.session_id : undefined,
+      // Live arrival time attributes the surface to the turn now running —
+      // root executions span turns, so the id keys alone cannot.
+      created_at: new Date().toISOString(),
       surface: raw.surface,
     };
     setSurfaces(current => [
@@ -657,10 +660,13 @@ export function useResearchSession() {
   );
 
   const stopAgent = useCallback(async () => {
-    if (!state.conversationId) return;
+    if (state.status !== "running" || !state.conversationId || !state.sessionId) return;
     const transport = await getTransport();
-    await transport.stopAgent(state.conversationId);
-  }, [state.conversationId]);
+    const result = await transport.cancelSession(state.sessionId, state.conversationId);
+    if (!result.success) {
+      dispatch({ type: "ERROR", message: result.error ?? "Failed to cancel request" });
+    }
+  }, [state.status, state.conversationId, state.sessionId]);
 
   // --- Reset for a brand-new research session ---
   const startNewResearch = useCallback(() => {

@@ -379,9 +379,13 @@ fn test_callback_without_result_no_action() {
 /// Graph approach should inject SDLC pattern.
 #[test]
 fn test_intent_injection_sdlc_for_graph() {
-    use gateway_execution::middleware::intent_analysis::*;
+    use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "stock analysis".to_string(),
         hidden_intents: vec!["fetch options data".to_string()],
         recommended_skills: vec!["coding".to_string()],
@@ -394,16 +398,14 @@ fn test_intent_injection_sdlc_for_graph() {
             structure: Default::default(),
             reason: "domain match".to_string(),
         },
+        pinned_procedure: None,
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Graph,
-            graph: None,
             explanation: "Complex analysis".to_string(),
         },
-        rewritten_prompt: String::new(),
-        procedure_recommendation: None,
     };
 
-    let injection = format_intent_injection(&analysis, None, None);
+    let injection = format_intent_injection(&analysis, None);
 
     // Graph approach should route to planner-agent
     assert!(
@@ -424,9 +426,13 @@ fn test_intent_injection_sdlc_for_graph() {
 /// Simple approach should NOT inject SDLC pattern.
 #[test]
 fn test_intent_injection_no_sdlc_for_simple() {
-    use gateway_execution::middleware::intent_analysis::*;
+    use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "greeting".to_string(),
         hidden_intents: vec![],
         recommended_skills: vec![],
@@ -439,16 +445,14 @@ fn test_intent_injection_no_sdlc_for_simple() {
             structure: Default::default(),
             reason: "simple".to_string(),
         },
+        pinned_procedure: None,
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Simple,
-            graph: None,
             explanation: "Quick question".to_string(),
         },
-        rewritten_prompt: String::new(),
-        procedure_recommendation: None,
     };
 
-    let injection = format_intent_injection(&analysis, None, None);
+    let injection = format_intent_injection(&analysis, None);
 
     assert!(
         !injection.contains("SDLC Pattern"),
@@ -475,9 +479,13 @@ fn test_intent_injection_no_sdlc_for_simple() {
 /// Ward rules should not have hardcoded domain examples.
 #[test]
 fn test_ward_rules_domain_agnostic() {
-    use gateway_execution::middleware::intent_analysis::*;
+    use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "test".to_string(),
         hidden_intents: vec![],
         recommended_skills: vec![],
@@ -490,16 +498,14 @@ fn test_ward_rules_domain_agnostic() {
             structure: Default::default(),
             reason: "test".to_string(),
         },
+        pinned_procedure: None,
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Simple,
-            graph: None,
             explanation: "test".to_string(),
         },
-        rewritten_prompt: String::new(),
-        procedure_recommendation: None,
     };
 
-    let injection = format_intent_injection(&analysis, None, None);
+    let injection = format_intent_injection(&analysis, None);
 
     // Should NOT have financial domain terms
     assert!(

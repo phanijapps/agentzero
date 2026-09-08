@@ -1,7 +1,7 @@
 //! # Runner
 //!
-//! Session orchestration. Decomposed from a 3,067-LOC god module into
-//! six focused units. **Read `AGENTS.md` in this directory before
+//! Session orchestration with focused live-control and execution components.
+//! **Read `AGENTS.md` in this directory before
 //! adding code here.**
 
 use std::path::Path;
@@ -9,19 +9,26 @@ use std::path::Path;
 use agent_runtime::{prepare_tool_result_for_context, ToolResultContextConfig};
 use agent_tools::ToolSettings;
 
+mod continuation_execution;
 mod continuation_watcher;
 pub(super) mod core;
 mod delegation_dispatcher;
+pub(crate) mod exec_ctx;
 mod execution_stream;
+mod initial_execution;
+pub(crate) mod integrations;
 mod invoke_bootstrap;
+pub(crate) mod recovery;
+pub(crate) mod session_control;
 mod session_invoker;
+mod subagent_recovery;
 
 pub use continuation_watcher::ContinuationWatcher;
 pub use core::*;
 pub use delegation_dispatcher::DelegationDispatcher;
 #[cfg(any(test, feature = "test-stubs"))]
 pub use session_invoker::StubSessionInvoker;
-pub use session_invoker::{ContinuationSpawner, DelegationSpawner, SessionSpawner};
+pub use session_invoker::{ContinuationSpawner, DelegationSpawner};
 
 pub(crate) fn prompt_safe_tool_result_config(
     tool_settings: &ToolSettings,

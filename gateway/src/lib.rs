@@ -52,6 +52,7 @@ pub mod websocket;
 #[cfg(test)]
 pub mod test_utils;
 
+pub use agent_runtime::logging::safe_runtime_diagnostics;
 pub use bus::{BusError, GatewayBus, HttpGatewayBus, SessionHandle, SessionRequest};
 pub use config::GatewayConfig;
 pub use connectors::{ConnectorConfig, ConnectorRegistry, ConnectorService, DispatchContext};

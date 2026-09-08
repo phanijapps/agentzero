@@ -36,7 +36,7 @@ pub use ingest::{
     EvidenceRecord, IngestTool, IngestionAccess, StructuredCounts, StructuredEntity,
     StructuredRelationship,
 };
-pub use memory::{MemoryEntry, MemoryStore, MemoryTool, MemoryWriteTool};
+pub use memory::{MemoryEntry, MemorySearchTool, MemoryStore, MemoryTool, MemoryWriteTool};
 pub use multimodal::MultimodalAnalyzeTool;
 pub use recall::{
     RecallAuthorizationAccess, RecallAuthorizationContext, RecallContentVisibility, RecallFailure,

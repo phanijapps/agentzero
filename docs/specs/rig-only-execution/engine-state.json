@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "run_id": "fb320581-90fd-4785-8474-bd587f006a21",
+  "feature": "rig-only-execution",
+  "mode": "code",
+  "state": "CODE-HUMAN-GATE",
+  "last_event": "reviewers-clean",
+  "last_event_context": null,
+  "transition_sequence": 30,
+  "last_transition_at": "2026-09-07T01:13:14Z",
+  "gate_question": "Are these changes correct and ready to merge?"
+}

@@ -99,6 +99,26 @@ impl ProcedureRepository {
         })
     }
 
+    /// List `(name, ward_id)` pairs for an agent across all wards.
+    pub fn list_procedure_names(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<String>)>, String> {
+        self.db.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT name, ward_id FROM procedures WHERE agent_id = ?1 ORDER BY name LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(params![agent_id, limit as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
+
     /// List procedures for an agent, optionally filtered by ward.
     pub fn list_procedures(
         &self,

@@ -1,18 +1,17 @@
 # Agent Runtime Library
 
-`agent-runtime` is zbot's execution runtime. It keeps the gateway-facing execution contract stable while providing a Rig-backed engine path behind an adapter.
+`agent-runtime` is zbot's execution runtime. It keeps the gateway-facing execution contract stable and implements it with the Rig-backed engine behind an adapter.
 
 ## Overview
 
 The crate owns:
 
 - `AgentEngine`, the facade used by `gateway-execution`.
-- `AgentExecutor`, the existing executor and fallback path.
-- `RigAgentEngine`, the Rig-backed engine implementation.
+- `RigAgentEngine`, the sole engine implementation.
 - `LlmClient` and OpenAI-compatible provider transport.
 - Runtime middleware for context control and token accounting.
 - Tool registry/context types used by built-in tools and the Rig tool bridge.
-- MCP manager for the fallback executor path.
+- MCP transports and session ownership consumed by the Rig engine.
 
 Rig is intentionally contained under `src/rig_adapter/`. Gateway, stores, tools, and UI code should not depend on Rig types directly.
 
@@ -23,8 +22,6 @@ gateway-execution
         │
         ▼
   AgentEngine facade
-        │
-        ├── AgentExecutor fallback
         │
         └── RigAgentEngine
               ├── LlmCompletionModel -> zbot LlmClient

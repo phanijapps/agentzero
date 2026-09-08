@@ -9,8 +9,6 @@
 //! `DelegationDispatcher` is a 3-field struct: it holds only the concurrency
 //! semaphore, the inbound request channel, and a [`DelegationSpawner`]. Everything
 //! else (the 21 deps that `spawn_delegated_agent` needs) lives inside the
-//! `RunnerDelegationInvoker` companion, which is constructed by
-//! `ExecutionRunner::make_delegation_invoker()` and injected at wire-up time.
 //!
 //! This keeps the dispatcher testable with a `StubSessionInvoker` (one trait
 //! method per stub) while keeping the production path complete.
@@ -25,22 +23,19 @@
 //!   regardless of session. The permit is acquired here and passed to the
 //!   invoker so it holds it for the duration of the child execution.
 
+use super::core::ExecutionRunner;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use api_logs::LogService;
-use async_trait::async_trait;
-use execution_state::StateService;
-use gateway_events::EventBus;
-use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths};
-use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
-use zbot_runtime_sqlite::DatabaseManager;
 
-use crate::agent_pool::AgentResultBus;
-use crate::delegation::{spawn_delegated_agent, DelegationRegistry, DelegationRequest};
-use crate::handle::ExecutionHandle;
+use crate::config::ExecutionConfig;
+use crate::delegation::DelegationRequest;
 use crate::runner::session_invoker::DelegationSpawner;
+use gateway_events::GatewayEvent;
+use serde_json::Value;
 
 /// Dispatcher that enforces per-session sequential ordering and global
 /// concurrency cap for subagent delegations.
@@ -190,7 +185,6 @@ impl DelegationDispatcher {
 }
 
 // ============================================================================
-// RunnerDelegationInvoker
 // ============================================================================
 
 /// Per-ward serialization locks: ward name → an async mutex held for the
@@ -208,7 +202,10 @@ pub(crate) type WardLocks = std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mu
 /// ward-as-agent design routes sub-work to the generic worker agents, never to
 /// sibling wards, so no `ward A → ward B → ward A` cycle (which would deadlock)
 /// can form.
-async fn acquire_ward_lock(locks: &Arc<WardLocks>, ward: &str) -> tokio::sync::OwnedMutexGuard<()> {
+pub(super) async fn acquire_ward_lock(
+    locks: &Arc<WardLocks>,
+    ward: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
     let ward_mutex = {
         let mut map = locks
             .lock()
@@ -220,112 +217,90 @@ async fn acquire_ward_lock(locks: &Arc<WardLocks>, ward: &str) -> tokio::sync::O
     ward_mutex.lock_owned().await
 }
 
-/// Companion to `ExecutionRunner` that holds the subset of runner fields
-/// needed to call `spawn_delegated_agent`, implementing [`DelegationSpawner`]
-/// so `DelegationDispatcher` remains decoupled from the concrete runner type.
-///
-/// Constructed via [`ExecutionRunner::make_delegation_invoker`] inside
-/// `with_config` — before the runner is wrapped in `Arc` — so each field
-/// gets a clone of the runner's shared handles rather than ownership.
-///
-/// The full delegation pipeline runs inside `spawn_delegation`:
-/// child session creation, delegation registry lifecycle, event emission,
-/// subagent rules + ward context + recall priming, executor build + run,
-/// success/failure callbacks, and continuation trigger.
-pub(crate) struct RunnerDelegationInvoker {
-    pub(crate) event_bus: Arc<EventBus>,
-    pub(crate) agent_service: Arc<AgentService>,
-    pub(crate) provider_service: Arc<ProviderService>,
-    pub(crate) mcp_service: Arc<McpService>,
-    pub(crate) skill_service: Arc<gateway_services::SkillService>,
-    pub(crate) paths: SharedVaultPaths,
-    pub(crate) messages: Arc<dyn zbot_conversation::MessageStore>,
-    pub(crate) session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
-    pub(crate) checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
-    pub(crate) handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    pub(crate) delegation_registry: Arc<DelegationRegistry>,
-    pub(crate) delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
-    pub(crate) log_service: Arc<LogService<DatabaseManager>>,
-    pub(crate) state_service: Arc<StateService<DatabaseManager>>,
-    pub(crate) memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    pub(crate) distiller: Option<Arc<crate::distillation::SessionDistiller>>,
-    pub(crate) memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
-    pub(crate) peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
-    pub(crate) a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
-    pub(crate) rate_limiters: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
-        >,
-    >,
-    pub(crate) kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    pub(crate) ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    pub(crate) goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
-    pub(crate) steering_registry: Arc<agent_runtime::SteeringRegistry>,
-    pub(crate) agent_result_bus: Arc<AgentResultBus>,
-    /// Per-ward serialization locks (see [`acquire_ward_lock`]).
-    pub(crate) ward_locks: Arc<WardLocks>,
-    /// Per-ward usage telemetry — bumped on every `ward:<name>` delegation.
-    pub(crate) ward_usage: Arc<gateway_services::WardUsage>,
-}
-
-#[async_trait]
-impl DelegationSpawner for RunnerDelegationInvoker {
-    async fn spawn_delegation(
+impl ExecutionRunner {
+    /// Spawn a delegated subagent.
+    ///
+    /// This is called when an agent uses the delegate_to_agent tool.
+    /// The subagent runs in a separate task with its own conversation.
+    pub async fn spawn_delegation(
         &self,
-        request: DelegationRequest,
-        permit: Option<OwnedSemaphorePermit>,
-    ) -> Result<(), String> {
-        // Bump per-ward usage telemetry as soon as we know this is a ward
-        // delegation, before any locking. The curator reads these counters
-        // to decide what's active vs stale (see Phase B). Failures here
-        // never block delegation — telemetry is best-effort.
-        let ward_name = request.child_agent_id.strip_prefix("ward:");
-        if let Some(ward) = ward_name {
-            if let Err(e) = self.ward_usage.bump_use(ward) {
-                tracing::warn!(ward = %ward, error = %e, "ward_usage.bump_use failed");
+        parent_agent_id: &str,
+        parent_conversation_id: &str,
+        child_agent_id: &str,
+        task: &str,
+        context: Option<Value>,
+    ) -> Result<String, String> {
+        // Generate child conversation ID
+        let child_conversation_id = format!(
+            "{}-sub-{}",
+            parent_conversation_id,
+            uuid::Uuid::new_v4()
+                .to_string()
+                .split('-')
+                .next()
+                .unwrap_or("0")
+        );
+
+        // Register the delegation (legacy function, using conversation_id as session for backward compat)
+        let delegation_context = crate::delegation::DelegationContext::new(
+            parent_conversation_id, // session_id (using conv_id for legacy)
+            parent_conversation_id, // parent_execution_id (using conv_id for legacy)
+            parent_agent_id,
+            parent_conversation_id,
+        );
+        let delegation_context = if let Some(ctx) = context {
+            delegation_context.with_context(ctx)
+        } else {
+            delegation_context
+        };
+        self.ctx
+            .control
+            .delegation_registry
+            .register(&child_conversation_id, delegation_context);
+
+        // Create config for the child agent
+        let config = ExecutionConfig::new(
+            child_agent_id.to_string(),
+            child_conversation_id.clone(),
+            self.ctx.paths.vault_dir().clone(),
+        );
+
+        // Emit delegation started event
+        self.ctx
+            .event_bus
+            .publish(GatewayEvent::DelegationStarted {
+                session_id: parent_conversation_id.to_string(), // legacy: using conv_id as session
+                parent_execution_id: parent_conversation_id.to_string(),
+                child_execution_id: child_conversation_id.clone(),
+                parent_agent_id: parent_agent_id.to_string(),
+                child_agent_id: child_agent_id.to_string(),
+                task: task.to_string(),
+                parent_conversation_id: Some(parent_conversation_id.to_string()),
+                child_conversation_id: Some(child_conversation_id.clone()),
+            })
+            .await;
+
+        // Spawn the child agent
+        match self.invoke(config, task.to_string()).await {
+            Ok((_handle, session_id)) => {
+                tracing::info!(
+                    parent_agent = %parent_agent_id,
+                    child_agent = %child_agent_id,
+                    child_conversation = %child_conversation_id,
+                    session_id = %session_id,
+                    "Spawned delegated subagent"
+                );
+                Ok(child_conversation_id)
+            }
+            Err(e) => {
+                // Remove from registry on failure
+                self.ctx
+                    .control
+                    .delegation_registry
+                    .remove(&child_conversation_id);
+                Err(e.to_string())
             }
         }
-
-        // Serialize ward-agent delegations per ward. Ward-shared files
-        // (memory-bank/*.md, specs) are written by tools without filesystem
-        // locks; the dispatcher only serializes per session, so two sessions
-        // delegating to the same ward could lose updates. Holding this guard
-        // for the whole child execution makes it one ward-agent per ward.
-        let _ward_guard = match ward_name {
-            Some(ward) => Some(acquire_ward_lock(&self.ward_locks, ward).await),
-            None => None,
-        };
-        spawn_delegated_agent(
-            &request,
-            self.event_bus.clone(),
-            self.agent_service.clone(),
-            self.provider_service.clone(),
-            self.mcp_service.clone(),
-            self.skill_service.clone(),
-            self.paths.clone(),
-            self.messages.clone(),
-            self.session_meta.clone(),
-            self.checkpoints.clone(),
-            self.handles.clone(),
-            self.delegation_registry.clone(),
-            self.delegation_tx.clone(),
-            self.log_service.clone(),
-            self.state_service.clone(),
-            permit,
-            self.memory_store.clone(),
-            self.distiller.clone(),
-            self.memory_recall.clone(),
-            self.peer_messages.clone(),
-            self.a2a_delegation.clone(),
-            self.rate_limiters.clone(),
-            self.kg_store.clone(),
-            self.ingestion_adapter.clone(),
-            self.goal_adapter.clone(),
-            self.steering_registry.clone(),
-            self.agent_result_bus.clone(),
-        )
-        .await
-        .map(|_| ())
     }
 }
 

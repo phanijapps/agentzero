@@ -45,6 +45,13 @@ export interface AgentTurn {
    */
   request: string | null;
   timeline: TimelineEntry[];
+  /**
+   * Epoch ms of the last engine heartbeat observed for this turn while
+   * running. The engine emits one every ~10s during silent provider phases;
+   * the UI uses it to distinguish "provider is slow but working" from a
+   * dead stall. Undefined/null when no heartbeat has arrived.
+   */
+  lastHeartbeatAt?: number | null;
   tokenCount: number;
   /** Final respond() content (markdown). Null until Respond event arrives. */
   respond: string | null;
@@ -111,6 +118,9 @@ export interface SessionTurn {
    *  live ticker pill while the turn is running. Empty after snapshot;
    *  filled by the WS reducer for live runs. */
   timeline: TimelineEntry[];
+  /** Last engine heartbeat (epoch ms) while the root turn runs — see
+   *  AgentTurn.lastHeartbeatAt. */
+  lastHeartbeatAt?: number | null;
   /** Per-turn status (mirrors AgentTurnStatus). */
   status: AgentTurnStatus;
   /** ISO timestamp of the user message. */

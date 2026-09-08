@@ -141,7 +141,7 @@ async fn load_or_create_specialist_rejects_reserved_root_agent_id() {
         .await
         .expect_err("delegated root should be rejected");
 
-    assert!(err.contains("Reserved system agent id"));
+    assert!(err.to_string().contains("Reserved system agent id"));
 }
 
 /// Happy path: a ward directory with an `AGENTS.md` doctrine file produces
@@ -217,7 +217,7 @@ async fn load_or_create_specialist_errors_when_ward_dir_missing() {
         .expect_err("missing ward dir must error in P1");
 
     assert!(
-        err.contains("nonexistent"),
+        err.to_string().contains("nonexistent"),
         "error message should contain the ward name; got: {err}"
     );
 }

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "run_id": "874f0120-32d1-4554-b577-710593c2c165",
+  "feature": "gateway-responsibility-boundaries",
+  "mode": "code",
+  "state": "CODE-HUMAN-GATE",
+  "last_event": "reviewers-clean",
+  "last_event_context": null,
+  "transition_sequence": 14,
+  "last_transition_at": "2026-09-06T13:23:21Z",
+  "gate_question": "Are these changes correct and ready to merge?"
+}

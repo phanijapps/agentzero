@@ -11,21 +11,22 @@ cargo build -p agent-runtime
 
 ## Current Engine Shape
 
-`gateway-execution` consumes `AgentEngine`, not Rig directly. This crate provides two implementations behind that facade:
+`gateway-execution` consumes `AgentEngine`, not Rig directly. The sole
+implementation behind that facade:
 
 | Engine | Purpose |
 |--------|---------|
-| `AgentExecutor` | Existing executor implementation and fallback path. |
-| `RigAgentEngine` | Rig-backed implementation that adapts zbot config/tools/history/hooks/streams into the existing runtime event contract. |
+| `RigAgentEngine` | Adapts zBot config/tools/history/hooks/streams into the runtime event contract; owns configured MCP session lifetimes. |
 
-`ZBOT_ENGINE=rig` selects the Rig path when gateway safety gates allow it. Sessions with configured MCP servers currently fall back to `AgentExecutor` because MCP subprocess lifecycle cleanup has not been moved into the Rig path.
+`gateway-execution` constructs it unconditionally from prepared session inputs
+(`build_execution_engine`); there is no engine-selection flag and no fallback.
 
 ## Key Components
 
 | File | Purpose |
 |------|---------|
-| `executor.rs` | `AgentExecutor`, `AgentEngine` facade, existing stream execution path. |
-| `rig_adapter/engine.rs` | Rig-backed engine, hook mapping, stream mapping, stop handling. |
+| `engine/` | Neutral facade: `AgentEngine` trait, `ExecutorConfig`, `ExecutorError`, hooks, `PreparedExecution`, private snapshots. |
+| `rig_adapter/engine.rs` | The engine: hook mapping, stream mapping, stop handling. |
 | `rig_adapter/model.rs` | Rig `CompletionModel` implementation over zbot's `LlmClient`. |
 | `rig_adapter/tool.rs` | Rig `ToolDyn` bridge over `agent_primitives::Tool`. |
 | `rig_adapter/config.rs` | Neutral Rig-facing config resolved from existing zbot settings. |
@@ -34,12 +35,12 @@ cargo build -p agent-runtime
 | `llm/retry.rs` | Retrying LLM wrapper. |
 | `types/events.rs` | `StreamEvent` contract consumed by gateway. |
 | `tools/registry.rs` | Runtime tool registry. |
-| `mcp/` | MCP manager for the fallback executor path. |
+| `mcp/` | MCP transports and session ownership consumed by the Rig engine. |
 | `middleware/` | Summarization, context editing, token counting, and related runtime context control. |
 
 ## Event Contract
 
-Both engine paths must emit existing `StreamEvent` variants so gateway conversion and UI reducers remain unchanged: token/reasoning deltas, tool lifecycle, respond/delegate actions, ward changes, token updates, completion, errors, and UI interactions.
+The engine must emit the existing `StreamEvent` variants so gateway conversion and UI reducers remain unchanged: token/reasoning deltas, tool lifecycle, respond/delegate actions, ward changes, token updates, completion, errors, and UI interactions.
 
 ## Code Style
 

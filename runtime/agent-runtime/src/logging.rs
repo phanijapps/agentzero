@@ -20,6 +20,18 @@
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+/// Keep third-party MCP and Rig payloads out of application diagnostics.
+/// Apply as a separate filter so an environment directive cannot override it.
+pub fn safe_runtime_diagnostics(metadata: &tracing::Metadata<'_>) -> bool {
+    // rmcp traces raw protocol events; sse-stream even includes malformed
+    // lines in warnings. Rig records raw prompts, tool arguments and results
+    // before host hooks run. AgentZero emits bounded diagnostics and typed
+    // execution events at its own boundaries instead of these raw payloads.
+    let root = metadata.target().split("::").next().unwrap_or_default();
+    !matches!(root, "rmcp" | "sse_stream")
+        && !crate::rig_adapter::PAYLOAD_DIAGNOSTIC_TARGETS.contains(&root)
+}
+
 /// Log level for the application
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogLevel {
@@ -74,7 +86,9 @@ pub fn init_logging(level: LogLevel, with_file: bool) {
         .with_default_directive(level.as_tracing().into())
         .from_env_lossy();
 
-    let registry = tracing_subscriber::registry().with(env_filter);
+    let registry = tracing_subscriber::registry().with(env_filter).with(
+        tracing_subscriber::filter::filter_fn(safe_runtime_diagnostics),
+    );
 
     if with_file {
         registry
@@ -106,7 +120,9 @@ pub fn init_logging_from_env(with_file: bool) {
         .with_default_directive(tracing::Level::INFO.into())
         .from_env_lossy();
 
-    let registry = tracing_subscriber::registry().with(env_filter);
+    let registry = tracing_subscriber::registry().with(env_filter).with(
+        tracing_subscriber::filter::filter_fn(safe_runtime_diagnostics),
+    );
 
     if with_file {
         registry

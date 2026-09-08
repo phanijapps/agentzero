@@ -4065,9 +4065,62 @@
   background: var(--background);
 }
 
+.observatory__canvas.observatory__canvas--graph {
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 52% 44%, var(--primary-subtle), transparent 42%),
+    linear-gradient(145deg, var(--background-elevated), var(--background));
+}
+
 .observatory__canvas svg {
   width: 100%;
   height: 100%;
+}
+
+.graph-atmosphere {
+  pointer-events: none;
+}
+
+.graph-atmosphere__core {
+  stop-color: var(--primary-muted);
+}
+
+.graph-atmosphere__edge {
+  stop-color: transparent;
+}
+
+.graph-atmosphere__grid {
+  fill: none;
+  stroke: var(--border);
+  stroke-opacity: 0.28;
+  stroke-width: 1;
+}
+
+.observatory__graph-context {
+  position: absolute;
+  top: var(--spacing-4);
+  left: var(--spacing-4);
+  display: grid;
+  gap: var(--spacing-0-5);
+  padding: var(--spacing-2) var(--spacing-3);
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--background-surface) 80%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  backdrop-filter: blur(12px);
+}
+
+.observatory__graph-kicker {
+  color: var(--primary);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .observatory__sidebar {
@@ -4153,10 +4206,11 @@
   gap: var(--spacing-3);
   font-size: var(--text-xs);
   padding: var(--spacing-2) var(--spacing-3);
-  background: var(--background-surface);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--background-surface) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
   border-radius: var(--radius-md);
   color: var(--muted-foreground);
+  backdrop-filter: blur(12px);
 }
 
 .observatory__legend-item {
@@ -4169,6 +4223,7 @@
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  box-shadow: 0 0 calc(8px * (1 + var(--fx-glow))) currentColor;
 }
 
 .observatory__zoom-controls {
@@ -4186,27 +4241,30 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--background-surface);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--background-surface) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
   border-radius: var(--radius-md);
   cursor: pointer;
   color: var(--muted-foreground);
-  transition: all 0.15s;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.15s;
+  backdrop-filter: blur(12px);
 }
 
 .observatory__zoom-btn:hover {
   color: var(--foreground);
   border-color: var(--border-hover);
+  background: var(--primary-subtle);
+  transform: translateY(-1px);
 }
 
 /* Graph nodes */
 .graph-node {
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, filter 0.2s;
 }
 
 .graph-node:hover {
-  opacity: 0.8;
+  filter: brightness(1.25);
 }
 
 .graph-node--person { fill: #6366f1; }
@@ -4218,7 +4276,8 @@
 
 .graph-node--selected {
   stroke: var(--primary);
-  stroke-width: 2px;
+  stroke-width: 2.5px;
+  filter: drop-shadow(0 0 calc(7px * (1 + var(--fx-glow))) var(--primary));
 }
 
 .graph-node--dimmed {
@@ -4227,15 +4286,28 @@
 
 /* Graph edges */
 .graph-edge {
-  stroke: var(--foreground);
-  stroke-width: 1px;
-  opacity: 0.15;
+  stroke: color-mix(in srgb, var(--primary) 52%, var(--muted-foreground));
+  stroke-width: 1.2px;
+  opacity: var(--graph-edge-strength, 0.28);
+  transition: opacity 0.2s, stroke 0.2s, stroke-width 0.2s;
+}
+
+.graph-edge--related {
+  stroke: var(--primary);
+  stroke-width: 1.8px;
+  opacity: 0.9;
+}
+
+.graph-edge--dimmed {
+  opacity: 0.06;
 }
 
 /* Graph labels */
 .graph-label {
-  fill: var(--foreground);
+  fill: var(--attention-soft);
   font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
   pointer-events: none;
   text-anchor: middle;
   dominant-baseline: central;

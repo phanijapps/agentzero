@@ -115,14 +115,26 @@ pub fn estimate_tokens(text: &str, model: &str) -> usize {
 
 /// Estimate tokens for a single message, including tool-call envelopes and
 /// per-message formatting overhead.
+/// Multimodal content includes its serialized attachment payload. This is a
+/// request-payload estimate, not a claim about provider-specific image tiling,
+/// PDF extraction, or remote content fetched from a URL.
 #[must_use]
 pub fn estimate_message_tokens(message: &ChatMessage, model: &str) -> usize {
-    let mut tokens = estimate_tokens(&message.text_content(), model);
+    let content = if message.has_multimodal_content() {
+        match serde_json::to_string(&message.content) {
+            Ok(content) => content,
+            Err(_) => return usize::MAX,
+        }
+    } else {
+        message.text_content()
+    };
+    let mut tokens = estimate_tokens(&content, model);
 
     if let Some(tool_calls) = &message.tool_calls {
         for tool_call in tool_calls {
-            tokens += estimate_tokens(&tool_call.name, model);
-            tokens += estimate_tokens(&tool_call.arguments.to_string(), model);
+            tokens = tokens.saturating_add(estimate_tokens(&tool_call.name, model));
+            tokens =
+                tokens.saturating_add(estimate_tokens(&tool_call.arguments.to_string(), model));
         }
     }
 
@@ -135,7 +147,7 @@ pub fn estimate_total_tokens(messages: &[ChatMessage], model: &str) -> usize {
     messages
         .iter()
         .map(|m| estimate_message_tokens(m, model))
-        .sum()
+        .fold(0, usize::saturating_add)
 }
 
 /// Fraction of the model's context window currently occupied.

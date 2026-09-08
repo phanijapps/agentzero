@@ -27,6 +27,7 @@ gateway-memory = { path = "../gateway-memory" }
 gateway-services = { path = "../gateway-services" }
 gateway-connectors = { path = "../gateway-connectors" }
 gateway-templates = { path = "../gateway-templates" }
+distillation = { path = "../../services/distillation" }
 gateway-bridge = { path = "../gateway-bridge" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
 zbot-stores = { path = "../../stores/zbot-stores" }

@@ -2,9 +2,12 @@
 //!
 //! Promotes the legacy inline `agent_executions.checkpoint` blob into a
 //! first-class versioned table. `latest` returns the most recent snapshot for an
-//! execution by `(llm_turn DESC, created_at DESC)` — not by UUIDv7 string order
-//! (which is only millisecond-monotonic). `session_state.rs` reads from here
-//! (O(1) snapshot) instead of replaying `execution_logs` + `messages`.
+//! execution by `(created_at DESC, llm_turn DESC)` — write time is the
+//! authority because a continuation restarts its turn counter below the
+//! paused root's, and turn-first ordering would pin the stale root snapshot
+//! forever. UUIDv7 string order is only millisecond-monotonic, so `created_at`
+//! remains explicit. `session_state.rs` reads from here (O(1) snapshot)
+//! instead of replaying `execution_logs` + `messages`.
 
 use crate::domain::Checkpoint;
 use anyhow::Result;
@@ -59,7 +62,7 @@ impl CheckpointStore for SqliteCheckpointStore {
                         pending_tool_calls, context_state, child_executions,
                         schema_version, created_at
                  FROM checkpoints WHERE execution_id = ?
-                 ORDER BY llm_turn DESC, created_at DESC LIMIT 1",
+                 ORDER BY created_at DESC, llm_turn DESC LIMIT 1",
                 [execution_id],
                 |r| {
                     Ok(Checkpoint {

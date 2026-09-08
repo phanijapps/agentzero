@@ -250,14 +250,20 @@ fn bootstrap_governance_if_configured(
         return Ok((None, None));
     }
 
-    let ontology_repo = provider
-        .ontology()
-        .cloned()
-        .ok_or_else(|| unsupported_upstream_handle("governance_ontology"))?;
-    let taxonomy_repo = provider
-        .taxonomy()
-        .cloned()
-        .ok_or_else(|| unsupported_upstream_handle("governance_taxonomy"))?;
+    // Fail-soft: if the upstream conformance check didn't expose ontology or
+    // taxonomy handles, skip governance rather than crashing the daemon.
+    // The conformance check runs against an in-memory store and can fail
+    // independently of the on-disk database's health.
+    let (Some(ontology_repo), Some(taxonomy_repo)) =
+        (provider.ontology().cloned(), provider.taxonomy().cloned())
+    else {
+        tracing::warn!(
+            ontology_available = provider.ontology().is_some(),
+            taxonomy_available = provider.taxonomy().is_some(),
+            "Engram governance: upstream handles unavailable — skipping governance bootstrap"
+        );
+        return Ok((None, None));
+    };
 
     let config = config.clone();
     let result = match Handle::try_current() {

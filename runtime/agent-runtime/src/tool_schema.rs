@@ -2,6 +2,19 @@
 
 use serde_json::{json, Value};
 
+/// Canonical model-visible name encoding shared by both migration paths.
+pub(crate) fn normalize_tool_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Harden a tool parameter schema for stricter LLM compliance.
 /// Adds `"additionalProperties": false` if absent.
 /// Ensures `"required"` array exists (empty if missing).

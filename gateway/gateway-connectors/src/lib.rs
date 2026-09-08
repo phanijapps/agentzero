@@ -20,6 +20,12 @@ pub use dispatch::{dispatch, DispatchError, DispatchResponse, DispatchResult};
 pub use inbound::{InboundLogEntry, InboundPayload, InboundResult, InboundSender};
 pub use service::{ConnectorResult, ConnectorService, ConnectorServiceError, TestResult};
 
+/// Safe failed-HTTP diagnostic shared by dispatch and resource reads. Upstream
+/// error bodies can echo host credentials and are never diagnostic context.
+pub fn http_failure_summary(status: u16) -> String {
+    format!("Connector returned HTTP {status}")
+}
+
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};

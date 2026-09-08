@@ -19,7 +19,7 @@
 //! - **Tools**: Extensible tool registry and execution framework
 //! - **MCP**: Model Context Protocol client for external tool integration
 //! - **Middleware**: Pipeline for message preprocessing and event handling
-//! - **Executor**: Core orchestrator coordinating all components
+//! - **Engine**: The gateway-facing execution facade the sole Rig engine implements
 //! - **Logging**: Structured, controllable logging utilities
 //!
 //! For detailed usage examples, see the README.md file.
@@ -48,9 +48,6 @@ pub mod mcp;
 /// Middleware pipeline
 pub mod middleware;
 
-/// Executor core
-pub mod executor;
-
 /// Gateway-facing execution facade
 pub mod engine;
 
@@ -60,8 +57,10 @@ pub mod rig_adapter;
 /// Progress tracking for loop detection
 pub(crate) mod progress;
 
+pub(crate) mod tool_replay;
 /// Tool schema normalization and hardening helpers
 pub(crate) mod tool_schema;
+pub(crate) mod tool_visibility;
 
 /// Context management helpers (compaction, sanitization, truncation)
 pub(crate) mod context_management;
@@ -116,11 +115,10 @@ pub use context::{
     DroppedContextCandidate,
 };
 pub use context_management::{prepare_tool_result_for_context, ToolResultContextConfig};
-pub use engine::{AgentEngine, BoxedAgentEngine, StreamEventSink};
-pub use executor::{
-    create_executor, AfterToolCallHook, AgentExecutor, BeforeToolCallHook, ExecutorConfig,
-    ExecutorError, RecallHook, RecallHookResult, ToolCallDecision, ToolExecutionMode,
-    TransformContextHook,
+pub use engine::{
+    AgentEngine, BoxedAgentEngine, EngineHook, ExecutorConfig, ExecutorError, HookError, HookSet,
+    PreparedExecution, RecallPacket, RecallSchedule, StreamEventSink, ToolDecision,
+    ToolExecutionMode,
 };
 pub use rig_adapter::{CompletionClient, RigAgentConfig, RigConfigError, RigModelConfig};
 

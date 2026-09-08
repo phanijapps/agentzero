@@ -23,9 +23,22 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max - 1) + "…";
 }
 
-function describeTurnTimelineEntry(turn: SessionTurn): string | null {
+function describeTurnTimelineEntry(turn: SessionTurn, now: number = Date.now()): string | null {
+  // Silent-phase narration: a live heartbeat (engine sends ~every 10s)
+  // proves the provider call is alive; prefer it over a stale last-event
+  // description like "↳ done" while the model works silently.
+  const beat =
+    turn.status === "running" && turn.lastHeartbeatAt != null
+      ? `still working · ${Math.max(0, Math.round((now - Date.parse(turn.startedAt)) / 1000))}s`
+      : null;
   const last: TimelineEntry | undefined = turn.timeline[turn.timeline.length - 1];
-  if (!last) return turn.status === "running" ? "waiting…" : null;
+  if (!last) {
+    if (turn.status !== "running") return null;
+    return beat ?? "waiting…";
+  }
+  if (beat && turn.lastHeartbeatAt != null && turn.lastHeartbeatAt > last.at) {
+    return beat;
+  }
   if (last.kind === "thinking" || last.kind === "note") {
     return truncate(last.text, TICKER_MAX_LEN);
   }

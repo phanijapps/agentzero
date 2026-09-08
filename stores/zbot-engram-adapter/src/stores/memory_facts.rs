@@ -22,7 +22,6 @@ use zbot_stores_traits::{
 
 use crate::{
     bootstrap::EngramProvider,
-    capabilities::AdapterFeature,
     config::{AdapterConfig, AdapterEmbeddingProviderConfig, EmbeddingMode, ProviderMode},
     error::{AdapterError, AdapterResult},
     mapping::memory::{memory_fact_to_record_with_governance, memory_record_to_fact},
@@ -91,7 +90,8 @@ impl EngramMemoryFactStore {
         }
 
         config.validate()?;
-        provider.require_feature(AdapterFeature::MemoryFacts)?;
+        // Skip conformance gate if memory handle is already available
+        // (it can pass even when the in-memory conformance check fails)
         let mapper = config.scope_mapper()?;
         let memory = provider.memory()?;
         let embedding_identity = embedding_client

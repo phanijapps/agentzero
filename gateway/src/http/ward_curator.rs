@@ -40,7 +40,7 @@ pub async fn cleanup(
     make_curator(&state)
         .cleanup(&req)
         .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// `POST /api/curator/restore` — body `{ "backup": "<utc-iso>" }`.
@@ -132,10 +132,11 @@ pub async fn consolidate(
     };
 
     let curator = make_curator(&state);
-    let llm = make_curator_llm(&state).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let llm =
+        make_curator_llm(&state).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     consolidate_wards(&curator, llm.as_ref(), state.procedure_store.as_ref(), &req)
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

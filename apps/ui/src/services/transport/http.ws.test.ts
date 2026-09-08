@@ -266,10 +266,12 @@ describe('HttpTransport — executeAgent() / stopAgent()', () => {
     wsMock.simulateOpen();
     await c;
 
-    const res = await t.cancelSession('sess-1');
-    expect(res.success).toBe(true);
+    const pending = t.cancelSession('sess-1', 'conv-1');
     const cmd = JSON.parse(wsMock.send.mock.calls.at(-1)?.[0]);
-    expect(cmd.type).toBe('cancel');
+    expect(cmd).toEqual({ type: 'cancel', session_id: 'sess-1', conversation_id: 'conv-1' });
+    wsMock.simulateMessage({ type: 'session_cancelled', session_id: 'sess-1' });
+    const res = await pending;
+    expect(res.success).toBe(true);
   });
 
   it('endSession sends end_session command', async () => {

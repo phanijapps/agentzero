@@ -5,15 +5,22 @@
 use super::callback::{handle_delegation_failure, handle_delegation_success};
 use super::context::{infer_delegation_mode, DelegationContext, DelegationMode, DelegationRequest};
 use super::registry::DelegationRegistry;
+use crate::errors::ExecutionError;
 use agent_runtime::{BoxedAgentEngine, ContextActorKind, ToolResultContextConfig};
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::{SessionWardClaim, StateService};
 use gateway_events::{EventBus, GatewayEvent};
-use gateway_services::{AgentService, McpService, ProviderService, SharedVaultPaths, SkillService};
-use std::collections::{HashMap, HashSet};
+use gateway_services::{AgentService, SharedVaultPaths, SkillService};
+#[cfg(test)]
+use gateway_services::{McpService, ProviderService};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock};
+#[cfg(test)]
+use tokio::sync::RwLock;
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use zbot_runtime_sqlite::DatabaseManager;
 
 use crate::agent_pool::{AgentResultBus, AgentWaitError};
@@ -22,8 +29,8 @@ use agent_runtime::ChatMessage;
 
 use crate::handle::ExecutionHandle;
 use crate::invoke::{
-    broadcast_event, collect_agents_summary, collect_skills_summary, detect_subagent_role,
-    mcp_startup_failure_observer, process_stream_event, select_engine,
+    broadcast_event, build_execution_engine, collect_agents_summary, collect_skills_summary,
+    detect_subagent_role, mcp_startup_failure_observer, process_stream_event,
     spawn_batch_writer_with_traces, subagent_rules, AgentLoader, ExecutorBuilder,
     ResponseAccumulator, RuntimeActorKind, StreamContext,
 };
@@ -31,7 +38,6 @@ use crate::lifecycle::{
     complete_execution, crash_execution, emit_delegation_completed, emit_delegation_started,
     start_execution, CompleteExecution, CrashExecution, DelegationCompletedEvent,
 };
-use crate::recall::MemoryRecall;
 
 /// Spawn a delegated agent.
 ///
@@ -47,38 +53,38 @@ use crate::recall::MemoryRecall;
 /// - Marking execution as CRASHED if spawn fails
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_delegated_agent(
+    ctx: &crate::runner::exec_ctx::ExecCtx,
     request: &DelegationRequest,
-    event_bus: Arc<EventBus>,
-    agent_service: Arc<AgentService>,
-    provider_service: Arc<ProviderService>,
-    mcp_service: Arc<McpService>,
-    skill_service: Arc<SkillService>,
-    paths: SharedVaultPaths,
-    messages: Arc<dyn zbot_conversation::MessageStore>,
-    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
-    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
-    handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    delegation_registry: Arc<DelegationRegistry>,
-    delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
-    log_service: Arc<LogService<DatabaseManager>>,
-    state_service: Arc<StateService<DatabaseManager>>,
     delegation_permit: Option<OwnedSemaphorePermit>,
-    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    distiller: Option<Arc<crate::distillation::SessionDistiller>>,
-    memory_recall: Option<Arc<MemoryRecall>>,
-    peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
-    a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
-    rate_limiters: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
-        >,
-    >,
-    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
-    ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
-    steering_registry: Arc<agent_runtime::SteeringRegistry>,
-    agent_result_bus: Arc<AgentResultBus>,
-) -> Result<String, String> {
+) -> Result<String, ExecutionError> {
+    let event_bus = ctx.event_bus.clone();
+    let agent_service = ctx.agent_service.clone();
+    let provider_service = ctx.provider_service.clone();
+    let mcp_service = ctx.mcp_service.clone();
+    let skill_service = ctx.skill_service.clone();
+    let paths = ctx.paths.clone();
+    let messages = ctx.messages.clone();
+    let session_meta = ctx.session_meta.clone();
+    let checkpoints = ctx.checkpoints.clone();
+    let handles = ctx.control.handles.clone();
+    let delegation_registry = ctx.control.delegation_registry.clone();
+    let delegation_tx = ctx.delegation_tx.clone();
+    let log_service = ctx.log_service.clone();
+    let state_service = ctx.state_service.clone();
+    let memory_store = ctx.memory_store.clone();
+    let distiller = ctx.distiller.clone();
+    let memory_recall = ctx.memory_recall.clone();
+    let peer_messages = ctx.peer_messages.clone();
+    let a2a_delegation = ctx.a2a_delegation.clone();
+    let rate_limiters = ctx.rate_limiters.clone();
+    let integrations_snapshot = ctx.integrations.snapshot();
+    let kg_store = integrations_snapshot.kg_store;
+    let ingestion_adapter = integrations_snapshot.ingestion_adapter;
+    #[allow(unused_variables)]
+    let goal_adapter = integrations_snapshot.goal_adapter;
+    let steering_registry = ctx.steering_registry.clone();
+    let agent_result_bus = ctx.agent_result_bus.clone();
+
     // Generate the child conversation identity before validation so even an
     // assignment rejected prior to child-session creation can use the common
     // failure callback and delegation-completion path.
@@ -138,7 +144,7 @@ pub async fn spawn_delegated_agent(
             agent_result_bus: &agent_result_bus,
         })
         .await;
-        return Err(error.to_string());
+        return Err(ExecutionError::from(error.to_string()));
     }
 
     // A ward-agent target is an authoritative execution workspace. Persist it
@@ -248,7 +254,7 @@ pub async fn spawn_delegated_agent(
                 request,
                 child_conversation_id: &child_conversation_id,
                 child_session_id: Some(&child_session_id),
-                error: &e,
+                error: &e.to_string(),
                 messages: messages.as_ref(),
                 state_service: &state_service,
                 log_service: &log_service,
@@ -610,7 +616,7 @@ pub async fn spawn_delegated_agent(
                 request,
                 child_conversation_id: &child_conversation_id,
                 child_session_id: Some(&child_session_id),
-                error: &e,
+                error: &e.to_string(),
                 messages: messages.as_ref(),
                 state_service: &state_service,
                 log_service: &log_service,
@@ -716,9 +722,36 @@ pub async fn spawn_delegated_agent(
     // can query ctx.state.* rows when building the ward_snapshot preamble.
     let memory_store_for_snapshot = memory_store.clone();
 
-    // Spawn the execution task
+    // Spawn the execution task. Engine construction is unconditional and its
+    // config is always resolved today, but if the choke ever fails the child
+    // must go through the same early-failure cleanup as the builder above —
+    // never leak a RUNNING child row, a registered handle, or a hung parent.
+    let executor = match build_execution_engine(executor) {
+        Ok(engine) => engine,
+        Err(error) => {
+            tracing::error!(
+                child = %request.child_agent_id,
+                %error,
+                "Delegated engine construction failed"
+            );
+            handle_early_spawn_failure(EarlySpawnFailure {
+                request,
+                child_conversation_id: &child_conversation_id,
+                child_session_id: Some(&child_session_id),
+                error: &error.to_string(),
+                messages: messages.as_ref(),
+                state_service: &state_service,
+                log_service: &log_service,
+                event_bus: &event_bus,
+                delegation_registry: &delegation_registry,
+                agent_result_bus: &agent_result_bus,
+            })
+            .await;
+            return Err(error);
+        }
+    };
     spawn_execution_task(SpawnContext {
-        executor: select_engine(executor),
+        executor,
         handle: handle_clone,
         request: request.clone(),
         execution_id: execution_id.clone(),
@@ -996,7 +1029,7 @@ struct SpawnContext {
     memory_store_for_snapshot: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     /// Distiller for the subagent's child session — fired after
     /// `complete_session(child_session_id)`.
-    distiller: Option<Arc<crate::distillation::SessionDistiller>>,
+    distiller: Option<Arc<distillation::SessionDistiller>>,
     /// Steering registry — used to remove the handle when the subagent finishes.
     steering_registry: Arc<agent_runtime::SteeringRegistry>,
     /// Result bus — resolves wait_agent and kill_agent primitives.
@@ -1139,6 +1172,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
         let mut current_tool_name = String::new();
 
         let stop_sig = Some(handle.stop_signal());
+        let mut child_engine_state: Option<serde_json::Value> = None;
         let mut on_event = |event| {
             if handle.is_stop_requested() {
                 return;
@@ -1205,6 +1239,10 @@ fn spawn_execution_task(ctx: SpawnContext) {
                 agent_runtime::StreamEvent::Token { content, .. } => {
                     turn_text.push_str(content);
                 }
+                // Private checkpoint snapshot for the child's turn boundary.
+                agent_runtime::StreamEvent::ContextState { state, .. } => {
+                    child_engine_state = Some(state.clone());
+                }
                 _ => {}
             }
 
@@ -1239,23 +1277,28 @@ fn spawn_execution_task(ctx: SpawnContext) {
             );
         }
 
-        // Turn-boundary checkpoint — write a versioned snapshot of the
-        // subagent's context state so session_state can read it in O(1).
-        crate::runner::core::write_turn_checkpoint(
-            &checkpoints,
-            &state_service,
-            &execution_id,
-            &child_session_id,
-            handle.current_iteration(),
-            &accumulated_response,
-        );
+        // Confirm queued rows before the checkpoint lists them as represented
+        // outputs; also keeps the final child row visible before the result
+        // bus can race the periodic flush.
+        batch_writer.flush().await;
+        let child_represented_ids = batch_writer.written_message_ids();
+
+        // Turn-boundary checkpoint — the child's context state plus its
+        // private snapshot and recovery cursor beside it.
+        crate::runner::recovery::write_turn_checkpoint(crate::runner::recovery::TurnCheckpoint {
+            checkpoints: &checkpoints,
+            state_service: &state_service,
+            execution_id: &execution_id,
+            session_id: &child_session_id,
+            llm_turn: handle.current_iteration(),
+            response: &accumulated_response,
+            engine_state: child_engine_state.as_ref(),
+            input_cursor: 0, // child input is in-memory, not durable rows
+            represented_output_ids: &child_represented_ids,
+        });
 
         match result {
             Ok(()) => {
-                // Child completion can be observed independently by Research;
-                // do not let it overtake the final child-session message.
-                batch_writer.flush().await;
-
                 // Unblock any wait_agent before firing callbacks.
                 agent_result_bus.resolve(&execution_id, &agent_id, &accumulated_response);
 
@@ -1883,6 +1926,81 @@ fn walkdir_simple(dir: &Path) -> std::io::Result<Vec<String>> {
 mod tests {
     use super::*;
 
+    /// Build a minimal ExecCtx from the individual services tests construct.
+    #[allow(clippy::too_many_arguments)]
+    fn test_exec_ctx(
+        event_bus: Arc<EventBus>,
+        agent_service: Arc<AgentService>,
+        provider_service: Arc<ProviderService>,
+        mcp_service: Arc<McpService>,
+        skill_service: Arc<SkillService>,
+        paths: SharedVaultPaths,
+        messages: Arc<dyn zbot_conversation::MessageStore>,
+        session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+        checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
+        handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
+        delegation_registry: Arc<DelegationRegistry>,
+        delegation_tx: tokio::sync::mpsc::UnboundedSender<DelegationRequest>,
+        log_service: Arc<LogService<DatabaseManager>>,
+        state_service: Arc<StateService<DatabaseManager>>,
+        memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+        distiller: Option<Arc<distillation::SessionDistiller>>,
+        memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
+        peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
+        a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
+        rate_limiters: Arc<
+            std::sync::RwLock<
+                std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
+            >,
+        >,
+        _kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+        _ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
+        _goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
+        steering_registry: Arc<agent_runtime::SteeringRegistry>,
+        agent_result_bus: Arc<AgentResultBus>,
+    ) -> Arc<crate::runner::exec_ctx::ExecCtx> {
+        Arc::new(crate::runner::exec_ctx::ExecCtx {
+            event_bus,
+            agent_service,
+            provider_service,
+            mcp_service,
+            skill_service,
+            paths,
+            log_service,
+            state_service: state_service.clone(),
+            messages,
+            session_meta,
+            checkpoints,
+            control: crate::runner::session_control::SessionControl {
+                handles,
+                delegation_registry,
+                state_service,
+            },
+            delegation_tx,
+            delegation_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            connector_registry: None,
+            bridge_registry: None,
+            bridge_outbox: None,
+            memory_store,
+            embedding_client: None,
+            distiller,
+            handoff_writer: None,
+            memory_recall,
+            peer_messages,
+            a2a_delegation,
+            procedure_store: None,
+            ward_usage: Arc::new(gateway_services::WardUsage::new(std::path::PathBuf::from(
+                "/tmp/test-wards",
+            ))),
+            model_registry: Arc::new(arc_swap::ArcSwapOption::from(None)),
+            rate_limiters,
+            integrations: crate::runner::integrations::SharedIntegrations::default(),
+            steering_registry,
+            agent_result_bus,
+            ward_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        })
+    }
+
     struct AppendObserverMessageStore {
         inner: Arc<dyn zbot_conversation::MessageStore>,
         on_append: Arc<dyn Fn(&zbot_conversation::Message) + Send + Sync>,
@@ -2175,8 +2293,7 @@ mod tests {
         let steering_registry = Arc::new(agent_runtime::SteeringRegistry::new());
         let agent_result_bus = Arc::new(AgentResultBus::new());
 
-        let result = spawn_delegated_agent(
-            &request,
+        let result_ctx = test_exec_ctx(
             event_bus.clone(),
             agent_service.clone(),
             provider_service.clone(),
@@ -2196,20 +2313,19 @@ mod tests {
             None,
             None,
             None,
-            None,
             rate_limiters.clone(),
             None,
             None,
             None,
             steering_registry.clone(),
             agent_result_bus.clone(),
-        )
-        .await;
-
-        assert_eq!(
-            result.unwrap_err(),
-            "Dynamic capability assignment target rejected"
         );
+        let result = spawn_delegated_agent(&result_ctx, &request, None).await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Dynamic capability assignment target rejected"));
         let session_after = state_service
             .get_session(&session.id)
             .expect("read parent session")
@@ -2314,8 +2430,7 @@ mod tests {
                 }),
             });
 
-        let error = spawn_delegated_agent(
-            &broken_request,
+        let error_ctx = test_exec_ctx(
             event_bus.clone(),
             agent_service,
             provider_service,
@@ -2335,18 +2450,22 @@ mod tests {
             None,
             None,
             None,
-            None,
             rate_limiters,
             None,
             None,
             None,
-            steering_registry,
+            steering_registry.clone(),
             agent_result_bus.clone(),
-        )
-        .await
-        .expect_err("missing provider must fail spawn");
+        );
+        let error = spawn_delegated_agent(&error_ctx, &broken_request, None)
+            .await
+            .expect_err("missing provider must fail spawn");
         assert!(
-            error.to_ascii_lowercase().contains("provider"),
+            error
+                .to_string()
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("provider"),
             "unexpected loader failure: {error}"
         );
         assert!(

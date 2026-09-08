@@ -69,6 +69,11 @@ pub enum BatchWrite {
 #[derive(Clone)]
 pub struct BatchWriterHandle {
     tx: mpsc::UnboundedSender<BatchWrite>,
+    /// Durable row IDs this writer appended successfully (per execution).
+    /// Shared with the background loop, which records each id only after
+    /// `MessageStore::append` returns `Ok` — a flush acknowledgement alone
+    /// never inserts an id here.
+    written_ids: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl BatchWriterHandle {
@@ -146,6 +151,16 @@ impl BatchWriterHandle {
             tracing::warn!("BatchWriter stopped before terminal flush completed");
         }
     }
+
+    /// IDs of session rows this writer appended successfully.
+    ///
+    /// Call after [`flush`](Self::flush): the returned set distinguishes
+    /// confirmed durable writes from queued attempts, so checkpoint recovery
+    /// can omit exactly the rows whose content is already inside the runtime
+    /// snapshot without dropping rows a failed append never persisted.
+    pub fn written_message_ids(&self) -> Vec<String> {
+        self.written_ids.lock().unwrap().clone()
+    }
 }
 
 /// Spawn a batch writer background task.
@@ -188,6 +203,7 @@ fn spawn_batch_writer_inner(
     messages: Arc<dyn MessageStore>,
 ) -> BatchWriterHandle {
     let (tx, rx) = mpsc::unbounded_channel();
+    let written_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     tokio::spawn(batch_writer_loop(
         rx,
@@ -195,9 +211,10 @@ fn spawn_batch_writer_inner(
         log_service,
         traces_dir,
         messages,
+        written_ids.clone(),
     ));
 
-    BatchWriterHandle { tx }
+    BatchWriterHandle { tx, written_ids }
 }
 
 /// Background loop that processes batched writes.
@@ -207,6 +224,7 @@ async fn batch_writer_loop(
     log_service: Arc<LogService<DatabaseManager>>,
     traces_dir: Option<PathBuf>,
     messages: Arc<dyn MessageStore>,
+    written_ids: Arc<std::sync::Mutex<Vec<String>>>,
 ) {
     // Pending token updates — coalesced by execution_id (only latest kept)
     let mut token_updates: HashMap<String, (u64, u64)> = HashMap::new();
@@ -221,6 +239,20 @@ async fn batch_writer_loop(
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     // Don't accumulate ticks while we're busy flushing
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let flush = |token_updates: &mut HashMap<String, (u64, u64)>,
+                 log_entries: &mut Vec<ExecutionLog>,
+                 session_messages: &mut Vec<SessionMessage>| {
+        flush_all(
+            &state_service,
+            &log_service,
+            messages.as_ref(),
+            &written_ids,
+            token_updates,
+            log_entries,
+            session_messages,
+        );
+    };
 
     loop {
         tokio::select! {
@@ -272,12 +304,12 @@ async fn batch_writer_loop(
                         trace_writers.remove(&session_id);
                     }
                     Some(BatchWrite::Flush { acknowledgement }) => {
-                        flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                        flush(&mut token_updates, &mut log_entries, &mut session_messages);
                         let _ = acknowledgement.send(());
                     }
                     None => {
                         // Channel closed — flush remaining and exit
-                        flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                        flush(&mut token_updates, &mut log_entries, &mut session_messages);
                         tracing::debug!("BatchWriter shutting down after final flush");
                         return;
                     }
@@ -286,13 +318,13 @@ async fn batch_writer_loop(
                 // Flush if we've accumulated enough items
                 let total = token_updates.len() + log_entries.len() + session_messages.len();
                 if total >= 10 {
-                    flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                    flush(&mut token_updates, &mut log_entries, &mut session_messages);
                 }
             }
             _ = interval.tick() => {
                 // Periodic flush
                 if !token_updates.is_empty() || !log_entries.is_empty() || !session_messages.is_empty() {
-                    flush_all(&state_service, &log_service, messages.as_ref(), &mut token_updates, &mut log_entries, &mut session_messages);
+                    flush(&mut token_updates, &mut log_entries, &mut session_messages);
                 }
             }
         }
@@ -301,11 +333,13 @@ async fn batch_writer_loop(
 
 /// Flush all pending writes to the database.
 ///
-/// Session messages are routed through `MessageStore::append`.
+/// Session messages are routed through `MessageStore::append`; only rows
+/// whose append returned `Ok` are recorded in `written_ids`.
 fn flush_all(
     state_service: &StateService<DatabaseManager>,
     log_service: &LogService<DatabaseManager>,
     messages: &dyn MessageStore,
+    written_ids: &std::sync::Mutex<Vec<String>>,
     token_updates: &mut HashMap<String, (u64, u64)>,
     log_entries: &mut Vec<ExecutionLog>,
     session_messages: &mut Vec<SessionMessage>,
@@ -347,6 +381,10 @@ fn flush_all(
                 "BatchWriter: failed to append message via MessageStore: {}",
                 e
             );
+        } else {
+            // Success-confirmed durable write: record the row id so checkpoint
+            // recovery can treat this row as represented in the runtime tape.
+            written_ids.lock().unwrap().push(message.id);
         }
     }
 }
@@ -398,7 +436,10 @@ mod tests {
     fn send_on_closed_channel_does_not_panic() {
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx); // receiver gone — any send is a dead-letter
-        let handle = BatchWriterHandle { tx };
+        let handle = BatchWriterHandle {
+            tx,
+            written_ids: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
         // Covers both the convenience method and the silent-drop branch in
         // BatchWriterHandle::send.
         handle.token_update("e1", 1, 2);
@@ -416,7 +457,10 @@ mod tests {
     #[tokio::test]
     async fn convenience_methods_enqueue_correct_variants() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let handle = BatchWriterHandle { tx };
+        let handle = BatchWriterHandle {
+            tx,
+            written_ids: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
 
         handle.token_update("exec-9", 11, 22);
         match rx.recv().await.expect("token_update queued") {
@@ -487,6 +531,7 @@ mod tests {
             h.logs.clone(),
             None,
             h.messages.clone(),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
         ));
 
         // Enqueue a log and a session message. Neither is on the 10-item fast
@@ -532,6 +577,7 @@ mod tests {
             h.logs.clone(),
             None,
             h.messages.clone(),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
         ));
 
         for (tin, tout) in [(1, 2), (3, 4), (5, 6), (7, 8)] {
@@ -571,6 +617,7 @@ mod tests {
             h.logs.clone(),
             None,
             h.messages.clone(),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
         ));
 
         // Ten session messages pushes the pending-count gate at ≥10. The
@@ -658,6 +705,7 @@ mod tests {
             h.logs.clone(),
             Some(traces_dir.clone()),
             h.messages.clone(),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
         ));
 
         tx.send(BatchWrite::TraceEvent {
@@ -688,5 +736,61 @@ mod tests {
         assert_eq!(lines.len(), 2, "two trace events decoded");
         assert!(lines[0].contains(r#""span_id":"a""#));
         assert!(lines[1].contains(r#""span_id":"b""#));
+    }
+
+    /// A failed append must not be reported as a durable represented output:
+    /// checkpoint recovery omits represented IDs from replay, so recording an
+    /// id whose row never landed would silently drop that content. The flush
+    /// acknowledgement alone proves nothing about per-row success.
+    #[tokio::test]
+    async fn failed_append_is_not_a_written_message_id() {
+        struct FailingStore;
+        impl zbot_conversation::MessageStore for FailingStore {
+            fn append(&self, _msg: &zbot_conversation::Message) -> anyhow::Result<()> {
+                Err(anyhow::anyhow!("disk full"))
+            }
+            fn replay(
+                &self,
+                _session_id: &str,
+                _after_seq: Option<i64>,
+                _limit: usize,
+            ) -> anyhow::Result<Vec<zbot_conversation::Message>> {
+                Ok(Vec::new())
+            }
+            fn tool_sequence_for_session(&self, _session_id: &str) -> anyhow::Result<Vec<String>> {
+                Ok(Vec::new())
+            }
+        }
+
+        let h = setup();
+        let written_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(batch_writer_loop(
+            rx,
+            h.state.clone(),
+            h.logs.clone(),
+            None,
+            Arc::new(FailingStore),
+            written_ids.clone(),
+        ));
+        let handle = BatchWriterHandle {
+            tx,
+            written_ids: written_ids.clone(),
+        };
+        handle.session_message(
+            &h.session_id,
+            &h.execution_id,
+            "assistant",
+            "lost",
+            None,
+            None,
+        );
+        handle.flush().await;
+        drop(handle);
+        task.await.expect("task joins");
+        assert!(
+            written_ids.lock().unwrap().is_empty(),
+            "a failed append must not be recorded as a durable written id"
+        );
     }
 }

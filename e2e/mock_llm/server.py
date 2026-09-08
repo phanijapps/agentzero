@@ -199,6 +199,16 @@ def create_app(
                     _stream_response(response), media_type="text/event-stream",
                 )
             return JSONResponse(response)
+        if not streaming:
+            # Fixtures record agent streaming turns only. Non-streaming
+            # callers (session distillation, wiki compilation) run against the
+            # seeded environment's own providers; serving them from the FIFO
+            # would derail the recorded agent sequence. Fail without consuming
+            # a record so the caller's provider fallback engages.
+            return JSONResponse(
+                {"error": "non-streaming chat is not recorded by this fixture"},
+                status_code=503,
+            )
         if exec_id:
             result = store.next_response(
                 exec_id=exec_id, messages_hash=_messages_hash(messages),

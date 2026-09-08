@@ -5,7 +5,7 @@
 #![cfg(feature = "test-stubs")]
 
 use gateway_execution::config::ExecutionConfig;
-use gateway_execution::runner::{SessionSpawner, StubSessionInvoker};
+use gateway_execution::runner::StubSessionInvoker;
 use std::path::PathBuf;
 
 #[tokio::test]

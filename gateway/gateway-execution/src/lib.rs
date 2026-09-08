@@ -30,7 +30,7 @@ pub mod continuation;
 pub mod conversation_history;
 pub mod curator;
 pub mod delegation;
-pub mod distillation;
+pub mod errors;
 pub mod events;
 pub mod handle;
 pub mod indexer;
@@ -49,7 +49,6 @@ pub mod sleep;
 pub mod tool_result_extractor;
 pub mod tools;
 pub mod ward_artifact_indexer;
-pub mod ward_wiki;
 
 // Re-export public types
 pub use archiver::SessionArchiver;

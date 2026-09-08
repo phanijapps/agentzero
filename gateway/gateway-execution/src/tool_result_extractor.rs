@@ -8,6 +8,7 @@
 //! and `source_ref = tool_call_id`, enabling drill-down from graph to
 //! the exact tool invocation that produced it.
 
+use crate::errors::ExecutionError;
 use agent_tools::{EvidenceRecord, IngestionAccess};
 use knowledge_graph::{Entity, EntityType};
 use serde_json::{Map, Value};
@@ -242,7 +243,7 @@ async fn ensure_episode(
     content: &str,
     session_id: &str,
     agent_id: &str,
-) -> Result<String, String> {
+) -> Result<String, ExecutionError> {
     let content_hash = hash_content(content);
     // Dedup: if we've seen this exact tool output before, reuse the episode.
     if let Ok(Some(existing)) = store

@@ -288,7 +288,12 @@ pub(super) async fn handle_client_message(
             let ws_sid = session_id.to_string();
             let on_ready: gateway_execution::OnSessionReady =
                 Box::new(move |agent_session_id: String| {
+                    let owner_subscriptions = subs.clone();
+                    let owner_session_id = ws_sid.clone();
                     Box::pin(async move {
+                        owner_subscriptions
+                            .bind_session_owner(&owner_session_id, agent_session_id.clone())
+                            .await;
                         let _ = subs
                             .subscribe_with_scope(
                                 &ws_sid,
@@ -357,22 +362,19 @@ pub(super) async fn handle_client_message(
                     .await
                 {
                     Ok(receipt) => {
+                        // The durable queue has accepted and persisted the
+                        // request. Publish its reserved identity immediately
+                        // so Stop can cancel it before a worker starts it.
                         if let Some(client) = sessions.get(session_id).await {
-                            tokio::spawn(async move {
-                                let ready = agent_tasks.wait_until_ready(&receipt).await;
-                                let response = if ready.is_ok() {
-                                    ServerMessage::InvokeAccepted {
-                                        session_id: receipt.session_id,
-                                        conversation_id: conversation_id.clone(),
-                                    }
-                                } else {
-                                    ServerMessage::error(
-                                        Some(conversation_id),
-                                        "invocation_failed",
-                                        "Unable to start this request",
-                                    )
-                                };
-                                let _ = client.send(response);
+                            subscriptions
+                                .bind_session_owner(
+                                    &session_id.to_string(),
+                                    receipt.session_id.clone(),
+                                )
+                                .await;
+                            let _ = client.send(ServerMessage::InvokeAccepted {
+                                session_id: receipt.session_id,
+                                conversation_id,
                             });
                         }
                     }
@@ -551,13 +553,73 @@ pub(super) async fn handle_client_message(
         }
         ClientMessage::Cancel {
             session_id: exec_session_id,
+            conversation_id,
         } => {
             debug!(
                 "Session {} cancelling execution session {}",
                 session_id, exec_session_id
             );
 
-            match runtime.cancel(&exec_session_id).await {
+            let Some(conversation_id) = conversation_id else {
+                if let Some(session) = sessions.get(session_id).await {
+                    let _ = session.send(ServerMessage::error(
+                        None,
+                        "cancel_failed",
+                        "Cancellation request is missing its conversation",
+                    ));
+                }
+                return Ok(());
+            };
+            if !subscriptions
+                .owns_session(&session_id.to_string(), &exec_session_id)
+                .await
+            {
+                if let Some(session) = sessions.get(session_id).await {
+                    let _ = session.send(ServerMessage::error(
+                        Some(conversation_id),
+                        "cancel_failed",
+                        "You cannot cancel this request",
+                    ));
+                }
+                return Ok(());
+            }
+            let queued = match agent_tasks
+                .as_ref()
+                .map(|tasks| tasks.cancel_research(session_id, &conversation_id, &exec_session_id))
+            {
+                Some(Ok(outcome)) => outcome,
+                Some(Err(_)) => {
+                    if let Some(session) = sessions.get(session_id).await {
+                        let _ = session.send(ServerMessage::error(
+                            Some(conversation_id),
+                            "cancel_failed",
+                            "Unable to cancel this request",
+                        ));
+                    }
+                    return Ok(());
+                }
+                None => crate::durable_agent_tasks::AgentTaskCancelOutcome::NotFound,
+            };
+            let cancel_result = match queued {
+                crate::durable_agent_tasks::AgentTaskCancelOutcome::Canceled
+                | crate::durable_agent_tasks::AgentTaskCancelOutcome::AlreadyCanceled => {
+                    // A leased item may already have created its durable
+                    // session. Cancel its live execution too; for a pending
+                    // item there is no session yet and the queue transition is
+                    // still the accepted cancellation.
+                    let _ = runtime
+                        .cancel_exact(&exec_session_id, &conversation_id)
+                        .await;
+                    Ok(())
+                }
+                crate::durable_agent_tasks::AgentTaskCancelOutcome::NotFound
+                | crate::durable_agent_tasks::AgentTaskCancelOutcome::NotCancelable => {
+                    runtime
+                        .cancel_exact(&exec_session_id, &conversation_id)
+                        .await
+                }
+            };
+            match cancel_result {
                 Ok(()) => {
                     debug!("Execution session {} cancelled", exec_session_id);
                     if let Some(session) = sessions.get(session_id).await {
@@ -567,9 +629,13 @@ pub(super) async fn handle_client_message(
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to cancel session {}: {}", exec_session_id, e);
+                    warn!(session_id = %exec_session_id, error = %e, "Failed to cancel session");
                     if let Some(session) = sessions.get(session_id).await {
-                        let _ = session.send(ServerMessage::error(None, "cancel_failed", &e));
+                        let _ = session.send(ServerMessage::error(
+                            None,
+                            "cancel_failed",
+                            "Unable to cancel this request",
+                        ));
                     }
                 }
             }
@@ -1301,7 +1367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn research_subscribes_then_persists_before_acceptance() {
+    async fn research_subscribes_and_enqueues_before_early_acceptance() {
         let temp_dir = TempDir::new().unwrap();
         let server = GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
         let sessions = SessionRegistry::new();
@@ -1313,7 +1379,6 @@ mod tests {
         subscriptions.connect(client_id.clone(), tx).await;
         let message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
         let session_id = crate::durable_agent_tasks::reserved_session_id(message_id);
-        let execution_id = crate::durable_agent_tasks::reserved_execution_id(message_id);
         let prompt = "Investigate durable handoff";
         let service = server.ws_handler().agent_tasks().unwrap();
 
@@ -1348,48 +1413,17 @@ mod tests {
             .await
             .unwrap();
         assert!(!duplicate.inserted, "invoke must persist before returning");
-        assert!(rx.try_recv().is_err(), "acceptance must wait for bootstrap");
-
-        let session = execution_state::Session::new_with_id(
-            &session_id,
-            "root",
-            execution_state::TriggerSource::Web,
-        )
-        .unwrap();
-        server
+        // Durable queue acceptance provides the identity needed by Stop even
+        // before a worker bootstraps session/execution/message rows.
+        assert!(server
             .state()
             .state_service
-            .create_session_from(&session)
-            .unwrap();
-        let execution =
-            execution_state::AgentExecution::new_root_with_id(&execution_id, &session_id, "root")
-                .unwrap();
-        server
-            .state()
-            .state_service
-            .create_execution(&execution)
-            .unwrap();
-        server
-            .state()
-            .messages
-            .append(&zbot_conversation::Message {
-                id: message_id.to_owned(),
-                execution_id: Some(execution_id.clone()),
-                session_id: session_id.clone(),
-                role: "user".to_owned(),
-                content: prompt.to_owned(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                token_count: 1,
-                tool_calls: None,
-                tool_call_id: None,
-                seq: 0,
-            })
-            .unwrap();
-
-        let accepted = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
+            .get_session(&session_id)
             .unwrap()
-            .unwrap();
+            .is_none());
+        let accepted = rx
+            .try_recv()
+            .expect("durable enqueue acknowledges immediately");
         assert!(matches!(
             accepted,
             ServerMessage::InvokeAccepted {
@@ -1397,6 +1431,10 @@ mod tests {
                 conversation_id
             } if accepted_session == session_id && conversation_id == "research-1"
         ));
+        assert!(
+            rx.try_recv().is_err(),
+            "exactly one enqueue acknowledgement"
+        );
     }
 
     #[tokio::test]

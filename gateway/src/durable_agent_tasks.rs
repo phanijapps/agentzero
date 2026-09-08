@@ -142,6 +142,20 @@ pub enum AgentTaskEnqueueError {
     Conflict,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTaskCancelOutcome {
+    Canceled,
+    AlreadyCanceled,
+    NotFound,
+    NotCancelable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTaskCancelError {
+    Unauthorized,
+    Unavailable,
+}
+
 struct ResearchTaskPolicy {
     task: AgentTaskV1,
     node_id: String,
@@ -359,6 +373,59 @@ impl DurableAgentTaskService {
 
     pub fn work_store(&self) -> Arc<dyn execution_state::WorkStore> {
         self.store.clone()
+    }
+
+    /// Cancel the durable Research request owned by this WebSocket actor.
+    ///
+    /// The read-before-transition check binds both the request's conversation
+    /// and reserved session identity, so a reused conversation cannot cancel a
+    /// different request from the same client.
+    pub fn cancel_research(
+        &self,
+        actor_id: &str,
+        conversation_id: &str,
+        session_id: &str,
+    ) -> Result<AgentTaskCancelOutcome, AgentTaskCancelError> {
+        validate_bounded_identifier(actor_id, execution_state::MAX_ROUTING_BYTES)
+            .map_err(|_| AgentTaskCancelError::Unauthorized)?;
+        validate_bounded_identifier(conversation_id, MAX_CONVERSATION_ID_BYTES)
+            .map_err(|_| AgentTaskCancelError::Unauthorized)?;
+        validate_prefixed_uuid(session_id, "sess-")
+            .map_err(|_| AgentTaskCancelError::Unauthorized)?;
+        let scope = execution_state::WorkScope::new(
+            AGENT_TASK_SOURCE,
+            AGENT_TASK_KIND,
+            actor_id.to_owned(),
+        )
+        .map_err(|_| AgentTaskCancelError::Unauthorized)?;
+        let Some(work) = self
+            .store
+            .find_scoped(&scope, conversation_id)
+            .map_err(|_| AgentTaskCancelError::Unavailable)?
+        else {
+            return Ok(AgentTaskCancelOutcome::NotFound);
+        };
+        let envelope = work.envelope();
+        if envelope.target() != AGENT_TASK_TARGET
+            || envelope.provenance().session_id() != session_id
+            || envelope.correlation_id() != Some(conversation_id)
+        {
+            return Err(AgentTaskCancelError::Unauthorized);
+        }
+        match self
+            .store
+            .cancel_scoped(&scope, conversation_id, chrono::Utc::now())
+            .map_err(|_| AgentTaskCancelError::Unavailable)?
+        {
+            execution_state::WorkCancelOutcome::Canceled(_) => Ok(AgentTaskCancelOutcome::Canceled),
+            execution_state::WorkCancelOutcome::AlreadyCanceled(_) => {
+                Ok(AgentTaskCancelOutcome::AlreadyCanceled)
+            }
+            execution_state::WorkCancelOutcome::NotCancelable(_) => {
+                Ok(AgentTaskCancelOutcome::NotCancelable)
+            }
+            execution_state::WorkCancelOutcome::NotFound => Ok(AgentTaskCancelOutcome::NotFound),
+        }
     }
 
     pub async fn wait_until_ready(
@@ -1234,5 +1301,25 @@ mod tests {
             assert!(!logs.contains(secret));
             assert!(!persisted_failure.contains(secret));
         }
+    }
+
+    #[tokio::test]
+    async fn session_stop_durable_cancellation_contract() {
+        let runtime = Arc::new(FakeRuntime::new([AgentTaskRunState::Cancelled]));
+        let handler = AgentTaskHandler::new(runtime.clone(), "node-local")
+            .with_poll_interval(Duration::from_millis(1));
+
+        assert_eq!(
+            handler
+                .handle_task(valid_task(), "connection-1".to_owned())
+                .await,
+            WorkHandlerOutcome::Complete
+        );
+
+        assert_eq!(
+            runtime.starts.load(Ordering::SeqCst),
+            0,
+            "queued cancellation must prevent runtime launch"
+        );
     }
 }

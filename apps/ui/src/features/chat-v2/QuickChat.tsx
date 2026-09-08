@@ -152,7 +152,14 @@ export function QuickChat() {
         </div>
         <div className="quick-chat__actions">
           {state.status === "running" && (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={stopAgent} title="Stop">
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={stopAgent}
+              title="Stop"
+              aria-label="Stop chat"
+              disabled={!state.sessionId}
+            >
               <Square size={14} />
             </button>
           )}

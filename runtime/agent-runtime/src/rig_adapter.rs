@@ -3,17 +3,37 @@
 //! The implementation adapter lands in later migration tasks. This module owns
 //! the dependency pin so Rig stays confined to `agent-runtime`.
 
+mod checkpoint_tail;
 pub mod client;
 pub mod config;
+mod context_inputs;
+mod context_policy;
 pub mod engine;
+pub mod factory;
 pub mod model;
+mod progress_policy;
+mod resources;
 pub mod structured;
 pub mod tool;
+mod tool_hook;
+mod tool_results;
+mod turn_events;
+mod turn_signal;
+
+#[cfg(test)]
+mod capability_tests;
+#[cfg(test)]
+mod mcp_capability_tests;
+#[cfg(test)]
+mod mcp_lifecycle_tests;
 
 pub use client::LlmCompletionClient;
 pub use config::{RigAgentConfig, RigConfigError, RigModelConfig};
 pub use structured::prompt_typed;
 pub use tool::{RigToolAdapter, SharedToolContext};
+
+/// SDK tracing roots that record raw payloads before host policy hooks.
+pub(crate) const PAYLOAD_DIAGNOSTIC_TARGETS: &[&str] = &["rig", "rig_core"];
 
 // Re-exported through the adapter boundary so gateway crates can use Rig
 // extractors (typed structured output) over LlmCompletionClient without
@@ -48,6 +68,32 @@ pub const fn dependency_pin() -> RigDependencyPin {
         revision: RIG_REVISION,
         version: RIG_VERSION,
     }
+}
+
+/// Run a Rig agent with tools — no output schema, just the agent loop.
+/// The model uses tools, the loop handles dispatch. Returns the final text.
+pub async fn agent_with_tools(
+    llm_client: std::sync::Arc<dyn crate::llm::LlmClient>,
+    model: String,
+    system_prompt: impl Into<String>,
+    tools: Vec<Box<dyn rig::tool::ToolDyn>>,
+    user_message: &str,
+) -> Result<String, String> {
+    use rig::client::CompletionClient;
+    use rig::completion::Prompt;
+
+    let client = LlmCompletionClient::new(llm_client);
+    let agent = client
+        .agent(model)
+        .preamble(&system_prompt.into())
+        .tools(tools)
+        .default_max_turns(20)
+        .build();
+
+    agent
+        .prompt(user_message)
+        .await
+        .map_err(|e| format!("agent execution failed: {e}"))
 }
 
 #[cfg(test)]

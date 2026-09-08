@@ -34,6 +34,14 @@ impl ProcedureStore for GatewayProcedureStore {
             .collect()
     }
 
+    async fn list_procedure_names(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<String>)>, String> {
+        self.repo.list_procedure_names(agent_id, limit)
+    }
+
     async fn upsert_procedure(
         &self,
         procedure: Value,

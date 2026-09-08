@@ -3,6 +3,7 @@
 //! Provider resolution and agent loading utilities for execution setup.
 
 use crate::delegation::DelegationMode;
+use crate::errors::ExecutionError;
 use agent_tools::ToolSettings;
 use gateway_services::providers::Provider;
 use gateway_services::{
@@ -66,7 +67,7 @@ impl<'a> ProviderResolver<'a> {
     }
 
     /// Get the default provider (marked as is_default) or fall back to first.
-    pub fn get_default(&self) -> Result<Provider, String> {
+    pub fn get_default(&self) -> Result<Provider, ExecutionError> {
         let providers = self
             .provider_service
             .list()
@@ -78,14 +79,15 @@ impl<'a> ProviderResolver<'a> {
         }
 
         // Fall back to first provider
-        providers
-            .into_iter()
-            .next()
-            .ok_or_else(|| "No providers configured. Add a provider in Integrations.".to_string())
+        providers.into_iter().next().ok_or_else(|| {
+            ExecutionError::from(
+                "No providers configured. Add a provider in Integrations.".to_string(),
+            )
+        })
     }
 
     /// Get provider by ID, falling back to default if not found.
-    pub fn get_or_default(&self, provider_id: &str) -> Result<Provider, String> {
+    pub fn get_or_default(&self, provider_id: &str) -> Result<Provider, ExecutionError> {
         if !provider_id.is_empty() {
             match self.provider_service.get(provider_id) {
                 Ok(provider) => return Ok(provider),
@@ -151,7 +153,7 @@ impl<'a> AgentLoader<'a> {
     pub async fn load(
         &self,
         agent_id: &str,
-    ) -> Result<(gateway_services::agents::Agent, Provider), String> {
+    ) -> Result<(gateway_services::agents::Agent, Provider), ExecutionError> {
         let mut agent = self
             .agent_service
             .get(agent_id)
@@ -172,7 +174,7 @@ impl<'a> AgentLoader<'a> {
     pub async fn load_or_create_root(
         &self,
         agent_id: &str,
-    ) -> Result<(gateway_services::agents::Agent, Provider), String> {
+    ) -> Result<(gateway_services::agents::Agent, Provider), ExecutionError> {
         if agent_id != "root" {
             let agent = self.agent_service.get(agent_id).await?;
             let provider = self.provider_resolver.get_or_default(&agent.provider_id)?;
@@ -260,11 +262,11 @@ impl<'a> AgentLoader<'a> {
     pub async fn load_or_create_specialist(
         &self,
         agent_id: &str,
-    ) -> Result<(gateway_services::agents::Agent, Provider), String> {
+    ) -> Result<(gateway_services::agents::Agent, Provider), ExecutionError> {
         if matches!(agent_id, "root" | "orchestrator") {
-            return Err(format!(
+            return Err(ExecutionError::from(format!(
                 "Reserved system agent id cannot be delegated: {agent_id}"
-            ));
+            )));
         }
 
         // Ward-as-agent: a `ward:<name>` id synthesizes the agent from the
@@ -334,14 +336,14 @@ impl<'a> AgentLoader<'a> {
     fn synthesize_ward_agent(
         &self,
         ward_name: &str,
-    ) -> Result<(gateway_services::agents::Agent, Provider), String> {
+    ) -> Result<(gateway_services::agents::Agent, Provider), ExecutionError> {
         let ward_dir = self.paths.ward_dir(ward_name);
         if !ward_dir.is_dir() {
-            return Err(format!(
+            return Err(ExecutionError::from(format!(
                 "ward '{}' has no directory at {}",
                 ward_name,
                 ward_dir.display()
-            ));
+            )));
         }
 
         let loaded_doctrine = load_ward_doctrine(&self.paths, ward_name);

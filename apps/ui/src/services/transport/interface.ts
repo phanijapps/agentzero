@@ -407,7 +407,7 @@ export interface Transport {
   resumeSession(sessionId: string): Promise<TransportResult<void>>;
 
   /** Cancel an execution session */
-  cancelSession(sessionId: string): Promise<TransportResult<void>>;
+  cancelSession(sessionId: string, conversationId?: string): Promise<TransportResult<void>>;
 
   /** End a session (mark as completed) */
   endSession(sessionId: string): Promise<TransportResult<void>>;

@@ -1526,6 +1526,81 @@ fn normalize_agent_recall_result(query: &str, value: Value) -> Value {
 // TESTS
 // ============================================================================
 
+/// Focused memory search tool — read-only, no filesystem access.
+/// Exposes only semantic search over the fact store via `recall_facts`.
+pub struct MemorySearchTool {
+    fact_store: Arc<dyn MemoryFactStore>,
+}
+
+impl MemorySearchTool {
+    pub fn new(fact_store: Arc<dyn MemoryFactStore>) -> Self {
+        Self { fact_store }
+    }
+}
+
+#[async_trait]
+impl Tool for MemorySearchTool {
+    fn name(&self) -> &'static str {
+        "search_memory"
+    }
+
+    fn description(&self) -> &'static str {
+        "Search indexed resources (skills, agents, wards, MCPs, procedures, memories) \
+         for entries relevant to a query. Returns matching results with names \
+         and descriptions."
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to search for (e.g. 'financial analysis skills', 'research agents')"
+                }
+            },
+            "required": ["query"]
+        }))
+    }
+
+    async fn execute(&self, _ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+        let query = args
+            .get("query")
+            .and_then(|q| q.as_str())
+            .unwrap_or_default();
+
+        let result = self
+            .fact_store
+            .recall_facts("root", query, 20)
+            .await
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
+
+        let items = result
+            .get("results")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let filtered: Vec<_> = items
+            .into_iter()
+            .take(10)
+            .map(|item| {
+                let key = item.get("key").and_then(|k| k.as_str()).unwrap_or("");
+                let content = item.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let category = item.get("category").and_then(|c| c.as_str()).unwrap_or("");
+                let name = key.split(':').nth(1).unwrap_or(key);
+                json!({
+                    "name": name,
+                    "description": content,
+                    "category": category,
+                })
+            })
+            .collect();
+
+        Ok(json!({ "results": filtered }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

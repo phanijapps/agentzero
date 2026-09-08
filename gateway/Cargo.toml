@@ -39,6 +39,7 @@ gateway-templates = { path = "gateway-templates" }
 gateway-connectors = { path = "gateway-connectors" }
 gateway-services = { path = "gateway-services" }
 gateway-execution = { path = "gateway-execution" }
+distillation = { path = "../services/distillation" }
 gateway-memory = { path = "gateway-memory" }
 gateway-hooks = { path = "gateway-hooks" }
 gateway-cron = { path = "gateway-cron" }

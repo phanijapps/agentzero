@@ -120,6 +120,8 @@ function ResearchHeader({ state, pillState, onOpenDrawer, onNew, onStop, showNew
             className="btn btn--ghost btn--sm"
             onClick={onStop}
             title="Stop"
+            aria-label="Stop research"
+            disabled={!state.sessionId}
           >
             <Square size={14} />
           </button>
@@ -279,25 +281,42 @@ function MainColumn({ state, surfaces, onSend, showSubagents }: MainColumnProps)
   // Interleave: each surface renders directly under the turn (execution)
   // that produced it; orphaned surfaces (no matching turn, e.g. turn
   // pruned from the tape) render after the last turn.
-  // Ownership maps: live turns key by execution id; snapshot turns carry
-  // `executionId` separately (their `id` is message-derived). Subagent
-  // turns are nested — a surface created by a ward-agent matches its
-  // subagent turn by session id (snapshot) or execution id (live) and
-  // renders under that subagent's PARENT root turn.
-  const ownerTurnId = new Map<string, string>();
+  // Ownership: primary attribution is the TIME WINDOW — the last turn
+  // whose user message precedes the surface's creation owns it. Root
+  // executions span multiple user turns with continuations, so execution
+  // ids cannot tell turn 1's surface from turn 2's (sess-fe38cfc3: both
+  // surfaces carried the one root exec id and piled under the last turn).
+  // Id keys (exec for live turns, session for snapshot subagent turns)
+  // remain the fallback for legacy rows without a timestamp.
+  const idOwnerTurnId = new Map<string, string>();
+  const turnStarts: { turnId: string; at: number }[] = [];
   for (const turn of state.turns) {
     const topKey = turn.executionId ?? turn.id;
-    ownerTurnId.set(topKey, turn.id);
+    idOwnerTurnId.set(topKey, turn.id);
     for (const sub of turn.subagents ?? []) {
-      ownerTurnId.set(sub.id, turn.id);
+      idOwnerTurnId.set(sub.id, turn.id);
     }
+    const at = Date.parse(turn.userMessage.createdAt);
+    if (Number.isFinite(at)) turnStarts.push({ turnId: turn.id, at });
   }
+  turnStarts.sort((a, b) => a.at - b.at);
   const owningTurnOf = (item: SavedSurface): string | null => {
-    if (item.execution_id && ownerTurnId.has(item.execution_id)) {
-      return ownerTurnId.get(item.execution_id)!;
+    const created = item.created_at ? Date.parse(item.created_at) : NaN;
+    if (Number.isFinite(created) && turnStarts.length > 0) {
+      let owner: string | null = null;
+      for (const { turnId, at } of turnStarts) {
+        if (at <= created) owner = turnId;
+        else break;
+      }
+      if (owner !== null) return owner;
+      // Created before the first turn's message (clock skew): first turn.
+      return turnStarts[0].turnId;
     }
-    if (item.session_id && ownerTurnId.has(item.session_id)) {
-      return ownerTurnId.get(item.session_id)!;
+    if (item.execution_id && idOwnerTurnId.has(item.execution_id)) {
+      return idOwnerTurnId.get(item.execution_id)!;
+    }
+    if (item.session_id && idOwnerTurnId.has(item.session_id)) {
+      return idOwnerTurnId.get(item.session_id)!;
     }
     return null;
   };

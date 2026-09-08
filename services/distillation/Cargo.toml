@@ -1,0 +1,33 @@
+[package]
+name = "distillation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agent-runtime = { path = "../../runtime/agent-runtime" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
+gateway-events = { path = "../../gateway/gateway-events" }
+gateway-services = { path = "../../gateway/gateway-services" }
+gateway-templates = { path = "../../gateway/gateway-templates" }
+zbot-conversation = { path = "../../stores/zbot-conversation" }
+zbot-stores = { path = "../../stores/zbot-stores" }
+zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
+zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
+knowledge-graph = { path = "../knowledge-graph" }
+api-logs = { path = "../api-logs" }
+execution-state = { path = "../execution-state" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v7", "v4"] }
+anyhow = "1"
+futures = "0.3"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }

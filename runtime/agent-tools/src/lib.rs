@@ -35,6 +35,7 @@ pub use tools::{
     IngestionAccess,
     LoadSkillTool,
     MemoryEntry,
+    MemorySearchTool,
     MemoryStore,
     MemoryTool,
     MemoryWriteTool,

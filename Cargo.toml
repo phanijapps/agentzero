@@ -28,6 +28,7 @@ members = [
     # Services - Standalone data services
     "services/api-logs",
     "services/daily-sessions",
+    "services/distillation",
     "services/execution-state",
     "services/knowledge-graph",
 

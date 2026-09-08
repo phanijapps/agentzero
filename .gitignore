@@ -142,6 +142,8 @@ docs/*
 !docs/rfc/**
 !docs/architecture/
 docs/architecture/*
+!docs/reviews/
+!docs/reviews/**
 !docs/architecture/security.md
 !docs/architecture/engram-code-graph-indexing.md
 !docs/architecture/engram-graph-noise-audit.md

@@ -24,10 +24,6 @@ Feature specs for AgentZero. Each spec is the canonical artifact for its scope, 
 | [Execution Errors](execution-errors/spec.md) | `ExecutionError` enum replaces 155 `Result<_, String>` sites across gateway-execution. |
 | [Turn Loop](turn-loop/spec.md) | Engine loop decomposed: `TurnSignal` enum + pure event mapping. Golden traces prove zero behavior change. |
 | [Junkyard Audit](junkyard-audit/spec.md) | Final branch receipts for the `op_clean_crap` consolidation. |
-| [Distillation Graph Governance](distillation-graph-governance/spec.md) | Governance rules for knowledge-graph projection from distilled sessions. |
-| [Engram Memory Engine Cutover](engram-memory-engine-cutover/spec.md) | Engram-backed memory as the sole persistence layer for facts, episodes, and wiki. |
-| [Ward Slim (P3-P5)](ward-slim/spec.md) | Ward tool surface reduction across three phases. |
-| [P0 Supply Chain Gates](p0-supply-chain-gates/spec.md) | Supply chain security gates for CI. |
 
 ## Historical Record
 

@@ -1029,7 +1029,7 @@ struct SpawnContext {
     memory_store_for_snapshot: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
     /// Distiller for the subagent's child session — fired after
     /// `complete_session(child_session_id)`.
-    distiller: Option<Arc<crate::distillation::SessionDistiller>>,
+    distiller: Option<Arc<distillation::SessionDistiller>>,
     /// Steering registry — used to remove the handle when the subagent finishes.
     steering_registry: Arc<agent_runtime::SteeringRegistry>,
     /// Result bus — resolves wait_agent and kill_agent primitives.
@@ -1944,7 +1944,7 @@ mod tests {
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
         memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-        distiller: Option<Arc<crate::distillation::SessionDistiller>>,
+        distiller: Option<Arc<distillation::SessionDistiller>>,
         memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
         peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
         a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,

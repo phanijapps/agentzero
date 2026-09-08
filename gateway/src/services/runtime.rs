@@ -7,9 +7,7 @@
 
 use crate::connectors::ConnectorRegistry;
 use crate::events::{EventBus, GatewayEvent};
-use crate::execution::{
-    ExecutionConfig, ExecutionHandle, ExecutionRunner, MemoryRecall, SessionDistiller,
-};
+use crate::execution::{ExecutionConfig, ExecutionHandle, ExecutionRunner, MemoryRecall};
 use crate::hooks::HookContext;
 use crate::services::{AgentService, McpService, ProviderService, SharedVaultPaths, SkillService};
 use api_logs::LogService;
@@ -118,7 +116,7 @@ impl RuntimeService {
         a2a_delegation: Option<Arc<dyn gateway_execution::a2a::A2aDelegationService>>,
         connector_registry: Option<Arc<ConnectorRegistry>>,
         memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-        distiller: Option<Arc<SessionDistiller>>,
+        distiller: Option<Arc<distillation::SessionDistiller>>,
         memory_recall: Option<Arc<MemoryRecall>>,
         bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
         bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,

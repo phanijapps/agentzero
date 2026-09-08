@@ -49,7 +49,7 @@ pub struct ExecutionStream {
     pub delegation_tx: mpsc::UnboundedSender<DelegationRequest>,
     pub delegation_registry: Arc<DelegationRegistry>,
     pub handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
-    pub distiller: Option<Arc<crate::distillation::SessionDistiller>>,
+    pub distiller: Option<Arc<distillation::SessionDistiller>>,
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub paths: SharedVaultPaths,
     pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,

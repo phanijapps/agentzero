@@ -9,7 +9,7 @@ mod seeded_defaults;
 use crate::connectors::{ConnectorRegistry, ConnectorService};
 use crate::cron::CronScheduler;
 use crate::events::EventBus;
-use crate::execution::{DelegationRegistry, MemoryRecall, SessionArchiver, SessionDistiller};
+use crate::execution::{DelegationRegistry, MemoryRecall, SessionArchiver};
 use crate::hooks::HookRegistry;
 use crate::services::{
     AgentService, McpService, ModelRegistry, ProviderService, RuntimeService, SettingsService,
@@ -104,7 +104,7 @@ pub struct AppState {
     pub distillation_repo: Option<Arc<DistillationRepository>>,
 
     /// Session distiller for triggering on-demand distillation (e.g., backfill).
-    pub distiller: Option<Arc<SessionDistiller>>,
+    pub distiller: Option<Arc<distillation::SessionDistiller>>,
 
     /// Backend-neutral session episode store.
     pub episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>>,
@@ -372,7 +372,7 @@ impl AppState {
         let session_archiver = Arc::new(SessionArchiver::new(db_manager.clone(), archive_path));
 
         // Build the trait-routed memory_store eagerly (before MemoryRecall +
-        // SessionDistiller construction, so they can be wired with it).
+        // distillation::SessionDistiller construction, so they can be wired with it).
         let early_memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> = engram_store_bundle
             .as_ref()
             .map(|bundle| bundle.memory_store.clone());
@@ -594,11 +594,11 @@ impl AppState {
         // trait object.
         let memory_store = early_memory_store;
 
-        // SessionDistiller writes semantic artifacts through Engram-backed
+        // distillation::SessionDistiller writes semantic artifacts through Engram-backed
         // trait stores. Conversation-linked run tracking still uses
         // conversations.db through DistillationRepository.
-        let distiller: Option<Arc<SessionDistiller>> = if memory_store.is_some() {
-            let mut distiller_inner = SessionDistiller::new(
+        let distiller: Option<Arc<distillation::SessionDistiller>> = if memory_store.is_some() {
+            let mut distiller_inner = distillation::SessionDistiller::new(
                 provider_service.clone(),
                 embedding_client.clone(),
                 messages.clone(),
@@ -641,7 +641,7 @@ impl AppState {
 
         // Keep a handle for on-demand distillation (backfill, trigger).
         // None when the distiller wasn't constructed.
-        let distiller_ref: Option<Arc<SessionDistiller>> = distiller.clone();
+        let distiller_ref: Option<Arc<distillation::SessionDistiller>> = distiller.clone();
         let max_parallel_agents = settings
             .get_execution_settings()
             .map(|s| s.max_parallel_agents)

@@ -53,7 +53,7 @@ pub fn format_intent_injection(
         // Soft ward note: when the classifier matched an existing ward, work
         // products belong there (read-only answers may skip it).
         if analysis.ward_recommendation.action == WardAction::UseExisting
-            && analysis.ward_recommendation.reason != super::router::TRIVIAL_WARD_REASON
+            && analysis.ward_recommendation.reason != "Trivial message"
         {
             out.push_str(&format!(
                 "\n**Ward:** File-producing work belongs in the existing `{}` ward.\n",

@@ -1,4 +1,4 @@
-//! Intent routing: the intent agent searches the index and submits an analysis.
+//! Intent routing: trivial bypass + procedure match + agent (which searches).
 
 use super::agent::{run_intent_agent, IntentAgentDeps};
 use super::contract::{
@@ -8,12 +8,11 @@ use super::contract::{
 use gateway_services::SharedVaultPaths;
 use zbot_stores_traits::ProcedureStore;
 
-pub(crate) const TRIVIAL_WARD_REASON: &str = "Simple request — no ward needed";
-
-pub(crate) fn is_simple_message(message: &str) -> bool {
+/// Greetings and non-task messages bypass the agent entirely — no LLM call.
+fn is_trivial(message: &str) -> bool {
     let trimmed = message.trim();
     let word_count = trimmed.split_whitespace().count();
-    let simple_patterns = [
+    let trivial = [
         "hello",
         "hi",
         "hey",
@@ -31,14 +30,14 @@ pub(crate) fn is_simple_message(message: &str) -> bool {
         "who are you",
     ];
     let lower = trimmed.to_lowercase();
-    simple_patterns
+    trivial
         .iter()
         .any(|p| lower == *p || (lower.starts_with(p) && word_count <= 4))
 }
 
-pub(crate) fn simple_analysis(message: &str) -> IntentAnalysis {
+fn trivial_analysis() -> IntentAnalysis {
     IntentAnalysis {
-        primary_intent: message.chars().take(100).collect(),
+        primary_intent: String::new(),
         hidden_intents: vec![],
         solution_path: vec![],
         recommended_skills: vec![],
@@ -50,7 +49,7 @@ pub(crate) fn simple_analysis(message: &str) -> IntentAnalysis {
             ward_name: "general".to_string(),
             subdirectory: None,
             structure: std::collections::HashMap::new(),
-            reason: TRIVIAL_WARD_REASON.to_string(),
+            reason: "Trivial message".to_string(),
         },
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Simple,
@@ -62,8 +61,8 @@ pub(crate) fn simple_analysis(message: &str) -> IntentAnalysis {
     }
 }
 
-/// Deterministic global procedure match.
-async fn match_procedure_by_name(
+/// Deterministic procedure name match — no LLM needed.
+async fn match_procedure(
     procedure_store: Option<&dyn ProcedureStore>,
     message: &str,
 ) -> Option<PinnedProcedure> {
@@ -88,92 +87,27 @@ async fn match_procedure_by_name(
         .map(|(name, ward_id)| PinnedProcedure { name, ward_id })
 }
 
-/// List wards on disk as (name, purpose) pairs — used by the fallback.
-fn list_wards(paths: &SharedVaultPaths) -> Vec<(String, String)> {
-    let Ok(entries) = std::fs::read_dir(paths.wards_dir()) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let purpose = std::fs::read_to_string(entry.path().join("AGENTS.md"))
-                .ok()
-                .and_then(|content| {
-                    content
-                        .lines()
-                        .find(|l| !l.trim().is_empty() && !l.starts_with('#'))
-                        .map(|l| l.trim().to_string())
-                })
-                .unwrap_or_default();
-            (name, purpose)
-        })
-        .collect()
+fn fallback() -> IntentAnalysis {
+    trivial_analysis()
 }
 
-fn fallback_analysis(wards: &[(String, String)]) -> IntentAnalysis {
-    let mut analysis = simple_analysis("");
-    analysis.primary_intent = String::new();
-    match wards.first() {
-        Some((top_ward, _)) => {
-            analysis.ward_recommendation = WardRecommendation {
-                action: WardAction::UseExisting,
-                ward_name: top_ward.clone(),
-                subdirectory: None,
-                structure: std::collections::HashMap::new(),
-                reason: "Intent agent unavailable — warm-routing via top ward".to_string(),
-            };
-        }
-        None => {
-            analysis.ward_recommendation.action = WardAction::CreateNew;
-            analysis.ward_recommendation.reason =
-                "Intent agent unavailable and no ward matched — create_new".to_string();
-        }
-    }
-    analysis
-}
-
-/// Classify one user request. Never fails — the worst case is the fallback.
+/// Classify a user request. The agent searches and decides simple vs graph.
 pub async fn analyze_intent(deps: &IntentAgentDeps, user_message: &str) -> IntentAnalysis {
-    if is_simple_message(user_message) {
-        tracing::info!("Intent router — trivial message, no agent call");
-        return simple_analysis(user_message);
+    if is_trivial(user_message) {
+        return trivial_analysis();
     }
 
-    if let Some(pinned) =
-        match_procedure_by_name(deps.procedure_store.as_deref(), user_message).await
-    {
-        tracing::info!(
-            procedure = %pinned.name,
-            ward = ?pinned.ward_id,
-            "Intent router — deterministic procedure match"
-        );
-        let mut analysis = simple_analysis(user_message);
+    if let Some(pinned) = match_procedure(deps.procedure_store.as_deref(), user_message).await {
+        let mut analysis = trivial_analysis();
         analysis.execution_strategy.explanation =
             "Request names a learned procedure — direct invocation".to_string();
         analysis.pinned_procedure = Some(pinned);
         return analysis;
     }
 
-    tracing::info!("Intent router — running intent agent");
-    let wards = list_wards(&deps.paths);
-
     match run_intent_agent(deps, user_message).await {
-        Some(mut analysis) => {
-            analysis.pinned_procedure = None;
-            tracing::info!(
-                primary_intent = %analysis.primary_intent,
-                approach = %analysis.execution_strategy.approach,
-                complexity = ?analysis.complexity,
-                "Intent agent complete"
-            );
-            analysis
-        }
-        None => {
-            tracing::warn!("Intent agent did not submit — falling back");
-            fallback_analysis(&wards)
-        }
+        Some(analysis) => analysis,
+        None => fallback(),
     }
 }
 

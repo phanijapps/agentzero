@@ -70,6 +70,34 @@ pub const fn dependency_pin() -> RigDependencyPin {
     }
 }
 
+/// Build a Rig agent with tools and get a typed, schema-enforced response.
+/// Single call: the model uses tools, then returns T via response_format.
+pub async fn agent_with_tools_and_schema<T>(
+    llm_client: std::sync::Arc<dyn crate::llm::LlmClient>,
+    model: String,
+    system_prompt: impl Into<String>,
+    tools: Vec<Box<dyn rig::tool::ToolDyn>>,
+    user_message: &str,
+) -> Result<T, String>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+{
+    use rig::client::CompletionClient;
+    use rig::completion::TypedPrompt;
+
+    let client = LlmCompletionClient::new(llm_client);
+    let agent = client
+        .agent(model)
+        .preamble(&system_prompt.into())
+        .tools(tools)
+        .build();
+
+    agent
+        .prompt_typed::<T>(user_message)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

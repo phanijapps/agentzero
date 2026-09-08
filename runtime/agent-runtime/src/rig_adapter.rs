@@ -70,40 +70,6 @@ pub const fn dependency_pin() -> RigDependencyPin {
     }
 }
 
-/// Build a Rig agent with tools and get a typed, schema-enforced response.
-/// Single call: the model uses tools, then returns T via response_format.
-pub async fn agent_with_tools_and_schema<T>(
-    llm_client: std::sync::Arc<dyn crate::llm::LlmClient>,
-    model: String,
-    system_prompt: impl Into<String>,
-    tools: Vec<Box<dyn rig::tool::ToolDyn>>,
-    user_message: &str,
-) -> Result<T, String>
-where
-    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
-{
-    use rig::client::CompletionClient;
-    use rig::completion::Prompt;
-
-    let client = LlmCompletionClient::new(llm_client);
-    let agent = client
-        .agent(model)
-        .preamble(&system_prompt.into())
-        .tools(tools)
-        .default_max_turns(20)
-        .build();
-
-    // Run the agent loop — the model uses tools, then produces text.
-    // We parse the text using Rig's built-in deserializer (handles JSON
-    // in markdown fences and prose-wrapped objects).
-    let response = agent
-        .prompt(user_message)
-        .await
-        .map_err(|e| format!("agent execution failed: {e}"))?;
-
-    // Deserialize the text response into T
-    serde_json::from_str::<T>(&response).map_err(|e| format!("invalid structured output: {e}"))
-}
 /// Run a Rig agent with tools — no output schema, just the agent loop.
 /// The model uses tools, the loop handles dispatch. Returns the final text.
 pub async fn agent_with_tools(

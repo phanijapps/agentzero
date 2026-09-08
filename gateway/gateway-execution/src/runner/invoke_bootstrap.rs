@@ -92,7 +92,6 @@ pub(super) struct SetupResult {
 // PRIVATE CONTEXT TYPES (mirrors the same structs in core.rs)
 // ============================================================================
 
-/// Borrowed inputs for [`InvokeBootstrap::create_executor`].
 struct CreateExecutorArgs<'a> {
     agent: &'a gateway_services::agents::Agent,
     provider: &'a gateway_services::providers::Provider,
@@ -106,7 +105,6 @@ struct CreateExecutorArgs<'a> {
 }
 
 /// Per-request services and settings gathered by
-/// [`InvokeBootstrap::collect_execution_inputs`].
 struct ExecutionInputs {
     available_agents: Vec<serde_json::Value>,
     available_skills: Vec<serde_json::Value>,
@@ -118,7 +116,6 @@ struct ExecutionInputs {
     rate_limiter: Arc<agent_runtime::ProviderRateLimiter>,
 }
 
-/// Borrowed inputs for [`InvokeBootstrap::run_intent_analysis`].
 struct IntentAnalysisCtx<'a> {
     agent: &'a gateway_services::agents::Agent,
     provider: &'a gateway_services::providers::Provider,
@@ -130,7 +127,6 @@ struct IntentAnalysisCtx<'a> {
     fact_store: Option<&'a Arc<dyn zbot_stores::MemoryFactStore>>,
 }
 
-/// Return type of [`InvokeBootstrap::run_intent_analysis`].
 struct IntentOutcome {
     recommended_skills: Vec<String>,
     recommended_capabilities: Vec<agent_primitives::event::AgentCapabilityAssignment>,
@@ -138,14 +134,10 @@ struct IntentOutcome {
     instructions_injection: String,
     title_hint: String,
     /// A ward accepted by filesystem validation. This is the only
-    /// intent-derived ward identifier allowed into runtime state.
     existing_ward_id: Option<String>,
-    /// Present only for cold graph work that must establish a ward before planning.
     planning_task: Option<String>,
-    /// Host-owned full catalog used by planner-only `lookup_capabilities`.
     planning_capability_catalog: Option<serde_json::Value>,
     /// Sanitized intent data, held until the active ward is known. Delaying
-    /// the write prevents a model-suggested path from becoming fact scope.
     intent_snapshot: serde_json::Value,
 }
 
@@ -298,37 +290,6 @@ fn safe_capability_name(value: &str) -> String {
 ///
 /// Runtime configuration, auth tokens, URLs, command lines, headers, and
 /// environment values never cross this boundary.
-#[allow(dead_code)]
-fn safe_intent_mcp_catalog(mcp_service: &McpService) -> Vec<serde_json::Value> {
-    let mut candidates = mcp_service
-        .list_summaries()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|summary| {
-            summary.enabled
-                && matches!(
-                    summary.auth_status.as_deref(),
-                    None | Some("not_configured") | Some("connected")
-                )
-        })
-        .map(|summary| {
-            let description = safe_capability_description(&summary.description);
-            let name = safe_capability_name(&summary.name);
-            serde_json::json!({
-                "id": summary.id,
-                "name": name,
-                "description": description,
-            })
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        left.get("id")
-            .and_then(serde_json::Value::as_str)
-            .cmp(&right.get("id").and_then(serde_json::Value::as_str))
-    });
-    candidates
-}
-
 /// Keep model output on the narrow capability transport boundary. Invalid
 /// targets and unknown IDs are silently discarded here and revalidated again
 /// immediately before child/root executor construction.
@@ -1739,84 +1700,6 @@ impl InvokeBootstrap {
     /// Build the LLM client for intent analysis, honoring the per-task
     /// override (`settings.intent_analysis.{provider_id,model}`). Returns
     /// a retrying client or None (with fallback event emitted).
-    #[allow(dead_code)]
-    async fn build_intent_llm_client(
-        &self,
-        agent: &gateway_services::agents::Agent,
-        provider: &gateway_services::providers::Provider,
-        config: &ExecutionConfig,
-        session_id: &str,
-        execution_id: &str,
-    ) -> Option<std::sync::Arc<dyn agent_runtime::LlmClient>> {
-        // Build temporary LLM client for analysis. Per-task override:
-        // `settings.intent_analysis.{provider_id,model}` swaps the
-        // root-agent provider/model used for analysis. Empty values
-        // inherit (= what the root agent already resolved to). Lets
-        // users route this every-prompt call to a cheaper/faster model.
-        let exec_settings = gateway_services::SettingsService::new(self.ctx.paths.clone())
-            .get_execution_settings()
-            .unwrap_or_default();
-        let intent_cfg = exec_settings.intent_analysis;
-
-        let target_provider =
-            if let Some(id) = intent_cfg.provider_id.as_deref().filter(|s| !s.is_empty()) {
-                self.ctx
-                    .provider_service
-                    .get(id)
-                    .unwrap_or_else(|_| provider.clone())
-            } else {
-                provider.clone()
-            };
-        let target_model = intent_cfg
-            .model
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| agent.model.clone());
-        let max_tokens = intent_cfg.max_tokens.unwrap_or(agent.max_tokens);
-
-        let llm_config = agent_runtime::LlmConfig::new(
-            target_provider.base_url.clone(),
-            target_provider.api_key.clone(),
-            target_model,
-            target_provider
-                .id
-                .clone()
-                .unwrap_or_else(|| target_provider.name.clone()),
-        )
-        .with_max_tokens(max_tokens);
-
-        let raw_client = match agent_runtime::OpenAiClient::new(llm_config) {
-            Ok(c) => c,
-            Err(e) => {
-                if config.redact_diagnostics() {
-                    tracing::warn!(
-                        session_id,
-                        execution_id,
-                        reason_code = "intent_client_unavailable",
-                        "Intent analysis unavailable"
-                    );
-                } else {
-                    tracing::warn!("Failed to create LLM client for intent analysis: {}", e);
-                }
-                self.emit_intent_fallback_complete(
-                    session_id,
-                    execution_id,
-                    &config.agent_id,
-                    "LLM client creation failed — workspace selection unavailable",
-                    "Intent analysis unavailable (no LLM client)",
-                )
-                .await;
-                return None;
-            }
-        };
-
-        let retrying: std::sync::Arc<dyn agent_runtime::LlmClient> =
-            std::sync::Arc::new(agent_runtime::RetryingLlmClient::new(
-                std::sync::Arc::new(raw_client),
-                agent_runtime::RetryPolicy::default(),
-            ));
-        Some(retrying)
-    }
-
     async fn derive_and_publish_session_title(
         &self,
         session_id: &str,
@@ -1880,65 +1763,6 @@ impl InvokeBootstrap {
     /// off mid-string) leaves no intent log even though analysis ran and
     /// used the normal scratch fallback — which looked identical to
     /// "intent analysis off" on the /research info icon and in replay.
-    #[allow(dead_code)]
-    async fn emit_intent_fallback_complete(
-        &self,
-        session_id: &str,
-        execution_id: &str,
-        agent_id: &str,
-        ward_reason: &str,
-        strategy_explanation: &str,
-    ) {
-        // Metadata mirrors the fallback event so session-state derivation
-        // (title/ward) treats the degraded result consistently with a real one.
-        let metadata = serde_json::json!({
-            "primary_intent": "general",
-            "fallback": true,
-            "ward_recommendation": {
-                "action": "create_new",
-                "ward_name": "scratch",
-                "subdirectory": null,
-                "reason": ward_reason,
-            },
-            "execution_strategy": {
-                "approach": "simple",
-                "explanation": strategy_explanation,
-            },
-        });
-        let log_entry = api_logs::ExecutionLog::new(
-            execution_id,
-            session_id,
-            agent_id,
-            api_logs::LogLevel::Warn,
-            api_logs::LogCategory::Intent,
-            format!("Intent analysis unavailable: {strategy_explanation}"),
-        )
-        .with_metadata(metadata);
-        let _ = self.ctx.log_service.log(log_entry);
-
-        self.ctx
-            .event_bus
-            .publish(GatewayEvent::IntentAnalysisComplete {
-                session_id: session_id.to_string(),
-                execution_id: execution_id.to_string(),
-                primary_intent: "general".to_string(),
-                hidden_intents: vec![],
-                recommended_skills: vec![],
-                recommended_agents: vec![],
-                ward_recommendation: serde_json::json!({
-                    "action": "create_new",
-                    "ward_name": "scratch",
-                    "subdirectory": null,
-                    "reason": ward_reason,
-                }),
-                execution_strategy: serde_json::json!({
-                    "approach": "simple",
-                    "explanation": strategy_explanation,
-                }),
-            })
-            .await;
-    }
-
     /// Emit an error event on the conversation.
     async fn emit_error(&self, conversation_id: &str, agent_id: &str, message: &str) {
         self.ctx
@@ -2315,285 +2139,6 @@ mod tests {
             None,
             Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
             Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool)),
-        );
-    }
-
-    #[tokio::test]
-    async fn begin_setup_persists_the_root_user_message_before_lifecycle_events() {
-        #[allow(deprecated)]
-        let dir = tempfile::tempdir().unwrap();
-        #[allow(deprecated)]
-        let path = dir.into_path();
-        let paths = Arc::new(VaultPaths::new(path));
-        let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
-        let messages: Arc<dyn zbot_conversation::MessageStore> =
-            Arc::new(zbot_conversation::SqliteMessageStore::new(
-                zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
-            ));
-        let handles: Arc<RwLock<HashMap<String, ExecutionHandle>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
-        let bootstrap = test_bootstrap(
-            paths.clone(),
-            db.clone(),
-            messages.clone(),
-            handles.clone(),
-            Arc::new(StateService::new(db.clone())),
-            Arc::new(LogService::new(db)),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
-            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool)),
-        );
-        let client_message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
-        let mut config = ExecutionConfig::new(
-            "root".to_string(),
-            "research-client".to_string(),
-            paths.vault_dir().clone(),
-        )
-        .with_client_message_id(client_message_id.to_string());
-
-        let observed_by_callback = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let callback_messages = messages.clone();
-        let callback_observed = observed_by_callback.clone();
-        let on_ready: crate::runner::OnSessionReady = Box::new(move |session_id| {
-            Box::pin(async move {
-                let rows = callback_messages
-                    .replay(&session_id, None, 10)
-                    .expect("callback snapshot should replay the root prompt");
-                *callback_observed.lock().expect("callback observation lock") = rows;
-            })
-        });
-        let setup = bootstrap
-            .begin_setup(
-                &mut config,
-                "persist before intent analysis",
-                Some(on_ready),
-            )
-            .await
-            .expect("setup should persist the submitted message");
-
-        let persisted = messages
-            .replay(&setup.session_id, None, 10)
-            .expect("message replay should succeed");
-        assert_eq!(persisted.len(), 1);
-        assert_eq!(persisted[0].id, client_message_id);
-        assert_eq!(persisted[0].role, "user");
-        assert_eq!(persisted[0].content, "persist before intent analysis");
-        assert_eq!(
-            persisted[0].execution_id.as_deref(),
-            Some(setup.execution_id.as_str())
-        );
-        {
-            let observed = observed_by_callback.lock().unwrap();
-            assert_eq!(observed.len(), 1);
-            assert_eq!(observed[0].id, client_message_id);
-            assert_eq!(observed[0].content, "persist before intent analysis");
-        }
-
-        bootstrap
-            .ctx
-            .state_service
-            .complete_execution(&setup.execution_id)
-            .expect("complete root execution before retry");
-        bootstrap
-            .ctx
-            .state_service
-            .try_complete_session(&setup.session_id)
-            .expect("complete session before retry");
-        let terminal_session = bootstrap
-            .ctx
-            .state_service
-            .get_session(&setup.session_id)
-            .expect("read terminal session")
-            .expect("session exists");
-        assert_eq!(terminal_session.status.as_str(), "completed");
-
-        // A duplicate durable id simulates a failed retry of a completed
-        // session. Setup must fail before callback/lifecycle/model work and
-        // must not reactivate the terminal session or execution.
-        let mut retry_config = config.with_session_id(setup.session_id.clone());
-        let failure_callback_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let callback_flag = failure_callback_called.clone();
-        let on_failed_ready: crate::runner::OnSessionReady = Box::new(move |_| {
-            Box::pin(async move {
-                callback_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            })
-        });
-        let failed = bootstrap
-            .begin_setup(
-                &mut retry_config,
-                "retry with the same durable id",
-                Some(on_failed_ready),
-            )
-            .await;
-        assert!(
-            matches!(&failed, Err(error) if error.to_string().contains("Unable to start this request"))
-        );
-        assert!(!failure_callback_called.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(bootstrap.ctx.control.handles.read().await.len(), 1);
-        let after_failure = bootstrap
-            .ctx
-            .state_service
-            .get_session(&setup.session_id)
-            .expect("read session after failed retry")
-            .expect("session exists");
-        assert_eq!(after_failure.status.as_str(), "completed");
-        let after_failure_execution = bootstrap
-            .ctx
-            .state_service
-            .get_execution(&setup.execution_id)
-            .expect("read execution after failed retry")
-            .expect("execution exists");
-        assert_eq!(after_failure_execution.status.as_str(), "completed");
-
-        let resumed = bootstrap
-            .begin_setup_from_persisted(
-                &mut retry_config,
-                "persist before intent analysis",
-                &setup.execution_id,
-                client_message_id,
-                None,
-            )
-            .await
-            .expect("durable resume should reuse the exact root prompt");
-        assert_eq!(resumed.session_id, setup.session_id);
-        assert_eq!(resumed.execution_id, setup.execution_id);
-        assert_eq!(resumed.root_message_id, client_message_id);
-        let after_resume = messages
-            .replay(&resumed.session_id, None, 10)
-            .expect("message replay should succeed");
-        assert_eq!(after_resume.len(), 1, "resume must not append the prompt");
-        assert_eq!(
-            bootstrap
-                .ctx
-                .state_service
-                .get_session(&resumed.session_id)
-                .unwrap()
-                .unwrap()
-                .status,
-            execution_state::SessionStatus::Running
-        );
-    }
-
-    #[test]
-    fn client_message_id_uses_only_a_valid_browser_uuid() {
-        let valid_id = "msg-550e8400-e29b-41d4-a716-446655440000";
-        let valid = ExecutionConfig::new(
-            "root".to_string(),
-            "conversation".to_string(),
-            std::path::PathBuf::from("/tmp"),
-        )
-        .with_client_message_id(valid_id.to_string());
-        assert_eq!(client_message_id(&valid), valid_id);
-
-        let invalid = ExecutionConfig::new(
-            "root".to_string(),
-            "conversation".to_string(),
-            std::path::PathBuf::from("/tmp"),
-        )
-        .with_client_message_id("not-a-message-id".to_string());
-        let generated = client_message_id(&invalid);
-        assert!(generated.starts_with("msg-"));
-        assert_ne!(generated, "not-a-message-id");
-    }
-
-    #[test]
-    fn current_prompt_is_excluded_from_prior_history() {
-        let (history, scanned) = history_before_current_prompt(
-            vec![
-                zbot_conversation::Message {
-                    id: "msg-prior".to_string(),
-                    execution_id: Some("exec-1".to_string()),
-                    session_id: "sess-1".to_string(),
-                    role: "user".to_string(),
-                    content: "prior request".to_string(),
-                    created_at: "2026-07-13T12:00:00Z".to_string(),
-                    token_count: 1,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    seq: 1,
-                },
-                zbot_conversation::Message {
-                    id: "msg-current".to_string(),
-                    execution_id: Some("exec-1".to_string()),
-                    session_id: "sess-1".to_string(),
-                    role: "user".to_string(),
-                    content: "current request".to_string(),
-                    created_at: "2026-07-13T12:01:00Z".to_string(),
-                    token_count: 1,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    seq: 2,
-                },
-            ],
-            "msg-current",
-        );
-
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].role, "user");
-        assert_eq!(history[0].text_content(), "prior request");
-        assert_eq!(scanned, 1, "cursor covers only the scanned prior row");
-    }
-
-    /// Regression: when intent analysis can't produce a result (e.g. the
-    /// model returned truncated JSON that fails to parse), the fallback
-    /// path must still record an Intent-category execution_log. Otherwise
-    /// the DB shows no intent log and the session looks like intent
-    /// analysis never ran — the exact symptom behind the missing
-    /// /research intent info icon.
-    #[tokio::test]
-    async fn intent_fallback_writes_intent_log() {
-        #[allow(deprecated)]
-        let dir = tempfile::tempdir().unwrap();
-        #[allow(deprecated)]
-        let path = dir.into_path();
-        let paths = Arc::new(VaultPaths::new(path));
-        let db = Arc::new(DatabaseManager::new(paths.clone()).unwrap());
-        let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(
-            zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap(),
-        ));
-        let handles: Arc<RwLock<HashMap<String, ExecutionHandle>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let log_service = Arc::new(LogService::new(db.clone()));
-
-        let pool = zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
-        let bootstrap = test_bootstrap(
-            paths.clone(),
-            db.clone(),
-            messages.clone(),
-            handles.clone(),
-            Arc::new(StateService::new(db.clone())),
-            log_service.clone(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Arc::new(zbot_conversation::SqliteSessionMetaStore::new(pool.clone())),
-            Arc::new(zbot_conversation::SqliteCheckpointStore::new(pool)),
-        );
-
-        let execution_id = "exec-fallback-test";
-        bootstrap
-            .emit_intent_fallback_complete(
-                "sess-test",
-                execution_id,
-                "root",
-                "model returned incomplete JSON",
-                "Intent analysis unavailable",
-            )
-            .await;
-
-        assert!(
-            bootstrap.ctx.log_service.has_intent_log(execution_id),
-            "fallback path must record an Intent-category log so the session \
-             never appears as if intent analysis was skipped"
         );
     }
 }

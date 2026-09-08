@@ -22,7 +22,6 @@ use zbot_stores_traits::{
 
 use crate::{
     bootstrap::EngramProvider,
-    capabilities::AdapterFeature,
     config::{AdapterConfig, AdapterEmbeddingProviderConfig, EmbeddingMode, ProviderMode},
     error::{AdapterError, AdapterResult},
     mapping::memory::{memory_fact_to_record_with_governance, memory_record_to_fact},

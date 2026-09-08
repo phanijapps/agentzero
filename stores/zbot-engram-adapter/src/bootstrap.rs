@@ -254,10 +254,9 @@ fn bootstrap_governance_if_configured(
     // taxonomy handles, skip governance rather than crashing the daemon.
     // The conformance check runs against an in-memory store and can fail
     // independently of the on-disk database's health.
-    let (Some(ontology_repo), Some(taxonomy_repo)) = (
-        provider.ontology().cloned(),
-        provider.taxonomy().cloned(),
-    ) else {
+    let (Some(ontology_repo), Some(taxonomy_repo)) =
+        (provider.ontology().cloned(), provider.taxonomy().cloned())
+    else {
         tracing::warn!(
             ontology_available = provider.ontology().is_some(),
             taxonomy_available = provider.taxonomy().is_some(),

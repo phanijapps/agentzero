@@ -1807,6 +1807,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "distillation"
+version = "2026.8.4"
+dependencies = [
+ "agent-primitives",
+ "agent-runtime",
+ "anyhow",
+ "api-logs",
+ "async-trait",
+ "chrono",
+ "execution-state",
+ "futures",
+ "gateway-events",
+ "gateway-services",
+ "gateway-templates",
+ "knowledge-graph",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zbot-conversation",
+ "zbot-stores",
+ "zbot-stores-domain",
+ "zbot-stores-sqlite",
+ "zbot-stores-traits",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

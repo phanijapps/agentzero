@@ -83,7 +83,7 @@ where
     T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
 {
     use rig::client::CompletionClient;
-    use rig::completion::TypedPrompt;
+    use rig::completion::Prompt;
 
     let client = LlmCompletionClient::new(llm_client);
     let agent = client
@@ -93,10 +93,16 @@ where
         .default_max_turns(10)
         .build();
 
-    agent
-        .prompt_typed::<T>(user_message)
+    // Run the agent loop — the model uses tools, then produces text.
+    // We parse the text using Rig's built-in deserializer (handles JSON
+    // in markdown fences and prose-wrapped objects).
+    let response = agent
+        .prompt(user_message)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("agent execution failed: {e}"))?;
+
+    // Deserialize the text response into T
+    serde_json::from_str::<T>(&response).map_err(|e| format!("invalid structured output: {e}"))
 }
 
 #[cfg(test)]

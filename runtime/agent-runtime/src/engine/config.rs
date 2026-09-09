@@ -46,7 +46,6 @@ pub struct ExecutorConfig {
 
     /// Initial state to inject into tool context.
     /// This allows passing hook context, delegation context, etc.
-    #[allow(dead_code)]
     pub initial_state: std::collections::HashMap<String, Value>,
 
     /// Maximum characters for a tool result in context (default: 30000 chars ≈ 7500 tokens).

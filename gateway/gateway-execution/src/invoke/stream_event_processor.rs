@@ -576,12 +576,12 @@ fn extract_response_delta(gateway_event: &Option<GatewayEvent>) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use api_logs::LogService;
     use execution_state::{
         AgentExecution, DelegationType, SessionPlanStep, SessionPlanStepStatus, StateService,
     };
     use gateway_events::EventBus;
-    use gateway_services::VaultPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -860,8 +860,7 @@ mod tests {
                 .map(|index| {
                     serde_json::json!({
                         "step": format!("Step {index}"),
-                        "status": "pending",
-                    })
+                        "status": "pending" })
                 })
                 .collect(),
         );

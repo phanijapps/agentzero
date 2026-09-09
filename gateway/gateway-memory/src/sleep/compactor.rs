@@ -235,8 +235,8 @@ fn pick_loser_winner(entities: &[Entity], a: &str, b: &str) -> (String, String) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use knowledge_graph::{Entity, EntityType, ExtractedKnowledge};
     use std::sync::Arc;
     use zbot_stores_sqlite::kg::storage::GraphStorage;

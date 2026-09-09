@@ -301,18 +301,17 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 return Err(ExecutorError::Stopped);
             }
             let item = tokio::select! {
-                biased;
-                _ = stop_poll.tick(), if stop_flag.is_some() => { continue; }
-                event = async { match policy_events.as_mut() { Some(events) => events.recv().await, None => futures::future::pending().await } }, if policy_events.is_some() => {
-                    if let Some(event) = event { on_event(event); } else { policy_events = None; }
-                    continue;
-                }
-                _ = heartbeat.tick() => {
-                    on_event(StreamEvent::Heartbeat { timestamp: current_timestamp() });
-                    continue;
-                }
-                item = stream.next() => item,
-            };
+            biased;
+            _ = stop_poll.tick(), if stop_flag.is_some() => { continue; }
+            event = async { match policy_events.as_mut() { Some(events) => events.recv().await, None => futures::future::pending().await } }, if policy_events.is_some() => {
+                if let Some(event) = event { on_event(event); } else { policy_events = None; }
+                continue;
+            }
+            _ = heartbeat.tick() => {
+                on_event(StreamEvent::Heartbeat { timestamp: current_timestamp() });
+                continue;
+            }
+            item = stream.next() => item };
             if let Some(events) = &mut policy_events {
                 while let Ok(event) = events.try_recv() {
                     on_event(event);
@@ -744,7 +743,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(StubLlm {
             chunks: vec!["ri".to_string(), "gged".to_string()],
         });
-        let model = LlmCompletionModel::new(client, "stub");
+        let model = LlmCompletionModel::new(client);
         let engine = RigAgentEngine::new(
             sample_config(),
             model,
@@ -1022,7 +1021,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(RecordingLlm { sent: sent.clone() });
         let engine = RigAgentEngine::new(
             sample_config(),
-            LlmCompletionModel::new(client, "stub"),
+            LlmCompletionModel::new(client),
             Vec::new(),
             Arc::new(crate::tools::context::ToolContext::default()),
         );

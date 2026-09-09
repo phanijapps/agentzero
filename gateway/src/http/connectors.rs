@@ -392,8 +392,7 @@ pub async fn inbound(
                     "sender".to_string(),
                     serde_json::json!({
                         "id": sender.id,
-                        "name": sender.name,
-                    }),
+                        "name": sender.name }),
                 );
             }
         }
@@ -402,8 +401,7 @@ pub async fn inbound(
         request = request.with_metadata(serde_json::json!({
             "sender": {
                 "id": sender.id,
-                "name": sender.name,
-            }
+                "name": sender.name }
         }));
     }
 

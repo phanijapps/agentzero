@@ -169,8 +169,7 @@ pub fn context_packet_delta_for_trigger(
         ),
         MicroRecallTrigger::ToolError {
             tool_name,
-            error_msg,
-        } => (
+            error_msg } => (
             "tool_error",
             format!("tool-error-{tool_name}"),
             "tool_error_context",
@@ -187,8 +186,7 @@ pub fn context_packet_delta_for_trigger(
             format!("entity-mention-{entity_name}"),
             "entity_context",
             format!("New entity mentioned: {entity_name}. Recall graph and memory context before acting on it."),
-        ),
-    };
+        ) };
     build_single_atom_delta(
         &format!("micro-recall:{iteration}:{}", slugify(&atom_id)),
         &ctx.agent_id,
@@ -352,7 +350,10 @@ async fn handle_pre_delegation(
     if let Some(store) = &ctx.memory_store {
         push_corrections(
             wm,
-            store.get_facts_by_category(agent_id, "correction", 5).await,
+            store
+                .get_facts_by_category(agent_id, "correction", 5)
+                .await
+                .map_err(|e| e.to_string()),
             None,
             "pre-delegation correction",
         );
@@ -360,7 +361,8 @@ async fn handle_pre_delegation(
             wm,
             store
                 .get_facts_by_category(&ctx.agent_id, "correction", 10)
-                .await,
+                .await
+                .map_err(|e| e.to_string()),
             Some(agent_id),
             "pre-delegation self-correction",
         );

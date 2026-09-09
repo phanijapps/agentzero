@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
+use zbot_stores_traits::StoreResult;
 use zbot_stores_traits::{Procedure, ProcedureStore};
 
 use agent_runtime::tools::context::ToolContext as ConcreteCtx;
@@ -67,7 +68,7 @@ impl ProcedureStore for InMemStore {
         &self,
         _agent_id: &str,
         name: &str,
-    ) -> std::result::Result<Option<Procedure>, String> {
+    ) -> StoreResult<Option<Procedure>> {
         let p = self.proc.lock().await;
         if p.name == name {
             Ok(Some(p.clone()))
@@ -80,14 +81,14 @@ impl ProcedureStore for InMemStore {
         id: &str,
         _d: Option<i64>,
         _t: Option<i64>,
-    ) -> std::result::Result<(), String> {
+    ) -> StoreResult<()> {
         let mut p = self.proc.lock().await;
         if p.id == id {
             p.success_count += 1;
         }
         Ok(())
     }
-    async fn increment_failure(&self, id: &str) -> std::result::Result<(), String> {
+    async fn increment_failure(&self, id: &str) -> StoreResult<()> {
         let mut p = self.proc.lock().await;
         if p.id == id {
             p.failure_count += 1;

@@ -1,8 +1,8 @@
 mod fixtures;
 
+use agent_primitives::vault_paths::VaultPaths;
 use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
 use async_trait::async_trait;
-use gateway_services::paths::VaultPaths;
 use std::sync::Arc;
 use tempfile::TempDir;
 use zbot_stores::KnowledgeGraphStore;

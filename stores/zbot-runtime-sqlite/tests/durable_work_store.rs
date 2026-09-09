@@ -1,10 +1,10 @@
+use agent_primitives::vault_paths::VaultPaths;
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use execution_state::{
     SqliteWorkStore, StateDbProvider, WorkAuthorization, WorkCancelOutcome, WorkDraft,
     WorkEnvelope, WorkError, WorkFailureCode, WorkPolicy, WorkPolicyError, WorkScope, WorkStatus,
     WorkStore, MAX_PAYLOAD_BYTES,
 };
-use gateway_services::VaultPaths;
 use rusqlite::Connection;
 use serde_json::json;
 use std::io::Write;

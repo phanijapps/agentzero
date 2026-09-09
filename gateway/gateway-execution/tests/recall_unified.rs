@@ -6,8 +6,9 @@ use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
 use async_trait::async_trait;
 use tempfile::tempdir;
 
+use agent_primitives::vault_paths::VaultPaths;
 use gateway_execution::recall::{ItemKind, MemoryRecall};
-use gateway_services::{RecallConfig, VaultPaths};
+use gateway_services::RecallConfig;
 use zbot_stores_sqlite::{
     EpisodeRepository, KnowledgeDatabase, MemoryFact, MemoryRepository, SessionEpisode,
     SqliteVecIndex, VectorIndex,

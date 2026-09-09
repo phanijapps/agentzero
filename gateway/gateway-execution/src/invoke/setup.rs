@@ -929,8 +929,9 @@ mod tests {
     #[test]
     fn compose_ward_agent_instructions_places_identity_then_doctrine() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         let out = compose_ward_agent_instructions(
             "You are the maritime ward-agent.",
@@ -950,8 +951,9 @@ mod tests {
     #[test]
     fn compose_ward_agent_instructions_omits_empty_doctrine() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         let out = compose_ward_agent_instructions("identity line", &paths, "maritime", "   ");
         assert!(!out.contains("WARD DOCTRINE"));
@@ -961,8 +963,9 @@ mod tests {
     #[test]
     fn load_ward_doctrine_preserves_complete_valid_content() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         let ward = paths.ward_dir("maritime");
         std::fs::create_dir_all(&ward).unwrap();
@@ -979,8 +982,9 @@ mod tests {
     #[test]
     fn load_ward_doctrine_rejects_oversized_without_partial_content() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         let ward = paths.ward_dir("oversized");
         std::fs::create_dir_all(&ward).unwrap();
@@ -1001,8 +1005,9 @@ mod tests {
     #[test]
     fn load_ward_doctrine_treats_missing_as_empty_without_diagnostic() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         std::fs::create_dir_all(paths.ward_dir("empty")).unwrap();
 
@@ -1019,8 +1024,9 @@ mod tests {
 
         for case in ["symlink", "hardlink", "fifo", "non-utf8"] {
             let tmp = tempfile::TempDir::new().unwrap();
-            let paths: SharedVaultPaths =
-                Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+            let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+                tmp.path().to_path_buf(),
+            ));
             paths.ensure_dirs_exist().unwrap();
             let ward = paths.ward_dir(case);
             std::fs::create_dir_all(&ward).unwrap();
@@ -1060,8 +1066,9 @@ mod tests {
     #[test]
     fn scaffolded_ward_persona_is_preserved_as_synthesized_doctrine() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         gateway_services::seed_default_ward_layout_template(&paths).unwrap();
         gateway_services::seed_default_ward_agent_template(&paths).unwrap();

@@ -12,7 +12,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent_primitives::WardArchetypeId;
+use crate::WardArchetypeId;
 
 const LEGACY_MCP_SERVERS_FILE: &str = "mcps.json";
 const LEGACY_SCHEDULES_FILE: &str = "cron_jobs.json";

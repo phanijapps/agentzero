@@ -262,10 +262,14 @@ async fn ensure_episode(
             Some(session_id),
             agent_id,
         )
-        .await?;
+        .await
+        .map_err(|e| ExecutionError::Store(e.to_string()))?;
     // Tool-result extraction is synchronous w.r.t. the episode — once the
     // entities are about to be stored, the extraction is "done."
-    store.mark_done(&id).await?;
+    store
+        .mark_done(&id)
+        .await
+        .map_err(|e| ExecutionError::Store(e.to_string()))?;
     Ok(id)
 }
 

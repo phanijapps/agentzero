@@ -1354,8 +1354,7 @@ mod tests {
     fn invoke_metadata_forwards_only_the_client_message_id() {
         let client_message_id = client_message_id_from_metadata(Some(serde_json::json!({
             "client_message_id": "msg-550e8400-e29b-41d4-a716-446655440000",
-            "unexpected": "must not enter execution config",
-        })));
+            "unexpected": "must not enter execution config" })));
         assert_eq!(
             client_message_id.as_deref(),
             Some("msg-550e8400-e29b-41d4-a716-446655440000")

@@ -315,8 +315,7 @@ impl Tool for DelegateTool {
                 "\n\n[PLATFORM: Windows / PowerShell. Do NOT use bash syntax (head, &&, cat, heredocs). Use Get-Content, ';', python.]"
             }
             "macos" => "\n\n[PLATFORM: macOS / zsh.]",
-            _ => "\n\n[PLATFORM: Linux / bash.]",
-        };
+            _ => "\n\n[PLATFORM: Linux / bash.]" };
         let enriched_task = format!("{task}{platform_hint}");
 
         // Set delegation action for the executor to pick up
@@ -361,8 +360,7 @@ impl Tool for DelegateTool {
                     "Task delegated to {} (fire-and-forget). Use execution_id with wait_agent to block until it completes and get its result, steer_agent to send mid-run instructions, or kill_agent to stop it.",
                     target_agent_id
                 )
-            },
-        });
+            } });
         if let Some(warning) = task_warning {
             if let Some(obj) = result.as_object_mut() {
                 obj.insert("warning".to_string(), json!(warning));
@@ -371,8 +369,7 @@ impl Tool for DelegateTool {
                     "recommended_task_chars".to_string(),
                     json!({
                         "preferred": PREFERRED_TASK_CHARS,
-                        "upper": RECOMMENDED_TASK_CHARS,
-                    }),
+                        "upper": RECOMMENDED_TASK_CHARS }),
                 );
             }
         }
@@ -688,8 +685,7 @@ mod tests {
                     "task": "compose summary",
                     "skills": ["html-report"],
                     "mcps": ["renderer"],
-                    "parallel": false,
-                }),
+                    "parallel": false }),
             )
             .await
             .expect("delegate must succeed");

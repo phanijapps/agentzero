@@ -1,5 +1,6 @@
 //! `WikiStore` trait — backend-agnostic interface for ward wiki articles.
 
+use crate::error::{StoreError, StoreResult};
 use crate::memory_facts::EmbeddingQueryIdentity;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -22,12 +23,12 @@ pub struct WikiStats {
 #[async_trait]
 pub trait WikiStore: Send + Sync {
     /// List all articles for a ward. Default returns empty.
-    async fn list_articles(&self, _ward_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_articles(&self, _ward_id: &str) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
     /// Get a single article by (ward_id, title). Default returns None.
-    async fn get_article(&self, _ward_id: &str, _title: &str) -> Result<Option<Value>, String> {
+    async fn get_article(&self, _ward_id: &str, _title: &str) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
@@ -36,13 +37,15 @@ pub trait WikiStore: Send + Sync {
         &self,
         article: WikiArticle,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let _ = (article, embedding);
-        Err("upsert_article not implemented for this store".to_string())
+        Err(StoreError::Unavailable(
+            "upsert_article not implemented for this store".into(),
+        ))
     }
 
     /// Delete an article. Returns true if a row was removed.
-    async fn delete_article(&self, _ward_id: &str, _title: &str) -> Result<bool, String> {
+    async fn delete_article(&self, _ward_id: &str, _title: &str) -> StoreResult<bool> {
         Ok(false)
     }
 
@@ -54,7 +57,7 @@ pub trait WikiStore: Send + Sync {
         _query: &str,
         _limit: usize,
         _query_embedding: Option<&[f32]>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
@@ -66,7 +69,7 @@ pub trait WikiStore: Send + Sync {
         limit: usize,
         query_embedding: Option<&[f32]>,
         query_identity: Option<&EmbeddingQueryIdentity>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let _ = query_identity;
         self.search_wiki_hybrid(ward_id, query, limit, query_embedding)
             .await
@@ -81,7 +84,7 @@ pub trait WikiStore: Send + Sync {
         query: &str,
         limit: usize,
         query_embedding: Option<&[f32]>,
-    ) -> Result<Vec<WikiHit>, String> {
+    ) -> StoreResult<Vec<WikiHit>> {
         self.search_wiki_hybrid_typed_with_identity(ward_id, query, limit, query_embedding, None)
             .await
     }
@@ -94,7 +97,7 @@ pub trait WikiStore: Send + Sync {
         limit: usize,
         query_embedding: Option<&[f32]>,
         query_identity: Option<&EmbeddingQueryIdentity>,
-    ) -> Result<Vec<WikiHit>, String> {
+    ) -> StoreResult<Vec<WikiHit>> {
         let rows = self
             .search_wiki_hybrid_with_identity(
                 ward_id,
@@ -105,11 +108,14 @@ pub trait WikiStore: Send + Sync {
             )
             .await?;
         rows.into_iter()
-            .map(|v| serde_json::from_value(v).map_err(|e| format!("decode WikiHit: {e}")))
+            .map(|v| {
+                serde_json::from_value(v)
+                    .map_err(|e| StoreError::Invalid(format!("decode WikiHit: {e}")))
+            })
             .collect()
     }
 
-    async fn wiki_stats(&self) -> Result<WikiStats, String> {
+    async fn wiki_stats(&self) -> StoreResult<WikiStats> {
         Ok(WikiStats::default())
     }
 
@@ -122,7 +128,7 @@ pub trait WikiStore: Send + Sync {
         _ward_id: &str,
         _embedding: &[f32],
         _limit: usize,
-    ) -> Result<Vec<(WikiArticle, f64)>, String> {
+    ) -> StoreResult<Vec<(WikiArticle, f64)>> {
         Ok(Vec::new())
     }
 
@@ -133,7 +139,7 @@ pub trait WikiStore: Send + Sync {
         embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         limit: usize,
-    ) -> Result<Vec<(WikiArticle, f64)>, String> {
+    ) -> StoreResult<Vec<(WikiArticle, f64)>> {
         let _ = query_identity;
         self.search_wiki_by_similarity_typed(ward_id, embedding, limit)
             .await
@@ -142,10 +148,13 @@ pub trait WikiStore: Send + Sync {
     /// Typed variant of `list_articles` returning `Vec<WikiArticle>`
     /// directly. Default deserialises the Value-based result for
     /// backends that haven't overridden.
-    async fn list_articles_typed(&self, ward_id: &str) -> Result<Vec<WikiArticle>, String> {
+    async fn list_articles_typed(&self, ward_id: &str) -> StoreResult<Vec<WikiArticle>> {
         let rows = self.list_articles(ward_id).await?;
         rows.into_iter()
-            .map(|v| serde_json::from_value(v).map_err(|e| format!("decode WikiArticle: {e}")))
+            .map(|v| {
+                serde_json::from_value(v)
+                    .map_err(|e| StoreError::Invalid(format!("decode WikiArticle: {e}")))
+            })
             .collect()
     }
 }

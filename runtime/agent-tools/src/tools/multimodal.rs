@@ -205,11 +205,9 @@ impl Tool for MultimodalAnalyzeTool {
             "model": model,
             "messages": [{
                 "role": "user",
-                "content": content_blocks,
-            }],
+                "content": content_blocks }],
             "temperature": temperature,
-            "max_tokens": max_tokens,
-        });
+            "max_tokens": max_tokens });
 
         // Add response_format if output_schema provided
         if let Some(schema) = output_schema {

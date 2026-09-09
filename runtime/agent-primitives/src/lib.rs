@@ -47,6 +47,7 @@ pub mod multimodal;
 pub mod policy;
 pub mod tool;
 pub mod types;
+pub mod vault_paths;
 pub mod vec_math;
 pub mod ward;
 

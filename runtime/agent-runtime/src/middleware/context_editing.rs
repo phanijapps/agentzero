@@ -137,12 +137,6 @@ impl ContextEditingMiddleware {
         Self { config }
     }
 
-    /// Find tool result messages that should be cleared
-    #[allow(dead_code)]
-    fn find_tool_results_to_clear(&self, messages: &[ChatMessage]) -> Vec<usize> {
-        self.find_tool_results_to_clear_with_cascade(messages, &ExecutionState::default())
-    }
-
     /// Find tool result messages that should be cleared, with cascade unloading for skills.
     ///
     /// When a skill's SKILL.md is selected for clearing, all of its resource files
@@ -506,29 +500,25 @@ mod tests {
                 content: vec![Part::Text { text: "Search for something".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: vec![Part::Text { text: String::new() }],
                 tool_calls: Some(vec![tool1, tool2]),
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "Search result: lots of text here that should be cleared when context editing kicks in".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_1".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "2".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_2".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
         ]
     }
 
@@ -557,7 +547,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let messages = create_test_messages_with_tool_calls();
 
-        let indices = middleware.find_tool_results_to_clear(&messages);
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         // Should clear the first tool result, keep the last one
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0], 2); // Index of first tool result
@@ -579,7 +570,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let messages = create_test_messages_with_tool_calls();
 
-        let indices = middleware.find_tool_results_to_clear(&messages);
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         // Should only clear calculator, not search
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0], 3); // Index of calculator result
@@ -636,7 +628,8 @@ mod tests {
         };
         let middleware = ContextEditingMiddleware::new(config);
 
-        let indices = middleware.find_tool_results_to_clear(&messages);
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
 
         assert_eq!(indices, vec![2]);
     }
@@ -658,7 +651,8 @@ mod tests {
         let mut messages = create_test_messages_with_tool_calls();
         let execution_state = ExecutionState::default(); // No skills loaded
 
-        let indices = middleware.find_tool_results_to_clear(&messages);
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Check that the first tool result was cleared
@@ -801,7 +795,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let mut messages = messages_with_skill;
 
-        let indices = middleware.find_tool_results_to_clear(&messages);
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Check that the skill result has a skill-specific placeholder
@@ -865,7 +860,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let mut messages = messages_with_skill;
 
-        let indices = middleware.find_tool_results_to_clear(&messages);
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Should use generic placeholder, not skill-specific
@@ -928,7 +924,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let mut messages = messages_with_skill;
 
-        let indices = middleware.find_tool_results_to_clear(&messages);
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Should use custom template
@@ -1150,8 +1147,7 @@ mod tests {
             content: vec![Part::Text { text: "I'll help you with that. Let me think about the best approach for implementing this feature. We need to consider several factors including performance and maintainability.".to_string() }],
             tool_calls: None,
             tool_call_id: None,
-            is_summary: false,
-        };
+            is_summary: false };
 
         let compressed = compress_assistant_message(&msg, 5);
         assert!(compressed.starts_with("[Turn 5:"));
@@ -1177,43 +1173,37 @@ mod tests {
                 content: vec![Part::Text { text: "Create the files".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: vec![Part::Text { text: "I'll create main.rs and read lib.rs for you. Let me start with the main file.".to_string() }],
                 tool_calls: Some(vec![tool1, tool2]),
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "[cleared]".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_1".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "[cleared]".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_2".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "user".to_string(),
                 content: vec![Part::Text { text: "Now add tests".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: vec![Part::Text { text: "I'll add tests now.".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
         ];
 
         let original_assistant_content = messages[1].text_content();

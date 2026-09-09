@@ -15,15 +15,19 @@ pub(super) struct ProgressPolicy {
     turn_warned: bool,
     context_warned: bool,
     stuck_warned: bool,
+    /// Last failing call already nudged (tool name, failure count at nudge
+    /// time) — re-nudges only when a different call or a higher count wins.
+    failure_nudge_key: Option<(String, u32)>,
 }
 impl Default for ProgressPolicy {
     fn default() -> Self {
         Self {
-            tracker: ProgressTracker::new(0),
+            tracker: ProgressTracker::new(),
             prompt_tokens: 0,
             turn_warned: false,
             context_warned: false,
             stuck_warned: false,
+            failure_nudge_key: None,
         }
     }
 }
@@ -34,8 +38,9 @@ impl ProgressPolicy {
         }
     }
     pub fn tool(&mut self, name: &str, args: &Value, error: Option<&str>) {
-        self.tracker.record_tool_call(name, args, error.is_none());
-        if let Some(error) = error.filter(|error| *error != "blocked_by_hook") {
+        let error = error.filter(|error| *error != "blocked_by_hook");
+        self.tracker.record_tool_call(name, args, error);
+        if let Some(error) = error {
             self.tracker.record_error(error);
         }
     }
@@ -43,6 +48,7 @@ impl ProgressPolicy {
     pub fn respond(&mut self) {
         self.tracker.record_respond();
     }
+
     pub fn prepare(
         &mut self,
         cfg: &ProgressConfig,
@@ -74,6 +80,27 @@ impl ProgressPolicy {
                 messages.push(ChatMessage::user(format!("[STEER: System] Budget exceeded ({turn}/{hard} iterations for {complexity} task). Respond NOW with what you have. Do not start new work.")));
             } else if hard > 0 && turn == soft {
                 messages.push(ChatMessage::user(format!("[STEER: System] You've used {turn}/{hard} iterations for a {complexity} task. Wrap up or simplify your approach.")));
+            }
+        }
+        if let Some((name, count, error)) = self.tracker.top_failing_call() {
+            // Nudge once per distinct failing call; re-nudge only when a
+            // different call or a higher failure count takes the lead.
+            let already_nudged = self
+                .failure_nudge_key
+                .as_ref()
+                .is_some_and(|(n, c)| n == name && *c >= count);
+            if !already_nudged {
+                self.failure_nudge_key = Some((name.to_string(), count));
+                let error_line = if error.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Last error: {error}.")
+                };
+                messages.push(ChatMessage::user(format!(
+                    "[SYSTEM: `{name}` has failed {count} times with these exact arguments.{error_line} \
+                     Retrying the identical call will keep failing. Change the arguments, \
+                     fix the underlying cause, or take a different approach.]"
+                )));
             }
         }
         if self.tracker.is_clearly_stuck() {
@@ -109,5 +136,53 @@ mod tests {
         policy.usage(Some(300));
         policy.usage(None);
         assert_eq!(policy.prompt_tokens, 300);
+    }
+
+    fn policy_with_failure() -> ProgressPolicy {
+        let mut policy = ProgressPolicy::default();
+        let args = serde_json::json!({"url": "https://api.example.com/x"});
+        policy.tool("fetch", &args, Some("connection refused"));
+        policy.tool("fetch", &args, Some("connection refused"));
+        policy
+    }
+
+    fn cfg() -> ProgressConfig {
+        ProgressConfig {
+            turn_budget: 0,
+            max_turns: 100,
+            complexity: None,
+            input_budget: 0,
+            warn_pct: 80,
+        }
+    }
+
+    #[test]
+    fn repeated_failure_injects_feedback_nudge() {
+        let mut policy = policy_with_failure();
+        let mut messages = Vec::new();
+        policy.prepare(&cfg(), &mut messages).expect("prepare");
+        let text: Vec<String> = messages.iter().map(|m| m.text_content()).collect();
+        let nudged = text
+            .iter()
+            .any(|t| t.contains("has failed 2 times") && t.contains("connection refused"));
+        assert!(nudged, "nudge should name the call and the error: {text:?}");
+    }
+
+    #[test]
+    fn failure_nudge_fires_once_per_call() {
+        let mut policy = policy_with_failure();
+        let mut first = Vec::new();
+        policy.prepare(&cfg(), &mut first).expect("prepare");
+        let mut second = Vec::new();
+        policy.prepare(&cfg(), &mut second).expect("prepare");
+        assert!(first
+            .iter()
+            .any(|m| m.text_content().contains("has failed 2 times")));
+        assert!(
+            !second
+                .iter()
+                .any(|m| m.text_content().contains("has failed 2 times")),
+            "same count must not re-nudge"
+        );
     }
 }

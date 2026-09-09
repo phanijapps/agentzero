@@ -93,6 +93,8 @@ impl RuntimeService {
             None, // ingestion_adapter
             None, // goal_adapter
             None, // procedure_store
+            None, // belief_store
+            None, // belief_contradiction_store
             gateway_memory::ProcedureRecommendationConfig::default(),
             memory_llm_factory,
         )
@@ -127,6 +129,8 @@ impl RuntimeService {
         ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
         goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
         procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
+        belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+        belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
         procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig,
         memory_llm_factory: Arc<dyn gateway_memory::MemoryLlmFactory>,
     ) -> Self {
@@ -187,6 +191,8 @@ impl RuntimeService {
         if let Some(a) = goal_adapter {
             runner.set_goal_adapter(a);
         }
+
+        runner.set_belief_stores(belief_store, belief_contradiction_store);
 
         Self {
             event_bus,
@@ -608,8 +614,7 @@ impl RuntimeService {
                         "Gateway placeholder response. Set OPENAI_API_KEY for real execution. Message: {}",
                         message.chars().take(50).collect::<String>()
                     )),
-                    conversation_id: Some(conversation_id.clone()),
-                })
+                    conversation_id: Some(conversation_id.clone()) })
                 .await;
         });
 

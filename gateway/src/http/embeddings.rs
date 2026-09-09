@@ -233,8 +233,7 @@ pub async fn configure(
                 Health::Reindexing { .. } => ("reindexing", false),
                 Health::Pulling { .. } => ("pulling", false),
                 Health::OllamaUnreachable => ("error", true),
-                Health::ModelMissing => ("error", true),
-            };
+                Health::ModelMissing => ("error", true) };
             let payload = serde_json::to_string(&h).unwrap_or_else(|_| "{}".into());
             let ev = Event::default().event(ev_name).data(payload);
             yield Ok::<_, Infallible>(ev);

@@ -60,8 +60,7 @@ async fn fixture(
     let config: McpServerConfig = serde_json::from_value(json!({
         "type":"stdio", "id":"fixture", "name":"fixture", "description":"isolated execution fixture",
         "command":"python3", "args":["-u", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_stdio_probe.py")],
-        "env":{"PROBE_PID_FILE":directory.path().join("pid")}, "enabled":true,
-    })).unwrap();
+        "env":{"PROBE_PID_FILE":directory.path().join("pid")}, "enabled":true })).unwrap();
     manager.start_server(config).await.unwrap();
     let provider = Arc::new(Provider {
         mode,
@@ -135,10 +134,9 @@ async fn dropped_rig_future_closes_mcp_while_engine_and_peer_are_retained() {
     let mut sink = |_| {};
     let mut execution = Box::pin(engine.execute_stream("hello", &[], &mut sink));
     tokio::select! {
-        _ = &mut execution => panic!("provider remains pending"),
-        _ = provider.entered.notified() => {},
-        _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("provider did not start"),
-    }
+    _ = &mut execution => panic!("provider remains pending"),
+    _ = provider.entered.notified() => {},
+    _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("provider did not start") }
     drop(execution);
     assert_closed(&manager, &directory).await;
     assert!(retained.list_tools().await.is_err());

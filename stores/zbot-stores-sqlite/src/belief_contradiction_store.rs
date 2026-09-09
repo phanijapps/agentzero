@@ -11,6 +11,7 @@
 // insert idempotent without an explicit pre-check race.
 
 use std::sync::Arc;
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -52,12 +53,14 @@ fn contradiction_type_to_str(t: &ContradictionType) -> &'static str {
     }
 }
 
-fn contradiction_type_from_str(s: &str) -> Result<ContradictionType, String> {
+fn contradiction_type_from_str(s: &str) -> StoreResult<ContradictionType> {
     match s {
         "logical" => Ok(ContradictionType::Logical),
         "tension" => Ok(ContradictionType::Tension),
         "temporal" => Ok(ContradictionType::Temporal),
-        other => Err(format!("unknown contradiction_type: {other}")),
+        other => Err(StoreError::Invalid(format!(
+            "unknown contradiction_type: {other}"
+        ))),
     }
 }
 
@@ -70,19 +73,19 @@ fn resolution_to_str(r: &Resolution) -> &'static str {
     }
 }
 
-fn resolution_from_str(s: &str) -> Result<Resolution, String> {
+fn resolution_from_str(s: &str) -> StoreResult<Resolution> {
     match s {
         "a_won" => Ok(Resolution::AWon),
         "b_won" => Ok(Resolution::BWon),
         "compatible" => Ok(Resolution::Compatible),
         "unresolved" => Ok(Resolution::Unresolved),
-        other => Err(format!("unknown resolution: {other}")),
+        other => Err(StoreError::Invalid(format!("unknown resolution: {other}"))),
     }
 }
 
 #[async_trait]
 impl BeliefContradictionStore for SqliteBeliefContradictionStore {
-    async fn insert_contradiction(&self, c: &BeliefContradiction) -> Result<(), String> {
+    async fn insert_contradiction(&self, c: &BeliefContradiction) -> StoreResult<()> {
         // Canonicalize the pair before insert so the unique index and all
         // future lookups stay aligned regardless of caller ordering.
         let (a, b) = canonical_pair(&c.belief_a_id, &c.belief_b_id);
@@ -99,32 +102,34 @@ impl BeliefContradictionStore for SqliteBeliefContradictionStore {
             .as_ref()
             .map(|r| resolution_to_str(r).to_string());
 
-        self.db.with_connection(move |conn| {
-            conn.execute(
-                "INSERT INTO kg_belief_contradictions (
+        self.db
+            .with_connection(move |conn| {
+                conn.execute(
+                    "INSERT INTO kg_belief_contradictions (
                     id, belief_a_id, belief_b_id, contradiction_type, severity,
                     judge_reasoning, detected_at, resolved_at, resolution
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
                 )
                 ON CONFLICT(belief_a_id, belief_b_id) DO NOTHING",
-                params![
-                    id,
-                    belief_a_id,
-                    belief_b_id,
-                    contradiction_type,
-                    severity,
-                    judge_reasoning,
-                    detected_at,
-                    resolved_at,
-                    resolution,
-                ],
-            )?;
-            Ok(())
-        })
+                    params![
+                        id,
+                        belief_a_id,
+                        belief_b_id,
+                        contradiction_type,
+                        severity,
+                        judge_reasoning,
+                        detected_at,
+                        resolved_at,
+                        resolution,
+                    ],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 
-    async fn for_belief(&self, belief_id: &str) -> Result<Vec<BeliefContradiction>, String> {
+    async fn for_belief(&self, belief_id: &str) -> StoreResult<Vec<BeliefContradiction>> {
         let belief_id = belief_id.to_string();
         let rows = self.db.with_connection(move |conn| {
             let mut stmt = conn.prepare(
@@ -139,14 +144,14 @@ impl BeliefContradictionStore for SqliteBeliefContradictionStore {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })?;
-        rows.into_iter().collect()
+        rows.into_iter().collect::<Result<Vec<_>, _>>()
     }
 
     async fn list_recent(
         &self,
         partition_id: &str,
         limit: usize,
-    ) -> Result<Vec<BeliefContradiction>, String> {
+    ) -> StoreResult<Vec<BeliefContradiction>> {
         let partition_id = partition_id.to_string();
         let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = self.db.with_connection(move |conn| {
@@ -165,48 +170,52 @@ impl BeliefContradictionStore for SqliteBeliefContradictionStore {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })?;
-        rows.into_iter().collect()
+        rows.into_iter().collect::<Result<Vec<_>, _>>()
     }
 
-    async fn pair_exists(&self, belief_a_id: &str, belief_b_id: &str) -> Result<bool, String> {
+    async fn pair_exists(&self, belief_a_id: &str, belief_b_id: &str) -> StoreResult<bool> {
         let (a, b) = canonical_pair(belief_a_id, belief_b_id);
         let a = a.to_string();
         let b = b.to_string();
-        self.db.with_connection(move |conn| {
-            let exists: Option<i64> = conn
-                .query_row(
-                    "SELECT 1 FROM kg_belief_contradictions \
+        self.db
+            .with_connection(move |conn| {
+                let exists: Option<i64> = conn
+                    .query_row(
+                        "SELECT 1 FROM kg_belief_contradictions \
                      WHERE belief_a_id = ?1 AND belief_b_id = ?2",
-                    params![a, b],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            Ok(exists.is_some())
-        })
+                        params![a, b],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(exists.is_some())
+            })
+            .map_err(StoreError::from)
     }
 
-    async fn resolve(&self, contradiction_id: &str, resolution: Resolution) -> Result<(), String> {
+    async fn resolve(&self, contradiction_id: &str, resolution: Resolution) -> StoreResult<()> {
         let id = contradiction_id.to_string();
         let resolution_str = resolution_to_str(&resolution).to_string();
         let now = Utc::now().to_rfc3339();
-        self.db.with_connection(move |conn| {
-            conn.execute(
-                "UPDATE kg_belief_contradictions
+        self.db
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE kg_belief_contradictions
                  SET resolution = ?1, resolved_at = ?2
                  WHERE id = ?3",
-                params![resolution_str, now, id],
-            )?;
-            Ok(())
-        })
+                    params![resolution_str, now, id],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 }
 
 /// Map one row of `kg_belief_contradictions` to a `BeliefContradiction`.
-/// Returns `Result<_, String>` per row so callers can fail loud on
+/// Returns `StoreResult<_>` per row so callers can fail loud on
 /// malformed timestamps / enum strings rather than silently dropping rows.
 fn row_to_contradiction(
     row: &rusqlite::Row,
-) -> rusqlite::Result<Result<BeliefContradiction, String>> {
+) -> rusqlite::Result<Result<BeliefContradiction, StoreError>> {
     let id: String = row.get(0)?;
     let belief_a_id: String = row.get(1)?;
     let belief_b_id: String = row.get(2)?;
@@ -225,7 +234,7 @@ fn row_to_contradiction(
     let parse_dt = |s: &str| {
         DateTime::parse_from_rfc3339(s)
             .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| format!("parse timestamp {s}: {e}"))
+            .map_err(|e| StoreError::Invalid(format!("parse timestamp {s}: {e}")))
     };
 
     let detected_at = match parse_dt(&detected_at_s) {
@@ -260,7 +269,7 @@ fn row_to_contradiction(
 mod tests {
     use super::*;
     use crate::{KnowledgeDatabase, SqliteBeliefStore};
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use tempfile::TempDir;
     use zbot_stores_domain::Belief;
     use zbot_stores_traits::BeliefStore;

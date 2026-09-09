@@ -1,4 +1,4 @@
-use gateway_services::paths::VaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use std::sync::Arc;
 use tempfile::TempDir;
 use zbot_stores_sqlite::kg::storage::GraphStorage;

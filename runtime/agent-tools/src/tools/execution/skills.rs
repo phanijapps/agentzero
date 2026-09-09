@@ -473,8 +473,7 @@ fn build_skill_packet(
             "render_policy": "summary",
             "full_body_read": "Use load_skill(file=\"@skill:<skill>/SKILL.md\") only when the full body is explicitly needed."
         },
-        "resources": resources,
-    })
+        "resources": resources })
 }
 
 fn summarize_sections(skill_name: &str, instructions: &str) -> Vec<Value> {
@@ -509,8 +508,7 @@ fn push_section(skill_name: &str, sections: &mut Vec<Value>, title: &str, body: 
         "title": title,
         "summary": truncate_text(&summary, MAX_SKILL_SECTION_CHARS),
         "resource_uri": format!("zbot://skills/{skill_name}/sections/{slug}"),
-        "token_estimate": estimate_tokens(&summary),
-    }));
+        "token_estimate": estimate_tokens(&summary) }));
 }
 
 fn markdown_heading(line: &str) -> Option<&str> {
@@ -598,8 +596,7 @@ fn list_skill_resources(skill_dir: &std::path::Path, skill_name: &str) -> Vec<Va
                 }
                 resources.push(json!({
                     "file": name,
-                    "load_with": format!("load_skill(file=\"{}\")", name),
-                }));
+                    "load_with": format!("load_skill(file=\"{}\")", name) }));
             }
         }
     }
@@ -619,8 +616,7 @@ fn list_skill_resources(skill_dir: &std::path::Path, skill_name: &str) -> Vec<Va
                         let rel_path = format!("{}/{}", dir_name, file_name);
                         resources.push(json!({
                                         "file": rel_path.clone(),
-                                        "load_with": format!("load_skill(file=\"@skill:{}/{}\")", skill_name, rel_path),
-                                    }));
+                                        "load_with": format!("load_skill(file=\"@skill:{}/{}\")", skill_name, rel_path) }));
                     }
                 }
             }

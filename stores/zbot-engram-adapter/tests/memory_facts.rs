@@ -977,5 +977,5 @@ async fn live_embedding_identity_mismatch_degrades_before_vector_search() {
         .upsert_typed_fact(drifted_fact.clone(), drifted_fact.embedding.clone())
         .await
         .expect_err("model drift must block vector writes");
-    assert!(err.contains("embedding_identity_mismatch"));
+    assert!(err.to_string().contains("embedding_identity_mismatch"));
 }

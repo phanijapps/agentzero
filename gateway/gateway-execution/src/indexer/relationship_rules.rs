@@ -4,9 +4,6 @@
 //! emits candidate `(source_name, RelationshipType, target_name, target_type)`
 //! tuples. The caller resolves names to entity IDs via `EntityResolver`.
 
-// Rule stubs and public API are used by later tasks in the activation pack.
-#![allow(dead_code)]
-
 use knowledge_graph::{EntityType, RelationshipType};
 use serde_json::{Map, Value};
 

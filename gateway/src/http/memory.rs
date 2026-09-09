@@ -96,7 +96,7 @@ fn validate_public_fact_input(
 fn public_internal_error(
     log_context: &str,
     public_message: &str,
-    e: String,
+    e: impl std::fmt::Display,
 ) -> (StatusCode, Json<ErrorResponse>) {
     tracing::error!("{}: {}", log_context, e);
     (
@@ -289,7 +289,7 @@ fn normalize_public_match_source(mut fact: MemoryFactResponse) -> MemoryFactResp
     fact
 }
 
-fn search_err(context: &str, e: String) -> (StatusCode, Json<ErrorResponse>) {
+fn search_err(context: &str, e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>) {
     public_internal_error(context, context, e)
 }
 
@@ -657,7 +657,7 @@ pub async fn dedupe_procedures(
     let deleted = store
         .dedupe_procedures_by_name()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok((
         StatusCode::OK,
         Json(DedupeProceduresResponse {

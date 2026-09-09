@@ -13,6 +13,7 @@ description = "Cron job configuration and persistence for AgentZero gateway"
 [dependencies]
 # Workspace crates
 gateway-services = { path = "../gateway-services" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 
 # Serialization
 serde = { workspace = true }

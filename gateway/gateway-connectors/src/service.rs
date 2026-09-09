@@ -5,7 +5,7 @@
 use crate::config::{
     ConnectorConfig, ConnectorsStore, CreateConnectorRequest, UpdateConnectorRequest,
 };
-use gateway_services::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use std::path::PathBuf;
 use thiserror::Error;
 use tokio::fs;
@@ -312,7 +312,7 @@ pub struct TestResult {
 mod tests {
     use super::*;
     use crate::config::ConnectorTransport;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::TempDir;

@@ -427,9 +427,9 @@ pub async fn reindex_all(
 mod tests {
     use super::*;
     use crate::vector_index::extract_dim_from_ddl;
+    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::llm::embedding::{EmbeddingClient as Trait, EmbeddingError};
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 

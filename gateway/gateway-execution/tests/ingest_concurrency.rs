@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
+use agent_primitives::vault_paths::VaultPaths;
 use gateway_execution::ingest::{IngestionQueue, NoopExtractor};
-use gateway_services::VaultPaths;
 use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_sqlite::kg::storage::GraphStorage;
 use zbot_stores_sqlite::{

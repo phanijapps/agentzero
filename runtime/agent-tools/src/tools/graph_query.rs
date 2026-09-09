@@ -3,10 +3,6 @@
 // Search, explore neighbors, and get contextual subgraphs from the knowledge graph.
 // ============================================================================
 
-// Public API types — consumed by downstream crates (e.g., pi-mono) that wire
-// a concrete GraphStorageAccess into the tool. No internal caller yet.
-#![allow(dead_code)]
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -253,8 +249,7 @@ impl GraphQueryTool {
         Ok(json!({
             "summary": md,
             "count": entities.len(),
-            "entities": entities,
-        }))
+            "entities": entities }))
     }
 
     async fn handle_neighbors(&self, args: &Value, limit: usize) -> Result<Value> {
@@ -446,8 +441,7 @@ impl GraphQueryTool {
             "summary": md,
             "count": entities.len(),
             "entities": entities,
-            "relationships": rel_rows,
-        }))
+            "relationships": rel_rows }))
     }
 }
 
@@ -480,8 +474,7 @@ mod tests {
                 mention_count: 5,
                 properties: serde_json::json!({
                     "aliases": ["yf"],
-                    "description": "Python library for stock data",
-                }),
+                    "description": "Python library for stock data" }),
                 first_seen_at: now.clone(),
                 last_seen_at: now.clone(),
             };

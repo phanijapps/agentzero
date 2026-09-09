@@ -27,7 +27,9 @@ const BASE_TAXONOMY_BYTES: &[u8] = include_bytes!("../../templates/governance/ba
 const OLLAMA_CLOUD_PENDING_BYTES: &[u8] =
     b"version = 1\nprovider_id = provider-ollama-cloud\nmodel = glm-5.2:cloud\n";
 
-fn ollama_cloud_pending_path(paths: &gateway_services::VaultPaths) -> std::path::PathBuf {
+fn ollama_cloud_pending_path(
+    paths: &agent_primitives::vault_paths::VaultPaths,
+) -> std::path::PathBuf {
     paths
         .config_dir()
         .join(gateway_services::providers::OLLAMA_CLOUD_PENDING_MARKER)
@@ -48,7 +50,9 @@ fn apply_ollama_cloud_recovery_status(
     }
 }
 
-fn claim_ollama_cloud_pending(paths: &gateway_services::VaultPaths) -> Result<bool, ()> {
+fn claim_ollama_cloud_pending(
+    paths: &agent_primitives::vault_paths::VaultPaths,
+) -> Result<bool, ()> {
     use std::io::Write;
 
     let path = ollama_cloud_pending_path(paths);
@@ -197,7 +201,7 @@ fn preflight_fixed_profile_target(
 /// Preflight every full-profile setting and fixed target before provider,
 /// SOUL, settings, or profile mutation.
 fn preflight_full_memory_profile(
-    paths: &gateway_services::VaultPaths,
+    paths: &agent_primitives::vault_paths::VaultPaths,
     existing_memory: &gateway_memory::MemorySettings,
     embedding_is_internal_384: bool,
 ) -> Result<(), &'static str> {
@@ -222,7 +226,7 @@ fn preflight_full_memory_profile(
 }
 
 fn memory_profile_targets(
-    paths: &gateway_services::VaultPaths,
+    paths: &agent_primitives::vault_paths::VaultPaths,
 ) -> Vec<(std::path::PathBuf, &'static [u8])> {
     let governance = paths.config_dir().join("governance");
     vec![
@@ -247,7 +251,9 @@ fn full_embedding_is_compatible(state: &AppState) -> bool {
         && state.embedding_service.client().model_name() == "bge-small-en-v1.5"
 }
 
-fn provision_memory_profile(paths: &gateway_services::VaultPaths) -> Result<(), &'static str> {
+fn provision_memory_profile(
+    paths: &agent_primitives::vault_paths::VaultPaths,
+) -> Result<(), &'static str> {
     for (index, (target, expected)) in memory_profile_targets(paths).into_iter().enumerate() {
         if let Err(code) = provision_fixed_profile_target(paths.vault_dir(), &target, expected) {
             tracing::warn!(
@@ -317,7 +323,7 @@ fn provision_fixed_profile_target(
 }
 
 pub(crate) fn activate_pending_memory_profile_on_boot(
-    paths: &gateway_services::VaultPaths,
+    paths: &agent_primitives::vault_paths::VaultPaths,
     settings_service: &gateway_services::SettingsService,
 ) -> Result<(), &'static str> {
     let marker = paths.config_dir().join(".zbot-memory-profile-v1-pending");
@@ -349,7 +355,7 @@ pub(crate) fn activate_pending_memory_profile_on_boot(
 }
 
 fn pending_v1_inputs_are_exact(
-    paths: &gateway_services::VaultPaths,
+    paths: &agent_primitives::vault_paths::VaultPaths,
     memory: &gateway_memory::MemorySettings,
 ) -> bool {
     let Ok(actual_memory) = serde_json::to_value(memory) else {
@@ -563,7 +569,7 @@ pub async fn get_commissioning_status(
 }
 
 fn pending_memory_profile_recovery(
-    paths: &gateway_services::VaultPaths,
+    paths: &agent_primitives::vault_paths::VaultPaths,
     settings: &gateway_services::AppSettings,
     status: CommissioningState,
     fallback_recovery: Option<&'static str>,
@@ -1420,7 +1426,9 @@ mod tests {
     fn profile_provisioning_distinguishes_safe_full_retry_and_conflict() {
         fn provision(root: &std::path::Path, full: bool) -> Result<(), &'static str> {
             if full {
-                provision_memory_profile(&gateway_services::VaultPaths::new(root.to_path_buf()))
+                provision_memory_profile(&agent_primitives::vault_paths::VaultPaths::new(
+                    root.to_path_buf(),
+                ))
             } else {
                 Ok(())
             }
@@ -1520,7 +1528,7 @@ mod tests {
             marker: Vec<u8>,
         }
 
-        fn snapshot(paths: &gateway_services::VaultPaths) -> PersistentSnapshot {
+        fn snapshot(paths: &agent_primitives::vault_paths::VaultPaths) -> PersistentSnapshot {
             let read = |path: std::path::PathBuf| std::fs::read(path).unwrap();
             let governance = paths.config_dir().join("governance");
             PersistentSnapshot {
@@ -1535,7 +1543,7 @@ mod tests {
         }
 
         let vault = tempfile::tempdir().unwrap();
-        let paths = gateway_services::VaultPaths::new(vault.path().to_path_buf());
+        let paths = agent_primitives::vault_paths::VaultPaths::new(vault.path().to_path_buf());
         let governance = paths.config_dir().join("governance");
         std::fs::create_dir_all(&governance).unwrap();
         std::fs::create_dir_all(paths.agent_contracts_dir()).unwrap();
@@ -1749,7 +1757,7 @@ mod tests {
     #[test]
     fn boot_activation_finalizes_exact_persisted_full_profile() {
         let vault = tempfile::tempdir().unwrap();
-        let paths = std::sync::Arc::new(gateway_services::VaultPaths::new(
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
             vault.path().to_path_buf(),
         ));
         provision_memory_profile(paths.as_ref()).unwrap();
@@ -1784,7 +1792,7 @@ mod tests {
     #[test]
     fn status_reports_restart_only_for_exact_durable_pending_state() {
         let vault = tempfile::tempdir().unwrap();
-        let paths = std::sync::Arc::new(gateway_services::VaultPaths::new(
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
             vault.path().to_path_buf(),
         ));
         provision_memory_profile(paths.as_ref()).unwrap();
@@ -1974,7 +1982,7 @@ mod tests {
     #[test]
     fn ollama_pending_claim_is_exclusive_exact_and_conflict_safe() {
         let vault = tempfile::tempdir().unwrap();
-        let paths = gateway_services::VaultPaths::new(vault.path().to_path_buf());
+        let paths = agent_primitives::vault_paths::VaultPaths::new(vault.path().to_path_buf());
         assert_eq!(claim_ollama_cloud_pending(&paths), Ok(true));
         assert_eq!(claim_ollama_cloud_pending(&paths), Ok(false));
         let marker = ollama_cloud_pending_path(&paths);
@@ -1990,7 +1998,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let vault = tempfile::tempdir().unwrap();
-        let paths = gateway_services::VaultPaths::new(vault.path().to_path_buf());
+        let paths = agent_primitives::vault_paths::VaultPaths::new(vault.path().to_path_buf());
         std::fs::create_dir_all(paths.config_dir()).unwrap();
         symlink(
             vault.path().join("missing-target"),

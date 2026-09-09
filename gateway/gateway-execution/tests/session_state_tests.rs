@@ -12,10 +12,10 @@
 
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::VaultPaths;
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_execution::session_state::{SessionPhase, SessionStateBuilder};
-use gateway_services::VaultPaths;
 #[allow(deprecated)]
 use tempfile::tempdir;
 use zbot_conversation::{Message, MessageStore, SqliteMessageStore};
@@ -454,10 +454,8 @@ fn test_title_falls_back_to_intent_primary_when_tool_skipped() {
                 "ward_recommendation": {
                     "action": "use_existing",
                     "ward_name": "scratch",
-                    "reason": "test",
-                },
-                "execution_strategy": { "approach": "simple", "explanation": "" },
-            })),
+                    "reason": "test" },
+                "execution_strategy": { "approach": "simple", "explanation": "" } })),
         )
         .unwrap();
 
@@ -509,10 +507,8 @@ fn test_title_sessions_row_wins_over_intent_fallback() {
                 "ward_recommendation": {
                     "action": "use_existing",
                     "ward_name": "scratch",
-                    "reason": "",
-                },
-                "execution_strategy": { "approach": "simple", "explanation": "" },
-            })),
+                    "reason": "" },
+                "execution_strategy": { "approach": "simple", "explanation": "" } })),
         )
         .unwrap();
 
@@ -907,8 +903,7 @@ fn test_intent_recommendation_is_not_an_active_ward_without_session_binding() {
                 "ward": "financial-analysis",
                 "ward_recommendation": {
                     "action": "use_existing",
-                    "ward_name": "financial-analysis",
-                }
+                    "ward_name": "financial-analysis" }
             })),
         )
         .unwrap();

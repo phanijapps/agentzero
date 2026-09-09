@@ -302,8 +302,7 @@ impl HttpFixture {
                                 if hang { let mut byte=[0]; let _ = socket.read(&mut byte).await; closed.notify_one(); return; }
                                 json!({"content":[{"type":"text","text":format!("{} {SECRET}",request["params"]["arguments"]["value"])}]})
                             },
-                            other => panic!("unexpected MCP method {other}"),
-                        };
+                            other => panic!("unexpected MCP method {other}") };
                         if native && method != "initialize" {
                             assert!(records.lock().unwrap().iter().any(|method| method=="notifications/initialized"));
                             assert!(headers.to_ascii_lowercase().contains("mcp-session-id: fixture-session"));

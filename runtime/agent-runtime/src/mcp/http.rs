@@ -25,7 +25,6 @@ const HTTP_MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// HTTP-based MCP client
 pub(super) struct HttpMcpClient {
-    #[allow(dead_code)] // Reserved for future connection tracking
     id: String,
     name: String,
     url: String,
@@ -62,10 +61,9 @@ impl HttpMcpClient {
     async fn send_request(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let mut canceled = self.canceled.subscribe();
         tokio::select! {
-            biased;
-            _ = canceled.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
-            result = self.send_request_inner(method, params) => result,
-        }
+        biased;
+        _ = canceled.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
+        result = self.send_request_inner(method, params) => result }
     }
 
     async fn send_request_inner(&self, method: &str, params: Value) -> Result<Value, McpError> {

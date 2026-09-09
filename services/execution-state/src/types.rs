@@ -887,8 +887,7 @@ impl SessionPlanInput {
         Self::preflight_update(&plan, explanation.as_deref())?;
         let input = serde_json::from_value::<Self>(serde_json::json!({
             "plan": plan,
-            "explanation": explanation,
-        }))
+            "explanation": explanation }))
         .map_err(|_| SessionPlanRejection::InvalidStructure)?;
 
         input.validate()?;
@@ -1711,8 +1710,7 @@ mod tests {
             serde_json::json!([{
                 "step": "Inspect the setup",
                 "status": "pending",
-                "untrusted": true,
-            }]),
+                "untrusted": true }]),
             None,
         );
         assert_eq!(unknown_field, Err(SessionPlanRejection::InvalidStructure));

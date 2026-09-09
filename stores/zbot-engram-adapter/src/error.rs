@@ -1,6 +1,7 @@
 //! Typed adapter errors with trait-boundary string conversion.
 
 use thiserror::Error;
+use zbot_stores_traits::StoreError;
 
 /// Result type used inside the adapter before translating to AgentZero traits.
 pub type AdapterResult<T> = Result<T, AdapterError>;
@@ -103,9 +104,20 @@ impl AdapterError {
         }
     }
 
-    /// Convert an internal error to the `Result<_, String>` shape used by
-    /// AgentZero store traits.
-    pub fn into_trait_error(self) -> String {
-        self.to_string()
+    /// Convert an internal error to the [`StoreError`] shape used by
+    /// AgentZero store traits, preserving the failure class: unsupported
+    /// features and bootstrap gaps surface as `Unavailable`, scope and
+    /// mapping failures as `Invalid`, storage failures as `Backend`.
+    pub fn into_trait_error(self) -> StoreError {
+        match self.kind() {
+            AdapterErrorKind::UnsupportedFeature | AdapterErrorKind::Bootstrap => {
+                StoreError::Unavailable(self.to_string())
+            }
+            AdapterErrorKind::InvalidScope
+            | AdapterErrorKind::PathNotConfined
+            | AdapterErrorKind::Mapping
+            | AdapterErrorKind::MissingConfig => StoreError::Invalid(self.to_string()),
+            AdapterErrorKind::Storage => StoreError::Backend(self.to_string()),
+        }
     }
 }

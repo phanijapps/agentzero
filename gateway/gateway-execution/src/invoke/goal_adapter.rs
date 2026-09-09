@@ -64,7 +64,10 @@ impl GoalAccess for GoalAdapter {
             completed_at: None,
         };
         let payload = serde_json::to_value(&goal).map_err(|e| format!("encode Goal: {e}"))?;
-        self.store.create_goal(payload).await?;
+        self.store
+            .create_goal(payload)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(to_summary(goal))
     }
 
@@ -73,7 +76,10 @@ impl GoalAccess for GoalAdapter {
         goal_id: &str,
         new_state: &str,
     ) -> std::result::Result<(), String> {
-        self.store.update_goal_state(goal_id, new_state).await
+        self.store
+            .update_goal_state(goal_id, new_state)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn update_filled_slots(
@@ -84,15 +90,25 @@ impl GoalAccess for GoalAdapter {
         self.store
             .update_goal_filled_slots(goal_id, filled_slots_json)
             .await
+            .map_err(|e| e.to_string())
     }
 
     async fn list_active(&self, agent_id: &str) -> std::result::Result<Vec<GoalSummary>, String> {
-        let rows = self.store.list_active_goals(agent_id).await?;
+        let rows = self
+            .store
+            .list_active_goals(agent_id)
+            .await
+            .map_err(|e| e.to_string())?;
         rows.into_iter().map(value_to_summary).collect()
     }
 
     async fn get(&self, goal_id: &str) -> std::result::Result<Option<GoalSummary>, String> {
-        match self.store.get_goal(goal_id).await? {
+        match self
+            .store
+            .get_goal(goal_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
             Some(v) => Ok(Some(value_to_summary(v)?)),
             None => Ok(None),
         }

@@ -3,9 +3,10 @@
 //! ExecutionRunner wiring.
 
 use super::*;
+use agent_primitives::vault_paths::VaultPaths;
 use execution_state::{SqliteWorkStore, WorkStore};
 use gateway_bus::LocalWorkTransport;
-use gateway_services::{agents::Agent, providers::Provider, VaultPaths};
+use gateway_services::{agents::Agent, providers::Provider};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub(super) use tokio::net::{TcpListener, TcpStream};
 pub(super) use tokio::sync::oneshot;

@@ -2,10 +2,10 @@
 //! The agent decides simple vs graph — no pre-checks, no pre-fetched results.
 
 use super::contract::IntentAnalysis;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_runtime::rig_adapter::RigToolAdapter;
 use agent_tools::MemorySearchTool;
 use gateway_services::providers::Provider;
-use gateway_services::SharedVaultPaths;
 use std::sync::Arc;
 use zbot_stores::MemoryFactStore;
 use zbot_stores_traits::ProcedureStore;

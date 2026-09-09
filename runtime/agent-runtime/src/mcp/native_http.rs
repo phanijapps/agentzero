@@ -23,10 +23,9 @@ impl SessionHttpClient {
     ) -> Result<T, StreamableHttpError<std::io::Error>> {
         let mut canceled = self.canceled.subscribe();
         tokio::select! {
-            biased;
-            _ = canceled.wait_for(|value| *value) => Err(safe_error()),
-            result = tokio::time::timeout(Duration::from_secs(30),future) => result.map_err(|_|safe_error())?.map_err(sanitize_error),
-        }
+        biased;
+        _ = canceled.wait_for(|value| *value) => Err(safe_error()),
+        result = tokio::time::timeout(Duration::from_secs(30),future) => result.map_err(|_|safe_error())?.map_err(sanitize_error) }
     }
 }
 

@@ -2,10 +2,10 @@
 //!
 //! Configuration types for agent execution.
 
+use agent_primitives::vault_paths::VaultPaths;
 use agent_primitives::FileSystemContext;
 use execution_state::TriggerSource;
 use gateway_events::HookContext;
-use gateway_services::VaultPaths;
 use serde_json::Value;
 use std::path::PathBuf;
 use zbot_conversation::LedgerResumePacket;
@@ -45,7 +45,7 @@ impl FileSystemContext for GatewayFileSystem {
 
     /// Skills load from the vault first (writable, user-owned) and then
     /// from `$HOME/.agents/skills/` (read-only, externally installed).
-    /// Mirrors `gateway_services::VaultPaths::skills_dirs()` so the runtime
+    /// Mirrors `agent_primitives::vault_paths::VaultPaths::skills_dirs()` so the runtime
     /// loader sees the same roots the indexer does.
     fn skills_dirs(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.vault_dir.join("skills")];
@@ -347,8 +347,7 @@ mod tests {
     fn execution_config_with_metadata() {
         let metadata = serde_json::json!({
             "thread_id": "C123:1234567890.123456",
-            "sender": "U12345",
-        });
+            "sender": "U12345" });
 
         let config = ExecutionConfig::new(
             "root".to_string(),

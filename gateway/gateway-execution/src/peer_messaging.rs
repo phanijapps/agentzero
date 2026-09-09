@@ -285,8 +285,7 @@ peer_data_json: {}\n\
             "sender_agent_id": sender_agent_id,
             "reply_token": work_id,
             "duplicate_policy": "If this message_id was already handled, do not repeat its effects.",
-            "content": content,
-        });
+            "content": content });
         serde_json::to_string(&peer_data)
             .unwrap_or_else(|_| "{\"content\":\"[invalid peer content]\"}".to_owned())
     }
@@ -542,12 +541,12 @@ fn validate_prefixed_uuid(value: &str, prefix: &str) -> Result<(), ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use execution_state::{SqliteWorkStore, WorkFailureCode, WorkStatus};
     use gateway_bus::{
         DurableWorkWorker, LocalWorkTransport, WorkHandlerRegistry, WorkWorkerConfig,
         WorkWorkerLimits,
     };
-    use gateway_services::VaultPaths;
     use tempfile::TempDir;
     use tokio::time::{sleep, timeout, Duration};
 

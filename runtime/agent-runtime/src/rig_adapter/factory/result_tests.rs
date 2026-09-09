@@ -449,7 +449,7 @@ async fn host_peer_outcome_plumbing_blocks_real_rig_effects_before_dispatch() {
     let context = Arc::new(crate::tools::ToolContext::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(Script::default());
-    let agent = AgentBuilder::new(LlmCompletionModel::new(provider.clone(), "fixture"))
+    let agent = AgentBuilder::new(LlmCompletionModel::new(provider.clone()))
         .tools(vec![
             RigToolAdapter::boxed(Arc::new(Effect {
                 output: Ok("peer-result-canary".into()),

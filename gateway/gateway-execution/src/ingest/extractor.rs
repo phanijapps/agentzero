@@ -24,8 +24,6 @@ struct EntityItem {
     type_str: Option<String>,
     summary: Option<String>,
     description: Option<String>,
-    #[allow(dead_code)]
-    aliases: Option<Vec<String>>,
 }
 
 /// Maximum length for the summary property. LLMs sometimes emit long

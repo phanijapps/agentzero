@@ -300,7 +300,9 @@ mod tests {
 
     fn control() -> (tempfile::TempDir, SessionControl) {
         let temp = tempfile::tempdir().unwrap();
-        let paths = Arc::new(gateway_services::VaultPaths::new(temp.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            temp.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         let db = Arc::new(DatabaseManager::new(paths).unwrap());
         let control = SessionControl {

@@ -101,8 +101,7 @@ impl Tool for ReadTool {
             "content": selected_lines,
             "total_lines": total_lines,
             "lines_read": end - start,
-            "offset": start,
-        }))
+            "offset": start }))
     }
 }
 

@@ -306,20 +306,20 @@ mod tests {
         assert!(StreamEvent::Done {
             timestamp: 0,
             final_message: String::new(),
-            token_count: 0,
+            token_count: 0
         }
         .is_terminal());
 
         assert!(StreamEvent::Error {
             timestamp: 0,
             error: String::new(),
-            recoverable: false,
+            recoverable: false
         }
         .is_terminal());
 
         assert!(!StreamEvent::Token {
             timestamp: 0,
-            content: String::new(),
+            content: String::new()
         }
         .is_terminal());
     }

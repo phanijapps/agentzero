@@ -3,9 +3,9 @@
 // Manages SQLite connection pool and initialization
 // ============================================================================
 
+use agent_primitives::vault_paths::SharedVaultPaths;
 use api_logs::DbProvider;
 use execution_state::StateDbProvider;
-use gateway_services::SharedVaultPaths;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;

@@ -138,7 +138,7 @@ impl OrphanArchiver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use tempfile::TempDir;
     use zbot_stores_sqlite::kg::storage::GraphStorage;

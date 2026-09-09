@@ -3,10 +3,6 @@
 // Bulk-structured graph writes + text ingest in a single polymorphic tool.
 // ============================================================================
 
-// Public API types — consumed by downstream (gateway) that wires a concrete
-// IngestionAccess into the tool. No in-crate caller yet.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -349,8 +345,7 @@ impl Tool for IngestTool {
             "text_chunks_enqueued": chunk_count,
             "source_id": resolved_source,
             "evidence": evidence,
-            "status": "ok",
-        }))
+            "status": "ok" }))
     }
 }
 

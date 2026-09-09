@@ -17,8 +17,6 @@ use crate::{CachedLlmClient, LlmClientConfig, MemoryLlmFactory};
 #[derive(Debug, Deserialize)]
 struct VerifierResponse {
     same_entity: bool,
-    #[allow(dead_code)]
-    confidence: Option<f64>,
 }
 
 /// LLM-backed pairwise verifier. Defaults to deny on any failure so a

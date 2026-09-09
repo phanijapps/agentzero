@@ -3,10 +3,6 @@
 // Create, update, list, and get agent goals. Active goals steer recall.
 // ============================================================================
 
-// Public API types — consumed by downstream (gateway) that wires a concrete
-// GoalAccess into the tool. No in-crate caller yet.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -215,6 +211,5 @@ fn summary_to_value(g: &GoalSummary) -> Value {
         "description": g.description,
         "state": g.state,
         "slots": g.slots,
-        "filled_slots": g.filled_slots,
-    })
+        "filled_slots": g.filled_slots })
 }

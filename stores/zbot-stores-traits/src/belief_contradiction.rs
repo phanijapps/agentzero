@@ -8,6 +8,7 @@
 //! (idempotent) — the detector relies on this to skip already-evaluated
 //! pairs without an explicit pre-check race.
 
+use crate::error::StoreResult;
 use async_trait::async_trait;
 use zbot_stores_domain::{BeliefContradiction, Resolution};
 
@@ -21,11 +22,11 @@ pub trait BeliefContradictionStore: Send + Sync {
     /// Insert a new contradiction. Implementations MUST canonicalize the
     /// pair (smaller id first) and treat conflicts on the unique index
     /// as a no-op (idempotent).
-    async fn insert_contradiction(&self, c: &BeliefContradiction) -> Result<(), String>;
+    async fn insert_contradiction(&self, c: &BeliefContradiction) -> StoreResult<()>;
 
     /// List contradictions involving a specific belief — works whether
     /// the belief is on the `belief_a_id` or `belief_b_id` side.
-    async fn for_belief(&self, belief_id: &str) -> Result<Vec<BeliefContradiction>, String>;
+    async fn for_belief(&self, belief_id: &str) -> StoreResult<Vec<BeliefContradiction>>;
 
     /// List recent contradictions in a partition, joined through
     /// `kg_beliefs.partition_id` since contradictions don't carry a
@@ -34,13 +35,13 @@ pub trait BeliefContradictionStore: Send + Sync {
         &self,
         partition_id: &str,
         limit: usize,
-    ) -> Result<Vec<BeliefContradiction>, String>;
+    ) -> StoreResult<Vec<BeliefContradiction>>;
 
     /// Check if a pair has already been evaluated (any row exists).
     /// Implementations MUST canonicalize the pair before lookup.
-    async fn pair_exists(&self, belief_a_id: &str, belief_b_id: &str) -> Result<bool, String>;
+    async fn pair_exists(&self, belief_a_id: &str, belief_b_id: &str) -> StoreResult<bool>;
 
     /// Mark a contradiction resolved. Sets `resolution` and `resolved_at`
     /// to "now".
-    async fn resolve(&self, contradiction_id: &str, resolution: Resolution) -> Result<(), String>;
+    async fn resolve(&self, contradiction_id: &str, resolution: Resolution) -> StoreResult<()>;
 }

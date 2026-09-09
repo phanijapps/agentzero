@@ -392,7 +392,9 @@ mod tests {
         let registry = Arc::new(BridgeRegistry::new());
 
         // Create a mock database manager
-        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         let db = Arc::new(zbot_runtime_sqlite::DatabaseManager::new(paths).unwrap());
         let outbox = Arc::new(OutboxRepository::new(db));
 
@@ -406,7 +408,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let registry = Arc::new(BridgeRegistry::new());
 
-        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         let db = Arc::new(zbot_runtime_sqlite::DatabaseManager::new(paths).unwrap());
         let outbox = Arc::new(OutboxRepository::new(db));
 
@@ -428,7 +432,9 @@ mod tests {
         std::fs::write(plugin_dir.join("plugin.json"), manifest).unwrap();
 
         let registry = Arc::new(BridgeRegistry::new());
-        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         let db = Arc::new(zbot_runtime_sqlite::DatabaseManager::new(paths).unwrap());
         let outbox = Arc::new(OutboxRepository::new(db));
 

@@ -322,7 +322,7 @@ impl ConflictJudgeLlm for LlmConflictJudge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Mutex;
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::{
@@ -419,8 +419,7 @@ mod tests {
                 "pinned": false,
                 "epistemic_class": "current",
                 "source_episode_id": null,
-                "source_ref": null,
-            }))
+                "source_ref": null }))
             .unwrap();
             store
                 .upsert_typed_fact(fact, Some(embedding.clone()))

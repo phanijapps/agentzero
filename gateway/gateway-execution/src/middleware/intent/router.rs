@@ -5,7 +5,7 @@ use super::contract::{
     ExecutionApproach, ExecutionStrategy, IntentAnalysis, PinnedProcedure, WardAction,
     WardRecommendation,
 };
-use gateway_services::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use zbot_stores_traits::ProcedureStore;
 
 /// Greetings and non-task messages bypass the agent entirely — no LLM call.

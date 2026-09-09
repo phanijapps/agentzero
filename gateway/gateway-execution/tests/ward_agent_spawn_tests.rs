@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::VaultPaths;
 use gateway_execution::invoke::setup::AgentLoader;
-use gateway_services::{AgentService, ProviderService, SettingsService, VaultPaths};
+use gateway_services::{AgentService, ProviderService, SettingsService};
 
 // ============================================================================
 // HELPERS

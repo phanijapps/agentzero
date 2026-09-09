@@ -11,7 +11,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use agent_runtime::llm::embedding::{content_hash, EmbeddingClient};
-use zbot_stores_traits::{MemoryFactStore, SkillIndexRow, StrategyFactInsert, StrategyFactMatch};
+use zbot_stores_traits::{
+    MemoryFactStore, SkillIndexRow, StoreError, StoreResult, StrategyFactInsert, StrategyFactMatch,
+};
 
 use crate::memory_repository::{MemoryFact, MemoryRepository};
 
@@ -43,16 +45,16 @@ const MAX_FACT_CONTENT_CHARS: usize = 800;
 ///
 /// `ctx` (session-context blobs) and `primitive` (extracted function
 /// signatures) are machine-generated and not subject to the sentence rule.
-fn validate_fact_content(category: &str, content: &str) -> Result<(), String> {
+fn validate_fact_content(category: &str, content: &str) -> StoreResult<()> {
     if matches!(category, CTX_CATEGORY | PRIMITIVE_CATEGORY) {
         return Ok(());
     }
     let len = content.chars().count();
     if len > MAX_FACT_CONTENT_CHARS {
-        return Err(format!(
+        return Err(StoreError::Invalid(format!(
             "fact content too long: {len} chars (max {MAX_FACT_CONTENT_CHARS}) — \
              a fact must be 1-3 sentences"
-        ));
+        )));
     }
     Ok(())
 }
@@ -154,7 +156,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         confidence: f64,
         session_id: Option<&str>,
         valid_from: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         validate_fact_content(category, content)?;
 
         // Generate embedding for the content
@@ -227,16 +229,10 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "key": key,
             "category": category,
             "confidence": confidence,
-            "message": format!("Fact saved: [{}] {}", category, content),
-        }))
+            "message": format!("Fact saved: [{}] {}", category, content) }))
     }
 
-    async fn recall_facts(
-        &self,
-        agent_id: &str,
-        query: &str,
-        limit: usize,
-    ) -> Result<Value, String> {
+    async fn recall_facts(&self, agent_id: &str, query: &str, limit: usize) -> StoreResult<Value> {
         // Generate embedding for the query
         let query_embedding = self.embed_text(query).await;
 
@@ -273,8 +269,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                     "content": sf.fact.content,
                     "confidence": sf.fact.confidence,
                     "score": sf.score,
-                    "source": "memory_db",
-                })
+                    "source": "memory_db" })
             })
             .collect();
 
@@ -282,8 +277,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "query": query,
             "results": items,
             "count": items.len(),
-            "source": "memory_db",
-        }))
+            "source": "memory_db" }))
     }
 
     async fn recall_facts_prioritized(
@@ -292,7 +286,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         query: &str,
         limit: usize,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         // Generate embedding for the query
         let query_embedding = self.embed_text(query).await;
 
@@ -488,8 +482,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                     "confidence": sf.fact.confidence,
                     "score": sf.score,
                     "source": "memory_db",
-                    "prioritized": true,
-                })
+                    "prioritized": true })
             })
             .collect();
 
@@ -499,8 +492,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "count": items.len(),
             "source": "memory_db",
             "prioritized": true,
-            "formatted": formatted,
-        }))
+            "formatted": formatted }))
     }
 
     /// Exact-key lookup for ctx-namespaced facts.
@@ -509,7 +501,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
     /// `created_at`, `updated_at` on hit — or `{"found": false, "key": ...}`
     /// on miss. Never performs fuzzy ranking; a missing key never
     /// "nearest-neighbors" to a different fact.
-    async fn get_ctx_fact(&self, ward_id: &str, key: &str) -> Result<Option<Value>, String> {
+    async fn get_ctx_fact(&self, ward_id: &str, key: &str) -> StoreResult<Option<Value>> {
         let fact = self
             .memory_repo
             .get_fact_by_key(CTX_AGENT_SENTINEL, CTX_SCOPE, ward_id, key)?;
@@ -531,8 +523,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                 "session_id": f.session_id,
                 "created_at": f.created_at,
                 "updated_at": f.updated_at,
-                "pinned": f.pinned,
-            })
+                "pinned": f.pinned })
         }))
     }
 
@@ -552,7 +543,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         content: &str,
         owner: &str,
         pinned: bool,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         // Ctx reads are by-key (never fuzzy), so skip embedding generation
         // to save cost + latency. If we ever want fuzzy *within* ctx
         // (e.g. "which step worked on DCF?"), we can backfill embeddings.
@@ -590,8 +581,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "action": "save_ctx_fact",
             "key": key,
             "owner": owner,
-            "session_id": session_id,
-        }))
+            "session_id": session_id }))
     }
 
     async fn upsert_primitive(
@@ -600,7 +590,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         key: &str,
         signature: &str,
         summary: &str,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         // Primitives are queried by exact key (snapshot render) or by
         // ward_id prefix. No embedding needed — deterministic lookup.
         let now = chrono::Utc::now().to_rfc3339();
@@ -640,7 +630,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         Ok(json!({ "success": true, "key": key, "ward_id": ward_id }))
     }
 
-    async fn list_primitives(&self, ward_id: &str) -> Result<Value, String> {
+    async fn list_primitives(&self, ward_id: &str) -> StoreResult<Value> {
         let rows = self
             .memory_repo
             .list_primitives_for_ward(ward_id)
@@ -655,54 +645,69 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                 json!({
                     "key": f.key,
                     "signature": signature,
-                    "summary": summary,
-                })
+                    "summary": summary })
             })
             .collect();
         Ok(json!({ "primitives": primitives }))
     }
 
-    async fn list_primitives_for_ward(&self, ward_id: &str) -> Result<Vec<MemoryFact>, String> {
-        self.memory_repo.list_primitives_for_ward(ward_id)
+    async fn list_primitives_for_ward(&self, ward_id: &str) -> StoreResult<Vec<MemoryFact>> {
+        self.memory_repo
+            .list_primitives_for_ward(ward_id)
+            .map_err(StoreError::from)
     }
 
     async fn list_recent_state_handoffs(
         &self,
         session_id: &str,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         self.memory_repo
             .list_recent_state_handoffs(session_id, limit)
+            .map_err(StoreError::from)
     }
 
-    async fn delete_facts_by_key(&self, category: &str, key: &str) -> Result<usize, String> {
-        self.memory_repo.delete_facts_by_key(category, key)
+    async fn delete_facts_by_key(&self, category: &str, key: &str) -> StoreResult<usize> {
+        self.memory_repo
+            .delete_facts_by_key(category, key)
+            .map_err(StoreError::from)
     }
 
-    async fn list_skill_index(&self) -> Result<Vec<SkillIndexRow>, String> {
-        self.memory_repo.list_skill_index_state()
+    async fn list_skill_index(&self) -> StoreResult<Vec<SkillIndexRow>> {
+        self.memory_repo
+            .list_skill_index_state()
+            .map_err(StoreError::from)
     }
 
-    async fn upsert_skill_index(&self, row: SkillIndexRow) -> Result<(), String> {
-        self.memory_repo.upsert_skill_index_state(&row)
+    async fn upsert_skill_index(&self, row: SkillIndexRow) -> StoreResult<()> {
+        self.memory_repo
+            .upsert_skill_index_state(&row)
+            .map_err(StoreError::from)
     }
 
-    async fn delete_skill_index(&self, name: &str) -> Result<bool, String> {
-        self.memory_repo.delete_skill_index_state(name)
+    async fn delete_skill_index(&self, name: &str) -> StoreResult<bool> {
+        self.memory_repo
+            .delete_skill_index_state(name)
+            .map_err(StoreError::from)
     }
 
-    async fn aggregate_stats(&self) -> Result<zbot_stores_traits::MemoryAggregateStats, String> {
-        self.memory_repo.aggregate_subsystem_stats()
+    async fn aggregate_stats(&self) -> StoreResult<zbot_stores_traits::MemoryAggregateStats> {
+        self.memory_repo
+            .aggregate_subsystem_stats()
+            .map_err(StoreError::from)
     }
 
-    async fn health_metrics(&self) -> Result<zbot_stores_traits::MemoryHealthMetrics, String> {
-        self.memory_repo.episode_health_metrics()
+    async fn health_metrics(&self) -> StoreResult<zbot_stores_traits::MemoryHealthMetrics> {
+        self.memory_repo
+            .episode_health_metrics()
+            .map_err(StoreError::from)
     }
 
-    async fn count_all_facts(&self, agent_id: Option<&str>) -> Result<i64, String> {
+    async fn count_all_facts(&self, agent_id: Option<&str>) -> StoreResult<i64> {
         self.memory_repo
             .count_all_memory_facts(agent_id)
             .map(|n| n as i64)
+            .map_err(StoreError::from)
     }
 
     async fn list_memory_facts(
@@ -712,35 +717,39 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         scope: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let facts = self
             .memory_repo
             .list_all_memory_facts(agent_id, category, scope, limit, offset)?;
         facts
             .into_iter()
-            .map(|f| serde_json::to_value(f).map_err(|e| e.to_string()))
+            .map(|f| serde_json::to_value(f).map_err(|e| StoreError::Backend(e.to_string())))
             .collect()
     }
 
-    async fn get_memory_fact_by_id(&self, fact_id: &str) -> Result<Option<Value>, String> {
+    async fn get_memory_fact_by_id(&self, fact_id: &str) -> StoreResult<Option<Value>> {
         match self.memory_repo.get_memory_fact_by_id(fact_id)? {
             Some(f) => Ok(Some(serde_json::to_value(f).map_err(|e| e.to_string())?)),
             None => Ok(None),
         }
     }
 
-    async fn delete_memory_fact(&self, fact_id: &str) -> Result<bool, String> {
-        self.memory_repo.delete_memory_fact(fact_id)
+    async fn delete_memory_fact(&self, fact_id: &str) -> StoreResult<bool> {
+        self.memory_repo
+            .delete_memory_fact(fact_id)
+            .map_err(StoreError::from)
     }
 
     async fn upsert_typed_fact(
         &self,
         mut typed: MemoryFact,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         validate_fact_content(&typed.category, &typed.content)?;
         typed.embedding = embedding;
-        self.memory_repo.upsert_memory_fact(&typed)
+        self.memory_repo
+            .upsert_memory_fact(&typed)
+            .map_err(StoreError::from)
     }
 
     async fn supersede_fact(
@@ -748,17 +757,19 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         old_id: &str,
         new_id: &str,
         transition_time: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         self.memory_repo
             .supersede_fact(old_id, new_id, transition_time)
+            .map_err(StoreError::from)
     }
 
-    async fn archive_fact(&self, fact_id: &str) -> Result<bool, String> {
+    async fn archive_fact(&self, fact_id: &str) -> StoreResult<bool> {
         self.memory_repo
             .archive_fact(fact_id)
             .map(|_| true)
+            .map_err(StoreError::from)
             .or_else(|e| {
-                if e.contains("not found") {
+                if e.detail().contains("not found") {
                     Ok(false)
                 } else {
                     Err(e)
@@ -775,7 +786,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         ward_id: Option<&str>,
         query_embedding: Option<&[f32]>,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let typed = self
             .search_memory_facts_hybrid_typed(
                 agent_id,
@@ -809,7 +820,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         ward_id: Option<&str>,
         query_embedding: Option<&[f32]>,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Vec<(MemoryFact, f64, String)>, String> {
+    ) -> StoreResult<Vec<(MemoryFact, f64, String)>> {
         let scored: Vec<(crate::memory_repository::ScoredFact, &'static str)> = match mode {
             "fts" => {
                 let rows = self
@@ -867,7 +878,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         embedding: &[f32],
         threshold: f32,
         scan_limit: usize,
-    ) -> Result<Option<StrategyFactMatch>, String> {
+    ) -> StoreResult<Option<StrategyFactMatch>> {
         let candidates = self
             .memory_repo
             .get_facts_by_category(agent_id, "strategy", scan_limit)
@@ -897,21 +908,24 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         fact_id: &str,
         merged_source_episode_id: &str,
         now_rfc3339: &str,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let fact_id = fact_id.to_string();
         let merged = merged_source_episode_id.to_string();
         let now = now_rfc3339.to_string();
-        self.memory_repo.db().with_connection(|conn| {
-            conn.execute(
-                "UPDATE memory_facts
+        self.memory_repo
+            .db()
+            .with_connection(|conn| {
+                conn.execute(
+                    "UPDATE memory_facts
                  SET mention_count = mention_count + 1,
                      updated_at = ?1,
                      source_episode_id = ?2
                  WHERE id = ?3",
-                rusqlite::params![now, merged, fact_id],
-            )?;
-            Ok(())
-        })
+                    rusqlite::params![now, merged, fact_id],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 
     async fn get_facts_by_category(
@@ -919,9 +933,10 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         agent_id: &str,
         category: &str,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         self.memory_repo
             .get_facts_by_category(agent_id, category, limit)
+            .map_err(StoreError::from)
     }
 
     async fn get_fact_by_key(
@@ -930,22 +945,26 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         scope: &str,
         ward_id: &str,
         key: &str,
-    ) -> Result<Option<MemoryFact>, String> {
+    ) -> StoreResult<Option<MemoryFact>> {
         self.memory_repo
             .get_fact_by_key(agent_id, scope, ward_id, key)
+            .map_err(StoreError::from)
     }
 
-    async fn get_fact_embedding(&self, fact_id: &str) -> Result<Option<Vec<f32>>, String> {
-        self.memory_repo.get_fact_embedding(fact_id)
+    async fn get_fact_embedding(&self, fact_id: &str) -> StoreResult<Option<Vec<f32>>> {
+        self.memory_repo
+            .get_fact_embedding(fact_id)
+            .map_err(StoreError::from)
     }
 
     async fn get_cached_embedding(
         &self,
         content_hash: &str,
         model_name: &str,
-    ) -> Result<Option<Vec<f32>>, String> {
+    ) -> StoreResult<Option<Vec<f32>>> {
         self.memory_repo
             .get_cached_embedding(content_hash, model_name)
+            .map_err(StoreError::from)
     }
 
     async fn cache_embedding(
@@ -953,9 +972,10 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         content_hash: &str,
         model_name: &str,
         embedding: &[f32],
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         self.memory_repo
             .cache_embedding(content_hash, model_name, embedding)
+            .map_err(StoreError::from)
     }
 
     async fn get_memory_facts(
@@ -963,8 +983,10 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         agent_id: &str,
         scope: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
-        self.memory_repo.get_memory_facts(agent_id, scope, limit)
+    ) -> StoreResult<Vec<MemoryFact>> {
+        self.memory_repo
+            .get_memory_facts(agent_id, scope, limit)
+            .map_err(StoreError::from)
     }
 
     async fn get_high_confidence_facts(
@@ -972,12 +994,13 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         agent_id: Option<&str>,
         threshold: f64,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         self.memory_repo
             .get_high_confidence_facts(agent_id, threshold, limit)
+            .map_err(StoreError::from)
     }
 
-    async fn insert_strategy_fact(&self, req: StrategyFactInsert) -> Result<String, String> {
+    async fn insert_strategy_fact(&self, req: StrategyFactInsert) -> StoreResult<String> {
         let id = format!("fact-{}", uuid::Uuid::new_v4());
         let now = chrono::Utc::now().to_rfc3339();
         let fact = MemoryFact {
@@ -1013,11 +1036,11 @@ impl MemoryFactStore for GatewayMemoryFactStore {
         &self,
         agent_id: &str,
         since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<String>, String> {
+    ) -> StoreResult<Vec<String>> {
         let agent_id = agent_id.to_string();
         let since_str = since.to_rfc3339();
         let db = self.memory_repo.db().clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        tokio::task::spawn_blocking(move || -> StoreResult<Vec<String>> {
             db.with_connection(|conn| -> Result<Vec<String>, rusqlite::Error> {
                 let mut stmt = conn.prepare(
                     "SELECT DISTINCT source_episode_id
@@ -1034,10 +1057,10 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
-            .map_err(|e| e.to_string())
+            .map_err(StoreError::from)
         })
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| StoreError::Backend(e.to_string()))?
     }
 }
 
@@ -1094,7 +1117,7 @@ mod tests {
     }
 
     fn create_test_store() -> GatewayMemoryFactStore {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let temp_dir = TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(temp_dir.path().to_path_buf()));

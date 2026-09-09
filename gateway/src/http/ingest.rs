@@ -96,11 +96,11 @@ pub async fn ingest(
                 &agent_id,
             )
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         episode_store
             .set_payload(&episode_id, &chunk.text)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         enqueued += 1;
     }
     queue.notify();
@@ -135,7 +135,7 @@ pub async fn progress(
     let counts = store
         .status_counts_for_source(&source_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(ProgressResponse {
         source_id,
         pending: counts.pending,

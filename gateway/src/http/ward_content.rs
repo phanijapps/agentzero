@@ -159,8 +159,7 @@ fn fact_to_value(fact: MemoryFact, now: DateTime<Utc>) -> Value {
         "updated_at": fact.updated_at,
         "pinned": fact.pinned,
         "epistemic_class": fact.epistemic_class,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     stamp(body, now, Some(&updated))
 }
 
@@ -178,8 +177,7 @@ fn wiki_to_value(article: WikiArticle, now: DateTime<Utc>) -> Value {
         "version": article.version,
         "created_at": article.created_at,
         "updated_at": article.updated_at,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     stamp(body, now, Some(&updated))
 }
 
@@ -213,8 +211,7 @@ fn procedure_to_value(proc: Procedure, now: DateTime<Utc>) -> Value {
         "last_used": proc.last_used,
         "created_at": proc.created_at,
         "updated_at": proc.updated_at,
-        "route_hint": route_hint,
-    });
+        "route_hint": route_hint });
     stamp(body, now, Some(&anchor))
 }
 
@@ -234,8 +231,7 @@ fn episode_to_value(ep: SessionEpisode, now: DateTime<Utc>) -> Value {
         "key_learnings": ep.key_learnings,
         "token_cost": ep.token_cost,
         "created_at": ep.created_at,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     stamp(body, now, Some(&created))
 }
 

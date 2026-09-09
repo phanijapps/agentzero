@@ -1,9 +1,10 @@
 //! Integration test for the intent agent using the real Ollama provider.
 //! Run: cargo test -p gateway-execution --features test-stubs --test intent_agent_eval -- --nocapture --ignored
 
+use agent_primitives::vault_paths::SharedVaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use gateway_execution::middleware::intent::agent::{run_intent_agent, IntentAgentDeps};
 use gateway_services::providers::Provider;
-use gateway_services::{SharedVaultPaths, VaultPaths};
 use serde_json::Value;
 use std::sync::Arc;
 use zbot_stores::MemoryFactStore;
@@ -25,7 +26,7 @@ impl MemoryFactStore for MockFactStore {
         _e: f64,
         _f: Option<&str>,
         _g: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Value, String> {
+    ) -> zbot_stores_traits::StoreResult<Value> {
         Ok(serde_json::json!({}))
     }
 
@@ -34,7 +35,7 @@ impl MemoryFactStore for MockFactStore {
         _agent: &str,
         query: &str,
         _limit: usize,
-    ) -> Result<Value, String> {
+    ) -> zbot_stores_traits::StoreResult<Value> {
         // Return static results so MemorySearchTool has data
         let _q = query.to_lowercase();
         let mut results = Vec::new();
@@ -43,28 +44,23 @@ impl MemoryFactStore for MockFactStore {
         results.push(serde_json::json!({
             "key": "skill:web-search",
             "content": "Search the web for current information on any topic",
-            "category": "skill",
-        }));
+            "category": "skill" }));
         results.push(serde_json::json!({
             "key": "skill:coding",
             "content": "Write and execute code for data analysis",
-            "category": "skill",
-        }));
+            "category": "skill" }));
         results.push(serde_json::json!({
             "key": "agent:research-agent",
             "content": "Web search and information gathering specialist",
-            "category": "agent",
-        }));
+            "category": "agent" }));
         results.push(serde_json::json!({
             "key": "agent:writing-agent",
             "content": "Creates formatted documents and reports",
-            "category": "agent",
-        }));
+            "category": "agent" }));
         results.push(serde_json::json!({
             "key": "ward:financial-analysis",
             "content": "Financial analysis and market research ward",
-            "category": "ward",
-        }));
+            "category": "ward" }));
         Ok(serde_json::json!({ "results": results }))
     }
 }

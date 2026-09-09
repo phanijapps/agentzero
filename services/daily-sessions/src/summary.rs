@@ -37,16 +37,14 @@ pub struct SummaryOptions {
     pub include_tool_calls: bool,
 
     /// Whether to include user messages only
-    pub user_messages_only: bool,
-}
+    pub user_messages_only: bool }
 
 impl Default for SummaryOptions {
     fn default() -> Self {
         Self {
             max_length: 500,
             include_tool_calls: false,
-            user_messages_only: false,
-        }
+            user_messages_only: false }
     }
 }
 

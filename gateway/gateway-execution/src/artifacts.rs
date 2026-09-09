@@ -313,7 +313,7 @@ pub fn process_artifact_declarations(
 mod tests {
     use super::*;
     use agent_primitives::event::ArtifactDeclaration;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::io::Read;
     use tempfile::TempDir;
 

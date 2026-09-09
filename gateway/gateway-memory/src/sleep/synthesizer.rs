@@ -269,6 +269,7 @@ impl Synthesizer {
                 source_episode_id,
             })
             .await
+            .map_err(|e| e.to_string())
     }
 
     async fn embed_content(&self, text: &str) -> Option<Vec<f32>> {
@@ -303,7 +304,8 @@ impl Synthesizer {
         let task_summaries = self
             .episode_store
             .task_summaries_for_sessions(&ctx.session_ids)
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(SynthesisInput {
             entity_name: cand.name.clone(),
             entity_type: cand.entity_type.clone(),
@@ -434,7 +436,7 @@ impl SynthesisLlm for LlmSynthesizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use std::sync::Mutex;
     use zbot_stores_sqlite::kg::storage::GraphStorage;

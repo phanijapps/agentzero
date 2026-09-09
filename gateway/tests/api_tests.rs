@@ -206,8 +206,7 @@ async fn autonomy_eligibility_is_a_read_only_policy_projection() {
                 "objective": "Review release state",
                 "next_action": "Inspect the latest checks",
                 "dedupe_key": format!("eligibility-{index}"),
-                "approval_policy": policy,
-            }))
+                "approval_policy": policy }))
             .await;
         create.assert_status(StatusCode::CREATED);
         let created: Value = create.json();

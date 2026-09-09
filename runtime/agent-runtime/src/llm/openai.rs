@@ -508,8 +508,7 @@ impl OpenAiClient {
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
-            "stream": false,
-        });
+            "stream": false });
 
         // Add tools if present
         if let Some((tools_val, footprint)) = prepared_tools {
@@ -536,8 +535,7 @@ impl OpenAiClient {
                         "json_schema": {
                             "name": "structured_output",
                             "strict": true,
-                            "schema": strict_json_schema(schema),
-                        }
+                            "schema": strict_json_schema(schema) }
                     }),
                 );
             }

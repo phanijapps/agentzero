@@ -287,7 +287,7 @@ mod tests {
                 execution_id: "exec-1".to_owned(),
                 session_id: "sess-1".to_owned(),
                 created_at: "2026-07-28T00:00:00Z".to_owned(),
-                surface: display,
+                surface: display
             }]
         );
     }

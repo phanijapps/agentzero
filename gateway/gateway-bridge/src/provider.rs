@@ -199,7 +199,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn setup() -> (Arc<BridgeRegistry>, Arc<OutboxRepository>) {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let dir = tempfile::TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(dir.path().to_path_buf()));

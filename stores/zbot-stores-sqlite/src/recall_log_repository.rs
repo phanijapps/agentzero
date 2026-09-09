@@ -98,7 +98,7 @@ mod tests {
     use super::*;
 
     fn create_test_db() -> Arc<DatabaseManager> {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();

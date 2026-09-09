@@ -105,12 +105,6 @@ impl MemoryRepository {
         Self { db, vec_index }
     }
 
-    /// Internal accessor for the vector index, used by the hybrid search path.
-    #[allow(dead_code)]
-    fn vec_index(&self) -> &Arc<dyn VectorIndex> {
-        &self.vec_index
-    }
-
     /// Test-only accessor for the underlying KnowledgeDatabase.
     #[cfg(test)]
     pub(crate) fn db_for_tests(&self) -> Arc<crate::KnowledgeDatabase> {
@@ -431,8 +425,7 @@ impl MemoryRepository {
             match result {
                 Ok(fact) => Ok(Some(fact)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(e),
-            }
+                Err(e) => Err(e) }
         })
     }
 
@@ -1518,7 +1511,7 @@ mod tests {
     use crate::vector_index::SqliteVecIndex;
 
     fn setup() -> (tempfile::TempDir, MemoryRepository) {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));

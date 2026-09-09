@@ -446,6 +446,7 @@ impl MemoryRecall {
                 limit,
             )
             .await
+            .map_err(|e| e.to_string())
     }
 
     /// Recall relevant facts for a given agent and user message.
@@ -1285,8 +1286,7 @@ impl MemoryRecall {
                     "model": identity.model.clone(),
                     "dimensions": identity.dimensions,
                     "promptProfile": identity.prompt_profile.clone(),
-                    "normalization": identity.normalization.clone(),
-                })
+                    "normalization": identity.normalization.clone() })
             });
             bus.publish_sync(gateway_events::GatewayEvent::RecallTrace {
                 agent_id: agent_id.to_string(),
@@ -1692,7 +1692,8 @@ impl MemoryRecall {
                 query_identity.as_ref(),
                 None, // as_of — default "now" recall; point-in-time is opt-in
             )
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         let facts = raw
             .into_iter()
             .filter(|v| {
@@ -1905,8 +1906,7 @@ fn taxonomy_trace(candidates: &[RecallTaxonomyExpansionCandidate]) -> Vec<serde_
                 "label": candidate.label,
                 "matchedLabel": candidate.matched_label,
                 "relation": candidate.relation,
-                "depth": candidate.depth,
-            })
+                "depth": candidate.depth })
         })
         .collect()
 }
@@ -2045,6 +2045,7 @@ mod ontology_retrieval_evaluation;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zbot_stores_traits::StoreResult;
 
     fn mk_item(kind: ItemKind, id: &str, content: &str, score: f64) -> ScoredItem {
         ScoredItem {
@@ -2421,8 +2422,8 @@ mod tests {
     // portion is suppressed.
     // ========================================================================
     use crate::recall::query_gate::{GateResponse, QueryGateLlm};
+    use agent_primitives::vault_paths::VaultPaths;
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use knowledge_graph::types::{Entity, EntityType};
     use std::sync::Mutex;
     use zbot_stores_sqlite::kg::storage::GraphStorage;
@@ -2719,13 +2720,13 @@ mod tests {
             _: &str,
             _: &str,
             _: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Option<Belief>, String> {
+        ) -> StoreResult<Option<Belief>> {
             Ok(None)
         }
-        async fn list_beliefs(&self, _: &str, _: usize) -> Result<Vec<Belief>, String> {
+        async fn list_beliefs(&self, _: &str, _: usize) -> StoreResult<Vec<Belief>> {
             Ok(vec![])
         }
-        async fn upsert_belief(&self, _: &Belief) -> Result<(), String> {
+        async fn upsert_belief(&self, _: &Belief) -> StoreResult<()> {
             Ok(())
         }
         async fn supersede_belief(
@@ -2733,29 +2734,29 @@ mod tests {
             _: &str,
             _: &str,
             _: chrono::DateTime<chrono::Utc>,
-        ) -> Result<(), String> {
+        ) -> StoreResult<()> {
             Ok(())
         }
-        async fn mark_stale(&self, _: &str) -> Result<(), String> {
+        async fn mark_stale(&self, _: &str) -> StoreResult<()> {
             Ok(())
         }
         async fn retract_belief(
             &self,
             _: &str,
             _: chrono::DateTime<chrono::Utc>,
-        ) -> Result<(), String> {
+        ) -> StoreResult<()> {
             Ok(())
         }
-        async fn beliefs_referencing_fact(&self, _: &str) -> Result<Vec<String>, String> {
+        async fn beliefs_referencing_fact(&self, _: &str) -> StoreResult<Vec<String>> {
             Ok(vec![])
         }
-        async fn get_belief_by_id(&self, _: &str) -> Result<Option<Belief>, String> {
+        async fn get_belief_by_id(&self, _: &str) -> StoreResult<Option<Belief>> {
             Ok(None)
         }
-        async fn list_stale(&self, _: &str, _: usize) -> Result<Vec<Belief>, String> {
+        async fn list_stale(&self, _: &str, _: usize) -> StoreResult<Vec<Belief>> {
             Ok(vec![])
         }
-        async fn clear_stale(&self, _: &str) -> Result<(), String> {
+        async fn clear_stale(&self, _: &str) -> StoreResult<()> {
             Ok(())
         }
         async fn search_beliefs(
@@ -2763,7 +2764,7 @@ mod tests {
             _: &str,
             _: &[f32],
             _: usize,
-        ) -> Result<Vec<ScoredBelief>, String> {
+        ) -> StoreResult<Vec<ScoredBelief>> {
             self.search_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(self.canned.clone())
@@ -2978,7 +2979,7 @@ mod tests {
             confidence: f64,
             session_id: Option<&str>,
             valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             self.inner
                 .save_fact(
                     agent_id, category, key, content, confidence, session_id, valid_from,
@@ -2991,7 +2992,7 @@ mod tests {
             agent_id: &str,
             query: &str,
             limit: usize,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             self.inner.recall_facts(agent_id, query, limit).await
         }
 
@@ -3004,7 +3005,7 @@ mod tests {
             ward_id: Option<&str>,
             query_embedding: Option<&[f32]>,
             as_of: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Vec<serde_json::Value>, String> {
+        ) -> StoreResult<Vec<serde_json::Value>> {
             self.inner
                 .search_memory_facts_hybrid(
                     agent_id,
@@ -3028,7 +3029,7 @@ mod tests {
             query_embedding: Option<&[f32]>,
             _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
             as_of: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Vec<serde_json::Value>, String> {
+        ) -> StoreResult<Vec<serde_json::Value>> {
             self.inner
                 .search_memory_facts_hybrid(
                     agent_id,
@@ -3042,7 +3043,7 @@ mod tests {
                 .await
         }
 
-        async fn get_fact_embedding(&self, fact_id: &str) -> Result<Option<Vec<f32>>, String> {
+        async fn get_fact_embedding(&self, fact_id: &str) -> StoreResult<Option<Vec<f32>>> {
             self.inner.get_fact_embedding(fact_id).await
         }
 
@@ -3052,7 +3053,7 @@ mod tests {
             scope: &str,
             ward_id: &str,
             key: &str,
-        ) -> Result<Option<MemoryFact>, String> {
+        ) -> StoreResult<Option<MemoryFact>> {
             self.inner
                 .get_fact_by_key(agent_id, scope, ward_id, key)
                 .await
@@ -3062,7 +3063,7 @@ mod tests {
             &self,
             fact: MemoryFact,
             embedding: Option<Vec<f32>>,
-        ) -> Result<(), String> {
+        ) -> StoreResult<()> {
             self.inner.upsert_typed_fact(fact, embedding).await
         }
     }
@@ -3109,8 +3110,7 @@ mod tests {
                     "pinned": false,
                     "epistemic_class": "current",
                     "source_episode_id": null,
-                    "source_ref": null,
-                }))
+                    "source_ref": null }))
                 .unwrap(),
                 None,
             )
@@ -3607,7 +3607,7 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!({"success": true}))
             }
 
@@ -3616,7 +3616,7 @@ mod tests {
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!([]))
             }
 
@@ -3629,7 +3629,7 @@ mod tests {
                 _ward_id: Option<&str>,
                 query_embedding: Option<&[f32]>,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
+            ) -> StoreResult<Vec<serde_json::Value>> {
                 *self.saw_query_embedding.lock().unwrap() = query_embedding.is_some();
                 Ok(Vec::new())
             }
@@ -3644,7 +3644,7 @@ mod tests {
                 query_embedding: Option<&[f32]>,
                 _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
                 as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
+            ) -> StoreResult<Vec<serde_json::Value>> {
                 self.search_memory_facts_hybrid(
                     agent_id,
                     query,
@@ -3694,7 +3694,7 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!({"success": true}))
             }
 
@@ -3703,7 +3703,7 @@ mod tests {
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!([]))
             }
 
@@ -3717,7 +3717,7 @@ mod tests {
                 _query_embedding: Option<&[f32]>,
                 _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
+            ) -> StoreResult<Vec<serde_json::Value>> {
                 *self.saw_query.lock().unwrap() = Some(query.to_string());
                 Ok(Vec::new())
             }
@@ -3730,7 +3730,7 @@ mod tests {
             async fn expand_recall_query(
                 &self,
                 request: zbot_stores_traits::RecallTaxonomyExpansionRequest,
-            ) -> Result<zbot_stores_traits::RecallTaxonomyExpansion, String> {
+            ) -> StoreResult<zbot_stores_traits::RecallTaxonomyExpansion> {
                 assert_eq!(request.max_depth, 1);
                 assert_eq!(request.max_fan_out, 8);
                 assert_eq!(request.max_candidates, 16);
@@ -3851,8 +3851,10 @@ mod tests {
             async fn expand_recall_query(
                 &self,
                 _request: zbot_stores_traits::RecallTaxonomyExpansionRequest,
-            ) -> Result<zbot_stores_traits::RecallTaxonomyExpansion, String> {
-                Err("postgres://user:secret@db.internal/zbot /mnt/private/taxonomy.db".to_string())
+            ) -> StoreResult<zbot_stores_traits::RecallTaxonomyExpansion> {
+                Err(zbot_stores_traits::StoreError::Backend(
+                    "taxonomy expansion failed (redacted fixture)".into(),
+                ))
             }
         }
 
@@ -3870,7 +3872,7 @@ mod tests {
             UnifiedRecallSourceStatus {
                 state: UnifiedRecallSourceState::Unavailable,
                 count: 0,
-                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable),
+                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable)
             }
         );
         assert!(format!("{:?}", outcome.source_summary).contains("SourceUnavailable"));
@@ -3893,7 +3895,7 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!({"success": true}))
             }
 
@@ -3902,7 +3904,7 @@ mod tests {
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!([]))
             }
 
@@ -3916,8 +3918,10 @@ mod tests {
                 _query_embedding: Option<&[f32]>,
                 _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
-                Err("sqlite:///mnt/private/conversations.db unavailable".to_string())
+            ) -> StoreResult<Vec<serde_json::Value>> {
+                Err(zbot_stores_traits::StoreError::Backend(
+                    "store unavailable".into(),
+                ))
             }
         }
 
@@ -3934,7 +3938,7 @@ mod tests {
             UnifiedRecallSourceStatus {
                 state: UnifiedRecallSourceState::Unavailable,
                 count: 0,
-                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable),
+                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable)
             }
         );
         assert!(!format!("{:?}", outcome.source_summary).contains("sqlite:///"));
@@ -3986,7 +3990,7 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!({"success": true}))
             }
 
@@ -3995,7 +3999,7 @@ mod tests {
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!([]))
             }
 
@@ -4008,7 +4012,7 @@ mod tests {
                 _ward_id: Option<&str>,
                 _query_embedding: Option<&[f32]>,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
+            ) -> StoreResult<Vec<serde_json::Value>> {
                 let fact = make_scored_fact(Some("current"), None, 1.0).fact;
                 let mut value = serde_json::to_value(fact).expect("fact json");
                 let object = value.as_object_mut().expect("fact object");
@@ -4036,7 +4040,7 @@ mod tests {
                 query_embedding: Option<&[f32]>,
                 _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
                 as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
+            ) -> StoreResult<Vec<serde_json::Value>> {
                 self.search_memory_facts_hybrid(
                     agent_id,
                     query,
@@ -4086,7 +4090,7 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!({"success": true}))
             }
 
@@ -4095,7 +4099,7 @@ mod tests {
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> Result<serde_json::Value, String> {
+            ) -> StoreResult<serde_json::Value> {
                 Ok(serde_json::json!([]))
             }
 
@@ -4108,7 +4112,7 @@ mod tests {
                 _ward_id: Option<&str>,
                 _query_embedding: Option<&[f32]>,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
+            ) -> StoreResult<Vec<serde_json::Value>> {
                 let fact = make_scored_fact(Some("current"), None, 1.0).fact;
                 let mut value = serde_json::to_value(fact).expect("fact json");
                 let object = value.as_object_mut().expect("fact object");
@@ -4136,7 +4140,7 @@ mod tests {
                 query_embedding: Option<&[f32]>,
                 _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
                 as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> Result<Vec<serde_json::Value>, String> {
+            ) -> StoreResult<Vec<serde_json::Value>> {
                 self.search_memory_facts_hybrid(
                     agent_id,
                     query,

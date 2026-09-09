@@ -9,11 +9,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ToolResultContextConfig};
 use api_logs::LogService;
 use execution_state::StateService;
 use gateway_events::EventBus;
-use gateway_services::SharedVaultPaths;
 use tokio::sync::{mpsc, RwLock};
 use zbot_runtime_sqlite::DatabaseManager;
 
@@ -138,8 +138,7 @@ fn handle_tool_call_start(
     acc.turn_tool_calls.push(serde_json::json!({
         "tool_id": tool_id,
         "tool_name": tool_name,
-        "args": args,
-    }));
+        "args": args }));
 }
 
 /// Handle a `StreamEvent::ToolResult` — flush the pending assistant turn,
@@ -829,10 +828,10 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use agent_primitives::vault_paths::VaultPaths;
     use api_logs::LogService;
     use execution_state::StateService;
     use gateway_events::EventBus;
-    use gateway_services::VaultPaths;
     use tokio::sync::{mpsc, RwLock};
     use zbot_runtime_sqlite::DatabaseManager;
 

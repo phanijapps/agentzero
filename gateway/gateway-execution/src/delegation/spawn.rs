@@ -946,8 +946,7 @@ fn capability_resolution_metadata(resolution: &CapabilityResolutionLog<'_>) -> s
         "effective_mcps": resolution.effective_mcps,
         "unresolved_skill_count": resolution.unresolved_skill_count,
         "unresolved_count": resolution.unresolved_count,
-        "rejection_codes": resolution.rejection_codes,
-    })
+        "rejection_codes": resolution.rejection_codes })
 }
 
 /// Return the `<reuse_check>` imperative for coding-capable agents.
@@ -1192,8 +1191,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
                     turn_tool_calls.push(serde_json::json!({
                         "tool_id": tool_id,
                         "tool_name": tool_name,
-                        "args": args,
-                    }));
+                        "args": args }));
                 }
                 agent_runtime::StreamEvent::ToolResult {
                     tool_id,
@@ -2056,7 +2054,9 @@ mod tests {
     #[test]
     fn ward_delegation_claims_parent_and_propagates_its_workspace_to_child() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().expect("vault dirs");
         let state = StateService::new(Arc::new(DatabaseManager::new(paths).expect("state db")));
         let (parent, execution) = state.create_session("root").expect("parent session");
@@ -2222,7 +2222,9 @@ mod tests {
     #[tokio::test]
     async fn spawn_failures_complete_parent_and_child_lifecycle() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().expect("vault dirs");
         let db = Arc::new(DatabaseManager::new(paths.clone()).expect("state db"));
         let state_service = Arc::new(StateService::new(db.clone()));
@@ -2623,7 +2625,9 @@ mod tests {
     #[test]
     fn persisted_capability_log_uses_canonical_ids_and_closed_rejection_codes() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().expect("vault dirs");
         let mcp_service = McpService::new(paths.clone());
         mcp_service

@@ -22,6 +22,7 @@
 //! (Postgres / MongoDB / etc.) means implementing the trait and adding
 //! a build branch in `persistence_factory.rs` — zero changes to consumers.
 
+use crate::error::{StoreError, StoreResult};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -64,7 +65,7 @@ pub trait KgEpisodeStore: Send + Sync {
 
     /// Look up an episode by exact id. Returns the `KgEpisode` JSON
     /// shape or `None` if the id is unknown.
-    async fn get_episode(&self, _id: &str) -> Result<Option<Value>, String> {
+    async fn get_episode(&self, _id: &str) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
@@ -75,12 +76,12 @@ pub trait KgEpisodeStore: Send + Sync {
         &self,
         _source_type: &str,
         _content_hash: &str,
-    ) -> Result<Option<Value>, String> {
+    ) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
     /// All episodes attributable to a session (across sources).
-    async fn list_by_session(&self, _session_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_by_session(&self, _session_id: &str) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
@@ -88,19 +89,19 @@ pub trait KgEpisodeStore: Send + Sync {
     async fn status_counts_for_source(
         &self,
         _source_ref_prefix: &str,
-    ) -> Result<KgEpisodeStatusCounts, String> {
+    ) -> StoreResult<KgEpisodeStatusCounts> {
         Ok(KgEpisodeStatusCounts::default())
     }
 
     /// Global pending count — used by backpressure to enforce a hard cap
     /// across all sources.
-    async fn count_pending_global(&self) -> Result<u64, String> {
+    async fn count_pending_global(&self) -> StoreResult<u64> {
         Ok(0)
     }
 
     /// Pending count scoped to one source — used by backpressure to
     /// enforce a per-source quota.
-    async fn count_pending_for_source(&self, _source_ref_prefix: &str) -> Result<u64, String> {
+    async fn count_pending_for_source(&self, _source_ref_prefix: &str) -> StoreResult<u64> {
         Ok(0)
     }
 
@@ -116,43 +117,47 @@ pub trait KgEpisodeStore: Send + Sync {
         _content_hash: &str,
         _session_id: Option<&str>,
         _agent_id: &str,
-    ) -> Result<String, String> {
-        Err("upsert_pending not implemented for this store".to_string())
+    ) -> StoreResult<String> {
+        Err(StoreError::Unavailable(
+            "upsert_pending not implemented for this store".into(),
+        ))
     }
 
     /// Atomically claim the next pending episode for processing.
     /// Returns `None` when the queue is empty. The status transitions
     /// to `running` and `started_at` is stamped.
-    async fn claim_next_pending(&self) -> Result<Option<Value>, String> {
+    async fn claim_next_pending(&self) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
     /// Mark an episode `done`. Idempotent.
-    async fn mark_done(&self, _id: &str) -> Result<(), String> {
+    async fn mark_done(&self, _id: &str) -> StoreResult<()> {
         Ok(())
     }
 
     /// Mark an episode `failed` with an error message. Idempotent.
-    async fn mark_failed(&self, _id: &str, _error: &str) -> Result<(), String> {
+    async fn mark_failed(&self, _id: &str, _error: &str) -> StoreResult<()> {
         Ok(())
     }
 
     /// Reset a failed episode back to `pending` if `retry_count` is
     /// below `max_retries`. Returns `true` when the retry was queued,
     /// `false` when the episode is over the retry budget.
-    async fn retry_if_eligible(&self, _id: &str, _max_retries: u32) -> Result<bool, String> {
+    async fn retry_if_eligible(&self, _id: &str, _max_retries: u32) -> StoreResult<bool> {
         Ok(false)
     }
 
     /// Attach the chunk's text payload. Stored separately from the
     /// metadata row so large payloads don't bloat status queries.
-    async fn set_payload(&self, _id: &str, _text: &str) -> Result<(), String> {
-        Err("set_payload not implemented for this store".to_string())
+    async fn set_payload(&self, _id: &str, _text: &str) -> StoreResult<()> {
+        Err(StoreError::Unavailable(
+            "set_payload not implemented for this store".into(),
+        ))
     }
 
     /// Read back the payload — used by the queue processor before
     /// running LLM extraction.
-    async fn get_payload(&self, _id: &str) -> Result<Option<String>, String> {
+    async fn get_payload(&self, _id: &str) -> StoreResult<Option<String>> {
         Ok(None)
     }
 }

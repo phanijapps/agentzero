@@ -19,8 +19,6 @@ use agent_runtime::llm::EmbeddingClient;
 use api_logs::LogService;
 use execution_state::{SqliteWorkStore, StateService, WorkStore};
 use gateway_services::EmbeddingService;
-#[cfg(test)]
-use gateway_services::{WardProvenance, WardUsage};
 use std::path::PathBuf;
 use std::sync::Arc;
 use zbot_engram_adapter::GovernanceCapabilityHealth;
@@ -726,6 +724,35 @@ impl AppState {
             });
 
         // Create runtime with execution runner and connector registry
+        // Belief Network handles, gated on the feature flag — the tool
+        // surface (`belief` tool), HTTP surface, and AppState all share
+        // this gating so each returns clean 503/"not configured" errors
+        // when the feature is off.
+        let belief_network_cfg = settings
+            .get_execution_settings()
+            .map(|s| s.memory.belief_network.clone())
+            .unwrap_or_default();
+        let belief_store_raw: Option<Arc<dyn zbot_stores::BeliefStore>> = engram_store_bundle
+            .as_ref()
+            .map(|bundle| bundle.belief_store.clone());
+        let belief_contradiction_store_raw: Option<Arc<dyn zbot_stores::BeliefContradictionStore>> =
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.belief_contradiction_store.clone());
+        let belief_store_for_http: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
+            if belief_network_cfg.enabled {
+                belief_store_raw.clone()
+            } else {
+                None
+            };
+        let belief_contradiction_store_for_http: Option<
+            Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
+        > = if belief_network_cfg.enabled {
+            belief_contradiction_store_raw.clone()
+        } else {
+            None
+        };
+
         let runtime = Arc::new(RuntimeService::with_runner_and_connectors(
             event_bus.clone(),
             agents.clone(),
@@ -753,6 +780,8 @@ impl AppState {
             ingestion_adapter,
             goal_adapter,
             procedure_store_for_state.clone(),
+            belief_store_for_http.clone(),
+            belief_contradiction_store_for_http.clone(),
             settings
                 .load()
                 .map(|s| s.execution.memory.procedure_recommendation.clone())
@@ -790,31 +819,6 @@ impl AppState {
         //
         // The sleep-time worker block below still gets to consume the
         // handles either way (it has its own internal enable flag).
-        let belief_network_cfg = settings
-            .get_execution_settings()
-            .map(|s| s.memory.belief_network.clone())
-            .unwrap_or_default();
-        let belief_store_raw: Option<Arc<dyn zbot_stores::BeliefStore>> = engram_store_bundle
-            .as_ref()
-            .map(|bundle| bundle.belief_store.clone());
-        let belief_contradiction_store_raw: Option<Arc<dyn zbot_stores::BeliefContradictionStore>> =
-            engram_store_bundle
-                .as_ref()
-                .map(|bundle| bundle.belief_contradiction_store.clone());
-        // HTTP surface only exposes the stores when the feature is on.
-        let belief_store_for_http: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
-            if belief_network_cfg.enabled {
-                belief_store_raw.clone()
-            } else {
-                None
-            };
-        let belief_contradiction_store_for_http: Option<
-            Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
-        > = if belief_network_cfg.enabled {
-            belief_contradiction_store_raw.clone()
-        } else {
-            None
-        };
 
         // Sleep-time worker is trait-routed. Gates on the trait stores
         // (kg_store, episode_store, memory_store, procedure_store,
@@ -1626,7 +1630,7 @@ impl AppState {
 
             match memory_store.upsert_typed_fact(fact_value, None).await {
                 Ok(()) => count += 1,
-                Err(e) => errors.push((key.to_string(), e)),
+                Err(e) => errors.push((key.to_string(), e.to_string())),
             }
         }
 
@@ -1658,128 +1662,6 @@ impl AppState {
         if let Err(error) = agent_tools::ensure_ward_catalog(&wards_dir) {
             tracing::error!(%error, root = %wards_dir.display(), "failed to initialize wards root");
         }
-    }
-
-    /// Create the wiki vault ward with canonical Obsidian tree + AGENTS.md marker.
-    ///
-    /// Idempotent — existing content is preserved. The marker
-    /// `<!-- obsidian-vault -->` in AGENTS.md lets the `wiki` skill discover
-    /// this ward via `ward(action="list")` regardless of the configured name.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    fn ensure_wiki_ward(&self, wards_dir: &std::path::Path, wiki_name: &str) {
-        let wiki_dir = wards_dir.join(wiki_name);
-        if let Err(e) = std::fs::create_dir_all(&wiki_dir) {
-            tracing::warn!("Failed to create wiki ward directory: {}", e);
-            return;
-        }
-
-        // Canonical Obsidian vault top-level folders.
-        let vault_folders = [
-            "00_Inbox",
-            "10_Journal/Daily",
-            "10_Journal/Weekly",
-            "20_Projects",
-            "30_Library/Books",
-            "30_Library/Articles",
-            "40_Research",
-            "50_Resources",
-            "60_Archive",
-            "70_Assets/Knowledge_Graphs",
-            "70_Assets/Images",
-            "70_Assets/Documents",
-            "_zztemplates",
-        ];
-        for folder in vault_folders {
-            let _ = std::fs::create_dir_all(wiki_dir.join(folder));
-        }
-
-        // Seed AGENTS.md with the discovery marker and the full routing map.
-        // This file is the source of truth for where content belongs — agents
-        // that enter this ward read it on entry and follow it exactly.
-        //
-        // Re-seed on every startup IF the existing content starts with our
-        // `<!-- obsidian-vault -->` marker (i.e. we wrote it previously, not
-        // the user). This lets template updates flow through on gateway
-        // restart without preserving a user-hand-edited file.
-        let agents_md = wiki_dir.join("AGENTS.md");
-        let should_seed = match std::fs::read_to_string(&agents_md) {
-            Ok(existing) => existing.starts_with("<!-- obsidian-vault -->"),
-            Err(_) => true, // missing → seed
-        };
-        if should_seed {
-            let content = format!(
-                "<!-- obsidian-vault -->\n\
-                 # {wiki_name}\n\n\
-                 ## Purpose / Scope\n\
-                 Obsidian-style vault. Producer skills (book-reader, stock-analysis, news-research, …) emit vault-ready folders in their origin ward; the `wiki` skill promotes them here. **This AGENTS.md is the authoritative routing map.** If a memory fact contradicts it, this file wins.\n\n\
-                 - **IN scope** — promoting producer-emitted, vault-ready folders from any origin ward into the numbered Obsidian tree; whole-folder copy; routing unmatched items to `00_Inbox/`.\n\
-                 - **OUT of scope** — running code, research, or data fetching; rewriting promoted content; writing to user-managed folders; deleting from origin wards. Tasks needing any of these belong in another ward.\n\n\
-                 ## Folder map — what goes where\n\n\
-                 | Vault path | What lives here | Producer source |\n\
-                 | --- | --- | --- |\n\
-                 | `00_Inbox/` | Unclassified items awaiting manual sorting. Never delete; the user reviews periodically. | Anything that fails classification |\n\
-                 | `10_Journal/Daily/` | One `YYYY-MM-DD.md` per day. | Journal skill (future) |\n\
-                 | `10_Journal/Weekly/` | One `YYYY-Www.md` per ISO week. | Journal skill (future) |\n\
-                 | `20_Projects/<project>/` | Agent-produced final project reports and deliverables. One folder per project. | `reports/<project>/` in origin ward |\n\
-                 | `30_Library/Books/<slug>/` | A book as `_index.md` + `chunks/ch-NN.md` + `entities/<type>-<slug>.md`. `<slug>` is kebab-case from the title (strip leading articles). | `books/<slug>/` in origin ward (book-reader) |\n\
-                 | `30_Library/Articles/<slug>/` | An article as `_index.md` (+ optional supporting files). `<slug>` is kebab-case from the title. | `articles/<slug>/` in origin ward (article-reader) |\n\
-                 | `40_Research/<archetype>/<subject>/<date-slug>/` | Research snapshots. `<archetype>` is the producer skill name (`stock-analysis`, `news-research`, `product-research`, `competitive-analysis`, `academic-research`, `market-research`, `technical-research`, `policy-research`). `<subject>` is kebab-case. `<date-slug>` is ISO date with optional suffix. | `research/<archetype>/<subject>/<date-slug>/` |\n\
-                 | `50_Resources/` | Durable reference material the user curates. | Manual only — `wiki` skill does not write here. |\n\
-                 | `60_Archive/` | Superseded or retired content. Move here manually when an item is no longer current. | Manual only. |\n\
-                 | `70_Assets/Knowledge_Graphs/` | KG exports (DB dumps) if generated by a separate tool. | Reserved — `wiki` does not write here. |\n\
-                 | `70_Assets/Images/` | Loose images from any ward. Renamed `<ward>__<basename>` on copy to avoid collisions. | `**/*.{{png,jpg,jpeg,svg,gif,webp}}` in origin ward |\n\
-                 | `70_Assets/Documents/` | Loose PDFs from any ward. Renamed `<ward>__<basename>` on copy. | `**/*.pdf` in origin ward |\n\
-                 | `_zztemplates/` | Obsidian note templates the user maintains. | Manual only — the skill never writes or reads here. |\n\n\
-                 ## Slug rules (the #1 failure mode)\n\n\
-                 Folder names under `30_Library/Books/`, `30_Library/Articles/`, `40_Research/<archetype>/`, `20_Projects/` are always **kebab-case slugs**, never display titles:\n\n\
-                 - `30_Library/Books/christmas-carol/` ✅  not `30_Library/Books/A Christmas Carol/` ❌\n\
-                 - `30_Library/Books/pride-and-prejudice/` ✅  not `30_Library/Books/Pride and Prejudice/` ❌\n\
-                 - `40_Research/stock-analysis/tsla/2026-04-16-q1/` ✅  not `40_Research/Stock Analysis/TSLA Q1 2026/` ❌\n\n\
-                 The display title lives in `_index.md` frontmatter (`title:`) and in wikilink aliases (`[[slug|Display Title]]`). The filesystem always uses the slug.\n\n\
-                 ## Routing contract for the wiki skill\n\n\
-                 The skill performs **whole-folder copy** with absolute paths, no content rewriting. For each producer folder in the origin ward:\n\n\
-                 1. Compute source path: `SRC=<origin-ward>/<producer-folder>` (e.g. `<origin>/books/christmas-carol/`).\n\
-                 2. Compute destination path per the folder map above: `DEST=<wiki-ward>/<vault-path>/<slug>/`.\n\
-                 3. Copy `cp -a \"$SRC\" \"$DEST\"`. Preserve timestamps; preserve names; preserve nested structure.\n\
-                 4. If the source doesn't match any rule, route to `00_Inbox/<relative-path>` — do NOT guess a category.\n\n\
-                 ## Hard don'ts\n\n\
-                 - Do NOT invent folders outside the numbered tree (`Literature/`, `StockResearch/`, `Books/`, etc. are WRONG — use the numbered paths).\n\
-                 - Do NOT use display-case folder names with spaces or capitals.\n\
-                 - Do NOT rewrite frontmatter, wikilinks, or markdown during the copy — producer skills own the content shape.\n\
-                 - Do NOT delete from the origin ward.\n\
-                 - Do NOT write into `50_Resources/`, `60_Archive/`, `_zztemplates/`, or `70_Assets/Knowledge_Graphs/` — those are user-managed or reserved.\n\
-                 - Do NOT run code, fetch data, or do research in this ward. It is content-only.\n\
-                 - Do NOT edit promoted files outside their `<!-- manual -->` blocks — the skill overwrites on re-promotion.\n\n\
-                 ## Handoff\n\n\
-                 On completion, return a JSON object summarizing the promotion run: `{{ \"status\": \"ok | partial | failed\", \"summary\": \"one line\", \"promoted\": [\"<vault-path>\"], \"inboxed\": [\"<vault-path>\"], \"skipped\": [\"<path>\"] }}`.\n\n\
-                 `promoted` = folders copied to a numbered path; `inboxed` = folders routed to `00_Inbox/` because no rule matched; `skipped` = paths intentionally left in the origin ward.\n\n\
-                 ## Discovery marker\n\n\
-                 The first line of this file (`<!-- obsidian-vault -->`) is the marker the wiki skill uses to find this ward via `ward(action=\"list\")`. Do not remove it.\n"
-            );
-            let _ = std::fs::write(&agents_md, content);
-        }
-
-        // Seed memory-bank/ scaffold so the ward matches the standard shape.
-        let memory_bank = wiki_dir.join("memory-bank");
-        let _ = std::fs::create_dir_all(&memory_bank);
-        for file in ["ward.md", "structure.md", "core_docs.md"] {
-            let path = memory_bank.join(file);
-            if !path.exists() {
-                let _ = std::fs::write(&path, "");
-            }
-        }
-
-        // Mark the bundled provenance so the curator never archives the wiki.
-        if let Err(e) = WardUsage::new(wards_dir).mark_created(wiki_name, WardProvenance::Bundled) {
-            tracing::warn!(
-                ward = %wiki_name,
-                error = %e,
-                "ward_usage: failed to mark wiki as bundled"
-            );
-        }
-
-        tracing::info!("Wiki vault ward ready at {}", wiki_dir.display());
     }
 }
 

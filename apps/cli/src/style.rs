@@ -11,39 +11,26 @@
 //! All helpers no-op when `color` is false (returns the plain text).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Style {
-    Accent,
-    Secondary,
     Amber,
     Dim,
-    Bold,
     BoldAccent,
     BoldSecondary,
-    Success,
     Error,
 }
 
 const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
 
-const FG_ACCENT: &str = "\x1b[38;2;167;139;250m"; // violet-400
-const FG_SECONDARY: &str = "\x1b[38;2;56;189;248m"; // sky-400
 const FG_AMBER: &str = "\x1b[38;2;251;191;36m"; // amber-400
 const FG_MUTED: &str = "\x1b[38;2;100;116;139m"; // slate-500
-const FG_SUCCESS: &str = "\x1b[38;2;34;197;94m"; // emerald-500
 const FG_ERROR: &str = "\x1b[38;2;248;113;113m"; // red-400
 
 fn open(style: Style) -> &'static str {
     match style {
-        Style::Accent => FG_ACCENT,
-        Style::Secondary => FG_SECONDARY,
         Style::Amber => FG_AMBER,
         Style::Dim => FG_MUTED,
-        Style::Bold => BOLD,
         Style::BoldAccent => "\x1b[1;38;2;167;139;250m",
         Style::BoldSecondary => "\x1b[1;38;2;56;189;248m",
-        Style::Success => FG_SUCCESS,
         Style::Error => FG_ERROR,
     }
 }
@@ -90,14 +77,14 @@ mod tests {
 
     #[test]
     fn no_color_strips_escapes() {
-        let s = paint("hello", false, Style::Accent);
+        let s = paint("hello", false, Style::Amber);
         assert_eq!(s, "hello");
         assert!(!s.contains("\x1b["));
     }
 
     #[test]
     fn color_adds_escapes() {
-        let s = paint("hello", true, Style::Accent);
+        let s = paint("hello", true, Style::Amber);
         assert!(s.contains("\x1b["));
         assert!(s.ends_with(RESET));
     }

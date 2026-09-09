@@ -220,7 +220,7 @@ mod tests {
     use tempfile::TempDir;
 
     async fn test_registry() -> (ConnectorRegistry, TempDir) {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let temp_dir = TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(temp_dir.path().to_path_buf()));

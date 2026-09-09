@@ -389,11 +389,11 @@ mod tests {
     // scripted LLM / embedding clients.
     // ------------------------------------------------------------------
 
+    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::llm::client::StreamCallback;
     use agent_runtime::llm::embedding::EmbeddingError;
     use agent_runtime::llm::LlmError;
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use std::sync::{Arc, Mutex};
     use zbot_stores_sqlite::vector_index::VectorIndex;
     use zbot_stores_sqlite::{

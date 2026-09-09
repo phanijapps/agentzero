@@ -9,6 +9,7 @@ use crate::invoke::executor::build_execution_engine;
 use crate::invoke::policy::RuntimeActorKind;
 use crate::invoke::tool_catalog::{default_visible, split_target, visibility_policy};
 use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
+use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_primitives::FileSystemContext;
 use agent_primitives::{Tool, ToolContext as ToolContextTrait};
 use agent_runtime::llm::{ChatResponse, LlmError, StreamCallback};
@@ -24,7 +25,6 @@ use async_trait::async_trait;
 use execution_state::StateService;
 use gateway_services::models::DEFAULT_MAX_INPUT_TOKENS;
 use gateway_services::McpService;
-use gateway_services::SharedVaultPaths;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -89,8 +89,9 @@ struct MockConnectorProvider;
 #[tokio::test]
 async fn available_agents_include_existing_wards_as_virtual_agents() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths: SharedVaultPaths =
-        Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     std::fs::create_dir_all(paths.wards_dir().join("financial-analysis")).unwrap();
     std::fs::create_dir_all(paths.wards_dir().join(".hidden")).unwrap();
@@ -260,7 +261,9 @@ fn sample_provider() -> Provider {
 #[tokio::test]
 async fn root_executor_uses_the_effective_active_ward_as_tool_context() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -312,7 +315,9 @@ async fn root_executor_uses_the_effective_active_ward_as_tool_context() {
 #[tokio::test]
 async fn invalid_template_is_non_terminal_and_not_injected() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -351,7 +356,9 @@ async fn invalid_template_is_non_terminal_and_not_injected() {
 #[tokio::test]
 async fn delegated_executor_receives_no_template_packet_or_prompt() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -390,7 +397,9 @@ async fn delegated_executor_receives_no_template_packet_or_prompt() {
 #[tokio::test]
 async fn planner_executor_receives_selected_template_packet_and_prompt() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -449,7 +458,9 @@ async fn planner_executor_receives_selected_template_packet_and_prompt() {
 #[tokio::test]
 async fn planner_refinement_tool_replay_persists_required_roles_only_in_selected_ward() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -536,7 +547,9 @@ async fn planner_refinement_tool_replay_persists_required_roles_only_in_selected
 #[tokio::test]
 async fn planner_no_persistent_role_replay_remains_ephemeral() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -617,7 +630,9 @@ extensions: {}
 #[tokio::test]
 async fn planner_missing_plan_role_replay_does_not_invent_a_fallback_plan() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -725,7 +740,9 @@ extensions: {}
 #[tokio::test]
 async fn planner_executor_fails_closed_when_selected_ward_is_missing() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     let mcp_service = McpService::new(paths);
     let mut agent = sample_agent();
@@ -758,7 +775,9 @@ async fn planner_executor_fails_closed_when_selected_ward_is_missing() {
 #[tokio::test]
 async fn planner_executor_fails_closed_when_selected_template_is_invalid() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     gateway_services::seed_default_ward_layout_template(&paths).expect("layout template");
     gateway_services::seed_default_ward_agent_template(&paths).expect("agent template");
@@ -864,7 +883,9 @@ fn rig_agent_config_preserves_gateway_agent_and_model_settings() {
 #[tokio::test]
 async fn execution_engine_is_rig_regardless_of_environment() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     let mcp_service = McpService::new(paths);
     let mut agent = sample_agent();
@@ -912,7 +933,9 @@ async fn execution_engine_is_rig_regardless_of_environment() {
 #[tokio::test]
 async fn missing_rig_config_fails_explicitly_instead_of_falling_back() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     let mcp_service = McpService::new(paths);
     let mut agent = sample_agent();
@@ -989,7 +1012,9 @@ async fn builder_resolves_mcp_display_name_for_real_rig_dispatch() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().unwrap();
     let service = McpService::new(paths);
     service.add(serde_json::from_value(serde_json::json!({
@@ -1030,7 +1055,9 @@ async fn builder_resolves_mcp_display_name_for_real_rig_dispatch() {
 #[tokio::test]
 async fn builder_attaches_rig_agent_config_from_production_path() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     let mcp_service = McpService::new(paths);
     let mut agent = sample_agent();
@@ -1076,7 +1103,9 @@ async fn builder_attaches_rig_agent_config_from_production_path() {
 #[tokio::test]
 async fn builder_hides_broad_context_pull_tools_from_model_schema() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     let mcp_service = McpService::new(paths);
     let mut agent = sample_agent();
@@ -1121,7 +1150,9 @@ async fn builder_hides_broad_context_pull_tools_from_model_schema() {
 #[tokio::test]
 async fn builder_exposes_narrow_recall_when_memory_recall_is_configured() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     let mcp_service = McpService::new(paths);
     let mut agent = sample_agent();
@@ -1167,7 +1198,9 @@ async fn builder_exposes_narrow_recall_when_memory_recall_is_configured() {
 #[tokio::test]
 async fn builder_exposes_connector_split_and_hides_query_resource_from_model_schema() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("vault dirs");
     let mcp_service = McpService::new(paths);
     let mut agent = sample_agent();
@@ -1455,7 +1488,9 @@ async fn present_surface_emits_bounded_create_and_update_markers() {
 async fn real_present_surface_tool_reaches_validated_gateway_events() {
     for (update, valid) in [(false, true), (true, true), (false, false)] {
         let dir = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().expect("vault dirs");
         let service = McpService::new(paths.clone());
         let arguments = if valid {
@@ -1798,7 +1833,9 @@ fn registry_names_with_agent_control_deps_and_mode(
     delegation_mode: Option<&str>,
 ) -> BTreeSet<String> {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("ensure vault dirs");
     let db = Arc::new(DatabaseManager::new(paths.clone()).expect("db init"));
     let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
@@ -1869,7 +1906,9 @@ fn catalog_for_actor_with_connector(actor_kind: RuntimeActorKind) -> ContextCapa
 
 fn catalog_for_actor_with_join_deps(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
     let dir = tempfile::tempdir().expect("tempdir");
-    let paths = Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+    let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+        dir.path().to_path_buf(),
+    ));
     paths.ensure_dirs_exist().expect("ensure vault dirs");
     let db = Arc::new(DatabaseManager::new(paths.clone()).expect("db init"));
     let messages = Arc::new(zbot_conversation::SqliteMessageStore::new(

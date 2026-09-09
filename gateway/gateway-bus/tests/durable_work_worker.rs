@@ -1,3 +1,4 @@
+use agent_primitives::vault_paths::VaultPaths;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use execution_state::{
@@ -11,7 +12,6 @@ use gateway_bus::{
     WorkHandlerPayloadError, WorkHandlerRegistry, WorkTransport, WorkWorkerConfig,
     WorkWorkerConfigError, WorkWorkerLimits,
 };
-use gateway_services::VaultPaths;
 use serde_json::json;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};

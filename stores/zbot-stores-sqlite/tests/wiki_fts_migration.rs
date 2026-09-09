@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tempfile::tempdir;
 
-use gateway_services::VaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use zbot_stores_sqlite::KnowledgeDatabase;
 
 fn db() -> (tempfile::TempDir, Arc<KnowledgeDatabase>) {

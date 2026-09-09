@@ -30,6 +30,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "dirs 5.0.1",
  "futures",
  "schemars",
  "serde",
@@ -38,6 +39,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1818,7 +1820,6 @@ dependencies = [
  "chrono",
  "execution-state",
  "futures",
- "gateway-events",
  "gateway-services",
  "gateway-templates",
  "knowledge-graph",
@@ -2717,6 +2718,7 @@ dependencies = [
 name = "gateway-bus"
 version = "2026.8.4"
 dependencies = [
+ "agent-primitives",
  "async-trait",
  "chrono",
  "execution-state",
@@ -2754,6 +2756,7 @@ dependencies = [
 name = "gateway-cron"
 version = "2026.8.4"
 dependencies = [
+ "agent-primitives",
  "chrono",
  "gateway-services",
  "serde",
@@ -2907,6 +2910,7 @@ dependencies = [
 name = "gateway-templates"
 version = "2026.8.4"
 dependencies = [
+ "agent-primitives",
  "gateway-services",
  "rust-embed",
  "tempfile",
@@ -7986,6 +7990,7 @@ dependencies = [
 name = "zbot-runtime-sqlite"
 version = "0.1.0"
 dependencies = [
+ "agent-primitives",
  "api-logs",
  "async-trait",
  "chrono",
@@ -8048,7 +8053,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "execution-state",
- "gateway-services",
  "knowledge-graph",
  "r2d2",
  "r2d2_sqlite",

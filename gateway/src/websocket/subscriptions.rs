@@ -145,11 +145,8 @@ pub fn should_send_to_scope(
 // =============================================================================
 
 /// Client connection state
-#[allow(dead_code)]
 struct Client {
-    id: ClientId,
     sender: mpsc::UnboundedSender<ServerMessage>,
-    connected_at: Instant,
     last_activity: Instant,
     subscription_count: usize,
     /// Track if channel has failed (for cleanup)
@@ -159,10 +156,7 @@ struct Client {
 
 /// Per-subscription state including scope and cached identifiers.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct SubscriptionEntry {
-    /// Client ID
-    client_id: ClientId,
     /// Event filtering scope
     scope: SubscriptionScope,
     /// Cached state for Session scope filtering (None for other scopes)
@@ -256,9 +250,7 @@ impl SubscriptionManager {
         state.clients.insert(
             client_id.clone(),
             Client {
-                id: client_id.clone(),
                 sender,
-                connected_at: Instant::now(),
                 last_activity: Instant::now(),
                 subscription_count: 0,
                 channel_healthy: true,
@@ -431,14 +423,9 @@ impl SubscriptionManager {
 
         // Store subscription entry with scope and state
         let entry_key = (conversation_id.clone(), client_id.clone());
-        state.subscription_entries.insert(
-            entry_key,
-            SubscriptionEntry {
-                client_id: client_id.clone(),
-                scope,
-                scope_state,
-            },
-        );
+        state
+            .subscription_entries
+            .insert(entry_key, SubscriptionEntry { scope, scope_state });
 
         let current_seq = *state.sequence_numbers.entry(conversation_id).or_insert(0);
 

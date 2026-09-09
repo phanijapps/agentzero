@@ -200,8 +200,7 @@ impl ConnectorResourceProvider for GatewayResourceProvider {
         Ok(serde_json::json!({
             "success": result.success,
             "status": result.status,
-            "body": result.body,
-        }))
+            "body": result.body }))
     }
 }
 

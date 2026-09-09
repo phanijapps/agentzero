@@ -266,8 +266,7 @@ pub(crate) fn write_turn_checkpoint(turn: TurnCheckpoint<'_>) {
         "response": response,
         "title": null,
         "model": null,
-        "subagents": null,
-    });
+        "subagents": null });
     let context_state = super::recovery::checkpoint_context_state(
         display,
         engine_state,

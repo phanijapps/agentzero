@@ -90,8 +90,6 @@ impl GetTokenUsage for LlmCompletionResponse {
 #[derive(Clone)]
 pub struct LlmCompletionModel {
     client: Arc<dyn LlmClient>,
-    #[allow(dead_code)]
-    model_id: String,
     single_action_mode: bool,
     context_policy: Option<Arc<super::context_policy::ContextPolicy>>,
 }
@@ -134,10 +132,9 @@ impl Drop for ProviderStream {
 impl LlmCompletionModel {
     /// Wrap an AgentZero LLM client for use as a Rig completion model.
     #[must_use]
-    pub fn new(client: Arc<dyn LlmClient>, model_id: impl Into<String>) -> Self {
+    pub fn new(client: Arc<dyn LlmClient>) -> Self {
         Self {
             client,
-            model_id: model_id.into(),
             single_action_mode: false,
             context_policy: None,
         }
@@ -163,8 +160,8 @@ impl CompletionModel for LlmCompletionModel {
     type StreamingResponse = LlmCompletionResponse;
     type Client = super::client::LlmCompletionClient;
 
-    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
-        Self::new(client.client.clone(), model)
+    fn make(client: &Self::Client, _model: impl Into<String>) -> Self {
+        Self::new(client.client.clone())
     }
 
     async fn completion(
@@ -424,8 +421,7 @@ pub(crate) fn convert_tools(tools: &[ToolDefinition]) -> Option<Value> {
                     "function": {
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.parameters,
-                    }
+                        "parameters": t.parameters }
                 })
             })
             .collect(),
@@ -577,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn bridge_streams_text_tokens_then_final() {
         let (stub, _seen) = StubLlm::text(&["hel", "lo"]);
-        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>, "stub");
+        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>);
 
         let stream = model
             .stream(rig_request("hi"))
@@ -607,7 +603,7 @@ mod tests {
             seen: Arc::new(Mutex::new(Vec::new())),
             seen_schema: Arc::new(Mutex::new(Vec::new())),
         });
-        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>, "stub");
+        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>);
 
         let stream = model.stream(rig_request("use tool")).await.expect("stream");
         let mut tool_calls = Vec::new();
@@ -656,7 +652,7 @@ mod tests {
                 Err(LlmError::ApiError("boom".to_string()))
             }
         }
-        let model = LlmCompletionModel::new(Arc::new(ErrorLlm) as Arc<dyn LlmClient>, "err");
+        let model = LlmCompletionModel::new(Arc::new(ErrorLlm) as Arc<dyn LlmClient>);
         let mut stream = model.stream(rig_request("hi")).await.expect("stream");
         match stream.next().await.expect("an item") {
             Err(CompletionError::ProviderError(msg)) => assert!(msg.contains("boom")),
@@ -719,13 +715,10 @@ mod tests {
         }
         let entered = Arc::new(tokio::sync::Notify::new());
         let dropped = Arc::new(tokio::sync::Notify::new());
-        let model = LlmCompletionModel::new(
-            Arc::new(PendingLlm {
-                entered: entered.clone(),
-                dropped: dropped.clone(),
-            }),
-            "pending",
-        );
+        let model = LlmCompletionModel::new(Arc::new(PendingLlm {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        }));
         let stream = model.stream(rig_request("hello")).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
             .await
@@ -755,7 +748,7 @@ mod tests {
             "openai".to_string(),
         );
         let client = crate::llm::OpenAiClient::new(config).expect("test OpenAI client");
-        let model = LlmCompletionModel::new(Arc::new(client) as Arc<dyn LlmClient>, "gpt-4-turbo");
+        let model = LlmCompletionModel::new(Arc::new(client) as Arc<dyn LlmClient>);
 
         let completion = model
             .completion(invalid_tool_request())
@@ -854,7 +847,7 @@ mod tests {
             },
             "required": ["value"]
         });
-        let model = LlmCompletionModel::new(stub.clone() as Arc<dyn LlmClient>, "stub");
+        let model = LlmCompletionModel::new(stub.clone() as Arc<dyn LlmClient>);
         let mut request = rig_request("typed");
         request.output_schema = Some(schemars::Schema::try_from(schema.clone()).unwrap());
 

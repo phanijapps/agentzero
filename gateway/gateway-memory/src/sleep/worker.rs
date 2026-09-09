@@ -402,8 +402,8 @@ mod tests {
     use super::*;
     use crate::sleep::pattern_extractor::{PatternExtractLlm, PatternInput, PatternResponse};
     use crate::sleep::synthesizer::{SynthesisInput, SynthesisLlm, SynthesisResponse};
+    use agent_primitives::vault_paths::VaultPaths;
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use std::sync::Mutex;
     use tempfile::tempdir;
     use zbot_stores::KnowledgeGraphStore;

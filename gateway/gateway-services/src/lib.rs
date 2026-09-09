@@ -21,7 +21,6 @@ pub mod mcp;
 pub mod mcp_oauth;
 pub mod models;
 pub mod ollama_client;
-pub mod paths;
 pub mod plugin_service;
 pub mod providers;
 pub mod recall_config;
@@ -35,6 +34,7 @@ pub mod watcher;
 #[cfg(windows)]
 mod windows_file;
 
+pub use agent_primitives::vault_paths::{SharedVaultPaths, VaultPaths};
 pub use agent_registry::AgentRegistry;
 pub use agents::{validate_configured_agent_id, AgentService};
 pub use embedding_service::{
@@ -48,7 +48,6 @@ pub use mcp::McpService;
 pub use mcp_oauth::{McpOAuthService, McpOAuthStartResponse};
 pub use models::ModelRegistry;
 pub use ollama_client::OllamaClient;
-pub use paths::{SharedVaultPaths, VaultPaths};
 pub use plugin_service::PluginService;
 pub use providers::ProviderService;
 pub use recall_config::{KgDecayConfig, RecallConfig};

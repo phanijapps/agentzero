@@ -10,8 +10,8 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use agent_primitives::vault_paths::VaultPaths;
 use agent_runtime::llm::embedding::EmbeddingClient;
-use gateway_services::VaultPaths;
 use zbot_engram_adapter::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout,
     AllowUnclassifiedPolicy, EmbeddingMode, EngramBeliefStore, EngramKnowledgeGraphStore,
@@ -224,9 +224,9 @@ fn map_scope_target(target: gateway_memory::MemoryScopeTarget) -> ScopeTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::llm::embedding::EmbeddingError;
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use zbot_engram_adapter::ProviderMode;

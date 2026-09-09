@@ -4,6 +4,8 @@
 //! data in [`super::tool_catalog`].
 
 use crate::errors::ExecutionError;
+use agent_primitives::vault_paths::SharedVaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use agent_primitives::{ConnectorResourceProvider, FileSystemContext};
 use agent_runtime::{
     ContextCapability, ContextCapabilityCatalog, ContextCapabilityHealth, ContextCapabilityKind,
@@ -22,7 +24,7 @@ use execution_state::StateService;
 use gateway_services::agents::Agent;
 use gateway_services::models::{ModelRegistry, DEFAULT_MAX_INPUT_TOKENS};
 use gateway_services::providers::Provider;
-use gateway_services::{McpService, SettingsService, SharedVaultPaths, SkillService, VaultPaths};
+use gateway_services::{McpService, SettingsService, SkillService};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -187,6 +189,9 @@ pub struct ExecutorBuilder {
     messages: Option<Arc<dyn MessageStore>>,
     /// Trait-routed procedure store for the `run_procedure` tool.
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
+    /// Belief Network stores for the `belief` tool (read-only).
+    belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+    belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
     memory_recall: Option<Arc<gateway_memory::MemoryRecall>>,
     peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
     a2a_delegation: Option<Arc<dyn crate::a2a::A2aDelegationService>>,
@@ -219,6 +224,8 @@ impl ExecutorBuilder {
             state_service: None,
             messages: None,
             procedure_store: None,
+            belief_store: None,
+            belief_contradiction_store: None,
             memory_recall: None,
             peer_messages: None,
             a2a_delegation: None,
@@ -241,6 +248,17 @@ impl ExecutorBuilder {
         procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore>,
     ) -> Self {
         self.procedure_store = Some(procedure_store);
+        self
+    }
+
+    /// Wire the Belief Network stores for the `belief` tool.
+    pub fn with_belief_stores(
+        mut self,
+        belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+        belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
+    ) -> Self {
+        self.belief_store = belief_store;
+        self.belief_contradiction_store = belief_contradiction_store;
         self
     }
 
@@ -660,8 +678,7 @@ impl ExecutorBuilder {
                                 "temperature": mm.temperature,
                                 "maxTokens": mm.max_tokens,
                                 "baseUrl": base_url,
-                                "apiKey": api_key,
-                            }),
+                                "apiKey": api_key }),
                         );
                     }
                 }
@@ -933,33 +950,36 @@ impl ExecutorBuilder {
             &mut tool_registry,
             actor,
             &[ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
-            Arc::new({
-                let tool = MemoryTool::new(fs_context.clone(), self.fact_store.clone())
-                    .with_optional_evidence_intake(self.ingestion_adapter.clone());
-                match &unified_recall_binding {
-                    Some((recall, authorization)) => tool.with_unified_recall(
-                        crate::invoke::unified_recall_adapter::unified_recall_binding_with_goals(
-                            recall.clone(),
-                            self.goal_adapter.clone(),
-                            authorization.clone(),
-                        ),
-                    ),
-                    None => tool,
-                }
-            }),
+            Arc::new(
+                MemoryTool::new(self.fact_store.clone())
+                    .with_optional_evidence_intake(self.ingestion_adapter.clone()),
+            ),
         );
         if let Some((recall, authorization)) = unified_recall_binding {
+            let mut tool = crate::invoke::unified_recall_adapter::unified_recall_tool_with_goals(
+                recall,
+                self.goal_adapter.clone(),
+                authorization,
+            );
+            if let Some(fact_store) = &self.fact_store {
+                tool = tool.with_fact_store(fact_store.clone());
+            }
             register_if_allowed(
                 &mut tool_registry,
                 actor,
                 &[ToolCapability::MemoryRead],
-                Arc::new(
-                    crate::invoke::unified_recall_adapter::unified_recall_tool_with_goals(
-                        recall,
-                        self.goal_adapter.clone(),
-                        authorization,
-                    ),
-                ),
+                Arc::new(tool),
+            );
+        }
+        if self.belief_store.is_some() || self.belief_contradiction_store.is_some() {
+            register_if_allowed(
+                &mut tool_registry,
+                actor,
+                &[ToolCapability::MemoryRead],
+                Arc::new(agent_tools::BeliefTool::new(
+                    self.belief_store.clone(),
+                    self.belief_contradiction_store.clone(),
+                )),
             );
         }
         register_if_allowed(
@@ -967,7 +987,7 @@ impl ExecutorBuilder {
             actor,
             &[ToolCapability::MemoryWrite],
             Arc::new(
-                agent_tools::MemoryWriteTool::new(fs_context.clone(), self.fact_store.clone())
+                agent_tools::MemoryWriteTool::new(self.fact_store.clone())
                     .with_optional_evidence_intake(self.ingestion_adapter.clone()),
             ),
         );
@@ -1202,8 +1222,7 @@ pub(crate) fn mcp_startup_failure_observer(
             "effective_mcps": [],
             "startup_failed_mcps": [mcp_id],
             "unresolved_count": 1,
-            "rejection_codes": ["startup_failed"],
-        }));
+            "rejection_codes": ["startup_failed"] }));
         if log_service.log(entry).is_err() {
             tracing::debug!(mcp_id, "Failed to persist MCP startup audit event");
         }
@@ -1248,8 +1267,7 @@ pub async fn collect_agents_summary(
                     summaries.push(serde_json::json!({
                         "id": format!("ward:{name}"),
                         "name": format!("Ward Agent: {name}"),
-                        "description": format!("Delegatable agent for the existing {name} ward"),
-                    }));
+                        "description": format!("Delegatable agent for the existing {name} ward") }));
                 }
             }
         }
@@ -1267,8 +1285,7 @@ pub async fn collect_skills_summary(skill_service: &SkillService) -> Vec<serde_j
             .map(|s| {
                 serde_json::json!({
                     "name": s.name,
-                    "description": s.description,
-                })
+                    "description": s.description })
             })
             .collect(),
         Err(_) => vec![],

@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 # Async runtime
 tokio = { workspace = true }
+tracing = { workspace = true }
+dirs = "5"
 async-trait = { workspace = true }
 futures = { workspace = true }
 async-stream = "0.3"

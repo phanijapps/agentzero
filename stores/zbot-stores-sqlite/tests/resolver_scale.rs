@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use gateway_services::VaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use knowledge_graph::{Entity, EntityType, ExtractedKnowledge};
 use zbot_stores_sqlite::kg::storage::GraphStorage;
 use zbot_stores_sqlite::KnowledgeDatabase;

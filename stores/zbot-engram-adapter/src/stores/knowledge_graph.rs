@@ -22,8 +22,8 @@ use zbot_stores::types::{
 };
 use zbot_stores::{
     ArchivableEntity, EmbeddingQueryIdentity, EntityNameEmbeddingHit, EntityWithEmbedding,
-    ExtractedKnowledge, GraphView, HierarchySummary, InterClusterRelationHit, KgStats,
-    KnowledgeGraphStore, LcaPath, ReindexReport, StoreError, StoreOutcome, StoreResult,
+    ExtractedKnowledge, GraphStoreError, GraphStoreResult, GraphView, HierarchySummary,
+    InterClusterRelationHit, KgStats, KnowledgeGraphStore, LcaPath, ReindexReport, StoreOutcome,
     VecIndexHealth,
 };
 
@@ -110,7 +110,7 @@ impl EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         mut entity: Entity,
-    ) -> StoreResult<EntityId> {
+    ) -> GraphStoreResult<EntityId> {
         self.admit_entity_write(agent_id, &mut entity)?;
         self.sidecar
             .claim_entity_owners(agent_id, std::iter::once(entity.id.as_str()))?;
@@ -123,10 +123,10 @@ impl EngramKnowledgeGraphStore {
                     &self.mapper,
                     Some(&self.governance),
                 )
-                .map_err(|error| StoreError::Backend(error.to_string()))?,
+                .map_err(|error| GraphStoreError::Backend(error.to_string()))?,
             )
             .await
-            .map_err(|error| StoreError::Backend(error.to_string()))?;
+            .map_err(|error| GraphStoreError::Backend(error.to_string()))?;
         let mut sidecar_entity = entity;
         sidecar_entity.name_embedding = None;
         self.sidecar
@@ -138,7 +138,7 @@ impl EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         mut relationship: Relationship,
-    ) -> StoreResult<RelationshipId> {
+    ) -> GraphStoreResult<RelationshipId> {
         self.admit_relationship_write(agent_id, &mut relationship)?;
         relationship = self.sidecar.canonicalize_relationship(relationship)?;
         // Deduplication merges durable sidecar properties. Apply the current
@@ -150,10 +150,10 @@ impl EngramKnowledgeGraphStore {
         self.knowledge
             .put_relationship(
                 relationship_to_knowledge_relationship(&relationship, &self.mapper)
-                    .map_err(|error| StoreError::Backend(error.to_string()))?,
+                    .map_err(|error| GraphStoreError::Backend(error.to_string()))?,
             )
             .await
-            .map_err(|error| StoreError::Backend(error.to_string()))?;
+            .map_err(|error| GraphStoreError::Backend(error.to_string()))?;
         self.sidecar.store_relationship(&relationship)?;
         self.sidecar.replace_governance_findings(
             &relationship.id,
@@ -167,7 +167,7 @@ impl EngramKnowledgeGraphStore {
     /// the adapter boundary. This is intentionally before either Engram or the
     /// compatibility sidecar is mutated, so every public graph-write path gets
     /// the same protection.
-    fn admit_entity_write(&self, agent_id: &str, entity: &mut Entity) -> StoreResult<()> {
+    fn admit_entity_write(&self, agent_id: &str, entity: &mut Entity) -> GraphStoreResult<()> {
         validate_agent_id(agent_id)?;
         validate_record_id("entity", &entity.id)?;
         validate_name(&entity.name)?;
@@ -184,7 +184,7 @@ impl EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         relationship: &mut Relationship,
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         self.admit_relationship_shape(agent_id, relationship)?;
         self.ensure_relationship_endpoints(agent_id, relationship)
     }
@@ -193,13 +193,13 @@ impl EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         relationship: &mut Relationship,
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         validate_agent_id(agent_id)?;
         validate_record_id("relationship", &relationship.id)?;
         validate_record_id("relationship source entity", &relationship.source_entity_id)?;
         validate_record_id("relationship target entity", &relationship.target_entity_id)?;
         if relationship.source_entity_id == relationship.target_entity_id {
-            return Err(StoreError::Invalid(
+            return Err(GraphStoreError::Invalid(
                 "relationship source and target must differ".to_string(),
             ));
         }
@@ -222,7 +222,7 @@ impl EngramKnowledgeGraphStore {
         agent_id: &str,
         relationship: &Relationship,
         batch_entity_ids: &std::collections::HashSet<&str>,
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         for (role, id) in [
             ("source", relationship.source_entity_id.as_str()),
             ("target", relationship.target_entity_id.as_str()),
@@ -234,10 +234,12 @@ impl EngramKnowledgeGraphStore {
                 .sidecar
                 .get_entity(&EntityId(id.to_string()))?
                 .ok_or_else(|| {
-                    StoreError::Invalid(format!("relationship {role} entity does not exist: {id}"))
+                    GraphStoreError::Invalid(format!(
+                        "relationship {role} entity does not exist: {id}"
+                    ))
                 })?;
             if entity.agent_id != agent_id {
-                return Err(StoreError::Invalid(format!(
+                return Err(GraphStoreError::Invalid(format!(
                     "relationship {role} entity belongs to another agent: {id}"
                 )));
             }
@@ -249,7 +251,7 @@ impl EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         relationship: &Relationship,
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         for (role, id) in [
             ("source", &relationship.source_entity_id),
             ("target", &relationship.target_entity_id),
@@ -258,10 +260,12 @@ impl EngramKnowledgeGraphStore {
                 .sidecar
                 .get_entity(&EntityId(id.clone()))?
                 .ok_or_else(|| {
-                    StoreError::Invalid(format!("relationship {role} entity does not exist: {id}"))
+                    GraphStoreError::Invalid(format!(
+                        "relationship {role} entity does not exist: {id}"
+                    ))
                 })?;
             if entity.agent_id != agent_id {
-                return Err(StoreError::Invalid(format!(
+                return Err(GraphStoreError::Invalid(format!(
                     "relationship {role} entity belongs to a different agent"
                 )));
             }
@@ -275,7 +279,7 @@ impl EngramKnowledgeGraphStore {
     fn persist_relationship_governance_selection(
         &self,
         relationship: &mut Relationship,
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         for key in RELATIONSHIP_GOVERNANCE_PROPERTY_KEYS {
             relationship.properties.remove(key);
         }
@@ -315,7 +319,7 @@ impl EngramKnowledgeGraphStore {
     fn validate_relationship(
         &self,
         relationship: &Relationship,
-    ) -> StoreResult<Vec<GovernanceValidationFinding>> {
+    ) -> GraphStoreResult<Vec<GovernanceValidationFinding>> {
         if self.governance.validation_mode == ValidationMode::Disabled {
             return Ok(Vec::new());
         }
@@ -368,30 +372,30 @@ impl EngramKnowledgeGraphStore {
         &self,
         agent_id: Option<&str>,
         limit: usize,
-    ) -> StoreResult<Vec<GovernanceValidationFinding>> {
+    ) -> GraphStoreResult<Vec<GovernanceValidationFinding>> {
         self.sidecar.list_governance_findings(agent_id, limit)
     }
 }
 
 #[async_trait]
 impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
-    async fn upsert_entity(&self, agent_id: &str, entity: Entity) -> StoreResult<EntityId> {
+    async fn upsert_entity(&self, agent_id: &str, entity: Entity) -> GraphStoreResult<EntityId> {
         self.upsert_entity_record(agent_id, entity).await
     }
 
-    async fn get_entity(&self, id: &EntityId) -> StoreResult<Option<Entity>> {
+    async fn get_entity(&self, id: &EntityId) -> GraphStoreResult<Option<Entity>> {
         self.sidecar.get_entity(id)
     }
 
-    async fn delete_entity(&self, id: &EntityId) -> StoreResult<()> {
+    async fn delete_entity(&self, id: &EntityId) -> GraphStoreResult<()> {
         self.sidecar.delete_entity(id)
     }
 
-    async fn bump_entity_mention(&self, id: &EntityId) -> StoreResult<()> {
+    async fn bump_entity_mention(&self, id: &EntityId) -> GraphStoreResult<()> {
         self.sidecar.bump_entity_mention(id)
     }
 
-    async fn add_alias(&self, entity_id: &EntityId, surface: &str) -> StoreResult<()> {
+    async fn add_alias(&self, entity_id: &EntityId, surface: &str) -> GraphStoreResult<()> {
         self.sidecar.add_alias(entity_id, surface)
     }
 
@@ -401,7 +405,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         entity_type: &EntityType,
         name: &str,
         embedding: Option<&[f32]>,
-    ) -> StoreResult<ResolveOutcome> {
+    ) -> GraphStoreResult<ResolveOutcome> {
         if let Some(entity) = self
             .sidecar
             .find_entity_by_name(agent_id, entity_type, name)?
@@ -436,12 +440,12 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         relationship: Relationship,
-    ) -> StoreResult<RelationshipId> {
+    ) -> GraphStoreResult<RelationshipId> {
         self.upsert_relationship_record(agent_id, relationship)
             .await
     }
 
-    async fn delete_relationship(&self, id: &RelationshipId) -> StoreResult<()> {
+    async fn delete_relationship(&self, id: &RelationshipId) -> GraphStoreResult<()> {
         self.sidecar.delete_relationship(id)
     }
 
@@ -449,7 +453,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         mut knowledge: ExtractedKnowledge,
-    ) -> StoreResult<StoreOutcome> {
+    ) -> GraphStoreResult<StoreOutcome> {
         let entity_count = knowledge.entities.len() as u64;
         let relationship_count = knowledge.relationships.len() as u64;
 
@@ -492,7 +496,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         id: &EntityId,
         direction: Direction,
         limit: usize,
-    ) -> StoreResult<Vec<Neighbor>> {
+    ) -> GraphStoreResult<Vec<Neighbor>> {
         Ok(self
             .sidecar
             .neighbors(id, direction, limit)?
@@ -511,7 +515,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         seed: &EntityId,
         max_hops: usize,
         limit: usize,
-    ) -> StoreResult<Vec<TraversalHit>> {
+    ) -> GraphStoreResult<Vec<TraversalHit>> {
         let relationships = self
             .sidecar
             .list_relationship_entries(None, None, usize::MAX, 0)?;
@@ -565,7 +569,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         agent_id: &str,
         query: &str,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         self.sidecar.search_entities_by_name(agent_id, query, limit)
     }
 
@@ -573,7 +577,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         normalized_name: &str,
-    ) -> StoreResult<Option<Entity>> {
+    ) -> GraphStoreResult<Option<Entity>> {
         self.sidecar
             .get_entity_by_normalized_name(agent_id, normalized_name)
     }
@@ -584,7 +588,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         query: &str,
         view: GraphView,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         self.sidecar
             .search_entities_view(agent_id, query, view, limit)
     }
@@ -594,7 +598,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         agent_id: &str,
         query_embedding: &[f32],
         top_k: usize,
-    ) -> StoreResult<Vec<EntityNameEmbeddingHit>> {
+    ) -> GraphStoreResult<Vec<EntityNameEmbeddingHit>> {
         let _ = (agent_id, query_embedding, top_k);
         Ok(Vec::new())
     }
@@ -605,7 +609,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         query_embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         top_k: usize,
-    ) -> StoreResult<Vec<EntityNameEmbeddingHit>> {
+    ) -> GraphStoreResult<Vec<EntityNameEmbeddingHit>> {
         Ok(self
             .sidecar
             .search_embedding(agent_id, None, query_embedding, query_identity, top_k)?
@@ -620,14 +624,14 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
             .collect())
     }
 
-    async fn reindex_embeddings(&self, _new_dim: usize) -> StoreResult<ReindexReport> {
+    async fn reindex_embeddings(&self, _new_dim: usize) -> GraphStoreResult<ReindexReport> {
         Ok(ReindexReport {
             tables_rebuilt: Vec::new(),
             rows_indexed: self.sidecar.count_entity_embeddings()? as u64,
         })
     }
 
-    async fn stats(&self) -> StoreResult<KgStats> {
+    async fn stats(&self) -> GraphStoreResult<KgStats> {
         Ok(KgStats {
             entity_count: self.sidecar.count_entities(None)? as u64,
             relationship_count: self.sidecar.count_relationships(None)? as u64,
@@ -639,15 +643,15 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         &self,
         min_age_hours: u32,
         limit: usize,
-    ) -> StoreResult<Vec<ArchivableEntity>> {
+    ) -> GraphStoreResult<Vec<ArchivableEntity>> {
         self.sidecar.list_archivable_orphans(min_age_hours, limit)
     }
 
-    async fn mark_entity_archival(&self, id: &EntityId, reason: &str) -> StoreResult<()> {
+    async fn mark_entity_archival(&self, id: &EntityId, reason: &str) -> GraphStoreResult<()> {
         self.sidecar.mark_entity_archival(id, reason)
     }
 
-    async fn graph_stats(&self, agent_id: &str) -> StoreResult<GraphStats> {
+    async fn graph_stats(&self, agent_id: &str) -> GraphStoreResult<GraphStats> {
         self.sidecar.graph_stats(agent_id)
     }
 
@@ -657,7 +661,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         entity_type: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         Ok(self
             .sidecar
             .list_entity_entries(Some(agent_id), entity_type, limit, offset)?
@@ -672,7 +676,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         relationship_type: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> StoreResult<Vec<Relationship>> {
+    ) -> GraphStoreResult<Vec<Relationship>> {
         Ok(self
             .sidecar
             .list_relationship_entries(Some(agent_id), relationship_type, limit, offset)?
@@ -687,7 +691,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         entity_id: &str,
         direction: Direction,
         limit: usize,
-    ) -> StoreResult<Vec<NeighborInfo>> {
+    ) -> GraphStoreResult<Vec<NeighborInfo>> {
         let id = EntityId(entity_id.to_string());
         let rows = self.sidecar.neighbors(&id, direction, limit)?;
         let mut hydrated = Vec::new();
@@ -712,15 +716,15 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         agent_id: &str,
         center_entity_id: &str,
         max_hops: usize,
-    ) -> StoreResult<Subgraph> {
+    ) -> GraphStoreResult<Subgraph> {
         self.sidecar.subgraph(agent_id, center_entity_id, max_hops)
     }
 
-    async fn count_all_entities(&self) -> StoreResult<usize> {
+    async fn count_all_entities(&self) -> GraphStoreResult<usize> {
         self.sidecar.count_entities(None)
     }
 
-    async fn count_all_relationships(&self) -> StoreResult<usize> {
+    async fn count_all_relationships(&self) -> GraphStoreResult<usize> {
         self.sidecar.count_relationships(None)
     }
 
@@ -729,11 +733,11 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         ward_id: Option<&str>,
         entity_type: Option<&str>,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         self.sidecar.list_all_entities(ward_id, entity_type, limit)
     }
 
-    async fn list_all_relationships(&self, limit: usize) -> StoreResult<Vec<Relationship>> {
+    async fn list_all_relationships(&self, limit: usize) -> GraphStoreResult<Vec<Relationship>> {
         Ok(self
             .sidecar
             .list_relationship_entries(None, None, limit, 0)?
@@ -742,7 +746,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
             .collect())
     }
 
-    async fn vec_index_health(&self) -> StoreResult<VecIndexHealth> {
+    async fn vec_index_health(&self) -> GraphStoreResult<VecIndexHealth> {
         let indexed_rows = self.sidecar.count_entity_embeddings()?;
         Ok(VecIndexHealth {
             tables_present: vec!["kg_name_index".to_string()],
@@ -756,7 +760,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         agent_id: &str,
         cluster_a: &[EntityId],
         cluster_b: &[EntityId],
-    ) -> StoreResult<usize> {
+    ) -> GraphStoreResult<usize> {
         self.sidecar
             .connectivity_strength(agent_id, cluster_a, cluster_b)
     }
@@ -769,7 +773,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         name: &str,
         description: &str,
         embedding: Option<Vec<f32>>,
-    ) -> StoreResult<EntityId> {
+    ) -> GraphStoreResult<EntityId> {
         let ward_id = members
             .iter()
             .find_map(|member| {
@@ -816,11 +820,11 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
             members,
             Some(&self.governance),
         )
-        .map_err(|error| StoreError::Backend(error.to_string()))?;
+        .map_err(|error| GraphStoreError::Backend(error.to_string()))?;
         self.hierarchy
             .put_node(node)
             .await
-            .map_err(|error| StoreError::Backend(error.to_string()))?;
+            .map_err(|error| GraphStoreError::Backend(error.to_string()))?;
         Ok(id)
     }
 
@@ -831,7 +835,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         source_aggregate: &EntityId,
         target_aggregate: &EntityId,
         relationship_type: &str,
-    ) -> StoreResult<RelationshipId> {
+    ) -> GraphStoreResult<RelationshipId> {
         let ward_id = self
             .sidecar
             .get_entity(source_aggregate)?
@@ -868,11 +872,11 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
             .upsert_relationship_record(agent_id, relationship.clone())
             .await?;
         let relation = relationship_to_hierarchy_relation(&relationship, &self.mapper)
-            .map_err(|error| StoreError::Backend(error.to_string()))?;
+            .map_err(|error| GraphStoreError::Backend(error.to_string()))?;
         self.hierarchy
             .put_relation(relation)
             .await
-            .map_err(|error| StoreError::Backend(error.to_string()))?;
+            .map_err(|error| GraphStoreError::Backend(error.to_string()))?;
         Ok(id)
     }
 
@@ -881,7 +885,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         agent_id: &str,
         layer: i64,
         limit: usize,
-    ) -> StoreResult<Vec<EntityWithEmbedding>> {
+    ) -> GraphStoreResult<Vec<EntityWithEmbedding>> {
         self.sidecar
             .list_entities_with_embeddings_at_layer(agent_id, layer, limit)
     }
@@ -890,7 +894,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         seed_entity_ids: &[EntityId],
-    ) -> StoreResult<LcaPath> {
+    ) -> GraphStoreResult<LcaPath> {
         self.sidecar.compute_lca_path(agent_id, seed_entity_ids)
     }
 
@@ -898,7 +902,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         entity_ids: &[EntityId],
-    ) -> StoreResult<Vec<InterClusterRelationHit>> {
+    ) -> GraphStoreResult<Vec<InterClusterRelationHit>> {
         self.sidecar
             .list_inter_cluster_relations(agent_id, entity_ids)
     }
@@ -907,7 +911,7 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         &self,
         agent_id: &str,
         top_n: usize,
-    ) -> StoreResult<HierarchySummary> {
+    ) -> GraphStoreResult<HierarchySummary> {
         self.sidecar.hierarchy_summary(agent_id, top_n)
     }
 }
@@ -1081,7 +1085,7 @@ impl KnowledgeGraphSidecar {
         &self,
         agent_id: &str,
         entity_ids: impl IntoIterator<Item = &'a str>,
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(to_backend)?;
         for entity_id in entity_ids {
@@ -1099,7 +1103,7 @@ impl KnowledgeGraphSidecar {
                 )
                 .map_err(to_backend)?;
             if owner != agent_id {
-                return Err(StoreError::Invalid(format!(
+                return Err(GraphStoreError::Invalid(format!(
                     "entity id belongs to another agent: {entity_id}"
                 )));
             }
@@ -1107,11 +1111,11 @@ impl KnowledgeGraphSidecar {
         transaction.commit().map_err(to_backend)
     }
 
-    fn store_entity(&self, entity: &Entity, embedding: Option<&[f32]>) -> StoreResult<()> {
+    fn store_entity(&self, entity: &Entity, embedding: Option<&[f32]>) -> GraphStoreResult<()> {
         self.store_entity_inner(entity, embedding, true)
     }
 
-    fn replace_entity(&self, entity: &Entity, embedding: Option<&[f32]>) -> StoreResult<()> {
+    fn replace_entity(&self, entity: &Entity, embedding: Option<&[f32]>) -> GraphStoreResult<()> {
         self.store_entity_inner(entity, embedding, false)
     }
 
@@ -1120,7 +1124,7 @@ impl KnowledgeGraphSidecar {
         entity: &Entity,
         embedding: Option<&[f32]>,
         bump_existing: bool,
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         let existing = self.get_entity_entry(&EntityId(entity.id.clone()))?;
         let mut stored = entity.clone();
         let embedding_json = embedding
@@ -1193,11 +1197,11 @@ impl KnowledgeGraphSidecar {
         Ok(())
     }
 
-    fn get_entity(&self, id: &EntityId) -> StoreResult<Option<Entity>> {
+    fn get_entity(&self, id: &EntityId) -> GraphStoreResult<Option<Entity>> {
         Ok(self.get_entity_entry(id)?.map(|entry| entry.entity))
     }
 
-    fn get_entity_entry(&self, id: &EntityId) -> StoreResult<Option<EntityEntry>> {
+    fn get_entity_entry(&self, id: &EntityId) -> GraphStoreResult<Option<EntityEntry>> {
         self.lock()?
             .query_row(
                 "SELECT entity_json, embedding_json, embedding_identity_json FROM kg_entities WHERE id = ?1 AND pruned = 0",
@@ -1208,7 +1212,7 @@ impl KnowledgeGraphSidecar {
             .map_err(to_backend)
     }
 
-    fn delete_entity(&self, id: &EntityId) -> StoreResult<()> {
+    fn delete_entity(&self, id: &EntityId) -> GraphStoreResult<()> {
         let connection = self.lock()?;
         connection
             .execute(
@@ -1228,17 +1232,17 @@ impl KnowledgeGraphSidecar {
         Ok(())
     }
 
-    fn bump_entity_mention(&self, id: &EntityId) -> StoreResult<()> {
+    fn bump_entity_mention(&self, id: &EntityId) -> GraphStoreResult<()> {
         let Some(mut entry) = self.get_entity_entry(id)? else {
-            return Err(StoreError::NotFound);
+            return Err(GraphStoreError::NotFound);
         };
         entry.entity.touch();
         self.replace_entity(&entry.entity, entry.embedding.as_deref())
     }
 
-    fn add_alias(&self, entity_id: &EntityId, surface: &str) -> StoreResult<()> {
+    fn add_alias(&self, entity_id: &EntityId, surface: &str) -> GraphStoreResult<()> {
         let Some(entity) = self.get_entity(entity_id)? else {
-            return Err(StoreError::NotFound);
+            return Err(GraphStoreError::NotFound);
         };
         self.lock()?
             .execute(
@@ -1260,7 +1264,7 @@ impl KnowledgeGraphSidecar {
         agent_id: &str,
         entity_type: &EntityType,
         surface: &str,
-    ) -> StoreResult<Option<EntityId>> {
+    ) -> GraphStoreResult<Option<EntityId>> {
         self.lock()?
             .query_row(
                 "SELECT entity_id FROM entity_aliases
@@ -1279,7 +1283,7 @@ impl KnowledgeGraphSidecar {
         agent_id: &str,
         entity_type: &EntityType,
         name: &str,
-    ) -> StoreResult<Option<Entity>> {
+    ) -> GraphStoreResult<Option<Entity>> {
         self.lock()?
             .query_row(
                 "SELECT entity_json, embedding_json, embedding_identity_json FROM kg_entities
@@ -1294,7 +1298,7 @@ impl KnowledgeGraphSidecar {
             .map_err(to_backend)
     }
 
-    fn store_relationship(&self, relationship: &Relationship) -> StoreResult<()> {
+    fn store_relationship(&self, relationship: &Relationship) -> GraphStoreResult<()> {
         let existing = self.get_relationship_entry(&RelationshipId(relationship.id.clone()))?;
         let mut stored = relationship.clone();
         if let Some(existing) = existing {
@@ -1351,7 +1355,10 @@ impl KnowledgeGraphSidecar {
         Ok(())
     }
 
-    fn canonicalize_relationship(&self, relationship: Relationship) -> StoreResult<Relationship> {
+    fn canonicalize_relationship(
+        &self,
+        relationship: Relationship,
+    ) -> GraphStoreResult<Relationship> {
         let key = self.relationship_dedup_key(&relationship)?;
         let Some(existing) = self.find_duplicate_relationship(&key, &relationship.id)? else {
             return Ok(relationship);
@@ -1368,7 +1375,7 @@ impl KnowledgeGraphSidecar {
         relationship_id: &str,
         agent_id: &str,
         findings: &[GovernanceValidationFinding],
-    ) -> StoreResult<()> {
+    ) -> GraphStoreResult<()> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(to_backend)?;
         transaction
@@ -1422,7 +1429,7 @@ impl KnowledgeGraphSidecar {
         &self,
         agent_id: Option<&str>,
         limit: usize,
-    ) -> StoreResult<Vec<GovernanceValidationFinding>> {
+    ) -> GraphStoreResult<Vec<GovernanceValidationFinding>> {
         let limit = limit.max(1) as i64;
         let connection = self.lock()?;
         if let Some(agent_id) = agent_id {
@@ -1453,7 +1460,7 @@ impl KnowledgeGraphSidecar {
     fn get_relationship_entry(
         &self,
         id: &RelationshipId,
-    ) -> StoreResult<Option<RelationshipEntry>> {
+    ) -> GraphStoreResult<Option<RelationshipEntry>> {
         self.lock()?
             .query_row(
                 "SELECT relationship_json FROM kg_relationships WHERE id = ?1 AND archived = 0",
@@ -1464,7 +1471,7 @@ impl KnowledgeGraphSidecar {
             .map_err(to_backend)
     }
 
-    fn delete_relationship(&self, id: &RelationshipId) -> StoreResult<()> {
+    fn delete_relationship(&self, id: &RelationshipId) -> GraphStoreResult<()> {
         self.lock()?
             .execute("DELETE FROM kg_relationships WHERE id = ?1", params![id.0])
             .map_err(to_backend)?;
@@ -1476,7 +1483,7 @@ impl KnowledgeGraphSidecar {
         id: &EntityId,
         direction: Direction,
         limit: usize,
-    ) -> StoreResult<Vec<NeighborRow>> {
+    ) -> GraphStoreResult<Vec<NeighborRow>> {
         let relationships = self.list_relationship_entries(None, None, usize::MAX, 0)?;
         let mut rows = Vec::new();
         for entry in relationships {
@@ -1518,7 +1525,7 @@ impl KnowledgeGraphSidecar {
         agent_id: &str,
         query: &str,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         let query = query.to_lowercase();
         let mut rows = self.list_entity_entries(Some(agent_id), None, usize::MAX, 0)?;
         rows.retain(|entry| entry.entity.name.to_lowercase().contains(&query));
@@ -1537,7 +1544,7 @@ impl KnowledgeGraphSidecar {
         &self,
         agent_id: &str,
         normalized_name: &str,
-    ) -> StoreResult<Option<Entity>> {
+    ) -> GraphStoreResult<Option<Entity>> {
         let connection = self.lock()?;
         let entity_json = connection
             .query_row(
@@ -1562,7 +1569,7 @@ impl KnowledgeGraphSidecar {
         query: &str,
         view: GraphView,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         let query = query.to_lowercase();
         let mut rows = self.list_entity_entries(Some(agent_id), None, usize::MAX, 0)?;
         rows.retain(|entry| entry.entity.name.to_lowercase().contains(&query));
@@ -1603,7 +1610,7 @@ impl KnowledgeGraphSidecar {
         query_embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         limit: usize,
-    ) -> StoreResult<Vec<EmbeddingHit>> {
+    ) -> GraphStoreResult<Vec<EmbeddingHit>> {
         if !identity_compatible(
             &self.embedding_identity,
             query_identity,
@@ -1647,7 +1654,7 @@ impl KnowledgeGraphSidecar {
         entity_type: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> StoreResult<Vec<EntityEntry>> {
+    ) -> GraphStoreResult<Vec<EntityEntry>> {
         let connection = self.lock()?;
         let mut conditions = vec!["pruned = 0".to_string()];
         let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
@@ -1691,7 +1698,7 @@ impl KnowledgeGraphSidecar {
         relationship_type: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> StoreResult<Vec<RelationshipEntry>> {
+    ) -> GraphStoreResult<Vec<RelationshipEntry>> {
         let mut conditions = vec!["archived = 0".to_string()];
         let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
 
@@ -1736,7 +1743,7 @@ impl KnowledgeGraphSidecar {
         Ok(rows.into_iter().skip(offset).take(limit.max(1)).collect())
     }
 
-    fn load_all_entities(&self) -> StoreResult<Vec<EntityEntry>> {
+    fn load_all_entities(&self) -> GraphStoreResult<Vec<EntityEntry>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -1750,7 +1757,7 @@ impl KnowledgeGraphSidecar {
         rows.collect::<Result<Vec<_>, _>>().map_err(to_backend)
     }
 
-    fn load_all_relationships(&self) -> StoreResult<Vec<RelationshipEntry>> {
+    fn load_all_relationships(&self) -> GraphStoreResult<Vec<RelationshipEntry>> {
         let mut rows = self.load_all_relationship_rows()?;
         rows = self.deduplicate_relationship_entries(rows)?;
         rows.sort_by(|left, right| {
@@ -1763,7 +1770,7 @@ impl KnowledgeGraphSidecar {
         Ok(rows)
     }
 
-    fn load_all_relationship_rows(&self) -> StoreResult<Vec<RelationshipEntry>> {
+    fn load_all_relationship_rows(&self) -> GraphStoreResult<Vec<RelationshipEntry>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -1781,7 +1788,7 @@ impl KnowledgeGraphSidecar {
         &self,
         key: &RelationshipDedupKey,
         incoming_id: &str,
-    ) -> StoreResult<Option<RelationshipEntry>> {
+    ) -> GraphStoreResult<Option<RelationshipEntry>> {
         for entry in self.load_all_relationship_rows()? {
             if entry.relationship.id == incoming_id {
                 continue;
@@ -1796,7 +1803,7 @@ impl KnowledgeGraphSidecar {
     fn deduplicate_relationship_entries(
         &self,
         rows: Vec<RelationshipEntry>,
-    ) -> StoreResult<Vec<RelationshipEntry>> {
+    ) -> GraphStoreResult<Vec<RelationshipEntry>> {
         let mut deduped: Vec<(RelationshipDedupKey, RelationshipEntry)> = Vec::new();
         for entry in rows {
             let key = self.relationship_dedup_key(&entry.relationship)?;
@@ -1816,7 +1823,7 @@ impl KnowledgeGraphSidecar {
     fn relationship_dedup_key(
         &self,
         relationship: &Relationship,
-    ) -> StoreResult<RelationshipDedupKey> {
+    ) -> GraphStoreResult<RelationshipDedupKey> {
         let ward_id = relationship_property_string(relationship, "ward_id")
             .or_else(|| {
                 self.get_entity(&EntityId(relationship.source_entity_id.clone()))
@@ -1839,7 +1846,7 @@ impl KnowledgeGraphSidecar {
         })
     }
 
-    fn count_entities(&self, agent_id: Option<&str>) -> StoreResult<usize> {
+    fn count_entities(&self, agent_id: Option<&str>) -> GraphStoreResult<usize> {
         let connection = self.lock()?;
         let count = match agent_id {
             Some(agent_id) => connection.query_row(
@@ -1857,7 +1864,7 @@ impl KnowledgeGraphSidecar {
         Ok(count.max(0) as usize)
     }
 
-    fn count_relationships(&self, agent_id: Option<&str>) -> StoreResult<usize> {
+    fn count_relationships(&self, agent_id: Option<&str>) -> GraphStoreResult<usize> {
         let connection = self.lock()?;
         let count = match agent_id {
             Some(agent_id) => connection.query_row(
@@ -1875,7 +1882,7 @@ impl KnowledgeGraphSidecar {
         Ok(count.max(0) as usize)
     }
 
-    fn count_aliases(&self) -> StoreResult<usize> {
+    fn count_aliases(&self) -> GraphStoreResult<usize> {
         self.lock()?
             .query_row("SELECT COUNT(*) FROM entity_aliases", [], |row| {
                 row.get::<_, i64>(0)
@@ -1884,7 +1891,7 @@ impl KnowledgeGraphSidecar {
             .map_err(to_backend)
     }
 
-    fn count_entity_embeddings(&self) -> StoreResult<usize> {
+    fn count_entity_embeddings(&self) -> GraphStoreResult<usize> {
         self.lock()?
             .query_row(
                 "SELECT COUNT(*) FROM kg_entities WHERE embedding_json IS NOT NULL",
@@ -1899,7 +1906,7 @@ impl KnowledgeGraphSidecar {
         &self,
         min_age_hours: u32,
         limit: usize,
-    ) -> StoreResult<Vec<ArchivableEntity>> {
+    ) -> GraphStoreResult<Vec<ArchivableEntity>> {
         let cutoff = Utc::now() - chrono::Duration::hours(i64::from(min_age_hours));
         let connected = self.connected_entity_ids()?;
         let mut rows = self
@@ -1924,9 +1931,9 @@ impl KnowledgeGraphSidecar {
         Ok(rows)
     }
 
-    fn mark_entity_archival(&self, id: &EntityId, reason: &str) -> StoreResult<()> {
+    fn mark_entity_archival(&self, id: &EntityId, reason: &str) -> GraphStoreResult<()> {
         let Some(mut entry) = self.get_entity_entry(id)? else {
-            return Err(StoreError::NotFound);
+            return Err(GraphStoreError::NotFound);
         };
         entry
             .entity
@@ -1939,7 +1946,7 @@ impl KnowledgeGraphSidecar {
         self.replace_entity(&entry.entity, entry.embedding.as_deref())
     }
 
-    fn graph_stats(&self, agent_id: &str) -> StoreResult<GraphStats> {
+    fn graph_stats(&self, agent_id: &str) -> GraphStoreResult<GraphStats> {
         let entities = self.list_entity_entries(Some(agent_id), None, usize::MAX, 0)?;
         let relationships = self.list_relationship_entries(Some(agent_id), None, usize::MAX, 0)?;
         let mut entity_types = HashMap::new();
@@ -1980,7 +1987,7 @@ impl KnowledgeGraphSidecar {
         agent_id: &str,
         center_entity_id: &str,
         max_hops: usize,
-    ) -> StoreResult<Subgraph> {
+    ) -> GraphStoreResult<Subgraph> {
         let mut visited = HashSet::from([center_entity_id.to_string()]);
         let mut queue = VecDeque::from([(center_entity_id.to_string(), 0_usize)]);
         let mut relationship_ids = HashSet::new();
@@ -2024,7 +2031,7 @@ impl KnowledgeGraphSidecar {
         ward_id: Option<&str>,
         entity_type: Option<&str>,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         let connection = self.lock()?;
         let mut conditions = vec!["pruned = 0".to_string()];
         let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
@@ -2065,7 +2072,7 @@ impl KnowledgeGraphSidecar {
         agent_id: &str,
         cluster_a: &[EntityId],
         cluster_b: &[EntityId],
-    ) -> StoreResult<usize> {
+    ) -> GraphStoreResult<usize> {
         if cluster_a.is_empty() || cluster_b.is_empty() {
             return Ok(0);
         }
@@ -2090,7 +2097,7 @@ impl KnowledgeGraphSidecar {
             .count())
     }
 
-    fn set_members_parent(&self, members: &[EntityId], parent: &EntityId) -> StoreResult<()> {
+    fn set_members_parent(&self, members: &[EntityId], parent: &EntityId) -> GraphStoreResult<()> {
         for member in members {
             let Some(mut entry) = self.get_entity_entry(member)? else {
                 continue;
@@ -2109,7 +2116,7 @@ impl KnowledgeGraphSidecar {
         agent_id: &str,
         layer: i64,
         limit: usize,
-    ) -> StoreResult<Vec<EntityWithEmbedding>> {
+    ) -> GraphStoreResult<Vec<EntityWithEmbedding>> {
         let mut rows = self
             .load_all_entities()?
             .into_iter()
@@ -2127,7 +2134,7 @@ impl KnowledgeGraphSidecar {
         Ok(rows)
     }
 
-    fn compute_lca_path(&self, agent_id: &str, seeds: &[EntityId]) -> StoreResult<LcaPath> {
+    fn compute_lca_path(&self, agent_id: &str, seeds: &[EntityId]) -> GraphStoreResult<LcaPath> {
         if seeds.is_empty() {
             return Ok(LcaPath::default());
         }
@@ -2151,7 +2158,7 @@ impl KnowledgeGraphSidecar {
         let chains = seeds
             .iter()
             .map(|seed| self.ancestor_chain(agent_id, seed))
-            .collect::<StoreResult<Vec<_>>>()?;
+            .collect::<GraphStoreResult<Vec<_>>>()?;
         if chains.iter().any(Vec::is_empty) {
             return Ok(LcaPath::default());
         }
@@ -2186,7 +2193,11 @@ impl KnowledgeGraphSidecar {
         })
     }
 
-    fn ancestor_chain(&self, agent_id: &str, seed: &EntityId) -> StoreResult<Vec<(String, i64)>> {
+    fn ancestor_chain(
+        &self,
+        agent_id: &str,
+        seed: &EntityId,
+    ) -> GraphStoreResult<Vec<(String, i64)>> {
         let mut chain = Vec::new();
         let mut current = seed.clone();
         let mut guard = 0;
@@ -2217,7 +2228,7 @@ impl KnowledgeGraphSidecar {
         &self,
         agent_id: &str,
         entity_ids: &[EntityId],
-    ) -> StoreResult<Vec<InterClusterRelationHit>> {
+    ) -> GraphStoreResult<Vec<InterClusterRelationHit>> {
         if entity_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -2249,7 +2260,11 @@ impl KnowledgeGraphSidecar {
             .collect())
     }
 
-    fn hierarchy_summary(&self, agent_id: &str, top_n: usize) -> StoreResult<HierarchySummary> {
+    fn hierarchy_summary(
+        &self,
+        agent_id: &str,
+        top_n: usize,
+    ) -> GraphStoreResult<HierarchySummary> {
         let connection = self.lock()?;
         let mut layer_statement = connection
             .prepare(
@@ -2268,7 +2283,7 @@ impl KnowledgeGraphSidecar {
                 row.map(|(layer, count)| (layer, count.max(0) as usize))
                     .map_err(to_backend)
             })
-            .collect::<StoreResult<Vec<_>>>()?;
+            .collect::<GraphStoreResult<Vec<_>>>()?;
 
         let mut aggregate_statement = connection
             .prepare(
@@ -2327,7 +2342,7 @@ impl KnowledgeGraphSidecar {
         })
     }
 
-    fn connected_entity_ids(&self) -> StoreResult<HashSet<String>> {
+    fn connected_entity_ids(&self) -> GraphStoreResult<HashSet<String>> {
         let mut ids = HashSet::new();
         for entry in self.load_all_relationships()? {
             ids.insert(entry.relationship.source_entity_id);
@@ -2336,7 +2351,7 @@ impl KnowledgeGraphSidecar {
         Ok(ids)
     }
 
-    fn degrees(&self) -> StoreResult<HashMap<String, usize>> {
+    fn degrees(&self) -> GraphStoreResult<HashMap<String, usize>> {
         let mut degrees = HashMap::new();
         for entry in self.load_all_relationships()? {
             *degrees
@@ -2349,10 +2364,10 @@ impl KnowledgeGraphSidecar {
         Ok(degrees)
     }
 
-    fn lock(&self) -> StoreResult<MutexGuard<'_, Connection>> {
-        self.connection
-            .lock()
-            .map_err(|_| StoreError::Backend("knowledge graph sidecar lock poisoned".to_string()))
+    fn lock(&self) -> GraphStoreResult<MutexGuard<'_, Connection>> {
+        self.connection.lock().map_err(|_| {
+            GraphStoreError::Backend("knowledge graph sidecar lock poisoned".to_string())
+        })
     }
 }
 
@@ -2492,8 +2507,8 @@ fn json_string_sql_error(column: usize) -> impl FnOnce(String) -> rusqlite::Erro
     }
 }
 
-fn to_backend(error: impl std::fmt::Display) -> StoreError {
-    StoreError::Backend(error.to_string())
+fn to_backend(error: impl std::fmt::Display) -> GraphStoreError {
+    GraphStoreError::Backend(error.to_string())
 }
 
 fn embedding_identity_from_config(config: &AdapterConfig) -> EmbeddingQueryIdentity {
@@ -2512,8 +2527,7 @@ fn encode_identity(identity: &EmbeddingQueryIdentity) -> String {
         "model": identity.model,
         "dimensions": identity.dimensions,
         "promptProfile": identity.prompt_profile,
-        "normalization": identity.normalization,
-    })
+        "normalization": identity.normalization })
     .to_string()
 }
 
@@ -2583,25 +2597,27 @@ fn ensure_optional_column(
     Ok(())
 }
 
-fn validate_agent_id(agent_id: &str) -> StoreResult<()> {
+fn validate_agent_id(agent_id: &str) -> GraphStoreResult<()> {
     if agent_id.trim().is_empty() {
-        return Err(StoreError::Invalid(
+        return Err(GraphStoreError::Invalid(
             "graph write requires a non-empty agent id for scope and provenance".to_string(),
         ));
     }
     Ok(())
 }
 
-fn validate_record_id(kind: &str, id: &str) -> StoreResult<()> {
+fn validate_record_id(kind: &str, id: &str) -> GraphStoreResult<()> {
     if id.trim().is_empty() {
-        return Err(StoreError::Invalid(format!("{kind} id must not be blank")));
+        return Err(GraphStoreError::Invalid(format!(
+            "{kind} id must not be blank"
+        )));
     }
     Ok(())
 }
 
-fn validate_name(name: &str) -> StoreResult<()> {
+fn validate_name(name: &str) -> GraphStoreResult<()> {
     if name.trim().is_empty() {
-        return Err(StoreError::Invalid(
+        return Err(GraphStoreError::Invalid(
             "entity name must not be blank".to_string(),
         ));
     }
@@ -2612,28 +2628,28 @@ fn validate_timestamps(
     kind: &str,
     first_seen_at: chrono::DateTime<Utc>,
     last_seen_at: chrono::DateTime<Utc>,
-) -> StoreResult<()> {
+) -> GraphStoreResult<()> {
     if last_seen_at < first_seen_at {
-        return Err(StoreError::Invalid(format!(
+        return Err(GraphStoreError::Invalid(format!(
             "{kind} last_seen_at must not precede first_seen_at"
         )));
     }
     Ok(())
 }
 
-fn validate_mention_count(kind: &str, mention_count: i64) -> StoreResult<()> {
+fn validate_mention_count(kind: &str, mention_count: i64) -> GraphStoreResult<()> {
     if mention_count < 1 {
-        return Err(StoreError::Invalid(format!(
+        return Err(GraphStoreError::Invalid(format!(
             "{kind} mention_count must be positive"
         )));
     }
     Ok(())
 }
 
-fn canonical_builtin_entity_type(entity_type: &EntityType) -> StoreResult<EntityType> {
+fn canonical_builtin_entity_type(entity_type: &EntityType) -> GraphStoreResult<EntityType> {
     let canonical = EntityType::from_str(entity_type.as_str());
     if matches!(canonical, EntityType::Custom(_)) {
-        return Err(StoreError::Invalid(format!(
+        return Err(GraphStoreError::Invalid(format!(
             "entity type must be a built-in ontology class: {}",
             entity_type.as_str()
         )));
@@ -2643,10 +2659,10 @@ fn canonical_builtin_entity_type(entity_type: &EntityType) -> StoreResult<Entity
 
 fn canonical_builtin_relationship_type(
     relationship_type: &RelationshipType,
-) -> StoreResult<RelationshipType> {
+) -> GraphStoreResult<RelationshipType> {
     let canonical = RelationshipType::from_str(relationship_type.as_str());
     if matches!(canonical, RelationshipType::Custom(_)) {
-        return Err(StoreError::Invalid(format!(
+        return Err(GraphStoreError::Invalid(format!(
             "relationship predicate must be a built-in ontology predicate: {}",
             relationship_type.as_str()
         )));
@@ -2654,11 +2670,14 @@ fn canonical_builtin_relationship_type(
     Ok(canonical)
 }
 
-fn ensure_scope(mapper: &ScopeMapper, properties: &mut HashMap<String, Value>) -> StoreResult<()> {
+fn ensure_scope(
+    mapper: &ScopeMapper,
+    properties: &mut HashMap<String, Value>,
+) -> GraphStoreResult<()> {
     let ward_id = match properties.get("ward_id") {
         Some(Value::String(value)) if !value.trim().is_empty() => value.trim().to_string(),
         Some(_) => {
-            return Err(StoreError::Invalid(
+            return Err(GraphStoreError::Invalid(
                 "ward_id must be a non-empty string when supplied".to_string(),
             ));
         }
@@ -2666,7 +2685,7 @@ fn ensure_scope(mapper: &ScopeMapper, properties: &mut HashMap<String, Value>) -
     };
     mapper
         .ward_scope(&ward_id)
-        .map_err(|error| StoreError::Invalid(format!("invalid graph scope: {error}")))?;
+        .map_err(|error| GraphStoreError::Invalid(format!("invalid graph scope: {error}")))?;
     properties.insert("ward_id".to_string(), json!(ward_id));
     Ok(())
 }

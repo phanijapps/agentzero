@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use zbot_stores_traits::{KgEpisodeStatusCounts, KgEpisodeStore};
+use zbot_stores_traits::{KgEpisodeStatusCounts, KgEpisodeStore, StoreError, StoreResult};
 
 use crate::kg_episode_repository::{KgEpisode, KgEpisodeRepository};
 
@@ -42,13 +42,12 @@ fn episode_to_value(ep: KgEpisode) -> Value {
         "error": ep.error,
         "created_at": ep.created_at,
         "started_at": ep.started_at,
-        "completed_at": ep.completed_at,
-    })
+        "completed_at": ep.completed_at })
 }
 
 #[async_trait]
 impl KgEpisodeStore for GatewayKgEpisodeStore {
-    async fn get_episode(&self, id: &str) -> Result<Option<Value>, String> {
+    async fn get_episode(&self, id: &str) -> StoreResult<Option<Value>> {
         Ok(self.repo.get(id)?.map(episode_to_value))
     }
 
@@ -56,14 +55,14 @@ impl KgEpisodeStore for GatewayKgEpisodeStore {
         &self,
         source_type: &str,
         content_hash: &str,
-    ) -> Result<Option<Value>, String> {
+    ) -> StoreResult<Option<Value>> {
         Ok(self
             .repo
             .get_by_content_hash(source_type, content_hash)?
             .map(episode_to_value))
     }
 
-    async fn list_by_session(&self, session_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_by_session(&self, session_id: &str) -> StoreResult<Vec<Value>> {
         Ok(self
             .repo
             .list_by_session(session_id)?
@@ -75,7 +74,7 @@ impl KgEpisodeStore for GatewayKgEpisodeStore {
     async fn status_counts_for_source(
         &self,
         source_ref_prefix: &str,
-    ) -> Result<KgEpisodeStatusCounts, String> {
+    ) -> StoreResult<KgEpisodeStatusCounts> {
         let c = self.repo.status_counts_for_source(source_ref_prefix)?;
         Ok(KgEpisodeStatusCounts {
             pending: c.pending,
@@ -85,12 +84,14 @@ impl KgEpisodeStore for GatewayKgEpisodeStore {
         })
     }
 
-    async fn count_pending_global(&self) -> Result<u64, String> {
-        self.repo.count_pending_global()
+    async fn count_pending_global(&self) -> StoreResult<u64> {
+        self.repo.count_pending_global().map_err(StoreError::from)
     }
 
-    async fn count_pending_for_source(&self, source_ref_prefix: &str) -> Result<u64, String> {
-        self.repo.count_pending_for_source(source_ref_prefix)
+    async fn count_pending_for_source(&self, source_ref_prefix: &str) -> StoreResult<u64> {
+        self.repo
+            .count_pending_for_source(source_ref_prefix)
+            .map_err(StoreError::from)
     }
 
     async fn upsert_pending(
@@ -100,32 +101,35 @@ impl KgEpisodeStore for GatewayKgEpisodeStore {
         content_hash: &str,
         session_id: Option<&str>,
         agent_id: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.repo
             .upsert_pending(source_type, source_ref, content_hash, session_id, agent_id)
+            .map_err(StoreError::from)
     }
 
-    async fn claim_next_pending(&self) -> Result<Option<Value>, String> {
+    async fn claim_next_pending(&self) -> StoreResult<Option<Value>> {
         Ok(self.repo.claim_next_pending()?.map(episode_to_value))
     }
 
-    async fn mark_done(&self, id: &str) -> Result<(), String> {
-        self.repo.mark_done(id)
+    async fn mark_done(&self, id: &str) -> StoreResult<()> {
+        self.repo.mark_done(id).map_err(StoreError::from)
     }
 
-    async fn mark_failed(&self, id: &str, error: &str) -> Result<(), String> {
-        self.repo.mark_failed(id, error)
+    async fn mark_failed(&self, id: &str, error: &str) -> StoreResult<()> {
+        self.repo.mark_failed(id, error).map_err(StoreError::from)
     }
 
-    async fn retry_if_eligible(&self, id: &str, max_retries: u32) -> Result<bool, String> {
-        self.repo.retry_if_eligible(id, max_retries)
+    async fn retry_if_eligible(&self, id: &str, max_retries: u32) -> StoreResult<bool> {
+        self.repo
+            .retry_if_eligible(id, max_retries)
+            .map_err(StoreError::from)
     }
 
-    async fn set_payload(&self, id: &str, text: &str) -> Result<(), String> {
-        self.repo.set_payload(id, text)
+    async fn set_payload(&self, id: &str, text: &str) -> StoreResult<()> {
+        self.repo.set_payload(id, text).map_err(StoreError::from)
     }
 
-    async fn get_payload(&self, id: &str) -> Result<Option<String>, String> {
-        self.repo.get_payload(id)
+    async fn get_payload(&self, id: &str) -> StoreResult<Option<String>> {
+        self.repo.get_payload(id).map_err(StoreError::from)
     }
 }

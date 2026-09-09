@@ -2,7 +2,7 @@
 //!
 //! Service for managing MCP server configurations.
 
-use crate::paths::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_runtime::McpServerConfig;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -826,7 +826,7 @@ fn mcp_ref_matches(config: &McpServerConfig, requested: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::{McpAuthConfig, McpAuthType};
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -1015,7 +1015,7 @@ mod tests {
         assert_eq!(
             result,
             Err(McpUpdateError::DuplicateId {
-                id: "second".to_string(),
+                id: "second".to_string()
             })
         );
         assert_eq!(service.get("first").unwrap().name(), "First");

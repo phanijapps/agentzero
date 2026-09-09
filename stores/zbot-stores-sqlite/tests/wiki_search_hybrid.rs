@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tempfile::tempdir;
 
-use gateway_services::VaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
 use zbot_stores_sqlite::{KnowledgeDatabase, WardWikiRepository};
 

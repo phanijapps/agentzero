@@ -251,7 +251,7 @@ impl AbstractionLlm for LlmCorrectionsAbstractor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Mutex;
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::{

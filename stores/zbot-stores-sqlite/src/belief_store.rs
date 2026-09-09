@@ -10,6 +10,7 @@
 
 use agent_primitives::vec_math::cosine_f64;
 use std::sync::Arc;
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -40,7 +41,7 @@ impl BeliefStore for SqliteBeliefStore {
         partition_id: &str,
         subject: &str,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Option<Belief>, String> {
+    ) -> StoreResult<Option<Belief>> {
         let cutoff = as_of.unwrap_or_else(Utc::now).to_rfc3339();
         let partition_id = partition_id.to_string();
         let subject = subject.to_string();
@@ -61,18 +62,21 @@ impl BeliefStore for SqliteBeliefStore {
                 )?;
                 stmt.query_row(params![partition_id, subject, cutoff], row_to_belief)
                     .optional()
-            })?
+            })
+            .map_err(StoreError::from)?
             .transpose()
     }
 
-    async fn list_beliefs(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String> {
+    async fn list_beliefs(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
         let partition_id = partition_id.to_string();
         // i64 cast is safe — `limit` originates from a usize controlled
         // by the caller and is bounded by realistic UI / API caps.
         let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = self.db.with_connection(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, partition_id, subject, content, confidence,
+        let rows = self
+            .db
+            .with_connection(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, partition_id, subject, content, confidence,
                         valid_from, valid_until, source_fact_ids,
                         synthesizer_version, reasoning, created_at,
                         updated_at, superseded_by, stale, embedding
@@ -80,18 +84,18 @@ impl BeliefStore for SqliteBeliefStore {
                  WHERE partition_id = ?1
                  ORDER BY updated_at DESC
                  LIMIT ?2",
-            )?;
-            let rows = stmt
-                .query_map(params![partition_id, limit_i64], row_to_belief)?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })?;
-        // Each row yields a Result<Belief, String> due to JSON decode in
-        // row_to_belief; flatten now.
-        rows.into_iter().collect()
+                )?;
+                let rows = stmt
+                    .query_map(params![partition_id, limit_i64], row_to_belief)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .map_err(StoreError::from)?;
+        // Each row yields a decode Result; flatten, mapping failures through.
+        rows.into_iter().collect::<Result<Vec<_>, StoreError>>()
     }
 
-    async fn upsert_belief(&self, belief: &Belief) -> Result<(), String> {
+    async fn upsert_belief(&self, belief: &Belief) -> StoreResult<()> {
         let source_fact_ids_json = serde_json::to_string(&belief.source_fact_ids)
             .map_err(|e| format!("encode source_fact_ids: {e}"))?;
         let valid_from = belief.valid_from.map(|t| t.to_rfc3339());
@@ -110,9 +114,10 @@ impl BeliefStore for SqliteBeliefStore {
         let stale = i32::from(belief.stale);
         let embedding = belief.embedding.clone();
 
-        self.db.with_connection(move |conn| {
-            conn.execute(
-                "INSERT INTO kg_beliefs (
+        self.db
+            .with_connection(move |conn| {
+                conn.execute(
+                    "INSERT INTO kg_beliefs (
                     id, partition_id, subject, content, confidence,
                     valid_from, valid_until, source_fact_ids,
                     synthesizer_version, reasoning, created_at, updated_at,
@@ -131,26 +136,27 @@ impl BeliefStore for SqliteBeliefStore {
                     superseded_by = excluded.superseded_by,
                     stale = excluded.stale,
                     embedding = excluded.embedding",
-                params![
-                    id,
-                    partition_id,
-                    subject,
-                    content,
-                    confidence,
-                    valid_from,
-                    valid_until,
-                    source_fact_ids_json,
-                    synthesizer_version,
-                    reasoning,
-                    created_at,
-                    updated_at,
-                    superseded_by,
-                    stale,
-                    embedding,
-                ],
-            )?;
-            Ok(())
-        })
+                    params![
+                        id,
+                        partition_id,
+                        subject,
+                        content,
+                        confidence,
+                        valid_from,
+                        valid_until,
+                        source_fact_ids_json,
+                        synthesizer_version,
+                        reasoning,
+                        created_at,
+                        updated_at,
+                        superseded_by,
+                        stale,
+                        embedding,
+                    ],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 
     async fn supersede_belief(
@@ -158,52 +164,58 @@ impl BeliefStore for SqliteBeliefStore {
         old_id: &str,
         new_id: &str,
         transition_time: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let old_id = old_id.to_string();
         let new_id = new_id.to_string();
         let ts = transition_time.to_rfc3339();
-        self.db.with_connection(move |conn| {
-            conn.execute(
-                "UPDATE kg_beliefs
+        self.db
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE kg_beliefs
                  SET valid_until = ?1,
                      superseded_by = ?2,
                      updated_at = ?1
                  WHERE id = ?3",
-                params![ts, new_id, old_id],
-            )?;
-            Ok(())
-        })
+                    params![ts, new_id, old_id],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 
-    async fn mark_stale(&self, belief_id: &str) -> Result<(), String> {
+    async fn mark_stale(&self, belief_id: &str) -> StoreResult<()> {
         let id = belief_id.to_string();
         let now = Utc::now().to_rfc3339();
-        self.db.with_connection(move |conn| {
-            conn.execute(
-                "UPDATE kg_beliefs SET stale = 1, updated_at = ?1 WHERE id = ?2",
-                params![now, id],
-            )?;
-            Ok(())
-        })
+        self.db
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE kg_beliefs SET stale = 1, updated_at = ?1 WHERE id = ?2",
+                    params![now, id],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 
     async fn retract_belief(
         &self,
         belief_id: &str,
         transition_time: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let id = belief_id.to_string();
         let ts = transition_time.to_rfc3339();
-        self.db.with_connection(move |conn| {
-            conn.execute(
-                "UPDATE kg_beliefs SET valid_until = ?1, updated_at = ?1 WHERE id = ?2",
-                params![ts, id],
-            )?;
-            Ok(())
-        })
+        self.db
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE kg_beliefs SET valid_until = ?1, updated_at = ?1 WHERE id = ?2",
+                    params![ts, id],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 
-    async fn get_belief_by_id(&self, belief_id: &str) -> Result<Option<Belief>, String> {
+    async fn get_belief_by_id(&self, belief_id: &str) -> StoreResult<Option<Belief>> {
         let belief_id = belief_id.to_string();
         let row = self.db.with_connection(move |conn| {
             let mut stmt = conn.prepare(
@@ -224,30 +236,34 @@ impl BeliefStore for SqliteBeliefStore {
         }
     }
 
-    async fn beliefs_referencing_fact(&self, fact_id: &str) -> Result<Vec<String>, String> {
+    async fn beliefs_referencing_fact(&self, fact_id: &str) -> StoreResult<Vec<String>> {
         let fact_id = fact_id.to_string();
-        self.db.with_connection(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT b.id FROM kg_beliefs b
+        self.db
+            .with_connection(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT b.id FROM kg_beliefs b
                  WHERE b.valid_until IS NULL
                    AND EXISTS (
                        SELECT 1 FROM json_each(b.source_fact_ids)
                        WHERE json_each.value = ?1
                    )",
-            )?;
-            let ids: Vec<String> = stmt
-                .query_map(params![fact_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(ids)
-        })
+                )?;
+                let ids: Vec<String> = stmt
+                    .query_map(params![fact_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(ids)
+            })
+            .map_err(StoreError::from)
     }
 
-    async fn list_stale(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String> {
+    async fn list_stale(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
         let partition_id = partition_id.to_string();
         let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = self.db.with_connection(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, partition_id, subject, content, confidence,
+        let rows = self
+            .db
+            .with_connection(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, partition_id, subject, content, confidence,
                         valid_from, valid_until, source_fact_ids,
                         synthesizer_version, reasoning, created_at,
                         updated_at, superseded_by, stale, embedding
@@ -255,25 +271,28 @@ impl BeliefStore for SqliteBeliefStore {
                  WHERE partition_id = ?1 AND stale = 1
                  ORDER BY updated_at ASC
                  LIMIT ?2",
-            )?;
-            let rows = stmt
-                .query_map(params![partition_id, limit_i64], row_to_belief)?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })?;
-        rows.into_iter().collect()
+                )?;
+                let rows = stmt
+                    .query_map(params![partition_id, limit_i64], row_to_belief)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .map_err(StoreError::from)?;
+        rows.into_iter().collect::<Result<Vec<_>, StoreError>>()
     }
 
-    async fn clear_stale(&self, belief_id: &str) -> Result<(), String> {
+    async fn clear_stale(&self, belief_id: &str) -> StoreResult<()> {
         let id = belief_id.to_string();
         let now = Utc::now().to_rfc3339();
-        self.db.with_connection(move |conn| {
-            conn.execute(
-                "UPDATE kg_beliefs SET stale = 0, updated_at = ?1 WHERE id = ?2",
-                params![now, id],
-            )?;
-            Ok(())
-        })
+        self.db
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE kg_beliefs SET stale = 0, updated_at = ?1 WHERE id = ?2",
+                    params![now, id],
+                )?;
+                Ok(())
+            })
+            .map_err(StoreError::from)
     }
 
     async fn search_beliefs(
@@ -281,7 +300,7 @@ impl BeliefStore for SqliteBeliefStore {
         partition_id: &str,
         query_embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<ScoredBelief>, String> {
+    ) -> StoreResult<Vec<ScoredBelief>> {
         // B-4 in-memory cosine: belief count is bounded (real-data has
         // ~15 multi-fact subjects, even at 100x growth ~1k beliefs).
         // A separate vec0 table would add maintenance cost for no
@@ -310,7 +329,7 @@ impl BeliefStore for SqliteBeliefStore {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })?;
-        // Flatten Result<Belief, String> per row before scoring.
+        // Flatten StoreResult<Belief> per row before scoring.
         let beliefs: Vec<Belief> = rows.into_iter().collect::<Result<Vec<_>, _>>()?;
 
         let mut scored: Vec<ScoredBelief> = beliefs
@@ -334,9 +353,9 @@ impl BeliefStore for SqliteBeliefStore {
 }
 
 /// Map one row of `kg_beliefs` to a `Belief`. The `source_fact_ids` JSON
-/// decode is fallible — return a `Result<Belief, String>` per row so the
+/// decode is fallible — return a `StoreResult<Belief>` per row so the
 /// caller can fail loud rather than silently dropping rows.
-fn row_to_belief(row: &rusqlite::Row) -> rusqlite::Result<Result<Belief, String>> {
+fn row_to_belief(row: &rusqlite::Row) -> rusqlite::Result<StoreResult<Belief>> {
     let id: String = row.get(0)?;
     let partition_id: String = row.get(1)?;
     let subject: String = row.get(2)?;
@@ -356,13 +375,17 @@ fn row_to_belief(row: &rusqlite::Row) -> rusqlite::Result<Result<Belief, String>
 
     let source_fact_ids: Vec<String> = match serde_json::from_str(&source_fact_ids_json) {
         Ok(v) => v,
-        Err(e) => return Ok(Err(format!("decode source_fact_ids for {id}: {e}"))),
+        Err(e) => {
+            return Ok(Err(StoreError::Invalid(format!(
+                "decode source_fact_ids for {id}: {e}"
+            ))))
+        }
     };
 
     let parse_dt = |s: &str| {
         DateTime::parse_from_rfc3339(s)
             .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| format!("parse timestamp {s}: {e}"))
+            .map_err(|e| StoreError::Invalid(format!("parse timestamp {s}: {e}")))
     };
 
     let valid_from = match valid_from.as_deref().map(parse_dt).transpose() {
@@ -422,7 +445,7 @@ fn embedding_from_bytes(bytes: &[u8]) -> Option<Vec<f32>> {
 mod tests {
     use super::*;
     use crate::KnowledgeDatabase;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use tempfile::TempDir;
 
     fn make_store() -> (SqliteBeliefStore, TempDir) {

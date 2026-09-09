@@ -6,6 +6,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use agent_runtime::llm::embedding::EmbeddingClient;
 use async_trait::async_trait;
@@ -205,7 +206,7 @@ impl EngramMemoryFactStore {
         &self,
         mut fact: MemoryFact,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         if let Some(embedding) = embedding {
             self.ensure_embedding_write_identity(&embedding)?;
             fact.embedding = Some(embedding);
@@ -222,7 +223,7 @@ impl EngramMemoryFactStore {
         self.memory
             .put_memory(record)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
 
         let embedding = fact.embedding.clone();
         let mut sidecar_fact = fact;
@@ -231,15 +232,14 @@ impl EngramMemoryFactStore {
             .store_fact(&sidecar_fact, embedding.as_deref(), false)
     }
 
-    fn ensure_embedding_write_identity(&self, embedding: &[f32]) -> Result<(), String> {
+    fn ensure_embedding_write_identity(&self, embedding: &[f32]) -> StoreResult<()> {
         let Some(client) = self.embedding_client.as_ref() else {
             return Ok(());
         };
         if embedding.len() as u32 != self.sidecar.embedding_identity.dimensions {
-            return Err(
-                "embedding dimension mismatch - reindex required before storing vectors"
-                    .to_string(),
-            );
+            return Err(StoreError::Invalid(
+                "embedding dimension mismatch - reindex required before storing vectors".into(),
+            ));
         }
         if self
             .sidecar
@@ -248,11 +248,13 @@ impl EngramMemoryFactStore {
         {
             Ok(())
         } else {
-            Err("embedding_identity_mismatch - reindex required before storing vectors".to_string())
+            Err(StoreError::Invalid(
+                "embedding_identity_mismatch - reindex required before storing vectors".into(),
+            ))
         }
     }
 
-    async fn update_status(&self, fact: &MemoryFact, status: MemoryStatus) -> Result<(), String> {
+    async fn update_status(&self, fact: &MemoryFact, status: MemoryStatus) -> StoreResult<()> {
         let scope = self
             .mapper
             .memory_fact_scope(&fact.ward_id, fact.session_id.as_deref())
@@ -261,10 +263,10 @@ impl EngramMemoryFactStore {
             .update_memory_status(&MemoryId::from(fact.id.as_str()), &scope, status)
             .await
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    async fn read_canonical_or_sidecar(&self, entry: SidecarEntry) -> Result<MemoryFact, String> {
+    async fn read_canonical_or_sidecar(&self, entry: SidecarEntry) -> StoreResult<MemoryFact> {
         let scope = self
             .mapper
             .memory_fact_scope(&entry.fact.ward_id, entry.fact.session_id.as_deref())
@@ -273,7 +275,7 @@ impl EngramMemoryFactStore {
             .memory
             .get_memory(&MemoryId::from(entry.fact.id.as_str()), &scope)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
 
         match maybe_record {
             Some(record) => memory_record_to_fact(&record)
@@ -295,7 +297,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         confidence: f64,
         session_id: Option<&str>,
         valid_from: Option<DateTime<Utc>>,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         self.save_fact_with_context(MemoryFactWriteRequest {
             agent_id: agent_id.to_string(),
             category: category.to_string(),
@@ -310,10 +312,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         .await
     }
 
-    async fn save_fact_with_context(
-        &self,
-        request: MemoryFactWriteRequest,
-    ) -> Result<Value, String> {
+    async fn save_fact_with_context(&self, request: MemoryFactWriteRequest) -> StoreResult<Value> {
         validate_fact_content(&request.category, &request.content)?;
 
         let scope = default_scope_for_category(&request.category).to_string();
@@ -380,16 +379,10 @@ impl MemoryFactStore for EngramMemoryFactStore {
             "key": request.key,
             "category": request.category,
             "confidence": request.confidence,
-            "message": format!("Fact saved: [{}] {}", request.category, request.content),
-        }))
+            "message": format!("Fact saved: [{}] {}", request.category, request.content) }))
     }
 
-    async fn recall_facts(
-        &self,
-        agent_id: &str,
-        query: &str,
-        limit: usize,
-    ) -> Result<Value, String> {
+    async fn recall_facts(&self, agent_id: &str, query: &str, limit: usize) -> StoreResult<Value> {
         let query = bounded_recall_query(query);
         let (query_embedding, degraded_reason) = self.embed_query(&query).await;
         let query_identity = query_embedding.as_ref().map(|_| self.query_identity());
@@ -415,24 +408,9 @@ impl MemoryFactStore for EngramMemoryFactStore {
         query: &str,
         limit: usize,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Value, String> {
-        let query = bounded_recall_query(query);
-        let (query_embedding, degraded_reason) = self.embed_query(&query).await;
-        let query_identity = query_embedding.as_ref().map(|_| self.query_identity());
-        let rows = self
-            .search_memory_facts_hybrid_with_identity(
-                Some(agent_id),
-                &query,
-                "hybrid",
-                limit,
-                None,
-                query_embedding.as_deref(),
-                query_identity.as_ref(),
-                as_of,
-            )
-            .await?;
-        let rows = tag_degraded_rows(rows, degraded_reason);
-        Ok(recall_value(&query, rows, degraded_reason))
+    ) -> StoreResult<Value> {
+        self.recall_facts_prioritized_scoped(agent_id, query, None, limit, as_of)
+            .await
     }
 
     async fn recall_facts_prioritized_scoped(
@@ -442,7 +420,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         ward_id: Option<&str>,
         limit: usize,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         let query = bounded_recall_query(query);
         let (query_embedding, degraded_reason) = self.embed_query(&query).await;
         let query_identity = query_embedding.as_ref().map(|_| self.query_identity());
@@ -470,7 +448,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         content: &str,
         owner: &str,
         pinned: bool,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         validate_fact_content(CTX_CATEGORY, content)?;
 
         let now = Utc::now().to_rfc3339();
@@ -524,11 +502,10 @@ impl MemoryFactStore for EngramMemoryFactStore {
             "action": "save_ctx_fact",
             "key": key,
             "owner": owner,
-            "session_id": session_id,
-        }))
+            "session_id": session_id }))
     }
 
-    async fn get_ctx_fact(&self, ward_id: &str, key: &str) -> Result<Option<Value>, String> {
+    async fn get_ctx_fact(&self, ward_id: &str, key: &str) -> StoreResult<Option<Value>> {
         Ok(self
             .sidecar
             .find_active_by_key(
@@ -554,8 +531,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                     "session_id": fact.session_id,
                     "created_at": fact.created_at,
                     "updated_at": fact.updated_at,
-                    "pinned": fact.pinned,
-                })
+                    "pinned": fact.pinned })
             }))
     }
 
@@ -565,7 +541,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         key: &str,
         signature: &str,
         summary: &str,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         let now = Utc::now().to_rfc3339();
         let content = primitive_content(signature, summary);
         let mut fact = self
@@ -612,7 +588,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         Ok(json!({ "success": true, "key": key, "ward_id": ward_id }))
     }
 
-    async fn list_primitives(&self, ward_id: &str) -> Result<Value, String> {
+    async fn list_primitives(&self, ward_id: &str) -> StoreResult<Value> {
         let primitives = self
             .sidecar
             .list_primitives_for_ward(ward_id)?
@@ -622,14 +598,13 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 json!({
                     "key": entry.fact.key,
                     "signature": signature,
-                    "summary": summary,
-                })
+                    "summary": summary })
             })
             .collect::<Vec<_>>();
         Ok(json!({ "primitives": primitives }))
     }
 
-    async fn list_primitives_for_ward(&self, ward_id: &str) -> Result<Vec<MemoryFact>, String> {
+    async fn list_primitives_for_ward(&self, ward_id: &str) -> StoreResult<Vec<MemoryFact>> {
         Ok(self
             .sidecar
             .list_primitives_for_ward(ward_id)?
@@ -642,7 +617,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         &self,
         session_id: &str,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(self
             .sidecar
             .list_recent_state_handoffs(session_id, limit)?
@@ -651,7 +626,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             .collect())
     }
 
-    async fn delete_facts_by_key(&self, category: &str, key: &str) -> Result<usize, String> {
+    async fn delete_facts_by_key(&self, category: &str, key: &str) -> StoreResult<usize> {
         let entries = self.sidecar.list_by_category_key(category, key)?;
         let mut deleted = 0;
         for entry in entries {
@@ -664,23 +639,23 @@ impl MemoryFactStore for EngramMemoryFactStore {
         Ok(deleted)
     }
 
-    async fn list_skill_index(&self) -> Result<Vec<SkillIndexRow>, String> {
+    async fn list_skill_index(&self) -> StoreResult<Vec<SkillIndexRow>> {
         self.sidecar.list_skill_index()
     }
 
-    async fn upsert_skill_index(&self, row: SkillIndexRow) -> Result<(), String> {
+    async fn upsert_skill_index(&self, row: SkillIndexRow) -> StoreResult<()> {
         self.sidecar.upsert_skill_index(&row)
     }
 
-    async fn delete_skill_index(&self, name: &str) -> Result<bool, String> {
+    async fn delete_skill_index(&self, name: &str) -> StoreResult<bool> {
         self.sidecar.delete_skill_index(name)
     }
 
-    async fn count_all_facts(&self, agent_id: Option<&str>) -> Result<i64, String> {
+    async fn count_all_facts(&self, agent_id: Option<&str>) -> StoreResult<i64> {
         self.sidecar.count_active(agent_id)
     }
 
-    async fn aggregate_stats(&self) -> Result<zbot_stores_traits::MemoryAggregateStats, String> {
+    async fn aggregate_stats(&self) -> StoreResult<zbot_stores_traits::MemoryAggregateStats> {
         Ok(zbot_stores_traits::MemoryAggregateStats {
             facts: self.count_all_facts(None).await?,
             ..Default::default()
@@ -694,11 +669,14 @@ impl MemoryFactStore for EngramMemoryFactStore {
         scope: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         self.sidecar
             .list_active(agent_id, category, scope, limit, offset)?
             .into_iter()
-            .map(|entry| serde_json::to_value(entry.fact).map_err(|error| error.to_string()))
+            .map(|entry| {
+                serde_json::to_value(entry.fact)
+                    .map_err(|error| StoreError::Backend(error.to_string()))
+            })
             .collect()
     }
 
@@ -709,7 +687,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         scope: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(self
             .sidecar
             .list_active(agent_id, category, scope, limit, offset)?
@@ -718,17 +696,17 @@ impl MemoryFactStore for EngramMemoryFactStore {
             .collect())
     }
 
-    async fn get_memory_fact_by_id(&self, fact_id: &str) -> Result<Option<Value>, String> {
+    async fn get_memory_fact_by_id(&self, fact_id: &str) -> StoreResult<Option<Value>> {
         let Some(entry) = self.sidecar.get(fact_id)? else {
             return Ok(None);
         };
         let fact = self.read_canonical_or_sidecar(entry).await?;
         serde_json::to_value(fact)
             .map(Some)
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    async fn delete_memory_fact(&self, fact_id: &str) -> Result<bool, String> {
+    async fn delete_memory_fact(&self, fact_id: &str) -> StoreResult<bool> {
         let Some(entry) = self.sidecar.get(fact_id)? else {
             return Ok(false);
         };
@@ -741,7 +719,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         &self,
         mut fact: MemoryFact,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         // The `embedding` parameter is the sole vector channel — the struct
         // field is `#[serde(skip)]` and was always dropped by the old Value
         // round-trip, so keep honoring only the explicit argument here.
@@ -754,9 +732,11 @@ impl MemoryFactStore for EngramMemoryFactStore {
         old_id: &str,
         new_id: &str,
         transition_time: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let Some(mut entry) = self.sidecar.get(old_id)? else {
-            return Err(format!("memory fact not found: {old_id}"));
+            return Err(StoreError::Invalid(format!(
+                "memory fact not found: {old_id}"
+            )));
         };
         entry.fact.valid_until = Some(transition_time.to_rfc3339());
         entry.fact.superseded_by = Some(new_id.to_string());
@@ -769,7 +749,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             .await
     }
 
-    async fn archive_fact(&self, fact_id: &str) -> Result<bool, String> {
+    async fn archive_fact(&self, fact_id: &str) -> StoreResult<bool> {
         let Some(entry) = self.sidecar.get(fact_id)? else {
             return Ok(false);
         };
@@ -787,7 +767,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         ward_id: Option<&str>,
         query_embedding: Option<&[f32]>,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         self.search_memory_facts_hybrid_with_identity(
             agent_id,
             query,
@@ -811,7 +791,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         query_embedding: Option<&[f32]>,
         query_identity: Option<&EmbeddingQueryIdentity>,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         self.sidecar
             .search(SearchRequest {
                 agent_id,
@@ -825,8 +805,8 @@ impl MemoryFactStore for EngramMemoryFactStore {
             })?
             .into_iter()
             .map(|hit| {
-                let mut value =
-                    serde_json::to_value(hit.fact).map_err(|error| error.to_string())?;
+                let mut value = serde_json::to_value(hit.fact)
+                    .map_err(|error| StoreError::Backend(error.to_string()))?;
                 if let Some(object) = value.as_object_mut() {
                     object.insert("score".to_string(), json!(hit.score));
                     object.insert("match_source".to_string(), Value::String(hit.match_source));
@@ -849,7 +829,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         ward_id: Option<&str>,
         query_embedding: Option<&[f32]>,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Vec<(MemoryFact, f64, String)>, String> {
+    ) -> StoreResult<Vec<(MemoryFact, f64, String)>> {
         self.search_memory_facts_hybrid_typed_with_identity(
             agent_id,
             query,
@@ -873,7 +853,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         query_embedding: Option<&[f32]>,
         query_identity: Option<&EmbeddingQueryIdentity>,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Vec<(MemoryFact, f64, String)>, String> {
+    ) -> StoreResult<Vec<(MemoryFact, f64, String)>> {
         Ok(self
             .sidecar
             .search(SearchRequest {
@@ -897,7 +877,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         embedding: &[f32],
         threshold: f32,
         scan_limit: usize,
-    ) -> Result<Option<StrategyFactMatch>, String> {
+    ) -> StoreResult<Option<StrategyFactMatch>> {
         let _ = (agent_id, embedding, threshold, scan_limit);
         Ok(None)
     }
@@ -909,7 +889,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         query_identity: Option<&EmbeddingQueryIdentity>,
         threshold: f32,
         scan_limit: usize,
-    ) -> Result<Option<StrategyFactMatch>, String> {
+    ) -> StoreResult<Option<StrategyFactMatch>> {
         if !self
             .sidecar
             .embedding_identity
@@ -942,9 +922,11 @@ impl MemoryFactStore for EngramMemoryFactStore {
         fact_id: &str,
         merged_source_episode_id: &str,
         now_rfc3339: &str,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let Some(mut entry) = self.sidecar.get(fact_id)? else {
-            return Err(format!("memory fact not found: {fact_id}"));
+            return Err(StoreError::Invalid(format!(
+                "memory fact not found: {fact_id}"
+            )));
         };
         entry.fact.mention_count = entry.fact.mention_count.saturating_add(1);
         entry.fact.source_episode_id = Some(merged_source_episode_id.to_string());
@@ -952,7 +934,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         self.upsert_fact_record(entry.fact, entry.embedding).await
     }
 
-    async fn insert_strategy_fact(&self, req: StrategyFactInsert) -> Result<String, String> {
+    async fn insert_strategy_fact(&self, req: StrategyFactInsert) -> StoreResult<String> {
         let id = format!("fact-{}", Uuid::new_v4());
         let now = Utc::now().to_rfc3339();
         let fact = MemoryFact {
@@ -990,7 +972,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         agent_id: &str,
         category: &str,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(self
             .sidecar
             .list_active(Some(agent_id), Some(category), None, limit, 0)?
@@ -1004,7 +986,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         agent_id: Option<&str>,
         threshold: f64,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(self
             .sidecar
             .load_all()?
@@ -1026,14 +1008,14 @@ impl MemoryFactStore for EngramMemoryFactStore {
         scope: &str,
         ward_id: &str,
         key: &str,
-    ) -> Result<Option<MemoryFact>, String> {
+    ) -> StoreResult<Option<MemoryFact>> {
         Ok(self
             .sidecar
             .find_active_by_key(agent_id, scope, ward_id, key, None)?
             .map(|entry| entry.fact))
     }
 
-    async fn get_fact_embedding(&self, fact_id: &str) -> Result<Option<Vec<f32>>, String> {
+    async fn get_fact_embedding(&self, fact_id: &str) -> StoreResult<Option<Vec<f32>>> {
         Ok(self.sidecar.get(fact_id)?.and_then(|entry| entry.embedding))
     }
 
@@ -1041,7 +1023,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         &self,
         content_hash: &str,
         model_name: &str,
-    ) -> Result<Option<Vec<f32>>, String> {
+    ) -> StoreResult<Option<Vec<f32>>> {
         self.sidecar.get_cached_embedding(content_hash, model_name)
     }
 
@@ -1050,7 +1032,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         content_hash: &str,
         model_name: &str,
         embedding: &[f32],
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         self.sidecar
             .cache_embedding(content_hash, model_name, embedding)
     }
@@ -1060,7 +1042,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         agent_id: &str,
         scope: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(self
             .sidecar
             .list_active(Some(agent_id), None, scope, limit, 0)?
@@ -1073,7 +1055,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
         &self,
         agent_id: &str,
         since: DateTime<Utc>,
-    ) -> Result<Vec<String>, String> {
+    ) -> StoreResult<Vec<String>> {
         self.sidecar
             .list_contradicted_fact_episode_ids(agent_id, since)
     }
@@ -1180,16 +1162,17 @@ impl MemoryFactSidecar {
         fact: &MemoryFact,
         embedding: Option<&[f32]>,
         archived: bool,
-    ) -> Result<(), String> {
-        let fact_json = serde_json::to_string(fact).map_err(|error| error.to_string())?;
+    ) -> StoreResult<()> {
+        let fact_json =
+            serde_json::to_string(fact).map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_json = embedding
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_identity_json = embedding
             .map(|_| serde_json::to_string(&self.embedding_identity))
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let archived = i64::from(archived);
 
         self.connection()?
@@ -1240,11 +1223,11 @@ impl MemoryFactSidecar {
                     embedding_identity_json,
                 ],
             )
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         Ok(())
     }
 
-    fn get(&self, id: &str) -> Result<Option<SidecarEntry>, String> {
+    fn get(&self, id: &str) -> StoreResult<Option<SidecarEntry>> {
         let row = self
             .connection()?
             .query_row(
@@ -1253,30 +1236,30 @@ impl MemoryFactSidecar {
                 sidecar_entry_from_row,
             )
             .optional()
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         row.transpose()
     }
 
-    fn delete(&self, id: &str) -> Result<bool, String> {
+    fn delete(&self, id: &str) -> StoreResult<bool> {
         let affected = self
             .connection()?
             .execute("DELETE FROM memory_facts WHERE id = ?1", params![id])
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         Ok(affected > 0)
     }
 
-    fn archive(&self, id: &str) -> Result<bool, String> {
+    fn archive(&self, id: &str) -> StoreResult<bool> {
         let affected = self
             .connection()?
             .execute(
                 "UPDATE memory_facts SET archived = 1 WHERE id = ?1",
                 params![id],
             )
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         Ok(affected > 0)
     }
 
-    fn count_active(&self, agent_id: Option<&str>) -> Result<i64, String> {
+    fn count_active(&self, agent_id: Option<&str>) -> StoreResult<i64> {
         match agent_id {
             Some(agent_id) => self
                 .connection()?
@@ -1285,7 +1268,7 @@ impl MemoryFactSidecar {
                     params![agent_id],
                     |row| row.get(0),
                 )
-                .map_err(|error| storage_error(error).to_string()),
+                .map_err(|error| storage_error(error).into_trait_error()),
             None => self
                 .connection()?
                 .query_row(
@@ -1293,7 +1276,7 @@ impl MemoryFactSidecar {
                     [],
                     |row| row.get(0),
                 )
-                .map_err(|error| storage_error(error).to_string()),
+                .map_err(|error| storage_error(error).into_trait_error()),
         }
     }
 
@@ -1304,7 +1287,7 @@ impl MemoryFactSidecar {
         scope: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<SidecarEntry>, String> {
+    ) -> StoreResult<Vec<SidecarEntry>> {
         let mut where_clauses = vec!["archived = 0".to_string()];
         let mut values = Vec::new();
         push_optional_clause(&mut where_clauses, &mut values, "agent_id", agent_id);
@@ -1330,7 +1313,7 @@ impl MemoryFactSidecar {
         ward_id: &str,
         key: &str,
         category: Option<&str>,
-    ) -> Result<Option<SidecarEntry>, String> {
+    ) -> StoreResult<Option<SidecarEntry>> {
         let mut where_clauses = vec![
             "archived = 0".to_string(),
             "agent_id = ?1".to_string(),
@@ -1365,7 +1348,7 @@ impl MemoryFactSidecar {
         key: &str,
         category: Option<&str>,
         session_id: Option<&str>,
-    ) -> Result<Option<SidecarEntry>, String> {
+    ) -> StoreResult<Option<SidecarEntry>> {
         let mut where_clauses = vec![
             "archived = 0".to_string(),
             "agent_id = ?1".to_string(),
@@ -1395,7 +1378,7 @@ impl MemoryFactSidecar {
         Ok(self.query_entries(&sql, values)?.into_iter().next())
     }
 
-    fn list_by_category_key(&self, category: &str, key: &str) -> Result<Vec<SidecarEntry>, String> {
+    fn list_by_category_key(&self, category: &str, key: &str) -> StoreResult<Vec<SidecarEntry>> {
         self.query_entries(
             "SELECT fact_json, embedding_json, archived, embedding_identity_json FROM memory_facts \
              WHERE archived = 0 AND category = ?1 AND key = ?2 ORDER BY updated_at DESC, id ASC",
@@ -1406,7 +1389,7 @@ impl MemoryFactSidecar {
         )
     }
 
-    fn list_primitives_for_ward(&self, ward_id: &str) -> Result<Vec<SidecarEntry>, String> {
+    fn list_primitives_for_ward(&self, ward_id: &str) -> StoreResult<Vec<SidecarEntry>> {
         self.query_entries(
             "SELECT fact_json, embedding_json, archived, embedding_identity_json FROM memory_facts \
              WHERE archived = 0
@@ -1428,7 +1411,7 @@ impl MemoryFactSidecar {
         &self,
         session_id: &str,
         limit: usize,
-    ) -> Result<Vec<SidecarEntry>, String> {
+    ) -> StoreResult<Vec<SidecarEntry>> {
         let pattern = format!("ctx.{session_id}.state.%");
         self.query_entries(
             "SELECT fact_json, embedding_json, archived, embedding_identity_json FROM memory_facts \
@@ -1451,7 +1434,7 @@ impl MemoryFactSidecar {
         )
     }
 
-    fn list_skill_index(&self) -> Result<Vec<SkillIndexRow>, String> {
+    fn list_skill_index(&self) -> StoreResult<Vec<SkillIndexRow>> {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
@@ -1460,7 +1443,7 @@ impl MemoryFactSidecar {
                  FROM skill_index_state
                  ORDER BY name ASC",
             )
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(SkillIndexRow {
@@ -1473,12 +1456,12 @@ impl MemoryFactSidecar {
                     format_version: row.get(6)?,
                 })
             })
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| storage_error(error).to_string())
+            .map_err(|error| storage_error(error).into_trait_error())
     }
 
-    fn upsert_skill_index(&self, row: &SkillIndexRow) -> Result<(), String> {
+    fn upsert_skill_index(&self, row: &SkillIndexRow) -> StoreResult<()> {
         self.connection()?
             .execute(
                 r#"
@@ -1504,18 +1487,18 @@ impl MemoryFactSidecar {
                     row.format_version,
                 ],
             )
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         Ok(())
     }
 
-    fn delete_skill_index(&self, name: &str) -> Result<bool, String> {
+    fn delete_skill_index(&self, name: &str) -> StoreResult<bool> {
         let affected = self
             .connection()?
             .execute(
                 "DELETE FROM skill_index_state WHERE name = ?1",
                 params![name],
             )
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         Ok(affected > 0)
     }
 
@@ -1523,7 +1506,7 @@ impl MemoryFactSidecar {
         &self,
         content_hash: &str,
         model_name: &str,
-    ) -> Result<Option<Vec<f32>>, String> {
+    ) -> StoreResult<Option<Vec<f32>>> {
         let json = self
             .connection()?
             .query_row(
@@ -1533,10 +1516,10 @@ impl MemoryFactSidecar {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         json.map(|json| serde_json::from_str::<Vec<f32>>(&json))
             .transpose()
-            .map_err(|error| format!("decode cached embedding: {error}"))
+            .map_err(|error| StoreError::Invalid(format!("decode cached embedding: {error}")))
     }
 
     fn cache_embedding(
@@ -1544,8 +1527,9 @@ impl MemoryFactSidecar {
         content_hash: &str,
         model_name: &str,
         embedding: &[f32],
-    ) -> Result<(), String> {
-        let embedding_json = serde_json::to_string(embedding).map_err(|error| error.to_string())?;
+    ) -> StoreResult<()> {
+        let embedding_json = serde_json::to_string(embedding)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.connection()?
             .execute(
                 r#"
@@ -1563,18 +1547,18 @@ impl MemoryFactSidecar {
                     Utc::now().to_rfc3339(),
                 ],
             )
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         Ok(())
     }
 
-    fn load_all(&self) -> Result<Vec<SidecarEntry>, String> {
+    fn load_all(&self) -> StoreResult<Vec<SidecarEntry>> {
         self.query_entries(
             "SELECT fact_json, embedding_json, archived, embedding_identity_json FROM memory_facts ORDER BY updated_at DESC",
             Vec::new(),
         )
     }
 
-    fn search(&self, request: SearchRequest<'_>) -> Result<Vec<SearchHit>, String> {
+    fn search(&self, request: SearchRequest<'_>) -> StoreResult<Vec<SearchHit>> {
         let cutoff = request.as_of.unwrap_or_else(Utc::now);
         let query = bounded_recall_query(request.query);
         let tokens = search_tokens(&query);
@@ -1651,7 +1635,7 @@ impl MemoryFactSidecar {
         &self,
         agent_id: Option<&str>,
         ward_id: Option<&str>,
-    ) -> Result<Vec<SidecarEntry>, String> {
+    ) -> StoreResult<Vec<SidecarEntry>> {
         let mut where_clauses = vec!["archived = 0".to_string(), "category != 'ctx'".to_string()];
         let mut values = Vec::new();
 
@@ -1695,7 +1679,7 @@ impl MemoryFactSidecar {
         &self,
         agent_id: &str,
         since: DateTime<Utc>,
-    ) -> Result<Vec<String>, String> {
+    ) -> StoreResult<Vec<String>> {
         let since = since.to_rfc3339();
         let connection = self.connection()?;
         let mut statement = connection
@@ -1709,39 +1693,41 @@ impl MemoryFactSidecar {
                    AND updated_at > ?2
                  ORDER BY json_extract(fact_json, '$.source_episode_id') ASC",
             )
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         let rows = statement
             .query_map(params![agent_id, since], |row| row.get::<_, String>(0))
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| storage_error(error).to_string())
+            .map_err(|error| storage_error(error).into_trait_error())
     }
 
-    fn query_entries(&self, sql: &str, values: Vec<SqlValue>) -> Result<Vec<SidecarEntry>, String> {
+    fn query_entries(&self, sql: &str, values: Vec<SqlValue>) -> StoreResult<Vec<SidecarEntry>> {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(sql)
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
         let mut rows = statement
             .query(params_from_iter(values))
-            .map_err(|error| storage_error(error).to_string())?;
+            .map_err(|error| storage_error(error).into_trait_error())?;
 
         let mut entries = Vec::new();
         while let Some(row) = rows
             .next()
-            .map_err(|error| storage_error(error).to_string())?
+            .map_err(|error| storage_error(error).into_trait_error())?
         {
-            let entry =
-                sidecar_entry_from_row(row).map_err(|error| storage_error(error).to_string())??;
+            let entry = sidecar_entry_from_row(row)
+                .map_err(|error| storage_error(error).into_trait_error())??;
             entries.push(entry);
         }
         Ok(entries)
     }
 
-    fn connection(&self) -> Result<MutexGuard<'_, Connection>, String> {
-        self.connection
-            .lock()
-            .map_err(|_| "adapter storage `memory_fact_sidecar` failed: lock poisoned".to_string())
+    fn connection(&self) -> StoreResult<MutexGuard<'_, Connection>> {
+        self.connection.lock().map_err(|_| {
+            StoreError::Backend(
+                "adapter storage `memory_fact_sidecar` failed: lock poisoned".to_string(),
+            )
+        })
     }
 }
 
@@ -1923,7 +1909,7 @@ struct SearchRequest<'a> {
 
 fn sidecar_entry_from_row(
     row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<Result<SidecarEntry, String>> {
+) -> rusqlite::Result<Result<SidecarEntry, StoreError>> {
     let fact_json: String = row.get(0)?;
     let embedding_json: Option<String> = row.get(1)?;
     let archived: i64 = row.get(2)?;
@@ -1941,18 +1927,18 @@ fn parse_sidecar_entry(
     embedding_json: Option<String>,
     archived: i64,
     embedding_identity_json: Option<String>,
-) -> Result<SidecarEntry, String> {
-    let mut fact: MemoryFact =
-        serde_json::from_str(&fact_json).map_err(|error| format!("decode MemoryFact: {error}"))?;
+) -> StoreResult<SidecarEntry> {
+    let mut fact: MemoryFact = serde_json::from_str(&fact_json)
+        .map_err(|error| StoreError::Invalid(format!("decode MemoryFact: {error}")))?;
     fact.embedding = None;
     let embedding = embedding_json
         .map(|json| serde_json::from_str::<Vec<f32>>(&json))
         .transpose()
-        .map_err(|error| format!("decode fact embedding: {error}"))?;
+        .map_err(|error| StoreError::Invalid(format!("decode fact embedding: {error}")))?;
     let embedding_identity = embedding_identity_json
         .map(|json| serde_json::from_str::<EmbeddingIdentity>(&json))
         .transpose()
-        .map_err(|error| format!("decode embedding identity: {error}"))?;
+        .map_err(|error| StoreError::Invalid(format!("decode embedding identity: {error}")))?;
     Ok(SidecarEntry {
         fact,
         embedding,
@@ -1978,8 +1964,7 @@ fn recall_value(query: &str, rows: Vec<Value>, degraded_reason: Option<&'static 
         "recalled": recalled,
         "count": count,
         "degraded": degraded_reason.is_some(),
-        "source": "memory_db",
-    });
+        "source": "memory_db" });
     if let (Some(reason), Some(object)) = (degraded_reason, value.as_object_mut()) {
         object.insert("reason".to_string(), json!(reason));
         object.insert("degraded_reason".to_string(), json!(reason));
@@ -2374,15 +2359,15 @@ fn split_primitive_content(content: &str) -> (String, String) {
     }
 }
 
-fn validate_fact_content(category: &str, content: &str) -> Result<(), String> {
+fn validate_fact_content(category: &str, content: &str) -> StoreResult<()> {
     if matches!(category, "ctx" | "primitive") {
         return Ok(());
     }
     let len = content.chars().count();
     if len > MAX_FACT_CONTENT_CHARS {
-        return Err(format!(
+        return Err(StoreError::Invalid(format!(
             "fact content too long: {len} chars (max {MAX_FACT_CONTENT_CHARS})"
-        ));
+        )));
     }
     Ok(())
 }

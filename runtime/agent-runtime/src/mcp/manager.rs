@@ -61,10 +61,9 @@ impl McpManager {
     pub async fn start_server(&self, config: McpServerConfig) -> Result<(), McpError> {
         let mut closed = self.closed.subscribe();
         tokio::select! {
-            biased;
-            _ = closed.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
-            result = self.start_server_inner(config) => result,
-        }
+        biased;
+        _ = closed.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
+        result = self.start_server_inner(config) => result }
     }
 
     async fn install(&self, id: String, client: Arc<dyn McpClient>) -> Result<(), McpError> {

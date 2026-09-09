@@ -310,9 +310,9 @@ async fn connector_dispatch_uses_fixed_resources_host_identity_and_enabled_state
     let dir = tempfile::tempdir().unwrap();
     let endpoint = Endpoint::start().await;
     let registry = Arc::new(gateway_connectors::ConnectorRegistry::new(
-        gateway_connectors::ConnectorService::new(Arc::new(gateway_services::VaultPaths::new(
-            dir.path().to_path_buf(),
-        ))),
+        gateway_connectors::ConnectorService::new(Arc::new(
+            agent_primitives::vault_paths::VaultPaths::new(dir.path().to_path_buf()),
+        )),
     ));
     registry.create(serde_json::from_value(json!({"id":"configured","name":"Configured","transport":{"type":"http","callback_url":format!("{}/invoke",endpoint.url)},"metadata":{"resources":[{"name":"fixed","uri":format!("{}/fixed",endpoint.url)}],"capabilities":[{"name":"send","schema":{"type":"object"}}]}})).unwrap()).await.unwrap();
     let provider = Arc::new(gateway_execution::GatewayResourceProvider::new(

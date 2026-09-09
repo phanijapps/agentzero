@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::VaultPaths;
 use agent_primitives::WardArchetypeId;
 use agent_tools::{WardLayoutAccess, WardLayoutState};
 use gateway_services::{
     create_ward_from_archetype, lint_ward, load_ward_layout, publish_tree_no_replace,
-    rollback_created_ward, CompiledWardLayout, VaultPaths, WardUsage,
+    rollback_created_ward, CompiledWardLayout, WardUsage,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -45,8 +46,7 @@ impl GatewayWardLayoutAccess {
                     "ward_id": ward,
                     "root_context_id": root_context_id,
                     "source": "ward/ward-conf.yaml",
-                    "diagnostic": {"code": code},
-                }),
+                    "diagnostic": {"code": code} }),
             },
         }
     }
@@ -73,8 +73,7 @@ impl GatewayWardLayoutAccess {
         let projection = canonical_json(json!({
             "apiVersion": loaded.document.api_version,
             "kind": loaded.document.kind,
-            "rules": rules,
-        }));
+            "rules": rules }));
         let normalized =
             serde_json::to_string(&projection).map_err(|_| "template_encode_failed".to_string())?;
         if normalized.len() > 64 * 1024 {
@@ -92,8 +91,7 @@ impl GatewayWardLayoutAccess {
             "projection": projection,
             "digest": snapshot_digest.clone(),
             "snapshot_digest": snapshot_digest,
-            "projection_digest": projection_digest,
-        });
+            "projection_digest": projection_digest });
         if let Some(archetype) = self.usage.get(ward).and_then(|record| record.archetype) {
             packet["archetype"] = json!(archetype);
             packet["archetype_authority"] = json!("provenance_only");
@@ -203,16 +201,14 @@ impl WardLayoutAccess for GatewayWardLayoutAccess {
                 json!({
                     "code": finding.code.chars().take(128).collect::<String>(),
                     "path": finding.path.chars().take(512).collect::<String>(),
-                    "message": finding.message.chars().take(512).collect::<String>(),
-                })
+                    "message": finding.message.chars().take(512).collect::<String>() })
             })
             .collect();
         Ok(json!({
             "valid": report.valid,
             "template_digest": expected_digest,
             "findings": findings,
-            "truncated": truncated,
-        }))
+            "truncated": truncated }))
     }
 
     fn concept(
@@ -301,8 +297,7 @@ impl WardLayoutAccess for GatewayWardLayoutAccess {
                     "operation": if entry.body.is_some() { "create_file" } else { "create_directory" },
                     "path": entry.path.to_string_lossy().replace('\\', "/"),
                     "size": body.len(),
-                    "digest": format!("{:x}", Sha256::digest(body.as_bytes())),
-                })
+                    "digest": format!("{:x}", Sha256::digest(body.as_bytes())) })
             })
             .collect();
 

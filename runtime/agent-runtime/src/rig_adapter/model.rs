@@ -716,13 +716,10 @@ mod tests {
         }
         let entered = Arc::new(tokio::sync::Notify::new());
         let dropped = Arc::new(tokio::sync::Notify::new());
-        let model = LlmCompletionModel::new(
-            Arc::new(PendingLlm {
-                entered: entered.clone(),
-                dropped: dropped.clone(),
-            }),
-            "pending",
-        );
+        let model = LlmCompletionModel::new(Arc::new(PendingLlm {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        }));
         let stream = model.stream(rig_request("hello")).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
             .await

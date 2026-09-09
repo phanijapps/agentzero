@@ -317,16 +317,4 @@ mod tests {
         assert!(!features.contains(&AdapterFeature::KnowledgeGraph));
         assert!(!features.contains(&AdapterFeature::Hierarchy));
     }
-
-    #[test]
-    fn semantic_services_require_capability_and_handle() {
-        assert!(semantic_handle_ready(&CapabilityState::Supported, true));
-        assert!(!semantic_handle_ready(&CapabilityState::Supported, false));
-        assert!(!semantic_handle_ready(
-            &CapabilityState::Unsupported {
-                reason: CapabilityReason::ProviderUnavailable,
-            },
-            true,
-        ));
-    }
 }

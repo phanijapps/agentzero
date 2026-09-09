@@ -271,7 +271,6 @@ impl ProgressTracker {
             )
         }
     }
-
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use agent_tools::{EntityInfo, GraphStorageAccess, NeighborInfo};
 use async_trait::async_trait;
 use knowledge_graph::{Direction, Entity, Relationship};
-use zbot_stores::{EntityId, KnowledgeGraphStore};
+use zbot_stores::KnowledgeGraphStore;
 
 /// Map `knowledge_graph::Entity` to the tool-facing [`EntityInfo`]
 /// without dropping fields. Mirror of the helper in
@@ -160,8 +160,3 @@ impl GraphStorageAccess for KgStoreAdapter {
             .map(entity_to_info))
     }
 }
-
-// Suppress dead_code on `EntityId` import — kept for symmetry with the
-// SQLite adapter's API surface; future callers may need it.
-#[allow(dead_code)]
-const _: fn(EntityId) = |_| {};

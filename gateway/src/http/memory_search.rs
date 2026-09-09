@@ -10,7 +10,7 @@
 //! - `semantic`: embedding required (returns 400 if unavailable); vec-only
 //!   across all selected types
 //!
-//! The `filters` field is accepted but ignored in v1. `limit` applies
+//! `limit` applies
 //! per-type, not globally.
 //!
 //! All four search paths route through the trait stores
@@ -41,9 +41,6 @@ pub struct SearchBody {
     pub types: Vec<String>,
     #[serde(default)]
     pub ward_ids: Vec<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub filters: Option<Value>,
     #[serde(default = "default_limit")]
     pub limit: usize,
     /// Optional agent scope. When present, memory-fact queries are restricted

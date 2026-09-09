@@ -10,9 +10,6 @@
 //!
 //! The chat message flow goes over WebSocket — see `events.rs`.
 
-// Some methods are scaffolded ahead of the slash commands that consume them.
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
@@ -188,11 +185,6 @@ impl DaemonClient {
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
-    /// Daemon uptime in seconds. Optional — older daemons may not include it.
-    /// Phase 2 reads this when rendering the header.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub uptime: Option<u64>,
 }
 
 /// Shape of the `/api/chat/init` response (camelCase wire format).
@@ -201,6 +193,4 @@ pub struct HealthResponse {
 pub struct ChatInit {
     pub session_id: String,
     pub conversation_id: String,
-    /// `true` when this call created the session, `false` if it was reused.
-    pub created: bool,
 }

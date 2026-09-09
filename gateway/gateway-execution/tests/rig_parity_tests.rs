@@ -162,7 +162,7 @@ async fn parity_simple_chat() {
     // agent-runtime-only; gateway-execution does not depend on it).
     let engine = RigAgentEngine::new(
         sample_config(),
-        LlmCompletionModel::new(client, "stub"),
+        LlmCompletionModel::new(client),
         Vec::new(),
         Arc::new(ToolContext::default()),
     );
@@ -203,7 +203,7 @@ async fn parity_tool_call_result() {
     });
     let engine = RigAgentEngine::new(
         sample_config(),
-        LlmCompletionModel::new(client, "stub"),
+        LlmCompletionModel::new(client),
         vec![RigToolAdapter::boxed(Arc::new(EchoTool))],
         Arc::new(ToolContext::default()),
     );
@@ -242,7 +242,7 @@ async fn parity_error() {
     });
     let engine = RigAgentEngine::new(
         sample_config(),
-        LlmCompletionModel::new(client, "stub"),
+        LlmCompletionModel::new(client),
         Vec::new(),
         Arc::new(ToolContext::default()),
     );
@@ -282,7 +282,7 @@ async fn parity_stop_cancel() {
     });
     let engine = RigAgentEngine::new(
         sample_config(),
-        LlmCompletionModel::new(client, "stub"),
+        LlmCompletionModel::new(client),
         Vec::new(),
         Arc::new(ToolContext::default()),
     );

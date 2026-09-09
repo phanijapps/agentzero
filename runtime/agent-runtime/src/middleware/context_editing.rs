@@ -551,7 +551,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let messages = create_test_messages_with_tool_calls();
 
-        let indices = middleware.find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         // Should clear the first tool result, keep the last one
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0], 2); // Index of first tool result
@@ -573,7 +574,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let messages = create_test_messages_with_tool_calls();
 
-        let indices = middleware.find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         // Should only clear calculator, not search
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0], 3); // Index of calculator result
@@ -630,7 +632,8 @@ mod tests {
         };
         let middleware = ContextEditingMiddleware::new(config);
 
-        let indices = middleware.find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
 
         assert_eq!(indices, vec![2]);
     }
@@ -652,7 +655,8 @@ mod tests {
         let mut messages = create_test_messages_with_tool_calls();
         let execution_state = ExecutionState::default(); // No skills loaded
 
-        let indices = middleware.find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Check that the first tool result was cleared
@@ -795,7 +799,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let mut messages = messages_with_skill;
 
-        let indices = middleware.find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Check that the skill result has a skill-specific placeholder
@@ -859,7 +864,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let mut messages = messages_with_skill;
 
-        let indices = middleware.find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Should use generic placeholder, not skill-specific
@@ -922,7 +928,8 @@ mod tests {
         let middleware = ContextEditingMiddleware::new(config);
         let mut messages = messages_with_skill;
 
-        let indices = middleware.find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
+        let indices = middleware
+            .find_tool_results_to_clear_with_cascade(&messages, &ExecutionState::default());
         middleware.clear_tool_results(&mut messages, &indices, &execution_state);
 
         // Should use custom template

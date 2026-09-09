@@ -17,7 +17,6 @@ use axum::{
     extract::{Query, State},
     Json,
 };
-use chrono::{DateTime, Utc};
 use gateway_memory::{
     BeliefPropagationStats, BeliefSynthesisStats, ContradictionDetectionStats,
     RecentBeliefNetworkActivity, TimestampedContradictionStats, TimestampedPropagationStats,
@@ -511,13 +510,10 @@ fn resolution_label(r: Option<&Resolution>) -> &'static str {
     }
 }
 
-// Re-export DateTime helper alias so future changes don't drift.
-#[allow(dead_code)]
-type _RfcAlias = DateTime<Utc>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     #[test]
     fn is_resolved_handles_each_variant() {

@@ -97,10 +97,11 @@ async fn main() -> Result<()> {
     let cfg = Config::resolve(args.url.clone()).context("resolve daemon URL")?;
     let client = DaemonClient::new(cfg.clone());
 
-    client
+    let health = client
         .health()
         .await
         .with_context(|| format!("daemon unreachable at {}", cfg.daemon_url))?;
+    tracing::debug!(status = %health.status, version = %health.version, "daemon healthy");
 
     if let Some(action_id) = args.surface_action.as_deref() {
         client

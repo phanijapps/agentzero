@@ -744,7 +744,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(StubLlm {
             chunks: vec!["ri".to_string(), "gged".to_string()],
         });
-        let model = LlmCompletionModel::new(client, "stub");
+        let model = LlmCompletionModel::new(client);
         let engine = RigAgentEngine::new(
             sample_config(),
             model,
@@ -1022,7 +1022,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(RecordingLlm { sent: sent.clone() });
         let engine = RigAgentEngine::new(
             sample_config(),
-            LlmCompletionModel::new(client, "stub"),
+            LlmCompletionModel::new(client),
             Vec::new(),
             Arc::new(crate::tools::context::ToolContext::default()),
         );

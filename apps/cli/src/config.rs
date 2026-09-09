@@ -55,7 +55,6 @@ impl Config {
 
     /// Derive the WebSocket URL from the HTTP URL by swapping the scheme.
     /// Used by Phase 2 to open the `/ws` upgrade.
-    #[allow(dead_code)]
     pub fn websocket_url(&self) -> String {
         let base = self.daemon_url.trim_end_matches('/');
         if let Some(rest) = base.strip_prefix("https://") {

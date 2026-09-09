@@ -25,7 +25,6 @@ const HTTP_MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// HTTP-based MCP client
 pub(super) struct HttpMcpClient {
-    #[allow(dead_code)] // Reserved for future connection tracking
     id: String,
     name: String,
     url: String,

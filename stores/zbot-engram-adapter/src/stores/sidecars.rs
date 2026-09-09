@@ -114,7 +114,7 @@ impl EngramSidecarStores {
                 PRAGMA journal_mode = WAL;
                 PRAGMA busy_timeout = 5000;
 
-                CREATE TABLE IF NOT EXISTS procedures (
+                CREATE TABLE IF NOT EXISTS zbot_procedures (
                     id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
                     ward_id TEXT,
@@ -128,9 +128,9 @@ impl EngramSidecarStores {
                     embedding_identity_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_sidecar_procedures_ward
-                    ON procedures(ward_id, updated_at);
+                    ON zbot_procedures(ward_id, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_sidecar_procedures_agent_name
-                    ON procedures(agent_id, name, success_count, created_at);
+                    ON zbot_procedures(agent_id, name, success_count, created_at);
 
                 CREATE TABLE IF NOT EXISTS episodes (
                     id TEXT PRIMARY KEY,
@@ -230,11 +230,46 @@ impl EngramSidecarStores {
                 component: SIDECAR_COMPONENT,
                 reason: error.to_string(),
             })?;
-        ensure_optional_column(&connection, "procedures", "embedding_identity_json", "TEXT")
+        // One-time migration: engram main now owns the `procedures` table
+        // name (its own procedural store). Legacy zbot rows in the old
+        // table copy into `zbot_procedures`; the copy is idempotent
+        // (INSERT OR IGNORE) and guarded on the legacy shape.
+        let legacy_has_ward = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('procedures') WHERE name = 'ward_id'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
             .map_err(|error| AdapterError::Bootstrap {
                 component: SIDECAR_COMPONENT,
                 reason: error.to_string(),
             })?;
+        if legacy_has_ward > 0 {
+            connection
+                .execute_batch(
+                    "INSERT OR IGNORE INTO zbot_procedures
+                        (id, agent_id, ward_id, name, success_count, failure_count,
+                         created_at, updated_at, record_json, embedding_json, embedding_identity_json)
+                     SELECT id, agent_id, ward_id, name, success_count, failure_count,
+                            created_at, updated_at, record_json, embedding_json, embedding_identity_json
+                     FROM procedures;",
+                )
+                .map_err(|error| AdapterError::Bootstrap {
+                    component: SIDECAR_COMPONENT,
+                    reason: format!("procedures table migration failed: {error}"),
+                })?;
+        }
+
+        ensure_optional_column(
+            &connection,
+            "zbot_procedures",
+            "embedding_identity_json",
+            "TEXT",
+        )
+        .map_err(|error| AdapterError::Bootstrap {
+            component: SIDECAR_COMPONENT,
+            reason: error.to_string(),
+        })?;
         ensure_optional_column(&connection, "episodes", "embedding_identity_json", "TEXT")
             .map_err(|error| AdapterError::Bootstrap {
                 component: SIDECAR_COMPONENT,
@@ -444,7 +479,7 @@ impl EngramSidecarStores {
     fn procedure_by_id(&self, id: &str) -> StoreResult<Option<Procedure>> {
         self.connection()?
             .query_row(
-                "SELECT record_json FROM procedures WHERE id = ?1",
+                "SELECT record_json FROM zbot_procedures WHERE id = ?1",
                 params![id],
                 |row| row.get::<_, String>(0),
             )
@@ -470,7 +505,7 @@ impl EngramSidecarStores {
         self.connection()?
             .execute(
                 r#"
-                INSERT INTO procedures
+                INSERT INTO zbot_procedures
                     (id, agent_id, ward_id, name, success_count, failure_count,
                      created_at, updated_at, record_json, embedding_json, embedding_identity_json)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
@@ -483,8 +518,8 @@ impl EngramSidecarStores {
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
                     record_json = excluded.record_json,
-                    embedding_json = COALESCE(excluded.embedding_json, procedures.embedding_json),
-                    embedding_identity_json = COALESCE(excluded.embedding_identity_json, procedures.embedding_identity_json)
+                    embedding_json = COALESCE(excluded.embedding_json, zbot_procedures.embedding_json),
+                    embedding_identity_json = COALESCE(excluded.embedding_identity_json, zbot_procedures.embedding_identity_json)
                 "#,
                 params![
                     procedure.id.as_str(),
@@ -558,7 +593,7 @@ impl EngramSidecarStores {
 impl ProcedureStore for EngramSidecarStores {
     async fn list_by_ward(&self, ward_id: &str, limit: usize) -> StoreResult<Vec<Value>> {
         self.row_jsons(
-            "SELECT record_json FROM procedures
+            "SELECT record_json FROM zbot_procedures
              WHERE ward_id = ?1
              ORDER BY updated_at DESC, id ASC
              LIMIT ?2",
@@ -610,7 +645,7 @@ impl ProcedureStore for EngramSidecarStores {
             clauses.push(format!("ward_id = ?{}", values.len()));
         }
         let sql = format!(
-            "SELECT record_json, embedding_json, embedding_identity_json FROM procedures WHERE {}",
+            "SELECT record_json, embedding_json, embedding_identity_json FROM zbot_procedures WHERE {}",
             clauses.join(" AND ")
         );
         let connection = self.connection()?;
@@ -692,7 +727,7 @@ impl ProcedureStore for EngramSidecarStores {
     async fn procedure_stats(&self) -> StoreResult<ProcedureStats> {
         let total = self
             .connection()?
-            .query_row("SELECT COUNT(*) FROM procedures", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM zbot_procedures", [], |row| row.get(0))
             .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(ProcedureStats { total })
     }
@@ -704,7 +739,7 @@ impl ProcedureStore for EngramSidecarStores {
     ) -> StoreResult<Option<ProcedureSummary>> {
         self.connection()?
             .query_row(
-                "SELECT id, name, success_count FROM procedures
+                "SELECT id, name, success_count FROM zbot_procedures
                  WHERE agent_id = ?1 AND name = ?2
                  ORDER BY success_count DESC, created_at DESC, id ASC
                  LIMIT 1",
@@ -728,7 +763,7 @@ impl ProcedureStore for EngramSidecarStores {
     ) -> StoreResult<Option<Procedure>> {
         self.connection()?
             .query_row(
-                "SELECT record_json FROM procedures
+                "SELECT record_json FROM zbot_procedures
                  WHERE agent_id = ?1 AND name = ?2
                  ORDER BY success_count DESC, created_at DESC, id ASC
                  LIMIT 1",
@@ -746,7 +781,7 @@ impl ProcedureStore for EngramSidecarStores {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT agent_id, name FROM procedures
+                "SELECT agent_id, name FROM zbot_procedures
                  GROUP BY agent_id, name HAVING COUNT(*) > 1",
             )
             .map_err(|error| StoreError::from(storage_error(error)))?;
@@ -763,7 +798,7 @@ impl ProcedureStore for EngramSidecarStores {
         for (agent_id, name) in groups {
             let keep: String = connection
                 .query_row(
-                    "SELECT id FROM procedures
+                    "SELECT id FROM zbot_procedures
                      WHERE agent_id = ?1 AND name = ?2
                      ORDER BY success_count DESC, created_at DESC, id ASC
                      LIMIT 1",
@@ -773,7 +808,7 @@ impl ProcedureStore for EngramSidecarStores {
                 .map_err(|error| StoreError::from(storage_error(error)))?;
             deleted += connection
                 .execute(
-                    "DELETE FROM procedures
+                    "DELETE FROM zbot_procedures
                      WHERE agent_id = ?1 AND name = ?2 AND id <> ?3",
                     params![agent_id, name, keep],
                 )

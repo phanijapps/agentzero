@@ -18,7 +18,7 @@ use zbot_stores_domain::{RouteHint, RouteSourceKind};
 use zbot_stores_traits::{EpisodeStore, SessionEpisode};
 
 /// Adapter that projects a ward's recent successful/partial episodes into
-/// [`ScoredItem`]s suitable for [`rrf_merge`](crate::recall::rrf_merge).
+/// [`ScoredItem`]s suitable for the unified fusion pool.
 pub struct PreviousEpisodesAdapter {
     store: Arc<dyn EpisodeStore>,
 }

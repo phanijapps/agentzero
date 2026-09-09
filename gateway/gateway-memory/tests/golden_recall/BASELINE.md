@@ -46,7 +46,7 @@ scoring in the unified path, `intent_boost` a provable no-op.
 
 - **Ranking instability (harness finding)**: `precision@5` fluctuates
   between runs (13/30 and 15/30 observed) because rank-only RRF gives
-  every lane's rank-1 the identical fused score (1/61) and `rrf_merge`
+  every lane's rank-1 the identical fused score (1/61) and the
   breaks those ties by `HashMap` iteration order — per-process random.
   Identical inputs, different packet order. Weighted fusion with
   preserved source scores is the fix; this metric becomes deterministic

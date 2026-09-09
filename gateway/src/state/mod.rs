@@ -516,40 +516,11 @@ impl AppState {
             tracing::debug!("Belief Network recall: disabled (default)");
         }
 
-        // Self-RAG retrieval gate (opt-in via `memory.queryGate.enabled` in
-        // settings.json). Reads settings eagerly here so the gate is attached
-        // before MemoryRecall is sealed in Arc below. When the block is
-        // missing, disabled, or unreadable, the gate stays None and recall
-        // behaves identically to pre-gate behavior.
-        let query_gate_cfg: gateway_memory::QueryGateConfig =
-            gateway_services::SettingsService::new(paths.clone())
-                .load()
-                .map(|s| s.execution.memory.query_gate.clone())
-                .unwrap_or_default();
-        if query_gate_cfg.enabled {
-            let llm = Arc::new(gateway_memory::LlmQueryGate::new(
-                memory_llm_factory.clone(),
-            ));
-            let gate = Arc::new(gateway_memory::QueryGate::new(llm, query_gate_cfg.clone()));
-            if let Some(recall) = memory_recall_inner.as_mut() {
-                recall.set_query_gate(gate);
-            }
-            tracing::info!(
-                "Memory query gate: enabled (model={:?}, max_subqueries={}, timeout_ms={})",
-                query_gate_cfg.model_id,
-                query_gate_cfg.max_subqueries,
-                query_gate_cfg.timeout_ms,
-            );
-        } else {
-            tracing::info!("Memory query gate: disabled");
-        }
-
-        // MMR diversity reranking (opt-in via `memory.mmr.enabled` in
-        // settings.json). Default-disabled: when the block is missing or
-        // `enabled = false`, recall is byte-for-byte identical to pre-MMR.
-        // The config block is attached unconditionally so the runtime can
-        // read the current values; only `enabled = true` triggers the
-        // rerank step inside `recall_unified`.
+        // MMR diversity reranking (default-on; disable via `memory.mmr.enabled` in
+        // settings.json). Default-enabled: diversity reranking is part of
+        // the production recall pipeline (P2). The config block is attached
+        // unconditionally so the runtime can read current values; only
+        // `enabled = true` triggers the rerank step inside `recall_unified`.
         let mmr_cfg: gateway_memory::MmrConfig =
             gateway_services::SettingsService::new(paths.clone())
                 .load()

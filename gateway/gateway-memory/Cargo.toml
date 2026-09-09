@@ -33,6 +33,10 @@ zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }
 
 # Entity / EntityType types used by Compactor's PairwiseVerifier trait.
+engram-domain = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-runtime = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-rerank-mmr = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-retrieval = { git = "https://github.com/phanijapps/engram", branch = "main" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
 
 # LLM client trait (EmbeddingClient) used by Synthesizer + sleep components

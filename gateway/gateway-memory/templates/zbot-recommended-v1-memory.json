@@ -79,12 +79,5 @@
     },
     "tenant": "agentzero",
     "wardScopeTarget": "workspace"
-  },
-  "queryGate": {
-    "enabled": true,
-    "maxSubqueries": 4,
-    "maxSubqueryLen": 200,
-    "modelId": null,
-    "timeoutMs": 3000
   }
 }

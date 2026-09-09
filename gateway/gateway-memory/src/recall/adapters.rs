@@ -3,7 +3,7 @@
 //! Callers construct source-specific results via existing repository search
 //! methods and pass them through these pure functions together with a
 //! per-source relevance score. The resulting `Vec<ScoredItem>` lists are
-//! consumed by `rrf_merge`.
+//! consumed by the weighted-RRF fuser (`fuse_source_lists`).
 
 use crate::recall::scored_item::{ItemKind, Provenance, ScoredItem};
 use zbot_stores::types::EntityId;
@@ -165,7 +165,7 @@ use std::sync::Arc;
 /// `query_embedding`, and project each hit as a [`ScoredItem::GraphNode`].
 ///
 /// The returned `ScoredItem::score` is rank-discounted by cosine similarity
-/// so higher-ranked, higher-similarity entities lead — `rrf_merge` re-scores
+/// so higher-ranked, higher-similarity entities lead — the fuser re-scores
 /// via rank during fusion, so this per-source score only matters for the
 /// adapter-local order, which we preserve by sorting by `(rank, cosine)`.
 pub async fn graph_ann_to_items(

@@ -116,6 +116,7 @@ pub fn entity_to_knowledge_entity_with_governance(
         updated_at: Some(entity.last_seen_at),
         valid_from: None,
         valid_until: None,
+        archived_at: None,
         metadata: Some(metadata),
     })
 }
@@ -202,6 +203,7 @@ pub fn relationship_to_knowledge_relationship(
         ),
         created_at: relationship.first_seen_at,
         updated_at: Some(relationship.last_seen_at),
+        archived_at: None,
     })
 }
 

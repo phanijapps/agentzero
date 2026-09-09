@@ -7,6 +7,8 @@ pub struct RunnerIntegrations {
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     pub goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
+    pub belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+    pub belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
 }
 
 #[derive(Clone, Default)]
@@ -37,6 +39,21 @@ impl SharedIntegrations {
             .expect("execution integrations lock poisoned")
             .ingestion_adapter = Some(adapter);
     }
+    pub fn set_belief_stores(
+        &self,
+        belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+        belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
+    ) {
+        self.0
+            .write()
+            .expect("execution integrations lock poisoned")
+            .belief_store = belief_store;
+        self.0
+            .write()
+            .expect("execution integrations lock poisoned")
+            .belief_contradiction_store = belief_contradiction_store;
+    }
+
     pub fn set_goal_adapter(&self, adapter: Arc<dyn agent_tools::GoalAccess>) {
         self.0
             .write()

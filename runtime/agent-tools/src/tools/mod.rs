@@ -2,6 +2,7 @@
 // TOOL MODULES
 // ============================================================================
 
+mod belief;
 mod connectors;
 mod execution;
 mod file;
@@ -31,12 +32,13 @@ pub use graph_query::{EntityInfo, GraphQueryTool, GraphStorageAccess, NeighborIn
 #[allow(unused_imports)]
 pub use goal::{GoalAccess, GoalSummary, GoalTool};
 // ingest types are public API for downstream crates (gateway wiring)
+pub use belief::BeliefTool;
 #[allow(unused_imports)]
 pub use ingest::{
     EvidenceRecord, IngestTool, IngestionAccess, StructuredCounts, StructuredEntity,
     StructuredRelationship,
 };
-pub use memory::{MemoryEntry, MemorySearchTool, MemoryStore, MemoryTool, MemoryWriteTool};
+pub use memory::{MemorySearchTool, MemoryTool, MemoryWriteTool};
 pub use multimodal::MultimodalAnalyzeTool;
 pub use recall::{
     RecallAuthorizationAccess, RecallAuthorizationContext, RecallContentVisibility, RecallFailure,

@@ -407,6 +407,17 @@ impl ExecutionRunner {
         self.ctx.integrations.set_goal_adapter(adapter);
     }
 
+    /// Install the Belief Network stores for the `belief` tool.
+    pub fn set_belief_stores(
+        &mut self,
+        belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+        belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
+    ) {
+        self.ctx
+            .integrations
+            .set_belief_stores(belief_store, belief_contradiction_store);
+    }
+
     /// Build a context capability catalog from the runner's live execution
     /// dependencies without starting an agent execution.
     pub fn context_capability_catalog(
@@ -439,6 +450,13 @@ impl ExecutionRunner {
         }
         if let Some(adapter) = integrations.goal_adapter {
             builder = builder.with_goal_adapter(adapter);
+        }
+        if integrations.belief_store.is_some() || integrations.belief_contradiction_store.is_some()
+        {
+            builder = builder.with_belief_stores(
+                integrations.belief_store,
+                integrations.belief_contradiction_store,
+            );
         }
         if let Some(store) = &self.ctx.procedure_store {
             builder = builder.with_procedure_store(store.clone());

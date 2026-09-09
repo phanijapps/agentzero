@@ -724,6 +724,35 @@ impl AppState {
             });
 
         // Create runtime with execution runner and connector registry
+        // Belief Network handles, gated on the feature flag — the tool
+        // surface (`belief` tool), HTTP surface, and AppState all share
+        // this gating so each returns clean 503/"not configured" errors
+        // when the feature is off.
+        let belief_network_cfg = settings
+            .get_execution_settings()
+            .map(|s| s.memory.belief_network.clone())
+            .unwrap_or_default();
+        let belief_store_raw: Option<Arc<dyn zbot_stores::BeliefStore>> = engram_store_bundle
+            .as_ref()
+            .map(|bundle| bundle.belief_store.clone());
+        let belief_contradiction_store_raw: Option<Arc<dyn zbot_stores::BeliefContradictionStore>> =
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.belief_contradiction_store.clone());
+        let belief_store_for_http: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
+            if belief_network_cfg.enabled {
+                belief_store_raw.clone()
+            } else {
+                None
+            };
+        let belief_contradiction_store_for_http: Option<
+            Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
+        > = if belief_network_cfg.enabled {
+            belief_contradiction_store_raw.clone()
+        } else {
+            None
+        };
+
         let runtime = Arc::new(RuntimeService::with_runner_and_connectors(
             event_bus.clone(),
             agents.clone(),
@@ -751,6 +780,8 @@ impl AppState {
             ingestion_adapter,
             goal_adapter,
             procedure_store_for_state.clone(),
+            belief_store_for_http.clone(),
+            belief_contradiction_store_for_http.clone(),
             settings
                 .load()
                 .map(|s| s.execution.memory.procedure_recommendation.clone())
@@ -788,31 +819,6 @@ impl AppState {
         //
         // The sleep-time worker block below still gets to consume the
         // handles either way (it has its own internal enable flag).
-        let belief_network_cfg = settings
-            .get_execution_settings()
-            .map(|s| s.memory.belief_network.clone())
-            .unwrap_or_default();
-        let belief_store_raw: Option<Arc<dyn zbot_stores::BeliefStore>> = engram_store_bundle
-            .as_ref()
-            .map(|bundle| bundle.belief_store.clone());
-        let belief_contradiction_store_raw: Option<Arc<dyn zbot_stores::BeliefContradictionStore>> =
-            engram_store_bundle
-                .as_ref()
-                .map(|bundle| bundle.belief_contradiction_store.clone());
-        // HTTP surface only exposes the stores when the feature is on.
-        let belief_store_for_http: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
-            if belief_network_cfg.enabled {
-                belief_store_raw.clone()
-            } else {
-                None
-            };
-        let belief_contradiction_store_for_http: Option<
-            Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
-        > = if belief_network_cfg.enabled {
-            belief_contradiction_store_raw.clone()
-        } else {
-            None
-        };
 
         // Sleep-time worker is trait-routed. Gates on the trait stores
         // (kg_store, episode_store, memory_store, procedure_store,

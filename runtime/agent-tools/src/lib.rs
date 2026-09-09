@@ -17,6 +17,7 @@ mod tools;
 pub use tools::guards;
 
 pub use tools::{
+    BeliefTool,
     ConnectorInvokeTool,
     ConnectorResourceTool,
     EditFileTool,
@@ -34,9 +35,7 @@ pub use tools::{
     IngestTool,
     IngestionAccess,
     LoadSkillTool,
-    MemoryEntry,
     MemorySearchTool,
-    MemoryStore,
     MemoryTool,
     MemoryWriteTool,
     // Multimodal vision fallback

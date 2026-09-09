@@ -8,10 +8,9 @@ use std::time::Instant;
 
 use tempfile::tempdir;
 
-use agent_primitives::vault_paths::VaultPaths;
-use knowledge_graph::{Entity, EntityType, ExtractedKnowledge};
-use zbot_stores_sqlite::kg::storage::GraphStorage;
-use zbot_stores_sqlite::KnowledgeDatabase;
+mod common;
+
+use knowledge_graph::{Entity, EntityType};
 
 fn normalized(v: Vec<f32>) -> Vec<f32> {
     let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -20,6 +19,16 @@ fn normalized(v: Vec<f32>) -> Vec<f32> {
     } else {
         v.into_iter().map(|x| x / n).collect()
     }
+}
+
+async fn kg_store_upsert(
+    kg: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
+    agent_id: &str,
+    entity: Entity,
+) {
+    kg.upsert_entity(agent_id, entity)
+        .await
+        .expect("seed store");
 }
 
 fn make_embedding(seed: u64) -> Vec<f32> {
@@ -35,16 +44,13 @@ fn make_embedding(seed: u64) -> Vec<f32> {
     normalized(v)
 }
 
-#[test]
-fn cold_boot_under_10s_with_10k_entities() {
+#[tokio::test]
+async fn cold_boot_under_10s_with_10k_entities() {
     let tmp = tempdir().expect("tempdir");
-    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-    std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
 
-    // Seed: create the DB once, write 10k entities, drop.
-    {
-        let db = Arc::new(KnowledgeDatabase::new(paths.clone()).expect("seed db"));
-        let storage = GraphStorage::new(db.clone()).expect("seed storage");
+    // Seed 10k entities through the production (engram) store.
+    let (kg_store,) = {
+        let (kg, _episodes) = common::engram_stores::kg_and_episode_stores(&tmp);
         let types = [
             EntityType::Person,
             EntityType::Organization,
@@ -57,28 +63,19 @@ fn cold_boot_under_10s_with_10k_entities() {
             let mut e = Entity::new("root".to_string(), t, format!("Entity{i}"));
             e.id = format!("e{i}");
             e.name_embedding = Some(make_embedding(i));
-            storage
-                .store_knowledge(
-                    "root",
-                    ExtractedKnowledge {
-                        entities: vec![e],
-                        relationships: vec![],
-                    },
-                )
-                .expect("seed store");
+            kg_store_upsert(&kg, "root", e).await;
         }
-        // drop db + storage explicitly when this block ends
-    }
+        let _ = types;
+        (kg,)
+    };
+    drop(kg_store);
 
-    // Cold boot: reopen and measure time to first successful query.
+    // Cold boot: reopen the provider and measure time to first successful
+    // trait query.
     let start = Instant::now();
-    let db = Arc::new(KnowledgeDatabase::new(paths.clone()).expect("cold boot db"));
-    db.with_connection(|conn| {
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM kg_entities", [], |r| r.get(0))?;
-        assert_eq!(n, 10_000);
-        Ok(())
-    })
-    .expect("cold-boot query");
+    let (kg, _episodes) = common::engram_stores::kg_and_episode_stores(&tmp);
+    let count = kg.count_all_entities().await.expect("cold-boot query");
+    assert_eq!(count, 10_000);
     let elapsed = start.elapsed();
 
     eprintln!("Cold-boot @ 10k entities: {elapsed:?}");

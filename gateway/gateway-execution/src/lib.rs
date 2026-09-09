@@ -46,6 +46,8 @@ pub mod session_ctx;
 pub mod session_state;
 pub mod session_title;
 pub mod sleep;
+#[cfg(test)]
+pub(crate) mod test_stores;
 pub mod tool_result_extractor;
 pub mod tools;
 pub mod ward_artifact_indexer;

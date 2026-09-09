@@ -779,12 +779,8 @@ async fn reindex_ward_directories(
 #[cfg(test)]
 mod reindex_scope_tests {
     use super::{reindex_ward_directories, valid_ward_directory_id};
-    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Arc;
-    use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
     use zbot_stores::KnowledgeGraphStore;
-    use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
-    use zbot_stores_traits::KgEpisodeStore;
 
     #[test]
     fn ward_directory_scope_requires_a_single_valid_component() {
@@ -832,47 +828,63 @@ mod reindex_scope_tests {
         std::os::unix::fs::symlink(&nested_outside, valid.join("linked-outside"))
             .expect("nested symlink");
 
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-        let episode_repo = Arc::new(KgEpisodeRepository::new(db));
-        let episode_store: Arc<dyn KgEpisodeStore> =
-            Arc::new(GatewayKgEpisodeStore::new(episode_repo));
-        let engram = Arc::new(
-            EngramKnowledgeGraphStore::open(AdapterConfig::engram_for_data_root(
-                tmp.path(),
-                "engram-reindex-test.db",
-            ))
-            .expect("Engram graph"),
+        // Production wiring: engram adapter stores on a tempdir.
+        use zbot_engram_adapter::{
+            AdapterConfig, EngramKnowledgeGraphStore, EngramProvider, EngramSidecarStores,
+        };
+        let root = tmp.path().join("engram-reindex");
+        std::fs::create_dir_all(&root).expect("root");
+        let mut config = AdapterConfig::engram_for_data_root(&root, "engram.db");
+        config.embedding_provider.provider_type = "gateway-test".to_string();
+        config.embedding_provider.model = "gateway-test".to_string();
+        config.embedding_provider.dimensions = 8;
+        let provider = EngramProvider::open(config.clone()).expect("provider");
+        let episode_store: Arc<dyn zbot_stores_traits::KgEpisodeStore> = Arc::new(
+            EngramSidecarStores::from_provider(config.clone(), &provider).expect("episode store"),
         );
-        let kg_store: Arc<dyn KnowledgeGraphStore> = engram.clone();
+        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(
+            EngramKnowledgeGraphStore::from_provider(config, &provider).expect("kg store"),
+        );
 
         let response = reindex_ward_directories(&wards_dir, &episode_store, &kg_store).await;
 
         assert_eq!(response.wards_processed, 1);
         assert!(response.entities_created >= 2);
-        let ada = engram
-            .get_entity_by_name("root", "Ada Lovelace")
-            .await
-            .expect("query Ada")
-            .expect("Ada indexed");
+        let ada = zbot_stores::KnowledgeGraphStore::get_entity_by_name(
+            kg_store.as_ref(),
+            "root",
+            "Ada Lovelace",
+        )
+        .await
+        .expect("query Ada")
+        .expect("Ada indexed");
         assert_eq!(
             ada.properties.get("ward_id"),
             Some(&serde_json::json!("research-ward"))
         );
-        assert!(engram
-            .get_entity_by_name("root", "Must Not Index")
-            .await
-            .expect("query invalid artifact")
-            .is_none());
-        assert!(engram
-            .get_entity_by_name("root", "Must Not Follow Ward Symlink")
-            .await
-            .expect("query Ward symlink artifact")
-            .is_none());
-        assert!(engram
-            .get_entity_by_name("root", "Must Not Follow Nested Symlink")
-            .await
-            .expect("query nested symlink artifact")
-            .is_none());
+        assert!(zbot_stores::KnowledgeGraphStore::get_entity_by_name(
+            kg_store.as_ref(),
+            "root",
+            "Must Not Index"
+        )
+        .await
+        .expect("query invalid artifact")
+        .is_none());
+        assert!(zbot_stores::KnowledgeGraphStore::get_entity_by_name(
+            kg_store.as_ref(),
+            "root",
+            "Must Not Follow Ward Symlink"
+        )
+        .await
+        .expect("query Ward symlink artifact")
+        .is_none());
+        assert!(zbot_stores::KnowledgeGraphStore::get_entity_by_name(
+            kg_store.as_ref(),
+            "root",
+            "Must Not Follow Nested Symlink"
+        )
+        .await
+        .expect("query nested symlink artifact")
+        .is_none());
     }
 }

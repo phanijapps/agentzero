@@ -1,4 +1,8 @@
 //! Verify the SleepTimeWorker fires a cycle when triggered.
+//!
+//! Stays on the sqlite KG reference implementation: the compactor/decay/
+//! pruner trio runs on the KG-maintenance surface that only sqlite
+//! implements (the deferred KG-lane migration).
 
 use std::sync::Arc;
 use std::time::Duration;

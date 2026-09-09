@@ -69,39 +69,47 @@ impl Backpressure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_primitives::vault_paths::VaultPaths;
-    use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
+    use crate::test_stores;
 
-    fn setup() -> (
-        tempfile::TempDir,
-        Arc<KgEpisodeRepository>,
-        Arc<dyn KgEpisodeStore>,
-    ) {
+    fn setup() -> (tempfile::TempDir, Arc<dyn KgEpisodeStore>) {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
-        let repo = Arc::new(KgEpisodeRepository::new(db));
-        let store: Arc<dyn KgEpisodeStore> = Arc::new(GatewayKgEpisodeStore::new(repo.clone()));
-        (tmp, repo, store)
+        let store = test_stores::kg_episode_store(&tmp);
+        (tmp, store)
+    }
+
+    async fn seed_pending(
+        store: &Arc<dyn KgEpisodeStore>,
+        source_type: &str,
+        prefix: &str,
+        n: usize,
+    ) {
+        for i in 0..n {
+            store
+                .upsert_pending(
+                    source_type,
+                    &format!("{prefix}#{i}"),
+                    &format!("h{i}"),
+                    None,
+                    "root",
+                )
+                .await
+                .expect("seed pending");
+        }
     }
 
     #[tokio::test]
     async fn allows_when_queue_is_empty() {
-        let (_tmp, _repo, store) = setup();
+        let (_tmp, store) = setup();
         let bp = Backpressure::new(BackpressureConfig::default(), store);
         assert!(bp.check("anything").await.is_ok());
     }
 
     #[tokio::test]
     async fn rejects_over_global_cap() {
-        let (_tmp, repo, store) = setup();
+        let (_tmp, store) = setup();
         // Seed exactly the cap number of pending episodes.
         let cap = 3;
-        for i in 0..cap {
-            repo.upsert_pending("t", &format!("x#{i}"), &format!("h{i}"), None, "root")
-                .unwrap();
-        }
+        seed_pending(&store, "t", "x", cap).await;
         let bp = Backpressure::new(
             BackpressureConfig {
                 max_queue_depth: cap as u64,
@@ -114,11 +122,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_over_per_source_cap() {
-        let (_tmp, repo, store) = setup();
-        for i in 0..5 {
-            repo.upsert_pending("t", &format!("book#{i}"), &format!("h{i}"), None, "root")
-                .unwrap();
-        }
+        let (_tmp, store) = setup();
+        seed_pending(&store, "t", "book", 5).await;
         let bp = Backpressure::new(
             BackpressureConfig {
                 max_queue_depth: 1_000,

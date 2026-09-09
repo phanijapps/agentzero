@@ -8,25 +8,24 @@ use tokio::time::{timeout, Duration};
 
 #[tokio::test]
 async fn captured_invokers_observe_stores_installed_after_construction() {
-    use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
-    use zbot_stores_sqlite::{
-        GatewayGoalStore, GatewayKgEpisodeStore, GoalRepository, KgEpisodeRepository,
-        KnowledgeDatabase,
+    use zbot_engram_adapter::{
+        AdapterConfig, EngramKnowledgeGraphStore, EngramProvider, EngramSidecarStores,
     };
     let mut harness = build_harness("http://unused".into()).await;
     let continuation = harness.runner.ctx.clone();
     let delegation = harness.runner.ctx.clone();
+    let root = harness._temp.path().join("engram-late-binding");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut adapter_config = AdapterConfig::engram_for_data_root(&root, "engram.db");
+    adapter_config.embedding_provider.provider_type = "gateway-execution-test".to_string();
+    adapter_config.embedding_provider.model = "gateway-execution-test".to_string();
+    adapter_config.embedding_provider.dimensions = 8;
+    let provider = EngramProvider::open(adapter_config.clone()).unwrap();
     let graph: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(
-        EngramKnowledgeGraphStore::open(AdapterConfig::engram_for_data_root(
-            harness._temp.path(),
-            "engram-late-binding-test.db",
-        ))
-        .unwrap(),
+        EngramKnowledgeGraphStore::from_provider(adapter_config.clone(), &provider).unwrap(),
     );
-    let db = Arc::new(KnowledgeDatabase::new(harness.paths.clone()).unwrap());
-    let episodes: Arc<dyn zbot_stores_traits::KgEpisodeStore> = Arc::new(
-        GatewayKgEpisodeStore::new(Arc::new(KgEpisodeRepository::new(db.clone()))),
-    );
+    let episodes: Arc<dyn zbot_stores_traits::KgEpisodeStore> =
+        Arc::new(EngramSidecarStores::from_provider(adapter_config, &provider).unwrap());
     let ingestion: Arc<dyn agent_tools::IngestionAccess> =
         Arc::new(crate::invoke::ingest_adapter::IngestionAdapter::new(
             Arc::new(crate::ingest::IngestionQueue::start(
@@ -38,10 +37,19 @@ async fn captured_invokers_observe_stores_installed_after_construction() {
             episodes.clone(),
             graph.clone(),
         ));
+    // Goals flow through the sidecar store (EngramSidecarStores implements
+    // GoalStore) — late-binding install path, same as production wiring.
+    let goal_root = harness._temp.path().join("engram-goals-late");
+    std::fs::create_dir_all(&goal_root).unwrap();
+    let mut goal_config = AdapterConfig::engram_for_data_root(&goal_root, "engram.db");
+    goal_config.embedding_provider.provider_type = "gateway-execution-test".to_string();
+    goal_config.embedding_provider.model = "gateway-execution-test".to_string();
+    goal_config.embedding_provider.dimensions = 8;
+    let goal_provider = EngramProvider::open(goal_config.clone()).unwrap();
+    let goal_store: Arc<dyn zbot_stores_traits::GoalStore> =
+        Arc::new(EngramSidecarStores::from_provider(goal_config, &goal_provider).unwrap());
     let goals: Arc<dyn agent_tools::GoalAccess> =
-        Arc::new(crate::invoke::goal_adapter::GoalAdapter::new(Arc::new(
-            GatewayGoalStore::new(Arc::new(GoalRepository::new(db))),
-        )));
+        Arc::new(crate::invoke::goal_adapter::GoalAdapter::new(goal_store));
     harness.runner.set_kg_store(graph.clone());
     harness.runner.set_kg_episode_store(episodes.clone());
     harness.runner.set_ingestion_adapter(ingestion.clone());

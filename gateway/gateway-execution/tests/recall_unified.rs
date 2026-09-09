@@ -8,25 +8,17 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 
-use agent_primitives::vault_paths::VaultPaths;
+mod common;
+
 use gateway_execution::recall::{ItemKind, MemoryRecall};
 use gateway_services::RecallConfig;
-use zbot_stores_sqlite::{
-    EpisodeRepository, KnowledgeDatabase, SessionEpisode, SqliteVecIndex, VectorIndex,
-};
+use zbot_stores_domain::SessionEpisode;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recall_unified_injects_previous_episodes_for_ward() {
     let tmp = tempdir().unwrap();
-    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-    std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-    let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-
-    let ep_vec: Arc<dyn VectorIndex> = Arc::new(
-        SqliteVecIndex::new(db.clone(), "session_episodes_index", "episode_id")
-            .expect("vec index init"),
-    );
-    let episode_repo = Arc::new(EpisodeRepository::new(db.clone(), ep_vec));
+    // Production wiring: the engram episode sidecar store.
+    let episode_store = common::engram_stores::episode_store(&tmp);
 
     let ward = "finance";
     let ep = SessionEpisode {
@@ -42,14 +34,14 @@ async fn recall_unified_injects_previous_episodes_for_ward() {
         embedding: None,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    episode_repo.insert(&ep).unwrap();
+    episode_store
+        .insert_episode(ep, None)
+        .await
+        .expect("seed episode");
 
     // No memory store wired — the facts lane is optional; this test proves
     // the episode chain injects regardless.
     let config = Arc::new(RecallConfig::default());
-    let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> = Arc::new(
-        zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo.clone()),
-    );
     let mut recall = MemoryRecall::new(None, config);
     recall.set_episode_store(episode_store);
 

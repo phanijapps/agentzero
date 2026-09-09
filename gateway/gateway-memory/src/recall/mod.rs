@@ -2676,11 +2676,7 @@ mod tests {
         v
     }
 
-    /// Build a real SQLite-backed memory store wired with an embedder so
-    use agent_primitives::vault_paths::VaultPaths;
     use knowledge_graph::types::{Entity, EntityType};
-    use zbot_stores_sqlite::kg::storage::GraphStorage;
-    use zbot_stores_sqlite::{KnowledgeDatabase, SqliteKgStore};
 
     /// `save_fact` generates embeddings that we can later look up via
     /// `get_fact_embedding`.
@@ -2715,12 +2711,24 @@ mod tests {
     async fn make_kg_store_with_apple_entity(
         tmp: &tempfile::TempDir,
     ) -> Arc<dyn zbot_stores::KnowledgeGraphStore> {
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("graph db"));
-        let store: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(
-            Arc::new(GraphStorage::new(db).expect("graph storage")),
-        ));
+        // Production wiring: the engram KG store, with the fixture
+        // embedder's identity dimensions so the kg_name_index path is
+        // exercised for real.
+        use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore, EngramProvider};
+        let root = tmp.path().join("engram-kg-recall-fixture");
+        std::fs::create_dir_all(&root).expect("engram fixture root");
+        let mut config = AdapterConfig::engram_for_data_root(&root, "engram.db");
+        // Adopt the query embedder's identity so the identity-aware ANN
+        // lane accepts the stored vectors (same discipline as the fact
+        // fixture above).
+        let embedder = DirectionalEmbed;
+        config.embedding_provider.provider_type = embedder.provider_type();
+        config.embedding_provider.model = embedder.model_name();
+        config.embedding_provider.dimensions = embedder.dimensions() as u32;
+        let provider = EngramProvider::open(config.clone()).expect("provider opens");
+        let store: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(
+            EngramKnowledgeGraphStore::from_provider(config, &provider).expect("kg fixture opens"),
+        );
         let mut entity = Entity::new(
             "agent-a".to_string(),
             EntityType::Concept,

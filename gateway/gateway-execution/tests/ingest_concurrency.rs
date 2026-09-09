@@ -6,33 +6,21 @@ use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
-use agent_primitives::vault_paths::VaultPaths;
+mod common;
+
 use gateway_execution::ingest::{IngestionQueue, NoopExtractor};
-use zbot_stores::KnowledgeGraphStore;
-use zbot_stores_sqlite::kg::storage::GraphStorage;
-use zbot_stores_sqlite::{
-    GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase, SqliteKgStore,
-};
-use zbot_stores_traits::KgEpisodeStore;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unrelated_reads_stay_under_200ms_p95_during_ingestion() {
     let tmp = tempdir().expect("tempdir");
-    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-    std::fs::create_dir_all(paths.conversations_db().parent().expect("parent")).expect("mkdir");
-    let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-    let episode_repo = Arc::new(KgEpisodeRepository::new(db.clone()));
-    let graph_storage = Arc::new(GraphStorage::new(db.clone()).expect("graph"));
-    let episode_store: Arc<dyn KgEpisodeStore> =
-        Arc::new(GatewayKgEpisodeStore::new(episode_repo.clone()));
-    let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(graph_storage));
+    let (kg_store, episode_store) = common::engram_stores::kg_and_episode_stores(&tmp);
     let extractor = Arc::new(NoopExtractor::new());
 
-    let queue = IngestionQueue::start(2, episode_store, kg_store, extractor);
+    let queue = IngestionQueue::start(2, episode_store.clone(), kg_store.clone(), extractor);
 
     // Seed 500 pending episodes.
     for i in 0..500 {
-        let id = episode_repo
+        let id = episode_store
             .upsert_pending(
                 "document",
                 &format!("stress#{i}"),
@@ -40,24 +28,23 @@ async fn unrelated_reads_stay_under_200ms_p95_during_ingestion() {
                 None,
                 "root",
             )
+            .await
             .expect("upsert");
-        episode_repo
+        episode_store
             .set_payload(&id, &format!("chunk {i} text"))
+            .await
             .expect("payload");
     }
     queue.notify();
 
-    // In parallel, issue 100 unrelated reads against knowledge.db.
-    let db_clone = db.clone();
+    // In parallel, issue 100 unrelated reads through the store's trait
+    // surface (entity count) while ingestion churns the same database.
+    let read_store = kg_store.clone();
     let read_handle = tokio::spawn(async move {
         let mut durations = Vec::with_capacity(100);
         for _ in 0..100 {
             let start = Instant::now();
-            let _ = db_clone.with_connection(|conn| {
-                let _: i64 =
-                    conn.query_row("SELECT COUNT(*) FROM kg_entities", [], |r| r.get(0))?;
-                Ok(())
-            });
+            let _ = read_store.count_all_entities().await;
             durations.push(start.elapsed());
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

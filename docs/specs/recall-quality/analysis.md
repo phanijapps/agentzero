@@ -147,64 +147,87 @@ signals never got carried: there is no single place to apply them.
   post-hoc multiplier on similarity, i.e. exactly the shape of the fix
   below.
 
-## 4. Design — make the ranking real, then make patterns actionable
+## 4. The cleaner solution — use what engram already baked
 
-### Phase 1 — Un-dark the scoring engine (facts path)
+**Revised after auditing the engram repo** (`~/projects/mem-alpha` = the
+`phanijapps/engram` the adapter already depends on). Engram's retrieval core
+already implements — tested, contract-frozen — almost everything my first
+design proposed to build in gateway-memory:
 
-All applied uniformly in **one post-fetch scorer** (kills F1/F2/F4/F6's cause):
+| My Phase-1 proposal | Engram already has |
+|---|---|
+| Weighted RRF (`w_source/(k+r)`) | `ReciprocalRankFusion` + `ReciprocalFusionConfig { k, default_source_weight, source_weights }` (`core/retrieval`) |
+| Recency decay on facts | `TemporalRetrievalIndex` + `recency_score` exponential decay, half-life 14d (`adapters/sqlite/src/memory/temporal_retrieval.rs`) |
+| Multi-factor scoring | `RetrievalScore { relevance, recency, confidence, cue_match, hierarchical_fit, policy_fit }` (`core/domain/retrieval.rs`) |
+| Honest telemetry | `FusionTrace` per candidate: source, source rank, source score, fusion score, dedup-with |
+| MMR rerank | `RetrievalReranker` port + `adapters/retrieval/mmr-rerank` (+ cross-encoder-rerank) |
+| Access reinforcement | `MemoryEvent::Retrieved` in the domain event set |
+| Procedure success/failure | `Procedure { success_count, failure_count }` + `increment_n` + `ProcedureStats` (`core/procedures`) — zbot duplicated this with its own table |
 
-1. **Carry legacy signals into unified**, per fact item after store fetch:
-   `final = base × decay(age, half_life[category]) × log2(2 + usage) ×
-   (contradicted ? 0.5 : 1)` — pinned/skill/agent exempt from decay (rules
-   already exist, `mod.rs:570-573`). Re-sort the list after scoring.
-2. **Weighted RRF**: `w_source/(k + r)` with per-source weights (facts 1.0,
-   procedures 1.1, beliefs 0.9, graph 0.8, wiki 0.9; defaults, tunable).
-   Preserve normalized relevance inside the weight when sources expose
-   comparable scores (facts do; graph confidence already multiplies).
-3. **Access reinforcement**: on a recall hit that survives into the final
-   packet, bump `mention_count` and set `last_accessed` (new column;
-   `updated_at` keeps meaning "content changed"). One `UPDATE … WHERE id IN
-   (…)` per recall — negligible cost. This is the ACT-R term: usage, not
-   just re-derivation, strengthens memory.
-4. **Honest telemetry**: `ranking_reasons` reflects what actually executed;
-   add `weighted_rrf`, `temporal_decay`, `usage_boost` when enabled.
-5. **Enable MMR by default** (λ=0.6, pool 30) — it exists, is tested, and
-   diversity is cheap insurance against near-duplicate fact floods
-   (3,079 domain facts).
+**The duplication is three layers deep, and only the bottom one is good:**
 
-### Phase 2 — Patterns that plan (the real ask)
+1. engram core retrieval composition — *unused by zbot*
+2. zbot-engram-adapter — hand-rolled hybrid SQL + its own RRF normalization over its own `memory_facts` table (bypasses engram's memory service)
+3. gateway-memory unified — its own `rrf_merge`, its own `mmr.rs`, its own (dead) legacy scoring
 
-6. **Procedure score = similarity × track-record**: `(1 + success_count) /
-   (2 + success_count + failure_count)` multiplier, decayed by `last_used`
-   age. The fields exist; recall never reads them. Render the record in the
-   content: "Procedure: research_and_visualize (used 12×, 11 ok)".
-7. **Planner link — pattern handoff**: when the intent agent runs (it has
-   MemorySearchTool), search procedures by the task summary; top match
-   above threshold enters the intent output as
-   `suggested_procedure: {name, match, record}`. The plan step then either
-   binds `run_procedure(name, args)` or explicitly deviates. Patterns stop
-   being reading material and become **plan candidates**.
-8. **Episode learnings → planner**: failed-episode avoid-list (shipped)
-   joins the intent input, not just session bootstrap, so plans avoid
-   known-dead approaches at construction time.
+### The plan: make the adapter an engram retrieval citizen (no data migration)
 
-### Phase 3 — Structure (enables 1–8 cheaply)
+**Phase 1 — Route the memory lane through engram's composer (2–3 days)**
 
-9. Split the monolith along the source seam:
-   `trait RecallSource { fn fetch(&self, qctx) -> BoxFuture<Vec<ScoredItem>> }`,
-   one impl per source (≈60–90 lines each), a `SourceRegistry`, and one
-   `score_and_fuse()` that owns decay/boost/weighted-RRF/MMR. The 676-line
-   function becomes a 60-line pipeline. Golden-trace the before/after.
+1. zbot-engram-adapter implements engram's `RetrievalIndex` port for the fact
+   store: the existing hybrid SQL becomes the `fact-hybrid` lane, returning
+   `RetrievalResult`s with `score.relevance` set (and `confidence` from the
+   fact's own field).
+2. Add a temporal lane over the same table using engram's `recency_score`
+   (per-category half-lives mapped from zbot's category semantics; pinned/
+   skill/agent exempt). Recency enters the fused score as a first-class
+   factor — not a gateway-side bolt-on.
+3. Fuse with engram's `ReciprocalRankFusion` + per-source weights. The
+   adapter's `normalize_rrf_score` is deleted; gateway-memory's `rrf_merge`
+   is deleted for the memory lane (kept only for zbot-policy lanes until
+   Phase 3).
+4. Reinforcement: on final-packet hits, write `MemoryEvent::Retrieved` (the
+   event kind already exists in the domain) and bump `mention_count` +
+   `last_accessed`. One batched UPDATE per recall.
+5. Honest telemetry for free: `FusionTrace` replaces the fabricated
+   `ranking_reasons` list.
+6. MMR via engram's `mmr-rerank` adapter, enabled by default; gateway-memory's
+   own `mmr.rs` deleted.
 
-### Evaluation (no vibing)
+**Phase 2 — Procedures converge on engram's procedural memory (1–2 days)**
 
-- **Golden recall set**: 30 real queries sampled from session history with
-  hand-labeled "should-have-recalled" facts/procedures.
-- Metrics: hit@5, correction-recall@5 (user corrections must surface —
-  they're the highest-value class), pattern-recall@5, stale-fact rate
-  (superseded-but-similar facts in top 5 — should go to ~0), latency Δ.
-- A/B the scoring stages on the same set: rank-only RRF (today) vs
-  +weighted vs +decay/usage vs +MMR — each stage must earn its place.
+7. `run_procedure` increments engram's `increment_n` (success/failure
+   accounting is the port's own contract); zbot's parallel counters die.
+8. Procedures lane scores with track record: `similarity × (1+success)/(2+
+   success+failure)` × recency-of-last-use, rendered in content
+   ("used 12×, 11 ok"). Fields already exist on both sides.
+9. Planner handoff (unchanged from prior design): top procedure above
+   threshold enters the intent agent's output as `suggested_procedure`
+   via its MemorySearchTool query — patterns become plan candidates.
+   Failed-episode avoid-list joins the intent input the same way.
+
+**Phase 3 — Collapse the gateway unified function (1.5 days)**
+
+10. Split `recall_unified_outcome_with_visibility` along the same seam
+    engram's ports already define: each zbot-policy source (goals,
+    episodes+avoid, profile, wiki) becomes a `RetrievalIndex` impl; the
+    unified function shrinks to registry → fuse (engram) → zbot visibility →
+    render. The dead legacy scoring block and both hand-rolled RRFs are
+    deleted, not carried.
+
+**Later (explicitly not now):** migrating zbot's `memory_facts` table into
+engram's `memories` MemoryRecord store — real but a data migration
+(7,147 rows, field mapping, conformance-parity run). Phase 1 gets the
+ranking wins without it; revisit when engram's consolidation pipeline
+(decay/pruning tasks) is something zbot wants to run in its sleep cycle —
+that's the moment full citizenship pays.
+
+### Evaluation (unchanged, still no vibing)
+
+Golden recall set: 30 real queries from session history, hand-labeled.
+Metrics: hit@5, correction-recall@5, pattern-recall@5, stale-fact rate
+(superseded-but-similar in top 5 → ~0), FusionTrace-explainable share
+(should be 100%), latency Δ vs the three-RRF stack.
 
 ## 5. What NOT to do
 

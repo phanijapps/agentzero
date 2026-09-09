@@ -604,6 +604,31 @@ impl ProcedureStore for EngramSidecarStores {
         )
     }
 
+    async fn list_procedure_names(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> StoreResult<Vec<(String, Option<String>)>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT json_extract(record_json, '$.name'),
+                        json_extract(record_json, '$.description')
+                 FROM zbot_procedures
+                 WHERE agent_id = ?1
+                 ORDER BY updated_at DESC, id ASC
+                 LIMIT ?2",
+            )
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        let rows = statement
+            .query_map(params![agent_id, limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::from(storage_error(error)))
+    }
+
     async fn upsert_procedure(
         &self,
         mut procedure: Procedure,

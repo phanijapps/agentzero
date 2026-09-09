@@ -431,17 +431,21 @@ pub async fn memory_recall_finds_match<S: MemoryFactStore>(store: &S) {
         .await
         .unwrap();
     let result = store.recall_facts("conf", "espresso", 10).await.unwrap();
-    let arr = result.as_array().expect("array");
+    let arr = result["results"].as_array().expect("results array");
     assert!(!arr.is_empty(), "recall should find match");
 }
 
 pub async fn memory_recall_respects_agent_isolation<S: MemoryFactStore>(store: &S) {
+    // Isolation applies to agent-scoped categories. Both production
+    // backends deliberately share global-scoped categories (user/domain/
+    // reference) across agents — that is documented product policy, not a
+    // leak — so the scenario uses `correction`, which scopes agent-private.
     let _ = store
         .save_fact(
             "agent-mem-a",
-            "preference",
-            "k1",
-            "agent A note",
+            "correction",
+            "iso.k1",
+            "agent A private note",
             0.9,
             None,
             None,
@@ -451,9 +455,9 @@ pub async fn memory_recall_respects_agent_isolation<S: MemoryFactStore>(store: &
     let _ = store
         .save_fact(
             "agent-mem-b",
-            "preference",
-            "k1",
-            "agent B note",
+            "correction",
+            "iso.k1",
+            "agent B private note",
             0.9,
             None,
             None,
@@ -461,11 +465,18 @@ pub async fn memory_recall_respects_agent_isolation<S: MemoryFactStore>(store: &
         .await
         .unwrap();
     let result = store.recall_facts("agent-mem-a", "note", 10).await.unwrap();
-    let arr = result.as_array().expect("array");
+    let arr = result["results"].as_array().expect("results array");
+    assert!(
+        arr.iter().any(|item| item["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("agent A"))),
+        "recall should find the agent's own correction: {arr:?}"
+    );
     for item in arr {
         assert_eq!(
             item.get("agent_id").and_then(|v| v.as_str()),
-            Some("agent-mem-a")
+            Some("agent-mem-a"),
+            "agent-scoped corrections must never cross agents: {arr:?}"
         );
     }
 }

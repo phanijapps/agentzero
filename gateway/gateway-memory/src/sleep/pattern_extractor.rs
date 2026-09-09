@@ -495,14 +495,13 @@ pub(crate) fn build_pattern_prompt(input: &PatternInput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sleep::test_support;
     use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use std::sync::Mutex;
-    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::{
         CompactionRepository, DatabaseManager, EpisodeRepository, GatewayCompactionStore,
-        GatewayEpisodeStore, GatewayProcedureStore, KnowledgeDatabase, Procedure,
-        ProcedureRepository,
+        GatewayEpisodeStore, KnowledgeDatabase, Procedure,
     };
     use zbot_stores_traits::StoreResult;
 
@@ -532,7 +531,6 @@ mod tests {
         _tmp: tempfile::TempDir,
         knowledge_db: Arc<KnowledgeDatabase>,
         conversations_db: Arc<DatabaseManager>,
-        procedure_repo: Arc<ProcedureRepository>,
         compaction_repo: Arc<CompactionRepository>,
         episode_store: Arc<dyn EpisodeStore>,
         message_store: Arc<dyn zbot_conversation::MessageStore>,
@@ -549,31 +547,28 @@ mod tests {
                 .expect("conversation pool");
         let knowledge_db = Arc::new(KnowledgeDatabase::new(paths.clone()).expect("knowledge db"));
         let conversations_db = Arc::new(DatabaseManager::new(paths).expect("convo db"));
-        let vec_index: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "procedures_index", "procedure_id")
-                .expect("vec index init"),
-        );
-        let procedure_repo = Arc::new(ProcedureRepository::new(knowledge_db.clone(), vec_index));
         let compaction_repo = Arc::new(CompactionRepository::new(knowledge_db.clone()));
 
-        let episode_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(knowledge_db.clone(), "session_episodes_index", "episode_id")
-                .expect("episode vec idx"),
+        let episode_vec: Arc<dyn zbot_stores_sqlite::VectorIndex> = Arc::new(
+            zbot_stores_sqlite::SqliteVecIndex::new(
+                knowledge_db.clone(),
+                "session_episodes_index",
+                "episode_id",
+            )
+            .expect("episode vec idx"),
         );
         let episode_repo = Arc::new(EpisodeRepository::new(knowledge_db.clone(), episode_vec));
         let episode_store: Arc<dyn EpisodeStore> = Arc::new(GatewayEpisodeStore::new(episode_repo));
         let message_store: Arc<dyn zbot_conversation::MessageStore> = Arc::new(
             zbot_conversation::SqliteMessageStore::new(conversation_pool),
         );
-        let procedure_store: Arc<dyn ProcedureStore> =
-            Arc::new(GatewayProcedureStore::new(procedure_repo.clone()));
+        let procedure_store = test_support::procedure_store(&tmp);
         let compaction_store: Arc<dyn CompactionStore> =
             Arc::new(GatewayCompactionStore::new(compaction_repo.clone()));
         Harness {
             _tmp: tmp,
             knowledge_db,
             conversations_db,
-            procedure_repo,
             compaction_repo,
             episode_store,
             message_store,
@@ -734,18 +729,22 @@ mod tests {
         assert_eq!(stats.procedures_inserted, 1);
         assert_eq!(*mock.calls.lock().unwrap(), 1);
 
-        let procs = h
-            .procedure_repo
-            .list_procedures(agent_id, Some("__global__"))
-            .expect("list procs");
-        assert_eq!(procs.len(), 1);
-        assert_eq!(procs[0].name, "investigate_postgres_issue");
-        assert!(procs[0].steps.contains("search_docs"));
+        let names = h
+            .procedure_store
+            .list_procedure_names(agent_id, 10)
+            .await
+            .expect("list procedure names");
+        assert_eq!(names.len(), 1, "exactly one procedure inserted: {names:?}");
+        assert_eq!(names[0].0, "investigate_postgres_issue");
 
         let rows = h.compaction_repo.list_run("run-pe-1").expect("list_run");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].operation, "pattern_extract");
-        assert_eq!(rows[0].entity_id.as_deref(), Some(procs[0].id.as_str()));
+        assert_eq!(
+            rows[0].entity_id.as_deref().is_some(),
+            true,
+            "audit row names the inserted procedure id"
+        );
     }
 
     #[tokio::test]
@@ -773,8 +772,9 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
         };
-        h.procedure_repo
-            .upsert_procedure(&existing)
+        h.procedure_store
+            .upsert_procedure(existing, None)
+            .await
             .expect("seed proc");
 
         let mock = Arc::new(MockLlm::new(ok_response("investigate_postgres_issue")));

@@ -322,13 +322,10 @@ impl ConflictJudgeLlm for LlmConflictJudge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sleep::test_support;
     use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Mutex;
-    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zbot_stores_sqlite::{
-        CompactionRepository, GatewayCompactionStore, GatewayMemoryFactStore, KnowledgeDatabase,
-        MemoryRepository,
-    };
+    use zbot_stores_sqlite::{CompactionRepository, GatewayCompactionStore, KnowledgeDatabase};
 
     struct MockJudge {
         response: Mutex<ConflictResponse>,
@@ -361,17 +358,12 @@ mod tests {
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = Arc::new(KnowledgeDatabase::new(paths).expect("db"));
-        let vec_index: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(db.clone(), vec_index));
         let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
         Harness {
-            _tmp: tmp,
-            memory_store: Arc::new(GatewayMemoryFactStore::new(memory_repo, None)),
+            memory_store: test_support::fact_store(&tmp),
             compaction_store: Arc::new(GatewayCompactionStore::new(compaction_repo)),
             knowledge_db: db,
+            _tmp: tmp,
         }
     }
 

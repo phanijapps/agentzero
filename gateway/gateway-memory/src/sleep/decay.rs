@@ -681,28 +681,45 @@ mod tests {
 
     /// Seed a `memory_facts` row marked as contradicted. Uses the
     /// minimal columns the SQL path reads.
-    fn insert_contradicted_fact(
-        graph: &zbot_stores_sqlite::kg::storage::GraphStorage,
+    async fn insert_contradicted_fact(
+        fact_store: &dyn zbot_stores_traits::MemoryFactStore,
         fact_id: &str,
         agent_id: &str,
         source_episode_id: &str,
         contradicted_by: &str,
     ) {
+        use zbot_stores_traits::MemoryFactStore as _;
         let now = chrono::Utc::now().to_rfc3339();
-        graph
-            .knowledge_db()
-            .with_connection(|conn| {
-                conn.execute(
-                    "INSERT INTO memory_facts
-                        (id, agent_id, scope, category, key, content, confidence,
-                         mention_count, contradicted_by, created_at, updated_at,
-                         source_episode_id)
-                     VALUES (?1, ?2, 'global', 'cat', ?1, 'c', 0.8, 1, ?3, ?4, ?4, ?5)",
-                    rusqlite::params![fact_id, agent_id, contradicted_by, now, source_episode_id],
-                )?;
-                Ok(())
-            })
-            .unwrap();
+        let fact = zbot_stores_domain::MemoryFact {
+            id: fact_id.to_string(),
+            session_id: None,
+            agent_id: agent_id.to_string(),
+            scope: "global".to_string(),
+            category: "domain".to_string(),
+            key: fact_id.to_string(),
+            content: "c".to_string(),
+            confidence: 0.8,
+            mention_count: 1,
+            source_summary: None,
+            ward_id: "__global__".to_string(),
+            contradicted_by: Some(contradicted_by.to_string()),
+            created_at: now.clone(),
+            updated_at: now,
+            expires_at: None,
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            pinned: false,
+            epistemic_class: Some("current".to_string()),
+            source_episode_id: Some(source_episode_id.to_string()),
+            source_ref: None,
+            last_accessed: None,
+            embedding: None,
+        };
+        fact_store
+            .upsert_typed_fact(fact, None)
+            .await
+            .expect("seed contradicted fact");
     }
 
     fn insert_kg_entity_with_episode(
@@ -731,15 +748,14 @@ mod tests {
 
     #[tokio::test]
     async fn propagate_fact_contradictions_decays_kg_nodes_for_contradicted_episodes() {
-        use zbot_stores_sqlite::GatewayMemoryFactStore;
-        use zbot_stores_traits::MemoryFactStore;
-
-        let (_tmp, graph) = setup();
+        let (tmp, graph) = setup();
         let agent = "a";
+        let fact_store: Arc<dyn zbot_stores_traits::MemoryFactStore> =
+            crate::sleep::test_support::fact_store(&tmp);
 
         // Two contradicted facts pointing to ep-1 and ep-2.
-        insert_contradicted_fact(&graph, "F1", agent, "ep-1", "F-newer");
-        insert_contradicted_fact(&graph, "F2", agent, "ep-2", "F-newer");
+        insert_contradicted_fact(fact_store.as_ref(), "F1", agent, "ep-1", "F-newer").await;
+        insert_contradicted_fact(fact_store.as_ref(), "F2", agent, "ep-2", "F-newer").await;
 
         // KG entities: e1 came from ep-1 (should decay), e2 from ep-99
         // (untouched), e3 from a multi-token blob including ep-2 (should
@@ -750,15 +766,6 @@ mod tests {
 
         let kg_store: Arc<dyn KnowledgeGraphStore> =
             Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
-        let db = graph.knowledge_db().clone();
-        let vec_index: Arc<dyn zbot_stores_sqlite::VectorIndex> = Arc::new(
-            zbot_stores_sqlite::SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo =
-            Arc::new(zbot_stores_sqlite::memory_repository::MemoryRepository::new(db, vec_index));
-        let fact_store: Arc<dyn MemoryFactStore> =
-            Arc::new(GatewayMemoryFactStore::new(memory_repo, None));
 
         let engine = DecayEngine::new(kg_store, DecayConfig::default())
             .with_contradiction_propagation(

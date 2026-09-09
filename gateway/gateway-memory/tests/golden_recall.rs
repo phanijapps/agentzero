@@ -34,12 +34,14 @@ use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
 use async_trait::async_trait;
 use gateway_memory::{ItemKind, MemoryRecall, RecallConfig, ScoredItem};
 use serde::Deserialize;
+use zbot_engram_adapter::{
+    AdapterConfig, EngramMemoryFactStore, EngramProvider, EngramSidecarStores,
+};
 use zbot_stores::KnowledgeGraphStore as _KgStoreTrait;
 use zbot_stores_domain::{Belief, MemoryFact, Procedure, SessionEpisode, WikiArticle};
 use zbot_stores_sqlite::kg::storage::GraphStorage;
 use zbot_stores_sqlite::{
-    EpisodeRepository, GatewayEpisodeStore, GatewayMemoryFactStore, GatewayProcedureStore,
-    GatewayWikiStore, KnowledgeDatabase, MemoryRepository, ProcedureRepository, SqliteBeliefStore,
+    EpisodeRepository, GatewayEpisodeStore, GatewayWikiStore, KnowledgeDatabase, SqliteBeliefStore,
     SqliteKgStore, SqliteVecIndex, WardWikiRepository,
 };
 use zbot_stores_traits::{
@@ -98,6 +100,9 @@ impl EmbeddingClient for HashEmbedder {
     }
     fn model_name(&self) -> String {
         "golden-hash-384".to_string()
+    }
+    fn provider_type(&self) -> String {
+        "golden-hash".to_string()
     }
 }
 
@@ -165,17 +170,28 @@ async fn setup_corpus() -> Result<Corpus, String> {
     let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
     let db = Arc::new(KnowledgeDatabase::new(paths).map_err(|e| e.to_string())?);
 
-    // --- memory facts -----------------------------------------------------
-    let memory_vec = Arc::new(
-        SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-            .map_err(|e| e.to_string())?,
-    );
-    let memory_repo = Arc::new(MemoryRepository::new(db.clone(), memory_vec));
+    // --- memory facts + procedures: the PRODUCTION (engram) path ----------
+    // Facts and procedures are the retrieval surfaces Tier D retires the
+    // sqlite backend for, so the golden set measures them exactly the way
+    // the daemon does: EngramProvider + the adapter stores wired with the
+    // same deterministic embedder. KG/wiki/episodes/beliefs stay sqlite
+    // until their own migration phases.
     let embedder: Arc<dyn EmbeddingClient> = Arc::new(HashEmbedder);
-    let memory_store = IdentityTolerantMemoryStore::new(Arc::new(GatewayMemoryFactStore::new(
-        memory_repo.clone(),
-        Some(embedder.clone()),
-    )));
+    let engram_root = tmp.path().join("engram");
+    std::fs::create_dir_all(&engram_root).map_err(|e| e.to_string())?;
+    let mut adapter_config = AdapterConfig::engram_for_data_root(&engram_root, "engram.db");
+    adapter_config.embedding_provider.provider_type = "golden-hash".to_string();
+    adapter_config.embedding_provider.model = "golden-hash-384".to_string();
+    adapter_config.embedding_provider.dimensions = EMBED_DIM as u32;
+    let provider = EngramProvider::open(adapter_config.clone()).map_err(|e| e.to_string())?;
+    let memory_store: Arc<dyn MemoryFactStore> = Arc::new(
+        EngramMemoryFactStore::from_provider_with_embedding_client(
+            adapter_config.clone(),
+            &provider,
+            Some(embedder.clone()),
+        )
+        .map_err(|e| e.to_string())?,
+    );
 
     let global = "__global__";
     let facts: Vec<MemoryFact> = vec![
@@ -252,13 +268,10 @@ async fn setup_corpus() -> Result<Corpus, String> {
         .await
         .map_err(|e| format!("supersede f08: {e}"))?;
 
-    // --- procedures -------------------------------------------------------
-    let procedure_vec = Arc::new(
-        SqliteVecIndex::new(db.clone(), "procedures_index", "procedure_id")
-            .map_err(|e| e.to_string())?,
+    // --- procedures (engram sidecars, the production path) ----------------
+    let procedure_store: Arc<dyn ProcedureStore> = Arc::new(
+        EngramSidecarStores::from_provider(adapter_config, &provider).map_err(|e| e.to_string())?,
     );
-    let procedure_repo = Arc::new(ProcedureRepository::new(db.clone(), procedure_vec));
-    let procedure_store = Arc::new(GatewayProcedureStore::new(procedure_repo));
     let procedures = vec![
         Procedure {
             id: "p1".into(),
@@ -747,6 +760,67 @@ async fn golden_recall_fixtures_parse_and_corpus_seeds() {
 
 /// The golden scorecard. Run with:
 /// `cargo test -p gateway-memory --test golden_recall -- --ignored --nocapture`
+/// The golden scorecard. Run with:
+/// `cargo test -p gateway-memory --test golden_recall -- --ignored --nocapture`
+#[tokio::test]
+#[ignore]
+async fn probe_c12_fact_lane() {
+    use zbot_stores_traits::MemoryFactStore as _;
+    let root = tempfile::tempdir().expect("root");
+    let mut config = AdapterConfig::engram_for_data_root(root.path(), "engram.db");
+    config.embedding_provider.provider_type = "golden-hash".to_string();
+    config.embedding_provider.model = "golden-hash-384".to_string();
+    config.embedding_provider.dimensions = EMBED_DIM as u32;
+    let provider = EngramProvider::open(config.clone()).expect("provider");
+    let store = EngramMemoryFactStore::from_provider_with_embedding_client(
+        config,
+        &provider,
+        Some(Arc::new(HashEmbedder)),
+    )
+    .expect("store");
+
+    let f = fact("f02", "correction", "policy.web_research_tools",
+        "Use duckduckgo-search skill for web research. Never use raw shell curl or wget for web scraping.",
+        "__global__", 3, 1, false, "agent");
+    let embedding = embed_text(&format!(
+        "{} {} {}",
+        f.category,
+        f.key.replace('_', " "),
+        f.content
+    ));
+    store
+        .upsert_typed_fact(f.clone(), Some(embedding))
+        .await
+        .expect("seed");
+
+    let identity = zbot_stores_traits::EmbeddingQueryIdentity {
+        provider_type: "golden-hash".into(),
+        model: "golden-hash-384".into(),
+        dimensions: EMBED_DIM as u32,
+        prompt_profile: "query".into(),
+        normalization: None,
+    };
+    for query in ["scrape financial websites for quotes", "web research tools"] {
+        let hits = store
+            .search_memory_facts_hybrid_with_identity(
+                Some(AGENT),
+                query,
+                "hybrid",
+                10,
+                Some(WARD_FINANCE),
+                Some(&embed_text(query)),
+                Some(&identity),
+                None,
+            )
+            .await
+            .expect("search");
+        eprintln!(
+            "PROBE query={query:?} hits={}",
+            serde_json::to_string(&hits).unwrap_or_default()
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "full-stack golden run: use --ignored --nocapture"]
 async fn golden_recall_scorecard() {
@@ -901,100 +975,3 @@ async fn golden_recall_scorecard() {
 // (equivalent to the engram adapter's behavior when identities match).
 // Seeding uses the same wrapper so the corpus is written through one type.
 // ============================================================================
-
-struct IdentityTolerantMemoryStore {
-    inner: Arc<GatewayMemoryFactStore>,
-}
-
-impl IdentityTolerantMemoryStore {
-    fn new(inner: Arc<GatewayMemoryFactStore>) -> Arc<Self> {
-        Arc::new(Self { inner })
-    }
-}
-
-#[async_trait]
-impl MemoryFactStore for IdentityTolerantMemoryStore {
-    async fn save_fact(
-        &self,
-        agent_id: &str,
-        category: &str,
-        key: &str,
-        content: &str,
-        confidence: f64,
-        session_id: Option<&str>,
-        valid_from: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
-        self.inner
-            .save_fact(
-                agent_id, category, key, content, confidence, session_id, valid_from,
-            )
-            .await
-    }
-
-    async fn recall_facts(
-        &self,
-        agent_id: &str,
-        query: &str,
-        limit: usize,
-    ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
-        self.inner.recall_facts(agent_id, query, limit).await
-    }
-
-    async fn upsert_typed_fact(
-        &self,
-        fact: MemoryFact,
-        embedding: Option<Vec<f32>>,
-    ) -> zbot_stores_traits::StoreResult<()> {
-        self.inner.upsert_typed_fact(fact, embedding).await
-    }
-
-    async fn supersede_fact(
-        &self,
-        old_id: &str,
-        new_id: &str,
-        transition_time: chrono::DateTime<chrono::Utc>,
-    ) -> zbot_stores_traits::StoreResult<()> {
-        self.inner
-            .supersede_fact(old_id, new_id, transition_time)
-            .await
-    }
-
-    async fn get_fact_by_key(
-        &self,
-        agent_id: &str,
-        scope: &str,
-        ward_id: &str,
-        key: &str,
-    ) -> zbot_stores_traits::StoreResult<Option<MemoryFact>> {
-        self.inner
-            .get_fact_by_key(agent_id, scope, ward_id, key)
-            .await
-    }
-
-    async fn search_memory_facts_hybrid_with_identity(
-        &self,
-        agent_id: Option<&str>,
-        query: &str,
-        mode: &str,
-        limit: usize,
-        ward_id: Option<&str>,
-        query_embedding: Option<&[f32]>,
-        _query_identity: Option<&zbot_stores_traits::EmbeddingQueryIdentity>,
-        as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> zbot_stores_traits::StoreResult<Vec<serde_json::Value>> {
-        // Identity gate relaxed: delegate to the plain (identity-free)
-        // hybrid surface — the trait default fails closed when a query
-        // embedding is present, and the sqlite backend does not override it.
-        self.inner
-            .search_memory_facts_hybrid(
-                agent_id,
-                query,
-                mode,
-                limit,
-                ward_id,
-                query_embedding,
-                as_of,
-            )
-            .await
-    }
-}

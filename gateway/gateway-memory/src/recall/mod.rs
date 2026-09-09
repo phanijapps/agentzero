@@ -2670,10 +2670,7 @@ mod tests {
     use agent_primitives::vault_paths::VaultPaths;
     use knowledge_graph::types::{Entity, EntityType};
     use zbot_stores_sqlite::kg::storage::GraphStorage;
-    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zbot_stores_sqlite::{
-        GatewayMemoryFactStore, KnowledgeDatabase, MemoryRepository, SqliteKgStore,
-    };
+    use zbot_stores_sqlite::{KnowledgeDatabase, SqliteKgStore};
 
     /// `save_fact` generates embeddings that we can later look up via
     /// `get_fact_embedding`.
@@ -2681,17 +2678,25 @@ mod tests {
         tmp: &tempfile::TempDir,
         embed: Arc<dyn EmbeddingClient>,
     ) -> Arc<dyn zbot_stores::MemoryFactStore> {
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("db"));
-        let vec_index: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(db, vec_index));
-        Arc::new(IdentityAwareFixtureStore {
-            inner: Arc::new(GatewayMemoryFactStore::new(memory_repo, Some(embed))),
-        })
+        // Production wiring: the engram adapter store, with the test
+        // embedder's identity propagated so identity-aware hybrid paths
+        // are exercised for real (no sqlite fallback wrapper needed).
+        use zbot_engram_adapter::{AdapterConfig, EngramMemoryFactStore, EngramProvider};
+        let root = tmp.path().join("engram-recall-fixture");
+        std::fs::create_dir_all(&root).expect("engram fixture root");
+        let mut config = AdapterConfig::engram_for_data_root(&root, "engram.db");
+        config.embedding_provider.provider_type = embed.provider_type();
+        config.embedding_provider.model = embed.model_name();
+        config.embedding_provider.dimensions = embed.dimensions() as u32;
+        let provider = EngramProvider::open(config.clone()).expect("provider opens");
+        Arc::new(
+            EngramMemoryFactStore::from_provider_with_embedding_client(
+                config,
+                &provider,
+                Some(embed),
+            )
+            .expect("fixture fact store opens"),
+        )
     }
 
     /// A real graph ANN fixture used to prove taxonomy configuration is
@@ -2718,110 +2723,6 @@ mod tests {
             .await
             .expect("graph entity");
         store
-    }
-
-    struct IdentityAwareFixtureStore {
-        inner: Arc<dyn zbot_stores::MemoryFactStore>,
-    }
-
-    #[async_trait]
-    impl zbot_stores::MemoryFactStore for IdentityAwareFixtureStore {
-        async fn save_fact(
-            &self,
-            agent_id: &str,
-            category: &str,
-            key: &str,
-            content: &str,
-            confidence: f64,
-            session_id: Option<&str>,
-            valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> StoreResult<serde_json::Value> {
-            self.inner
-                .save_fact(
-                    agent_id, category, key, content, confidence, session_id, valid_from,
-                )
-                .await
-        }
-
-        async fn recall_facts(
-            &self,
-            agent_id: &str,
-            query: &str,
-            limit: usize,
-        ) -> StoreResult<serde_json::Value> {
-            self.inner.recall_facts(agent_id, query, limit).await
-        }
-
-        async fn search_memory_facts_hybrid(
-            &self,
-            agent_id: Option<&str>,
-            query: &str,
-            mode: &str,
-            limit: usize,
-            ward_id: Option<&str>,
-            query_embedding: Option<&[f32]>,
-            as_of: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> StoreResult<Vec<serde_json::Value>> {
-            self.inner
-                .search_memory_facts_hybrid(
-                    agent_id,
-                    query,
-                    mode,
-                    limit,
-                    ward_id,
-                    query_embedding,
-                    as_of,
-                )
-                .await
-        }
-
-        async fn search_memory_facts_hybrid_with_identity(
-            &self,
-            agent_id: Option<&str>,
-            query: &str,
-            mode: &str,
-            limit: usize,
-            ward_id: Option<&str>,
-            query_embedding: Option<&[f32]>,
-            _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
-            as_of: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> StoreResult<Vec<serde_json::Value>> {
-            self.inner
-                .search_memory_facts_hybrid(
-                    agent_id,
-                    query,
-                    mode,
-                    limit,
-                    ward_id,
-                    query_embedding,
-                    as_of,
-                )
-                .await
-        }
-
-        async fn get_fact_embedding(&self, fact_id: &str) -> StoreResult<Option<Vec<f32>>> {
-            self.inner.get_fact_embedding(fact_id).await
-        }
-
-        async fn get_fact_by_key(
-            &self,
-            agent_id: &str,
-            scope: &str,
-            ward_id: &str,
-            key: &str,
-        ) -> StoreResult<Option<MemoryFact>> {
-            self.inner
-                .get_fact_by_key(agent_id, scope, ward_id, key)
-                .await
-        }
-
-        async fn upsert_typed_fact(
-            &self,
-            fact: MemoryFact,
-            embedding: Option<Vec<f32>>,
-        ) -> StoreResult<()> {
-            self.inner.upsert_typed_fact(fact, embedding).await
-        }
     }
 
     /// RecallConfig with min_score relaxed to 0 — the hybrid scorer

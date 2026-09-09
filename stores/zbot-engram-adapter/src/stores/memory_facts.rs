@@ -39,6 +39,12 @@ const PRIMITIVE_AGENT_SENTINEL: &str = "__ward__";
 const PRIMITIVE_SCOPE: &str = "global";
 const PRIMITIVE_CATEGORY: &str = "primitive";
 const MIN_SEMANTIC_SCORE: f64 = 0.20;
+/// Lexical evidence strong enough to admit without semantic support.
+/// Any real token or stem hit (weakest is a stem at 0.8) admits — parity
+/// with the previous sqlite-backed production path, which had no lexical
+/// admission filter at all: ranking handles quality, admission only
+/// filters zero-evidence semantic noise.
+const LEXICAL_ADMIT_SCORE: f64 = 0.5;
 const MAX_RECALL_QUERY_CHARS: usize = 500;
 const MAX_SEARCH_LIMIT: usize = 50;
 
@@ -371,7 +377,26 @@ impl MemoryFactStore for EngramMemoryFactStore {
             }
         };
 
-        self.upsert_fact_record(fact, None).await?;
+        // Embed on write when a client is wired — same contract as the
+        // sqlite backend. Without this, save_fact-written facts are only
+        // lexically retrievable (the semantic lane stores no vector).
+        let embedding = match self.embedding_client.as_ref() {
+            Some(client) => match client.embed(&[&fact.content]).await {
+                Ok(mut embeddings) if embeddings.len() == 1 => Some(embeddings.remove(0)),
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        key = %fact.key,
+                        "save_fact embedding failed — storing without vector"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        self.upsert_fact_record(fact, embedding).await?;
 
         Ok(json!({
             "success": true,
@@ -2114,6 +2139,10 @@ fn rank_hybrid_entries(
         .iter()
         .map(|(id, sparse, _)| (id.clone(), sparse.high_specificity))
         .collect();
+    let lexical_strength: HashMap<String, f64> = sparse_ranked
+        .iter()
+        .map(|(id, sparse, _)| (id.clone(), sparse.score))
+        .collect();
 
     let semantic_lane = semantic_ranked
         .into_iter()
@@ -2137,15 +2166,19 @@ fn rank_hybrid_entries(
     )
     .into_iter()
     .filter(|fused| {
-        // Same admission guard as the hand-rolled version: weak
-        // semantic matches only survive with a high-specificity
-        // lexical hit.
+        // Admission guard: weak semantic matches survive only with
+        // lexical evidence — a high-specificity hit (identifier/key
+        // token) OR a strong lexical score (stem or multi-token match
+        // ≥ 1.5). Pure weak-semantic noise still drops.
         let semantic_score = semantic_specificity.get(&fused.fact.id).copied();
         let high_specificity = lexical_specificity
             .get(&fused.fact.id)
             .copied()
             .unwrap_or(false);
-        semantic_score.is_none_or(|score| score >= MIN_SEMANTIC_SCORE) || high_specificity
+        let lexical_score = lexical_strength.get(&fused.fact.id).copied().unwrap_or(0.0);
+        semantic_score.is_none_or(|score| score >= MIN_SEMANTIC_SCORE)
+            || high_specificity
+            || lexical_score >= LEXICAL_ADMIT_SCORE
     })
     .map(|fused| SearchHit {
         score: normalize_fused_score(fused.score),
@@ -2220,6 +2253,15 @@ fn sparse_match(
             let weight = sparse_token_weight(token);
             score += weight;
             high_specificity |= is_high_specificity_token(fact, token);
+        } else if token.len() >= 5 && contains_stem(&haystack, token) {
+            // Stem approximation: a 5+ char query token whose stem
+            // ("scrap" from "scrape") prefixes a 6+ char word in the
+            // haystack ("scraping") is the same lexeme. Without this,
+            // "scrape" never matches facts that say "scraping" and the
+            // admission guard drops the exact correction the user needs.
+            let weight = sparse_token_weight(token) * 0.8;
+            score += weight;
+            high_specificity |= is_high_specificity_token(fact, token);
         }
     }
 
@@ -2227,6 +2269,39 @@ fn sparse_match(
         score,
         high_specificity,
     })
+}
+
+/// True when `token`'s stem (token minus its last character, a crude
+/// suffix-stripping approximation) prefixes a word-boundary-delimited word
+/// of length ≥ 6 inside `haystack`. Case-insensitive.
+fn contains_stem(haystack: &str, token: &str) -> bool {
+    let stem = &token[..token.len() - 1];
+    if stem.len() < 4 {
+        return false;
+    }
+    let lowered = haystack.to_lowercase();
+    let mut start = 0;
+    while let Some(position) = lowered[start..].find(stem) {
+        let at = start + position;
+        let before_ok = at == 0
+            || !lowered[..at]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+        let end = at + stem.len();
+        let after = lowered[end..].chars().next();
+        let after_ok = match after {
+            None => false, // stem alone isn't a longer word
+            Some(character) => {
+                character.is_alphanumeric() && lowered[end..].chars().take(2).count() == 2
+            }
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+        start = at + stem.len();
+    }
+    false
 }
 
 fn exact_identifier_or_key_match(fact: &MemoryFact, tokens: &[String]) -> Option<SparseMatch> {

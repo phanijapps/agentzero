@@ -1393,10 +1393,8 @@ mod tests {
     use agent_primitives::vault_paths::VaultPaths;
     use chrono::Duration as ChronoDuration;
     use std::sync::Mutex as StdMutex;
-    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::{
-        GatewayMemoryFactStore, KnowledgeDatabase, MemoryRepository,
-        SqliteBeliefContradictionStore, SqliteBeliefStore,
+        KnowledgeDatabase, SqliteBeliefContradictionStore, SqliteBeliefStore,
     };
 
     // -- mocks --------------------------------------------------------------
@@ -1513,12 +1511,7 @@ mod tests {
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
-        let vec_index: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id").expect("vec index"),
-        );
-        let mem_repo = Arc::new(MemoryRepository::new(db.clone(), vec_index));
-        let fact_store: Arc<dyn MemoryFactStore> =
-            Arc::new(GatewayMemoryFactStore::new(mem_repo, None));
+        let fact_store: Arc<dyn MemoryFactStore> = crate::sleep::test_support::fact_store(&tmp);
         let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(db.clone()));
         let contradiction_store: Arc<dyn BeliefContradictionStore> =
             Arc::new(SqliteBeliefContradictionStore::new(db));

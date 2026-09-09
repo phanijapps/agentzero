@@ -63,3 +63,6 @@ pub use synthesizer::{
 };
 pub use verifier::LlmPairwiseVerifier;
 pub use worker::{CycleStats, SleepOps, SleepTimeWorker};
+
+#[cfg(test)]
+pub(crate) mod test_support;

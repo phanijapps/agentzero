@@ -88,3 +88,18 @@ scoring in the unified path, `intent_boost` a provable no-op.
 
 ================ GOLDEN RECALL SCORECARD ================
 ```
+
+
+## D0 — engram-path scorecard (production path, post stem-matching + lexical-admission fixes)
+
+Floors ALL hold on the production (engram adapter) stack:
+- presence floor 30/30; correction 5/5; avoid 2/2; stale 3/3; pattern 5/5
+- precision@5 **76.7%** (vs 56.7% on the sqlite measurement path)
+- correction top-5 **5/5** (vs 4/5)
+
+The sqlite-path numbers above remain as historical baseline; the engram path
+is the measured production path from D0 on. Fixes made during D0 (both real
+production improvements, not harness tweaks): stem matching in the sparse
+lane ("scrape" → "scraping") and lexical-evidence admission parity with the
+previous sqlite-backed behavior (ranking handles quality; admission filters
+only zero-evidence semantic noise).

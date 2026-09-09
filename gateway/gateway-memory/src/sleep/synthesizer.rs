@@ -436,6 +436,7 @@ impl SynthesisLlm for LlmSynthesizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sleep::test_support;
     use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use std::sync::Mutex;
@@ -443,8 +444,8 @@ mod tests {
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::EpisodeRepository;
     use zbot_stores_sqlite::{
-        CompactionRepository, GatewayCompactionStore, GatewayEpisodeStore, GatewayMemoryFactStore,
-        KnowledgeDatabase, MemoryRepository, SqliteKgStore,
+        CompactionRepository, GatewayCompactionStore, GatewayEpisodeStore, KnowledgeDatabase,
+        SqliteKgStore,
     };
 
     struct MockLlm {
@@ -472,11 +473,10 @@ mod tests {
     struct Harness {
         _tmp: tempfile::TempDir,
         db: Arc<KnowledgeDatabase>,
-        memory_repo: Arc<MemoryRepository>,
+        memory_store: Arc<dyn MemoryFactStore>,
         compaction_repo: Arc<CompactionRepository>,
         kg_store: Arc<dyn KnowledgeGraphStore>,
         episode_store: Arc<dyn EpisodeStore>,
-        memory_store: Arc<dyn MemoryFactStore>,
         compaction_store: Arc<dyn CompactionStore>,
     }
 
@@ -485,11 +485,6 @@ mod tests {
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
         std::fs::create_dir_all(paths.conversations_db().parent().expect("parent")).expect("mkdir");
         let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-        let vec_index: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(db.clone(), vec_index));
         let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
         let graph = Arc::new(GraphStorage::new(db.clone()).expect("graph"));
         let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(graph));
@@ -499,18 +494,16 @@ mod tests {
         );
         let episode_repo = Arc::new(EpisodeRepository::new(db.clone(), episode_vec));
         let episode_store: Arc<dyn EpisodeStore> = Arc::new(GatewayEpisodeStore::new(episode_repo));
-        let memory_store: Arc<dyn MemoryFactStore> =
-            Arc::new(GatewayMemoryFactStore::new(memory_repo.clone(), None));
         let compaction_store: Arc<dyn CompactionStore> =
             Arc::new(GatewayCompactionStore::new(compaction_repo.clone()));
+        let memory_store = test_support::fact_store(&tmp);
         Harness {
             _tmp: tmp,
             db,
-            memory_repo,
+            memory_store,
             compaction_repo,
             kg_store,
             episode_store,
-            memory_store,
             compaction_store,
         }
     }
@@ -619,11 +612,16 @@ mod tests {
         assert_eq!(stats.facts_inserted, 2);
         assert_eq!(*mock.calls.lock().unwrap(), 2);
 
-        // Memory fact rows.
-        let facts = h
-            .memory_repo
-            .get_facts_by_category(agent_id, "strategy", 10)
+        // Memory fact rows (via the production trait surface).
+        let fact_values = h
+            .memory_store
+            .list_memory_facts(Some(agent_id), Some("strategy"), None, 10, 0)
+            .await
             .expect("facts");
+        let facts: Vec<zbot_stores_domain::MemoryFact> = fact_values
+            .iter()
+            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+            .collect();
         assert_eq!(facts.len(), 2);
         let pg_fact = facts
             .iter()

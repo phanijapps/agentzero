@@ -62,6 +62,7 @@ tempfile = "3"
 gateway-services = { path = "../gateway-services" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
+zbot-engram-adapter = { path = "../../stores/zbot-engram-adapter" }
 
 [lints]
 workspace = true

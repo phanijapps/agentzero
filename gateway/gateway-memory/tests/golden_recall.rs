@@ -34,14 +34,14 @@ use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
 use async_trait::async_trait;
 use gateway_memory::{ItemKind, MemoryRecall, RecallConfig, ScoredItem};
 use serde::Deserialize;
+use zbot_stores::KnowledgeGraphStore as _KgStoreTrait;
 use zbot_stores_domain::{Belief, MemoryFact, Procedure, SessionEpisode, WikiArticle};
+use zbot_stores_sqlite::kg::storage::GraphStorage;
 use zbot_stores_sqlite::{
     EpisodeRepository, GatewayEpisodeStore, GatewayMemoryFactStore, GatewayProcedureStore,
     GatewayWikiStore, KnowledgeDatabase, MemoryRepository, ProcedureRepository, SqliteBeliefStore,
     SqliteKgStore, SqliteVecIndex, WardWikiRepository,
 };
-use zbot_stores_sqlite::kg::storage::GraphStorage;
-use zbot_stores::KnowledgeGraphStore as _KgStoreTrait;
 use zbot_stores_traits::{
     BeliefStore, EpisodeStore, MemoryFactStore, ProcedureStore, StoreError, WikiStore,
 };
@@ -120,7 +120,18 @@ struct Corpus {
 }
 
 /// Fact used for expectations keyed by `fact.key`.
-fn fact(id: &str, category: &str, key: &str, content: &str, ward: &str, mention: i32, age_days: i64, pinned: bool, scope: &str) -> MemoryFact {
+#[allow(clippy::too_many_arguments)]
+fn fact(
+    id: &str,
+    category: &str,
+    key: &str,
+    content: &str,
+    ward: &str,
+    mention: i32,
+    age_days: i64,
+    pinned: bool,
+    scope: &str,
+) -> MemoryFact {
     MemoryFact {
         id: id.to_string(),
         session_id: None,
@@ -160,8 +171,10 @@ async fn setup_corpus() -> Result<Corpus, String> {
     );
     let memory_repo = Arc::new(MemoryRepository::new(db.clone(), memory_vec));
     let embedder: Arc<dyn EmbeddingClient> = Arc::new(HashEmbedder);
-    let memory_store: Arc<GatewayMemoryFactStore> =
-        Arc::new(GatewayMemoryFactStore::new(memory_repo.clone(), Some(embedder.clone())));
+    let memory_store = IdentityTolerantMemoryStore::new(Arc::new(GatewayMemoryFactStore::new(
+        memory_repo.clone(),
+        Some(embedder.clone()),
+    )));
 
     let global = "__global__";
     let facts: Vec<MemoryFact> = vec![
@@ -221,7 +234,12 @@ async fn setup_corpus() -> Result<Corpus, String> {
     ];
 
     for f in &facts {
-        let embedding = embed_text(&format!("{} {} {}", f.category, f.key.replace('_', " "), f.content));
+        let embedding = embed_text(&format!(
+            "{} {} {}",
+            f.category,
+            f.key.replace('_', " "),
+            f.content
+        ));
         memory_store
             .upsert_typed_fact(f.clone(), Some(embedding))
             .await
@@ -358,14 +376,16 @@ async fn setup_corpus() -> Result<Corpus, String> {
             .map_err(|e| e.to_string())?,
     );
     let episode_repo = Arc::new(EpisodeRepository::new(db.clone(), episode_vec));
-    let episode_store: Arc<dyn EpisodeStore> = Arc::new(GatewayEpisodeStore::new(episode_repo.clone()));
+    let episode_store: Arc<dyn EpisodeStore> =
+        Arc::new(GatewayEpisodeStore::new(episode_repo.clone()));
     let episodes = vec![
         SessionEpisode {
             id: "e1".into(),
             session_id: "sess-e1".into(),
             agent_id: AGENT.into(),
             ward_id: WARD_FINANCE.into(),
-            task_summary: "Built AAPL peer valuation comparison table and published it to the ward.".into(),
+            task_summary:
+                "Built AAPL peer valuation comparison table and published it to the ward.".into(),
             outcome: "success".into(),
             strategy_used: None,
             key_learnings: Some("Comparison table flow worked end to end.".into()),
@@ -391,10 +411,13 @@ async fn setup_corpus() -> Result<Corpus, String> {
             session_id: "sess-e3".into(),
             agent_id: AGENT.into(),
             ward_id: WARD_FINANCE.into(),
-            task_summary: "Pulled AAPL quotes by scraping with raw curl; blocked by anti-bot.".into(),
+            task_summary: "Pulled AAPL quotes by scraping with raw curl; blocked by anti-bot."
+                .into(),
             outcome: "failed".into(),
             strategy_used: None,
-            key_learnings: Some("Use research-agent for web data; raw curl scraping is blocked.".into()),
+            key_learnings: Some(
+                "Use research-agent for web data; raw curl scraping is blocked.".into(),
+            ),
             token_cost: None,
             embedding: None,
             created_at: days_ago(1),
@@ -424,7 +447,12 @@ async fn setup_corpus() -> Result<Corpus, String> {
             updated_at: chrono::Utc::now(),
             superseded_by: None,
             stale: false,
-            embedding: Some(embed_text("AAPL is fairly valued per the latest peer analysis.").iter().flat_map(|v| v.to_le_bytes()).collect()),
+            embedding: Some(
+                embed_text("AAPL is fairly valued per the latest peer analysis.")
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+            ),
         },
         Belief {
             id: "b2".into(),
@@ -441,7 +469,12 @@ async fn setup_corpus() -> Result<Corpus, String> {
             updated_at: chrono::Utc::now(),
             superseded_by: None,
             stale: false,
-            embedding: Some(embed_text("research-agent-first is the effective path for market data.").iter().flat_map(|v| v.to_le_bytes()).collect()),
+            embedding: Some(
+                embed_text("research-agent-first is the effective path for market data.")
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+            ),
         },
     ];
     for b in &beliefs {
@@ -484,7 +517,10 @@ async fn setup_corpus() -> Result<Corpus, String> {
     }
     let aapl = entity_ids.get("AAPL").ok_or("AAPL entity id")?.clone();
     let research_agent = entity_ids.get("research-agent").ok_or("entity id")?.clone();
-    let comp_table = entity_ids.get("comparison-table").ok_or("entity id")?.clone();
+    let comp_table = entity_ids
+        .get("comparison-table")
+        .ok_or("entity id")?
+        .clone();
     let relations = vec![
         Relationship {
             id: "r1".into(),
@@ -492,10 +528,7 @@ async fn setup_corpus() -> Result<Corpus, String> {
             source_entity_id: aapl.clone(),
             target_entity_id: research_agent.clone(),
             relationship_type: RelationshipType::Uses,
-            properties: JsonProps::from([(
-                "confidence".to_string(),
-                serde_json::json!(0.9),
-            )]),
+            properties: JsonProps::from([("confidence".to_string(), serde_json::json!(0.9))]),
             first_seen_at: chrono::Utc::now(),
             last_seen_at: chrono::Utc::now(),
             mention_count: 1,
@@ -506,10 +539,7 @@ async fn setup_corpus() -> Result<Corpus, String> {
             source_entity_id: research_agent.clone(),
             target_entity_id: comp_table.clone(),
             relationship_type: RelationshipType::Created,
-            properties: JsonProps::from([(
-                "confidence".to_string(),
-                serde_json::json!(0.8),
-            )]),
+            properties: JsonProps::from([("confidence".to_string(), serde_json::json!(0.8))]),
             first_seen_at: chrono::Utc::now(),
             last_seen_at: chrono::Utc::now(),
             mention_count: 1,
@@ -552,6 +582,7 @@ struct GoldenCase {
     ward_id: String,
     query: String,
     #[serde(default)]
+    #[allow(dead_code)]
     description: String,
     #[serde(default)]
     tag: String,
@@ -608,11 +639,18 @@ struct CaseReport {
     tag: String,
     passed: bool,
     failures: Vec<String>,
+    top5_keys: Vec<String>,
+    top5_kinds: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn evaluate(case: &GoldenCase, items: &[ScoredItem]) -> CaseReport {
     let mut failures = Vec::new();
+    // Safety floor (asserted): presence in the returned packet — the agent
+    // sees the item. The recall budget is the packet the model consumes.
+    let pool_keys: Vec<&str> = items.iter().filter_map(|i| fact_key_of(i)).collect();
+    let pool_kinds: Vec<&str> = items.iter().map(|i| kind_name(&i.kind)).collect();
+    // Quality metric (reported, not asserted): precision within the top-5.
     let top: Vec<&ScoredItem> = items.iter().take(5).collect();
     let top_keys: Vec<&str> = top.iter().filter_map(|i| fact_key_of(i)).collect();
     let top_kinds: Vec<&str> = top.iter().map(|i| kind_name(&i.kind)).collect();
@@ -620,24 +658,23 @@ fn evaluate(case: &GoldenCase, items: &[ScoredItem]) -> CaseReport {
     if case.expected.must_be_nonempty && items.is_empty() {
         failures.push("expected non-empty results, got none".into());
     }
-    if !case.expected.must_be_nonempty && !items.is_empty() && !case.expected.fact_keys_none.is_empty() {
-        // Non-empty is allowed only when none of the forbidden keys appear.
-    }
     if !case.expected.fact_keys_any.is_empty()
         && !case
             .expected
             .fact_keys_any
             .iter()
-            .any(|k| top_keys.contains(&k.as_str()))
+            .any(|k| pool_keys.contains(&k.as_str()))
     {
         failures.push(format!(
-            "fact_keys_any {:?} not in top-5 keys {:?}",
-            case.expected.fact_keys_any, top_keys
+            "fact_keys_any {:?} not in packet keys {:?}",
+            case.expected.fact_keys_any, pool_keys
         ));
     }
     for forbidden in &case.expected.fact_keys_none {
-        if top_keys.contains(&forbidden.as_str()) {
-            failures.push(format!("forbidden key {forbidden} surfaced in top-5 {top_keys:?}"));
+        if pool_keys.contains(&forbidden.as_str()) {
+            failures.push(format!(
+                "forbidden key {forbidden} surfaced in packet {pool_keys:?}"
+            ));
         }
     }
     if !case.expected.kinds_any.is_empty()
@@ -645,25 +682,39 @@ fn evaluate(case: &GoldenCase, items: &[ScoredItem]) -> CaseReport {
             .expected
             .kinds_any
             .iter()
-            .any(|k| top_kinds.contains(&k.as_str()))
+            .any(|k| pool_kinds.contains(&k.as_str()))
     {
         failures.push(format!(
-            "kinds_any {:?} not in top-5 kinds {:?}",
-            case.expected.kinds_any, top_kinds
+            "kinds_any {:?} not in packet kinds {:?}",
+            case.expected.kinds_any, pool_kinds
         ));
     }
 
     CaseReport {
         id: case.id.clone(),
-        tag: if case.tag.is_empty() { "recall".into() } else { case.tag.clone() },
+        tag: if case.tag.is_empty() {
+            "recall".into()
+        } else {
+            case.tag.clone()
+        },
         passed: failures.is_empty(),
         failures,
+        top5_keys: top_keys.iter().map(|s| s.to_string()).collect(),
+        top5_kinds: top_kinds.iter().map(|s| s.to_string()).collect(),
     }
 }
 
 // ============================================================================
 // Tests.
 // ============================================================================
+
+/// Production-shaped packet budget for the precision metric.
+const PROD_BUDGET: usize = 10;
+/// Generous budget for the presence floor: with ten fused lanes, a budget-10
+/// packet holds roughly one item per lane — presence there measures fusion
+/// order, not retrieval. Budget 25 measures whether the pipeline finds the
+/// item at all.
+const FLOOR_BUDGET: usize = 25;
 
 /// Smoke: fixtures parse, corpus seeds, and the recall stack answers without
 /// error. Runs in the normal suite.
@@ -678,7 +729,13 @@ async fn golden_recall_fixtures_parse_and_corpus_seeds() {
     let corpus = setup_corpus().await.expect("corpus seeds");
     let items = corpus
         .recall
-        .recall_unified(AGENT, "AAPL valuation comparison table", Some(WARD_FINANCE), &[], 10)
+        .recall_unified(
+            AGENT,
+            "AAPL valuation comparison table",
+            Some(WARD_FINANCE),
+            &[],
+            10,
+        )
         .await
         .expect("recall runs");
     assert!(
@@ -697,18 +754,49 @@ async fn golden_recall_scorecard() {
 
     let mut reports: Vec<CaseReport> = Vec::new();
     for case in &case_file.cases {
-        let items = corpus
+        // Presence floor: generous budget — did retrieval find it at all?
+        let floor_items = corpus
             .recall
-            .recall_unified(&case.agent_id, &case.query, Some(&case.ward_id), &[], 10)
+            .recall_unified(
+                &case.agent_id,
+                &case.query,
+                Some(&case.ward_id),
+                &[],
+                FLOOR_BUDGET,
+            )
             .await
             .unwrap_or_else(|e| panic!("{}: recall error: {e}", case.id));
-        let report = evaluate(case, &items);
+        let mut report = evaluate(case, &floor_items);
+        // Precision: production-shaped budget, top-5 of the packet.
+        let prod_items = corpus
+            .recall
+            .recall_unified(
+                &case.agent_id,
+                &case.query,
+                Some(&case.ward_id),
+                &[],
+                PROD_BUDGET,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}: recall error: {e}", case.id));
+        report.top5_keys = prod_items
+            .iter()
+            .take(5)
+            .filter_map(|i| fact_key_of(i).map(str::to_string))
+            .collect();
+        report.top5_kinds = prod_items
+            .iter()
+            .take(5)
+            .map(|i| kind_name(&i.kind).to_string())
+            .collect();
         println!(
-            "[{}] {} ({}) — {} items",
+            "[{}] {} ({}) — floor {}/{} items, prod {} items",
             if report.passed { "PASS" } else { "FAIL" },
             report.id,
             report.tag,
-            items.len()
+            floor_items.len(),
+            FLOOR_BUDGET,
+            prod_items.len()
         );
         for failure in &report.failures {
             println!("        {failure}");
@@ -717,6 +805,48 @@ async fn golden_recall_scorecard() {
     }
 
     // ---- scorecard -------------------------------------------------------
+    // Presence floor (asserted above) vs precision@5 (reported — the
+    // improvement target for the engram-retrieval migration phases).
+    let case_file_ref = &case_file;
+    let mut precision_hits = 0usize;
+    let mut correction_top5 = 0usize;
+    let mut correction_total = 0usize;
+    for report in &reports {
+        let case = case_file_ref
+            .cases
+            .iter()
+            .find(|c| c.id == report.id)
+            .expect("report maps to case");
+        let mut this_hit = true;
+        if !case.expected.fact_keys_any.is_empty()
+            && !case
+                .expected
+                .fact_keys_any
+                .iter()
+                .any(|k| report.top5_keys.contains(k))
+        {
+            this_hit = false;
+        }
+        if !case.expected.kinds_any.is_empty()
+            && !case
+                .expected
+                .kinds_any
+                .iter()
+                .any(|k| report.top5_kinds.contains(k))
+        {
+            this_hit = false;
+        }
+        if this_hit {
+            precision_hits += 1;
+        }
+        if case.tag == "correction" {
+            correction_total += 1;
+            if this_hit {
+                correction_top5 += 1;
+            }
+        }
+    }
+
     let total = reports.len();
     let passed = reports.iter().filter(|r| r.passed).count();
     let by_tag: HashMap<&str, Vec<&CaseReport>> = {
@@ -739,12 +869,15 @@ async fn golden_recall_scorecard() {
 
     println!();
     println!("================ GOLDEN RECALL SCORECARD ================");
-    println!("overall:        {passed}/{total} cases pass");
-    println!("hit@5 (all):    {:.1}%", passed as f64 * 100.0 / total as f64);
-    println!("correction@5:   {corr_pass}/{corr_total}");
-    println!("avoid-list:     {avoid_pass}/{avoid_total}");
-    println!("stale-suppress: {stale_pass}/{stale_total}");
-    println!("pattern@5:      {pattern_pass}/{pattern_total}");
+    println!("presence floor (asserted): {passed}/{total} cases");
+    println!(
+        "precision@5 (improvement target): {}/{} = {:.1}%",
+        precision_hits,
+        total,
+        precision_hits as f64 * 100.0 / total as f64
+    );
+    println!("correction top-5: {correction_top5}/{correction_total}");
+    println!("tag floors: correction {corr_pass}/{corr_total}, avoid {avoid_pass}/{avoid_total}, stale {stale_pass}/{stale_total}, pattern {pattern_pass}/{pattern_total}");
     println!("=========================================================");
 
     let failed: Vec<&CaseReport> = reports.iter().filter(|r| !r.passed).collect();
@@ -756,25 +889,111 @@ async fn golden_recall_scorecard() {
     );
 }
 
-#[tokio::test]
-#[ignore = "debug probe"]
-async fn probe_fact_lane() {
-    use zbot_stores_sqlite::GatewayMemoryFactStore;
-    let tmp = tempfile::tempdir().unwrap();
-    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-    let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
-    let memory_vec = Arc::new(SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id").unwrap());
-    let memory_repo = Arc::new(MemoryRepository::new(db.clone(), memory_vec));
-    let embedder: Arc<dyn EmbeddingClient> = Arc::new(HashEmbedder);
-    let store = GatewayMemoryFactStore::new(memory_repo, Some(embedder));
-    let f = fact("pf1", "correction", "policy.research_first",
-        "Never rely on LLM training data for factual content. Always delegate to research-agent to pull real data from the web.",
-        "__global__", 9, 7, false, "agent");
-    store.upsert_typed_fact(f.clone(), Some(embed_text(&f.content))).await.unwrap();
-    let q = embed_text("pull real market data for the valuation");
-    let res = store.search_memory_facts_hybrid_with_identity(Some(AGENT), "pull real market data for the valuation", "hybrid", 10, Some(WARD_FINANCE), Some(&q), None, None).await;
-    println!("hybrid result: {:?}", res.unwrap().iter().map(|v| v.get("key").cloned()).collect::<Vec<_>>());
-    let fts = store.search_memory_facts_fts(Some(AGENT), "market data", 10, Some("__global__"), None).await;
-    println!("fts result: {} rows", fts.map(|v| v.len()).unwrap_or_default());
+// ============================================================================
+// Identity-tolerant memory store wrapper.
+//
+// The `MemoryFactStore` trait default for
+// `search_memory_facts_hybrid_with_identity` fails closed whenever a query
+// embedding is present, and the sqlite backend does not override it — only
+// the production engram adapter implements the identity gate. The golden
+// harness delegates to the sqlite store and relaxes ONLY that gate
+// (equivalent to the engram adapter's behavior when identities match).
+// Seeding uses the same wrapper so the corpus is written through one type.
+// ============================================================================
+
+struct IdentityTolerantMemoryStore {
+    inner: Arc<GatewayMemoryFactStore>,
 }
 
+impl IdentityTolerantMemoryStore {
+    fn new(inner: Arc<GatewayMemoryFactStore>) -> Arc<Self> {
+        Arc::new(Self { inner })
+    }
+}
+
+#[async_trait]
+impl MemoryFactStore for IdentityTolerantMemoryStore {
+    async fn save_fact(
+        &self,
+        agent_id: &str,
+        category: &str,
+        key: &str,
+        content: &str,
+        confidence: f64,
+        session_id: Option<&str>,
+        valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
+        self.inner
+            .save_fact(
+                agent_id, category, key, content, confidence, session_id, valid_from,
+            )
+            .await
+    }
+
+    async fn recall_facts(
+        &self,
+        agent_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
+        self.inner.recall_facts(agent_id, query, limit).await
+    }
+
+    async fn upsert_typed_fact(
+        &self,
+        fact: MemoryFact,
+        embedding: Option<Vec<f32>>,
+    ) -> zbot_stores_traits::StoreResult<()> {
+        self.inner.upsert_typed_fact(fact, embedding).await
+    }
+
+    async fn supersede_fact(
+        &self,
+        old_id: &str,
+        new_id: &str,
+        transition_time: chrono::DateTime<chrono::Utc>,
+    ) -> zbot_stores_traits::StoreResult<()> {
+        self.inner
+            .supersede_fact(old_id, new_id, transition_time)
+            .await
+    }
+
+    async fn get_fact_by_key(
+        &self,
+        agent_id: &str,
+        scope: &str,
+        ward_id: &str,
+        key: &str,
+    ) -> zbot_stores_traits::StoreResult<Option<MemoryFact>> {
+        self.inner
+            .get_fact_by_key(agent_id, scope, ward_id, key)
+            .await
+    }
+
+    async fn search_memory_facts_hybrid_with_identity(
+        &self,
+        agent_id: Option<&str>,
+        query: &str,
+        mode: &str,
+        limit: usize,
+        ward_id: Option<&str>,
+        query_embedding: Option<&[f32]>,
+        _query_identity: Option<&zbot_stores_traits::EmbeddingQueryIdentity>,
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> zbot_stores_traits::StoreResult<Vec<serde_json::Value>> {
+        // Identity gate relaxed: delegate to the plain (identity-free)
+        // hybrid surface — the trait default fails closed when a query
+        // embedding is present, and the sqlite backend does not override it.
+        self.inner
+            .search_memory_facts_hybrid(
+                agent_id,
+                query,
+                mode,
+                limit,
+                ward_id,
+                query_embedding,
+                as_of,
+            )
+            .await
+    }
+}

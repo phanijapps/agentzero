@@ -1,17 +1,3 @@
-use knowledge_graph::types::{Entity, Relationship};
-use serde::{Deserialize, Serialize};
+//! Facade re-export: extraction payload lives in `knowledge_graph::kg_trait`.
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ExtractedKnowledge {
-    pub entities: Vec<Entity>,
-    pub relationships: Vec<Relationship>,
-}
-
-impl From<ExtractedKnowledge> for knowledge_graph::types::ExtractedKnowledge {
-    fn from(value: ExtractedKnowledge) -> Self {
-        knowledge_graph::types::ExtractedKnowledge {
-            entities: value.entities,
-            relationships: value.relationships,
-        }
-    }
-}
+pub use knowledge_graph::kg_trait::ExtractedKnowledge;

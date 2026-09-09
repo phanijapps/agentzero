@@ -19,11 +19,7 @@ pub use belief_contradiction::{
 };
 pub use error::{GraphStoreError, GraphStoreResult};
 pub use extracted::ExtractedKnowledge;
-pub use knowledge_graph::{
-    AggregateSummary, DecayCandidate, DuplicateCandidate, EntityNameEmbeddingHit,
-    EntityWithEmbedding, GraphView, HierarchySummary, InterClusterRelationHit, KgNodesForEpisodes,
-    KnowledgeGraphStore, LcaPath, RelationshipContext, StrategyCandidate, WeightedTraversalHit,
-};
+pub use ::knowledge_graph::kg_trait::*;
 pub use memory_facts::{
     EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFactStore, MemoryFactWriteRequest,
     MemoryHealthMetrics, SkillIndexRow, StrategyFactInsert, StrategyFactMatch,

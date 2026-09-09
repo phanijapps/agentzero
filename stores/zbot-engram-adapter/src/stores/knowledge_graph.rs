@@ -17,15 +17,18 @@ use knowledge_graph::types::{
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde_json::{json, Value};
 use uuid::Uuid;
-use zbot_stores::types::{
-    Direction, EntityId, Neighbor, RelationshipId, ResolveOutcome, TraversalHit,
+use knowledge_graph::kg_trait::kg_types::{
+    EntityId, Neighbor, RelationshipId, ResolveOutcome, TraversalHit,
 };
-use zbot_stores::{
-    ArchivableEntity, EmbeddingQueryIdentity, EntityNameEmbeddingHit, EntityWithEmbedding,
-    ExtractedKnowledge, GraphStoreError, GraphStoreResult, GraphView, HierarchySummary,
-    InterClusterRelationHit, KgStats, KnowledgeGraphStore, LcaPath, ReindexReport, StoreOutcome,
-    VecIndexHealth,
+use knowledge_graph::types::Direction;
+use knowledge_graph::kg_trait::{
+    ArchivableEntity, EntityWithEmbedding, EntityNameEmbeddingHit, ExtractedKnowledge,
+    GraphStoreError, GraphStoreResult, GraphView, HierarchySummary, InterClusterRelationHit,
+    KgNodesForEpisodes, KgStats, KnowledgeGraphStore, LcaPath, ReindexReport, StoreOutcome,
+    StrategyCandidate, VecIndexHealth, WeightedTraversalHit, AggregateSummary, DecayCandidate,
+    DuplicateCandidate, RelationshipContext,
 };
+use zbot_stores_traits::EmbeddingQueryIdentity;
 
 use crate::{
     bootstrap::EngramProvider,

@@ -3772,6 +3772,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zbot-stores-domain",
+ "zbot-stores-traits",
 ]
 
 [[package]]

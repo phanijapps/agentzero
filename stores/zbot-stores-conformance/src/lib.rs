@@ -9,7 +9,8 @@ pub mod parity;
 
 use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
 use zbot_stores::extracted::ExtractedKnowledge;
-use zbot_stores::types::{Direction, EntityId, ResolveOutcome};
+use knowledge_graph::kg_trait::kg_types::{EntityId, ResolveOutcome};
+use knowledge_graph::types::Direction;
 use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_domain::MemoryFact;
 

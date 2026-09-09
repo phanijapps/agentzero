@@ -16,6 +16,7 @@
 //! See `docs/architecture/future-state/db-provider-portability.md`.
 
 pub mod error;
+pub mod kg_trait;
 pub mod extractor;
 pub mod resolver;
 pub mod types;

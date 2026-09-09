@@ -1058,7 +1058,7 @@ impl EpisodeStore for EngramSidecarStores {
     ) -> StoreResult<Vec<SessionEpisode>> {
         self.row_jsons(
             "SELECT record_json FROM episodes
-             WHERE ward_id = ?1 AND outcome = 'success'
+             WHERE ward_id = ?1 AND outcome IN ('success', 'partial')
              ORDER BY created_at DESC, id ASC LIMIT ?2",
             vec![
                 SqlValue::Text(ward_id.to_string()),

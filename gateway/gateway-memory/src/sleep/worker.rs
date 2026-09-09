@@ -380,18 +380,14 @@ mod tests {
     use crate::sleep::test_support;
     use agent_primitives::vault_paths::VaultPaths;
     use async_trait::async_trait;
+    use knowledge_graph::kg_trait::KnowledgeGraphStore;
     use std::sync::Mutex;
     use tempfile::tempdir;
-    use zbot_stores::KnowledgeGraphStore;
-    use zbot_stores_sqlite::kg::storage::GraphStorage;
-    use zbot_stores_sqlite::SqliteKgStore;
-    use zbot_stores_sqlite::{CompactionRepository, KnowledgeDatabase};
 
     struct Harness {
-        _tmp: tempfile::TempDir,
-        db: Arc<KnowledgeDatabase>,
-        graph: Arc<GraphStorage>,
-        compaction_repo: Arc<CompactionRepository>,
+        tmp: tempfile::TempDir,
+        kg_store: Arc<dyn KnowledgeGraphStore>,
+        compaction_store: Arc<dyn zbot_stores_traits::CompactionStore>,
         memory_store: Arc<dyn zbot_stores::MemoryFactStore>,
         procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore>,
         message_store: Arc<dyn zbot_conversation::MessageStore>,
@@ -403,19 +399,17 @@ mod tests {
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let conversation_pool =
             zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths.clone()).unwrap());
-        let graph = Arc::new(GraphStorage::new(db.clone()).unwrap());
-        let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
         let message_store: Arc<dyn zbot_conversation::MessageStore> = Arc::new(
             zbot_conversation::SqliteMessageStore::new(conversation_pool),
         );
         let memory_store = test_support::fact_store(&tmp);
         let procedure_store = test_support::procedure_store(&tmp);
+        let kg_store = test_support::kg_store(&tmp);
+        let compaction_store = test_support::compaction_store(&tmp);
         Harness {
-            _tmp: tmp,
-            db,
-            graph,
-            compaction_repo,
+            tmp,
+            kg_store,
+            compaction_store,
             memory_store,
             procedure_store,
             message_store,
@@ -424,18 +418,13 @@ mod tests {
 
     fn build_core(h: &Harness) -> (Arc<Compactor>, Arc<DecayEngine>, Arc<Pruner>) {
         use crate::sleep::{DecayConfig, Pruner as Pr};
-        use zbot_stores_sqlite::GatewayCompactionStore;
-        use zbot_stores_traits::CompactionStore;
-        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let compaction_store: Arc<dyn CompactionStore> =
-            Arc::new(GatewayCompactionStore::new(h.compaction_repo.clone()));
         let compactor = Arc::new(Compactor::new(
-            kg_store.clone(),
-            compaction_store.clone(),
+            h.kg_store.clone(),
+            h.compaction_store.clone(),
             None,
         ));
-        let decay = Arc::new(DecayEngine::new(kg_store.clone(), DecayConfig::default()));
-        let pruner = Arc::new(Pr::new(kg_store, compaction_store));
+        let decay = Arc::new(DecayEngine::new(h.kg_store.clone(), DecayConfig::default()));
+        let pruner = Arc::new(Pr::new(h.kg_store.clone(), h.compaction_store.clone()));
         (compactor, decay, pruner)
     }
 
@@ -494,25 +483,12 @@ mod tests {
         // verify they were invoked (no panic, stats all zero, cycle completes).
         let h = harness();
         let (c, d, p) = build_core(&h);
-        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let episode_vec: Arc<dyn zbot_stores_sqlite::vector_index::VectorIndex> = Arc::new(
-            zbot_stores_sqlite::vector_index::SqliteVecIndex::new(
-                h.db.clone(),
-                "session_episodes_index",
-                "episode_id",
-            )
-            .expect("vec idx"),
-        );
-        let episode_repo = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
-            h.db.clone(),
-            episode_vec,
-        ));
+        let kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
         let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
-            Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
+            test_support::episode_store(&h.tmp);
         let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = h.memory_store.clone();
-        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
-            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
-        );
+        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
+            h.compaction_store.clone();
         let synth = Arc::new(MemorySynthesisConsolidation::new(Arc::new(
             crate::sleep::Synthesizer::new(
                 kg_store.clone(),
@@ -539,11 +515,9 @@ mod tests {
                 Vec::new(),
             ),
         )));
-        let archiver_kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let archiver_compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
-            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
-        );
+        let archiver_kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
+        let archiver_compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
+            h.compaction_store.clone();
         let archiver = Arc::new(crate::sleep::OrphanArchiver::new(
             archiver_kg_store,
             archiver_compaction_store,
@@ -604,25 +578,12 @@ mod tests {
         // counter is reachable (no panic) and cycle returns stats.
         let h = harness();
         let (c, d, p) = build_core(&h);
-        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let episode_vec: Arc<dyn zbot_stores_sqlite::vector_index::VectorIndex> = Arc::new(
-            zbot_stores_sqlite::vector_index::SqliteVecIndex::new(
-                h.db.clone(),
-                "session_episodes_index",
-                "episode_id",
-            )
-            .expect("vec idx"),
-        );
-        let episode_repo = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
-            h.db.clone(),
-            episode_vec,
-        ));
+        let kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
         let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
-            Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
+            test_support::episode_store(&h.tmp);
         let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = h.memory_store.clone();
-        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
-            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
-        );
+        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
+            h.compaction_store.clone();
         let synth = Arc::new(MemorySynthesisConsolidation::new(Arc::new(
             crate::sleep::Synthesizer::new(
                 kg_store,

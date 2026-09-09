@@ -13,13 +13,13 @@ pub mod knowledge_graph;
 pub mod memory_facts;
 pub mod types;
 
+pub use ::knowledge_graph::kg_trait::*;
 pub use belief::{Belief, BeliefStore, ScoredBelief};
 pub use belief_contradiction::{
     BeliefContradiction, BeliefContradictionStore, ContradictionType, Resolution,
 };
 pub use error::{GraphStoreError, GraphStoreResult};
 pub use extracted::ExtractedKnowledge;
-pub use ::knowledge_graph::kg_trait::*;
 pub use memory_facts::{
     EmbeddingQueryIdentity, MemoryAggregateStats, MemoryFactStore, MemoryFactWriteRequest,
     MemoryHealthMetrics, SkillIndexRow, StrategyFactInsert, StrategyFactMatch,

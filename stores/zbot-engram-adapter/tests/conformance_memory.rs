@@ -207,3 +207,97 @@ async fn conformance_procedure_upsert_and_similarity_round_trip() {
         "procedure must be agent-scoped"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Episode avoid-list surface on the engram sidecar store
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn episodes_failed_and_successful_fetch_by_ward() {
+    let root = tempfile::tempdir().expect("root");
+    let config = zbot_engram_adapter::AdapterConfig::engram_for_data_root(root.path(), "engram.db");
+    let provider = zbot_engram_adapter::EngramProvider::open(config.clone()).expect("provider");
+    let store =
+        zbot_engram_adapter::EngramSidecarStores::from_provider(config, &provider).expect("store");
+
+    use zbot_stores_traits::EpisodeStore as _;
+    let mk =
+        |id: &str, outcome: &str, learnings: Option<&str>| zbot_stores_domain::SessionEpisode {
+            id: id.into(),
+            session_id: format!("sess-{id}"),
+            agent_id: "agent-a".into(),
+            ward_id: "finance".into(),
+            task_summary: format!("task {id}"),
+            outcome: outcome.into(),
+            strategy_used: None,
+            key_learnings: learnings.map(str::to_string),
+            token_cost: None,
+            embedding: None,
+            created_at: (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339(),
+        };
+
+    store
+        .insert_episode(mk("e-ok", "success", Some("ok learnings")), None)
+        .await
+        .expect("insert ok");
+    // Partial outcomes are chain-eligible (sqlite parity): a partial episode
+    // must surface alongside successes.
+    store
+        .insert_episode(mk("e-partial", "partial", Some("partial learnings")), None)
+        .await
+        .expect("insert partial");
+    store
+        .insert_episode(mk("e-fail", "failed", Some("avoid this")), None)
+        .await
+        .expect("insert fail");
+
+    let ok = store
+        .fetch_recent_successful_by_ward("finance", 3)
+        .await
+        .expect("succ");
+    assert_eq!(ok.len(), 2, "success + partial both surface: {ok:?}");
+    let failed = store
+        .fetch_recent_failed_by_ward("finance", 3)
+        .await
+        .expect("failed");
+    assert_eq!(
+        failed.len(),
+        1,
+        "failed fetch must surface the avoid episode: {failed:?}"
+    );
+    assert_eq!(failed[0].id, "e-fail");
+}
+
+#[tokio::test]
+async fn kg_layer_zero_embeddings_surface_for_clustering() {
+    use knowledge_graph::kg_trait::KnowledgeGraphStore as _;
+    use zbot_engram_adapter::EngramKnowledgeGraphStore;
+    let root = tempfile::tempdir().expect("root");
+    let mut config =
+        zbot_engram_adapter::AdapterConfig::engram_for_data_root(root.path(), "engram.db");
+    config.embedding_provider.provider_type = "t".into();
+    config.embedding_provider.model = "m-384".into();
+    config.embedding_provider.dimensions = 384;
+    let provider = zbot_engram_adapter::EngramProvider::open(config.clone()).expect("provider");
+    let store = EngramKnowledgeGraphStore::from_provider(config, &provider).expect("store");
+
+    let mut e = knowledge_graph::Entity::new(
+        "agent".into(),
+        knowledge_graph::EntityType::Concept,
+        "e-0".into(),
+    );
+    let mut emb = vec![0.0_f32; 384];
+    emb[0] = 1.0;
+    e.name_embedding = Some(emb);
+    store.upsert_entity("agent", e).await.expect("seed");
+
+    let pool = store
+        .list_entities_with_embeddings_at_layer("agent", 0, 100)
+        .await
+        .expect("list");
+    assert_eq!(
+        pool.len(),
+        1,
+        "layer-0 entity with embedding must surface: {pool:?}"
+    );
+}

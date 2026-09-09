@@ -1390,12 +1390,8 @@ fn build_composite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_primitives::vault_paths::VaultPaths;
     use chrono::Duration as ChronoDuration;
     use std::sync::Mutex as StdMutex;
-    use zbot_stores_sqlite::{
-        KnowledgeDatabase, SqliteBeliefContradictionStore, SqliteBeliefStore,
-    };
 
     // -- mocks --------------------------------------------------------------
 
@@ -1508,13 +1504,8 @@ mod tests {
         config: BeliefContradictionConfig,
     ) -> TestEnv {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
         let fact_store: Arc<dyn MemoryFactStore> = crate::sleep::test_support::fact_store(&tmp);
-        let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(db.clone()));
-        let contradiction_store: Arc<dyn BeliefContradictionStore> =
-            Arc::new(SqliteBeliefContradictionStore::new(db));
+        let (belief_store, contradiction_store) = crate::sleep::test_support::belief_stores(&tmp);
         let consolidation = BeliefConsolidation::new(BeliefConsolidationParts {
             fact_store: fact_store.clone(),
             belief_store: belief_store.clone(),

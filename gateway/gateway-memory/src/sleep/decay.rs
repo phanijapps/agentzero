@@ -382,25 +382,38 @@ impl DecayEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_primitives::vault_paths::VaultPaths;
+    use crate::sleep::test_support;
+    use knowledge_graph::kg_trait::KnowledgeGraphStore;
     use knowledge_graph::{Entity, EntityType, ExtractedKnowledge, Relationship, RelationshipType};
     use std::sync::Arc;
-    use zbot_stores::KnowledgeGraphStore;
-    use zbot_stores_sqlite::kg::storage::GraphStorage;
-    use zbot_stores_sqlite::{KnowledgeDatabase, SqliteKgStore};
 
-    fn setup() -> (tempfile::TempDir, Arc<GraphStorage>) {
+    fn setup() -> (tempfile::TempDir, Arc<dyn KnowledgeGraphStore>) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
+        let kg = test_support::kg_store(&tmp);
+        (tmp, kg)
+    }
+
+    /// Sqlite KG reference-implementation fixture for the decay /
+    /// contradiction-propagation integration tests (see note above
+    /// `insert_kg_entity_with_episode`).
+    fn sqlite_graph() -> (
+        tempfile::TempDir,
+        Arc<zbot_stores_sqlite::kg::storage::GraphStorage>,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         std::fs::create_dir_all(paths.conversations_db().parent().expect("parent")).expect("mkdir");
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-        let graph = Arc::new(GraphStorage::new(db).expect("graph"));
+        let db = Arc::new(zbot_stores_sqlite::KnowledgeDatabase::new(paths).expect("db"));
+        let graph =
+            Arc::new(zbot_stores_sqlite::kg::storage::GraphStorage::new(db).expect("graph"));
         (tmp, graph)
     }
 
     #[tokio::test]
     async fn decay_engine_returns_only_orphan_old_non_archival() {
-        let (_tmp, graph) = setup();
+        let (_tmp, graph) = sqlite_graph();
         let agent_id = "agent-decay";
 
         // 1. An orphan, old entity -> should be returned.
@@ -459,7 +472,8 @@ mod tests {
             )
             .expect("store");
 
-        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(graph.clone()));
+        let kg_store: Arc<dyn KnowledgeGraphStore> =
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
         let engine = DecayEngine::new(
             kg_store,
             DecayConfig {
@@ -486,10 +500,11 @@ mod tests {
 
     #[tokio::test]
     async fn decay_kg_confidence_returns_stats_when_enabled() {
-        let (_tmp, graph) = setup();
+        let (_tmp, graph) = sqlite_graph();
         let agent_id = "agent-kg-decay";
 
-        // Seed one old entity.
+        // Seed one old entity (confidence is a KG-storage column; see the
+        // sqlite-reference note above `insert_kg_entity_with_episode`.
         graph
             .knowledge_db()
             .with_connection(|conn| {
@@ -510,7 +525,7 @@ mod tests {
             .unwrap();
 
         let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
+            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
         let config = crate::KgDecayConfig::default();
         let stats = engine.decay_kg_confidence(agent_id, &config).await;
@@ -520,9 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn decay_kg_confidence_no_op_when_disabled() {
-        let (_tmp, graph) = setup();
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
+        let (_tmp, kg_store) = setup();
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
         let config = crate::KgDecayConfig {
             enabled: false,
@@ -544,16 +557,10 @@ mod tests {
     #[tokio::test]
     async fn propagate_fact_confidence_drops_threshold_logic() {
         use crate::sleep::belief_propagator::BeliefPropagator;
-        use zbot_stores_sqlite::SqliteBeliefStore;
-        use zbot_stores_traits::{Belief, BeliefStore};
+        use zbot_stores_traits::Belief;
 
-        let (_tmp, graph) = setup();
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
-
-        // Wire a real belief store against the same knowledge DB.
-        let knowledge_db = graph.knowledge_db().clone();
-        let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(knowledge_db));
+        let (_tmp, kg_store) = setup();
+        let (belief_store, _contradictions) = test_support::belief_stores(&_tmp);
         let now = chrono::Utc::now();
         // Two beliefs: one sourced from "F-crossing", one from
         // "F-stable". Only the first should be touched.
@@ -619,14 +626,10 @@ mod tests {
     #[tokio::test]
     async fn propagate_sharp_drop_fires_even_above_floor() {
         use crate::sleep::belief_propagator::BeliefPropagator;
-        use zbot_stores_sqlite::SqliteBeliefStore;
-        use zbot_stores_traits::{Belief, BeliefStore};
+        use zbot_stores_traits::Belief;
 
-        let (_tmp, graph) = setup();
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
-        let knowledge_db = graph.knowledge_db().clone();
-        let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(knowledge_db));
+        let (_tmp, kg_store) = setup();
+        let (belief_store, _contradictions) = test_support::belief_stores(&_tmp);
         let now = chrono::Utc::now();
         let b = Belief {
             id: "b-sharp".into(),
@@ -662,9 +665,7 @@ mod tests {
     /// Engine without a wired propagator is a no-op on fact-drop calls.
     #[tokio::test]
     async fn propagate_no_op_without_propagator() {
-        let (_tmp, graph) = setup();
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
+        let (_tmp, kg_store) = setup();
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
 
         let drops = vec![("F-any".to_string(), 0.9_f64, 0.1_f64)];
@@ -721,6 +722,11 @@ mod tests {
             .expect("seed contradicted fact");
     }
 
+    // KG-confidence decay + contradiction propagation surfaces exist only
+    // on the sqlite KG store (production currently no-ops them through the
+    // engram adapter's trait defaults). These integration tests stay on the
+    // sqlite reference implementation until the KG lane migrates — tracked
+    // as the "KG lane → engram" backlog item.
     fn insert_kg_entity_with_episode(
         graph: &zbot_stores_sqlite::kg::storage::GraphStorage,
         id: &str,
@@ -747,7 +753,7 @@ mod tests {
 
     #[tokio::test]
     async fn propagate_fact_contradictions_decays_kg_nodes_for_contradicted_episodes() {
-        let (tmp, graph) = setup();
+        let (tmp, graph) = sqlite_graph();
         let agent = "a";
         let fact_store: Arc<dyn zbot_stores_traits::MemoryFactStore> =
             crate::sleep::test_support::fact_store(&tmp);
@@ -804,7 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn propagate_fact_contradictions_disabled_is_noop() {
-        let (_tmp, graph) = setup();
+        let (_tmp, graph) = sqlite_graph();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
             Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default())
@@ -824,7 +830,7 @@ mod tests {
 
     #[tokio::test]
     async fn propagate_fact_contradictions_no_factstore_is_noop() {
-        let (_tmp, graph) = setup();
+        let (_tmp, graph) = sqlite_graph();
         let kg_store: Arc<dyn KnowledgeGraphStore> =
             Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default());

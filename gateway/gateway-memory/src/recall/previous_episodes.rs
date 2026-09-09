@@ -145,29 +145,21 @@ pub fn failed_episode_to_item(ep: &SessionEpisode, rank: usize) -> ScoredItem {
 mod tests {
     use super::*;
     use crate::recall::scored_item::ItemKind;
-    use agent_primitives::vault_paths::VaultPaths;
-    use zbot_stores_sqlite::{
-        EpisodeRepository, GatewayEpisodeStore, KnowledgeDatabase, SqliteVecIndex,
-    };
+    use crate::sleep::test_support;
 
-    fn setup() -> (
-        tempfile::TempDir,
-        Arc<EpisodeRepository>,
-        Arc<dyn EpisodeStore>,
-    ) {
+    fn setup() -> (tempfile::TempDir, Arc<dyn EpisodeStore>) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-        let vec_index = Arc::new(
-            SqliteVecIndex::new(db.clone(), "session_episodes_index", "episode_id")
-                .expect("vec index init"),
-        );
-        let repo = Arc::new(EpisodeRepository::new(db, vec_index));
-        let store: Arc<dyn EpisodeStore> = Arc::new(GatewayEpisodeStore::new(repo.clone()));
-        (tmp, repo, store)
+        let store = test_support::episode_store(&tmp);
+        (tmp, store)
     }
 
-    fn insert_ep(repo: &EpisodeRepository, id: &str, ward: &str, outcome: &str, created_at: &str) {
+    async fn insert_ep(
+        store: &Arc<dyn EpisodeStore>,
+        id: &str,
+        ward: &str,
+        outcome: &str,
+        created_at: &str,
+    ) {
         let ep = SessionEpisode {
             id: id.to_string(),
             session_id: format!("sess-{id}"),
@@ -181,7 +173,9 @@ mod tests {
             embedding: None,
             created_at: created_at.to_string(),
         };
-        repo.insert(&ep).expect("insert");
+        zbot_stores_traits::EpisodeStore::insert_episode(store.as_ref(), ep, None)
+            .await
+            .expect("insert");
     }
 
     fn now_offset_days(days: i64) -> String {
@@ -240,23 +234,24 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_returns_top3_newest_first_filtered_by_ward_and_window() {
-        let (_tmp, repo, store) = setup();
+        let (_tmp, store) = setup();
         // 3 successful in ward, created oldest → newest.
-        insert_ep(&repo, "ep-old", "finance", "success", &now_offset_days(10));
-        insert_ep(&repo, "ep-mid", "finance", "partial", &now_offset_days(5));
-        insert_ep(&repo, "ep-new", "finance", "success", &now_offset_days(1));
+        insert_ep(&store, "ep-old", "finance", "success", &now_offset_days(10)).await;
+        insert_ep(&store, "ep-mid", "finance", "partial", &now_offset_days(5)).await;
+        insert_ep(&store, "ep-new", "finance", "success", &now_offset_days(1)).await;
         // 1 outside the 14-day window.
         insert_ep(
-            &repo,
+            &store,
             "ep-stale",
             "finance",
             "success",
             &now_offset_days(30),
-        );
+        )
+        .await;
         // 1 in a different ward.
-        insert_ep(&repo, "ep-other", "hr", "success", &now_offset_days(1));
+        insert_ep(&store, "ep-other", "hr", "success", &now_offset_days(1)).await;
         // 1 failed with learnings — surfaces as an avoid item.
-        insert_ep(&repo, "ep-fail", "finance", "failed", &now_offset_days(1));
+        insert_ep(&store, "ep-fail", "finance", "failed", &now_offset_days(1)).await;
 
         let adapter = PreviousEpisodesAdapter::new(store);
         let items = adapter.fetch("agent-a", "finance").await.expect("fetch");
@@ -281,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_empty_when_ward_has_no_episodes() {
-        let (_tmp, _repo, store) = setup();
+        let (_tmp, store) = setup();
         let adapter = PreviousEpisodesAdapter::new(store);
         let items = adapter.fetch("agent-a", "ghost-ward").await.expect("fetch");
         assert!(items.is_empty());

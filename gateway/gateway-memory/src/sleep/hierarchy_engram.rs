@@ -821,9 +821,6 @@ mod tests {
     use agent_runtime::llm::EmbeddingError;
     use std::sync::Mutex;
     use tempfile::TempDir;
-    use zbot_stores_sqlite::kg::storage::GraphStorage;
-    use zbot_stores_sqlite::KnowledgeDatabase;
-    use zbot_stores_sqlite::SqliteKgStore;
 
     // ---- fakes (ported from hierarchy_builder.rs) ----
 
@@ -911,19 +908,33 @@ mod tests {
 
     // ---- fixture builders (ported) ----
 
-    fn build_store_with_layer_zero(
+    async fn build_store_with_layer_zero(
         agent_id: &str,
         n_per_cluster: usize,
         n_clusters: usize,
     ) -> (Arc<dyn KnowledgeGraphStore>, TempDir) {
+        use knowledge_graph::EntityType;
         let dir = tempfile::tempdir().unwrap();
-        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
-            dir.path().to_path_buf(),
-        ));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths.clone()).unwrap());
-        let storage = Arc::new(GraphStorage::new(db.clone()).unwrap());
+        // Hierarchy fixtures embed at 384 dims (MockEmbedder); the shared
+        // test_support provider is configured for 8-dim facts — open a
+        // dedicated provider at the fixture's dimension so the store's
+        // embedding-identity guard admits these vectors.
+        let root = dir.path().join("engram-kg-hierarchy");
+        std::fs::create_dir_all(&root).expect("root");
+        let mut config =
+            zbot_engram_adapter::AdapterConfig::engram_for_data_root(&root, "engram.db");
+        config.embedding_provider.provider_type = "gateway-memory-test".to_string();
+        config.embedding_provider.model = "hierarchy-384".to_string();
+        config.embedding_provider.dimensions = 384;
+        let provider = zbot_engram_adapter::EngramProvider::open(config.clone()).expect("provider");
+        let kg: Arc<dyn KnowledgeGraphStore> = Arc::new(
+            zbot_engram_adapter::EngramKnowledgeGraphStore::from_provider(config, &provider)
+                .expect("kg store"),
+        );
 
+        // Seed through the trait surface (production path): entities with
+        // L2-normalized name embeddings land in the same ANN index the
+        // builder reads through.
         for c in 0..n_clusters {
             let angle = (c as f32) * std::f32::consts::TAU / (n_clusters as f32);
             let dx = angle.cos();
@@ -938,31 +949,18 @@ mod tests {
                     *v /= norm;
                 }
 
-                let emb_for_db = emb.clone();
-                let id_for_db = id.clone();
-                let agent_for_db = agent_id.to_string();
-                db.with_connection(|conn| {
-                    conn.execute(
-                        "INSERT INTO kg_entities
-                            (id, agent_id, entity_type, name, normalized_name, normalized_hash,
-                             first_seen_at, last_seen_at, layer)
-                         VALUES (?1, ?2, 'Concept', ?1, ?1, ?1,
-                                 datetime('now'), datetime('now'), 0)",
-                        rusqlite::params![id_for_db, agent_for_db],
-                    )?;
-                    let emb_json = serde_json::to_string(&emb_for_db).unwrap();
-                    conn.execute(
-                        "INSERT INTO kg_name_index (entity_id, name_embedding) \
-                         VALUES (?1, ?2)",
-                        rusqlite::params![id_for_db, emb_json],
-                    )?;
-                    Ok(())
-                })
-                .unwrap();
+                let mut entity = knowledge_graph::Entity::new(
+                    agent_id.to_string(),
+                    EntityType::Concept,
+                    id.clone(),
+                );
+                entity.name_embedding = Some(emb);
+                kg.upsert_entity(agent_id, entity)
+                    .await
+                    .expect("seed entity");
             }
         }
 
-        let kg: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(storage));
         (kg, dir)
     }
 
@@ -984,7 +982,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_agent_yields_no_aggregates() {
-        let (kg, _dir) = build_store_with_layer_zero("agent-empty", 0, 0);
+        let (kg, _dir) = build_store_with_layer_zero("agent-empty", 0, 0).await;
         let llm = MockLlm::new();
         let b = builder(kg, llm.clone(), true, HierarchyConfig::default());
         let (stats, nodes) = b.build_for_agent("agent-empty").await;
@@ -999,7 +997,7 @@ mod tests {
     async fn singletons_short_circuit_no_llm() {
         // Two single-member blobs: every cluster is a singleton, so the
         // LLM must never be called (singletons promote member-as-name).
-        let (store, _dir) = build_store_with_layer_zero("agent", 1, 2);
+        let (store, _dir) = build_store_with_layer_zero("agent", 1, 2).await;
         // 3 blobs of 1 member → k=max(2, 3/20)=2 → singleton clusters.
         let llm = MockLlm::new();
         // target 2 so a 3-entity pool clusters at all (default 20 would
@@ -1028,7 +1026,7 @@ mod tests {
     async fn orchestrator_accumulates_prior_names_across_clusters() {
         // Two multi-member clusters: the second synthesize call must see
         // the first aggregate's name in prior_names.
-        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2);
+        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2).await;
         let llm = MockLlm::new();
         let config = HierarchyConfig {
             cluster_target_size: 4,
@@ -1051,7 +1049,7 @@ mod tests {
 
     #[tokio::test]
     async fn llm_failure_increments_error_count_but_continues() {
-        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2);
+        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2).await;
         let llm = Arc::new(MockLlm {
             synth_calls: Mutex::new(0),
             relation_calls: Mutex::new(0),
@@ -1071,7 +1069,7 @@ mod tests {
 
     #[tokio::test]
     async fn budget_exhaustion_stops_cleanly() {
-        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2);
+        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2).await;
         let llm = MockLlm::new();
         let config = HierarchyConfig {
             cluster_target_size: 4,
@@ -1086,7 +1084,7 @@ mod tests {
 
     #[tokio::test]
     async fn pool_too_small_stops() {
-        let (store, _dir) = build_store_with_layer_zero("agent", 1, 1);
+        let (store, _dir) = build_store_with_layer_zero("agent", 1, 1).await;
         let llm = MockLlm::new();
         let b = builder(store, llm, true, HierarchyConfig::default());
         let (stats, _nodes) = b.build_for_agent("agent").await;
@@ -1098,7 +1096,7 @@ mod tests {
         // write_inter_cluster_pair falls back to "related-via" — verified
         // indirectly: relation call errors don't abort or count as errors
         // (they're logged + fallback). Covered by budget test shape here.
-        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2);
+        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2).await;
         let llm = MockLlm::new();
         let config = HierarchyConfig {
             cluster_target_size: 4,
@@ -1113,7 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn port_impl_returns_nodes_and_drainable_stats() {
-        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2);
+        let (store, _dir) = build_store_with_layer_zero("agent", 6, 2).await;
         let llm = MockLlm::new();
         let b = Arc::new(builder(
             store,
@@ -1151,7 +1149,7 @@ mod tests {
 
     #[tokio::test]
     async fn consolidation_trigger_drains_stats() {
-        let (store, _dir) = build_store_with_layer_zero("agent", 1, 3);
+        let (store, _dir) = build_store_with_layer_zero("agent", 1, 3).await;
         let llm = MockLlm::new();
         let hc = HierarchyConsolidation::new(
             store,

@@ -14,11 +14,11 @@ mod store;
 pub use error::{GraphStoreError, GraphStoreResult};
 pub use extracted::ExtractedKnowledge;
 pub use kg_types::{
-    ArchivableEntity, EntityId, KgStats, Neighbor, RelationshipId, ReindexReport, ResolveOutcome,
+    ArchivableEntity, EntityId, KgStats, Neighbor, ReindexReport, RelationshipId, ResolveOutcome,
     StoreOutcome, TraversalHit, VecIndexHealth,
 };
 pub use store::{
-    KnowledgeGraphStore, EntityWithEmbedding, KgNodesForEpisodes, LcaPath, WeightedTraversalHit,
+    EntityWithEmbedding, KgNodesForEpisodes, KnowledgeGraphStore, LcaPath, WeightedTraversalHit,
 };
 
 // Port request/response shapes re-exported at the trait surface so

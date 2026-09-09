@@ -8,14 +8,14 @@
 
 use std::sync::Arc;
 
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_engram_adapter::{
     AdapterConfig, EngramBeliefStore, EngramKnowledgeGraphStore, EngramMemoryFactStore,
     EngramProvider, EngramSidecarStores,
 };
-use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::{
-    BeliefContradictionStore, BeliefStore, CompactionStore, EpisodeStore, GoalStore,
-    KgEpisodeStore, MemoryFactStore, ProcedureStore,
+    BeliefContradictionStore, BeliefStore, CompactionStore, EpisodeStore, MemoryFactStore,
+    ProcedureStore,
 };
 
 fn adapter_config(root: &std::path::Path) -> AdapterConfig {
@@ -47,49 +47,25 @@ pub(crate) fn fact_store(tmp: &tempfile::TempDir) -> Arc<dyn MemoryFactStore> {
 /// An engram-backed procedure store for unit-test fixtures.
 pub(crate) fn procedure_store(tmp: &tempfile::TempDir) -> Arc<dyn ProcedureStore> {
     let (config, provider) = open_provider(tmp.path(), "engram-procedures");
-    Arc::new(
-        EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"),
-    )
+    Arc::new(EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"))
 }
 
 /// An engram-backed episode store for unit-test fixtures.
 pub(crate) fn episode_store(tmp: &tempfile::TempDir) -> Arc<dyn EpisodeStore> {
     let (config, provider) = open_provider(tmp.path(), "engram-episodes");
-    Arc::new(
-        EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"),
-    )
+    Arc::new(EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"))
 }
 
 /// An engram-backed compaction store for unit-test fixtures.
 pub(crate) fn compaction_store(tmp: &tempfile::TempDir) -> Arc<dyn CompactionStore> {
     let (config, provider) = open_provider(tmp.path(), "engram-compaction");
-    Arc::new(
-        EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"),
-    )
-}
-
-/// An engram-backed goal store for unit-test fixtures.
-pub(crate) fn goal_store(tmp: &tempfile::TempDir) -> Arc<dyn GoalStore> {
-    let (config, provider) = open_provider(tmp.path(), "engram-goals");
-    Arc::new(
-        EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"),
-    )
-}
-
-/// An engram-backed KG-ingestion episode store for unit-test fixtures.
-pub(crate) fn kg_episode_store(tmp: &tempfile::TempDir) -> Arc<dyn KgEpisodeStore> {
-    let (config, provider) = open_provider(tmp.path(), "engram-kg-episodes");
-    Arc::new(
-        EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"),
-    )
+    Arc::new(EngramSidecarStores::from_provider(config, &provider).expect("sidecar store opens"))
 }
 
 /// An engram-backed knowledge-graph store for unit-test fixtures.
 pub(crate) fn kg_store(tmp: &tempfile::TempDir) -> Arc<dyn KnowledgeGraphStore> {
     let (config, provider) = open_provider(tmp.path(), "engram-kg");
-    Arc::new(
-        EngramKnowledgeGraphStore::from_provider(config, &provider).expect("kg store opens"),
-    )
+    Arc::new(EngramKnowledgeGraphStore::from_provider(config, &provider).expect("kg store opens"))
 }
 
 /// Engram-backed belief + contradiction stores sharing one provider — the

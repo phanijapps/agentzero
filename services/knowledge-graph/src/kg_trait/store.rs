@@ -1,7 +1,9 @@
 use super::error::GraphStoreResult;
 use super::extracted::ExtractedKnowledge;
 use super::kg_types::*;
-use crate::types::{Direction, Entity, EntityType, GraphStats, NeighborInfo, Relationship, Subgraph};
+use crate::types::{
+    Direction, Entity, EntityType, GraphStats, NeighborInfo, Relationship, Subgraph,
+};
 use async_trait::async_trait;
 use zbot_stores_traits::EmbeddingQueryIdentity;
 // Port request/response shapes live in `zbot-stores-domain`; re-export

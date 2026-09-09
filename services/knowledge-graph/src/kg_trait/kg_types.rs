@@ -90,7 +90,7 @@ impl From<crate::types::NeighborInfo> for Neighbor {
             entity_id: EntityId(n.entity.id),
             relationship_id: RelationshipId(n.relationship.id),
             relationship_type: n.relationship.relationship_type.as_str().to_string(),
-            direction: n.direction.into(),
+            direction: n.direction,
         }
     }
 }

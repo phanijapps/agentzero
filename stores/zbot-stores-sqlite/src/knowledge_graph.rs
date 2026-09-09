@@ -240,7 +240,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         let id = id.0.clone();
         block(move || {
             storage
-                .get_neighbors("", &id, direction.into(), limit)
+                .get_neighbors("", &id, direction, limit)
                 .map(|rows| rows.into_iter().map(Into::into).collect())
                 .map_err(map_graph_err)
         })
@@ -589,7 +589,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         let entity_id = entity_id.to_string();
         block(move || {
             storage
-                .get_neighbors(&agent_id, &entity_id, direction.into(), limit)
+                .get_neighbors(&agent_id, &entity_id, direction, limit)
                 .map_err(map_graph_err)
         })
         .await

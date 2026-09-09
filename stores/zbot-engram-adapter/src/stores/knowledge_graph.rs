@@ -11,23 +11,21 @@ use async_trait::async_trait;
 use chrono::Utc;
 use engram_hierarchy::HierarchyRepository;
 use engram_knowledge::KnowledgeRepository;
+use knowledge_graph::kg_trait::kg_types::{
+    EntityId, Neighbor, RelationshipId, ResolveOutcome, TraversalHit,
+};
+use knowledge_graph::kg_trait::{
+    ArchivableEntity, EntityNameEmbeddingHit, EntityWithEmbedding, ExtractedKnowledge,
+    GraphStoreError, GraphStoreResult, GraphView, HierarchySummary, InterClusterRelationHit,
+    KgStats, KnowledgeGraphStore, LcaPath, ReindexReport, StoreOutcome, VecIndexHealth,
+};
+use knowledge_graph::types::Direction;
 use knowledge_graph::types::{
     Entity, EntityType, GraphStats, NeighborInfo, Relationship, RelationshipType, Subgraph,
 };
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde_json::{json, Value};
 use uuid::Uuid;
-use knowledge_graph::kg_trait::kg_types::{
-    EntityId, Neighbor, RelationshipId, ResolveOutcome, TraversalHit,
-};
-use knowledge_graph::types::Direction;
-use knowledge_graph::kg_trait::{
-    ArchivableEntity, EntityWithEmbedding, EntityNameEmbeddingHit, ExtractedKnowledge,
-    GraphStoreError, GraphStoreResult, GraphView, HierarchySummary, InterClusterRelationHit,
-    KgNodesForEpisodes, KgStats, KnowledgeGraphStore, LcaPath, ReindexReport, StoreOutcome,
-    StrategyCandidate, VecIndexHealth, WeightedTraversalHit, AggregateSummary, DecayCandidate,
-    DuplicateCandidate, RelationshipContext,
-};
 use zbot_stores_traits::EmbeddingQueryIdentity;
 
 use crate::{
@@ -1937,7 +1935,11 @@ impl KnowledgeGraphSidecar {
                 name: entry.entity.name,
             })
             .collect::<Vec<_>>();
-        rows.truncate(limit.max(1));
+        // Limit 0 means unbounded (matches the sqlite contract the
+        // hierarchy builder relies on when pooling layer-0 candidates).
+        if limit > 0 {
+            rows.truncate(limit);
+        }
         Ok(rows)
     }
 
@@ -2140,7 +2142,11 @@ impl KnowledgeGraphSidecar {
                 embedding: entry.embedding.unwrap_or_default(),
             })
             .collect::<Vec<_>>();
-        rows.truncate(limit.max(1));
+        // Limit 0 means unbounded (matches the sqlite contract the
+        // hierarchy builder relies on when pooling layer-0 candidates).
+        if limit > 0 {
+            rows.truncate(limit);
+        }
         Ok(rows)
     }
 

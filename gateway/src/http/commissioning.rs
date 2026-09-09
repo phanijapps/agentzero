@@ -1576,7 +1576,6 @@ mod tests {
         assert_eq!(preflight_full_memory_profile(&paths, &exact, true), Ok(()));
 
         let custom = gateway_memory::MemorySettings {
-            corrections_abstractor_interval_hours: 99,
             ..gateway_memory::MemorySettings::default()
         };
         assert_eq!(

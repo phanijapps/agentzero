@@ -38,6 +38,7 @@ engram-runtime = { git = "https://github.com/phanijapps/engram", branch = "main"
 engram-rerank-mmr = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-retrieval = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-belief = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-hierarchy = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-reflection = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-consolidation = { git = "https://github.com/phanijapps/engram", branch = "main" }
 knowledge-graph = { path = "../../services/knowledge-graph" }

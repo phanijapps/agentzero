@@ -7,9 +7,9 @@ pub mod belief_propagator;
 pub mod clustering;
 pub mod compactor;
 pub mod conflict_resolver;
-pub mod corrections_abstractor;
 pub mod decay;
-pub mod hierarchy_builder;
+pub mod extraction_engram;
+pub mod hierarchy_engram;
 pub mod llm_aggregate_entity;
 pub mod orphan_archiver;
 pub mod pattern_extractor;
@@ -39,13 +39,20 @@ pub use compactor::{CompactionStats, Compactor, PairwiseVerifier};
 pub use conflict_resolver::{
     ConflictJudgeLlm, ConflictResolver, ConflictResponse, ConflictStats, LlmConflictJudge,
 };
-pub use corrections_abstractor::{
-    AbstractionLlm, AbstractionStats, CorrectionsAbstractor, LlmCorrectionsAbstractor,
-};
 pub use decay::{
     ContradictionPropagationConfig, ContradictionPropagationStats, DecayConfig, DecayEngine,
     PruneCandidate,
 };
+pub use extraction_engram::{
+    MemorySynthesisConsolidation, ProcedureExtractionConsolidation, ZbotMemorySynthesisArm,
+    ZbotProcedureExtractionArm,
+};
+pub use hierarchy_engram::{
+    AggregateEntityLlm, AggregateMemberContext, AggregateResponse, HierarchyConfig,
+    HierarchyConsolidation, HierarchyStats, StopReason, ZbotHierarchyBuildArm,
+    ZbotHierarchyBuilder,
+};
+pub use llm_aggregate_entity::LlmAggregateEntity;
 pub use orphan_archiver::{OrphanArchiver, OrphanArchiverStats};
 pub use pattern_extractor::{
     LlmPatternExtractor, PatternExtractLlm, PatternExtractor, PatternResponse, PatternStats,

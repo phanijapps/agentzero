@@ -18,11 +18,10 @@ use zbot_stores_traits::{
 
 use crate::sleep::{
     BeliefConsolidation, BeliefConsolidationParts, BeliefContradictionConfig, BeliefPropagator,
-    Compactor, ConflictResolver, ContradictionPropagationConfig, CorrectionsAbstractor,
-    DecayConfig, DecayEngine, LlmBeliefSynthesizer, LlmConflictJudge, LlmContradictionJudge,
-    LlmCorrectionsAbstractor, LlmPairwiseVerifier, LlmPatternExtractor, LlmSynthesizer,
-    OrphanArchiver, PairwiseVerifier, PatternExtractor, Pruner, RecentBeliefNetworkActivity,
-    SleepOps, SleepTimeWorker, Synthesizer,
+    Compactor, ConflictResolver, ContradictionPropagationConfig, DecayConfig, DecayEngine,
+    LlmBeliefSynthesizer, LlmConflictJudge, LlmContradictionJudge, LlmPairwiseVerifier,
+    LlmPatternExtractor, LlmSynthesizer, OrphanArchiver, PairwiseVerifier, PatternExtractor,
+    Pruner, RecentBeliefNetworkActivity, SleepOps, SleepTimeWorker, Synthesizer,
 };
 use crate::{KgDecayConfig, MemoryLlmFactory};
 
@@ -45,7 +44,6 @@ pub struct MemoryServicesConfig {
     pub message_store: Arc<dyn zbot_conversation::MessageStore>,
     pub embedding_client: Option<Arc<dyn EmbeddingClient>>,
     pub kg_decay_config: KgDecayConfig,
-    pub corrections_abstractor_interval: Duration,
     pub conflict_resolver_interval: Duration,
     pub decay_config: DecayConfig,
     /// MEM-001 Part A — configuration for contradiction propagation
@@ -126,7 +124,6 @@ impl MemoryServices {
             message_store,
             embedding_client,
             kg_decay_config,
-            corrections_abstractor_interval,
             conflict_resolver_interval,
             decay_config,
             belief_store,
@@ -137,7 +134,7 @@ impl MemoryServices {
             belief_contradiction_budget_per_cycle,
             belief_fact_confidence_drop_threshold,
             hierarchy_enabled,
-            hierarchy_interval,
+            hierarchy_interval: _,
             hierarchy_max_layers,
             hierarchy_cluster_target_size,
             hierarchy_inter_cluster_relation_threshold,
@@ -203,14 +200,6 @@ impl MemoryServices {
             compaction_store.clone(),
         ));
 
-        let corrections_llm = Arc::new(LlmCorrectionsAbstractor::new(llm_factory.clone()));
-        let corrections_abstractor = Arc::new(CorrectionsAbstractor::new(
-            memory_store.clone(),
-            compaction_store.clone(),
-            corrections_llm,
-            corrections_abstractor_interval,
-        ));
-
         let conflict_llm = Arc::new(LlmConflictJudge::new(llm_factory.clone()));
         let conflict_resolver = Arc::new(
             ConflictResolver::new(
@@ -268,28 +257,36 @@ impl MemoryServices {
             let agg_llm = Arc::new(crate::sleep::llm_aggregate_entity::LlmAggregateEntity::new(
                 llm_factory.clone(),
             ));
-            let hierarchy_cfg = crate::sleep::hierarchy_builder::HierarchyConfig {
+            let hierarchy_cfg = crate::sleep::hierarchy_engram::HierarchyConfig {
                 cluster_target_size: hierarchy_cluster_target_size,
                 max_layers: hierarchy_max_layers,
                 inter_cluster_relation_threshold: hierarchy_inter_cluster_relation_threshold,
                 llm_budget_per_cycle: hierarchy_llm_budget_per_cycle,
-                ..crate::sleep::hierarchy_builder::HierarchyConfig::default()
+                ..crate::sleep::hierarchy_engram::HierarchyConfig::default()
             };
             Some(Arc::new(
-                crate::sleep::hierarchy_builder::HierarchyBuilder::new(kg_store.clone(), agg_llm)
-                    .with_embedding_client(embedding_client.clone())
-                    .with_config(hierarchy_cfg)
-                    .with_interval(hierarchy_interval),
+                crate::sleep::hierarchy_engram::HierarchyConsolidation::new(
+                    kg_store.clone(),
+                    agg_llm,
+                    embedding_client.clone(),
+                    hierarchy_cfg,
+                    "__default__".to_string(),
+                ),
             ))
         } else {
             None
         };
 
         let ops = SleepOps {
-            synthesizer: Some(synthesizer),
-            pattern_extractor: Some(pattern_extractor),
+            synthesizer: Some(Arc::new(
+                crate::sleep::extraction_engram::MemorySynthesisConsolidation::new(synthesizer),
+            )),
+            pattern_extractor: Some(Arc::new(
+                crate::sleep::extraction_engram::ProcedureExtractionConsolidation::new(
+                    pattern_extractor,
+                ),
+            )),
             orphan_archiver: Some(orphan_archiver),
-            corrections_abstractor: Some(corrections_abstractor),
             conflict_resolver: Some(conflict_resolver),
             belief_consolidation,
             belief_network_activity: Some(belief_network_activity.clone()),

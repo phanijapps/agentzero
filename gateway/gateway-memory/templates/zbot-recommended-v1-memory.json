@@ -7,7 +7,6 @@
     "neighborhoodPrefixDepth": 1
   },
   "conflictResolverIntervalHours": 24,
-  "correctionsAbstractorIntervalHours": 1,
   "hierarchy": {
     "clusterTargetSize": 20,
     "enabled": true,

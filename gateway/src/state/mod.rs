@@ -804,10 +804,6 @@ impl AppState {
             compaction_store.as_ref(),
         ) {
             (Some(kgs), Some(eps), Some(mems), Some(prs), Some(compstore)) => {
-                let abstractions_interval_hours = settings
-                    .get_execution_settings()
-                    .map(|s| s.memory.corrections_abstractor_interval_hours)
-                    .unwrap_or(24);
                 let conflict_interval_hours = settings
                     .get_execution_settings()
                     .map(|s| s.memory.conflict_resolver_interval_hours)
@@ -827,9 +823,6 @@ impl AppState {
                         message_store: messages.clone(),
                         embedding_client: embedding_client.clone(),
                         kg_decay_config: recall_config.kg_decay.clone(),
-                        corrections_abstractor_interval: std::time::Duration::from_secs(
-                            abstractions_interval_hours as u64 * 3600,
-                        ),
                         conflict_resolver_interval: std::time::Duration::from_secs(
                             conflict_interval_hours as u64 * 3600,
                         ),

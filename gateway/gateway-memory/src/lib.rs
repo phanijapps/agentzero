@@ -40,9 +40,6 @@ pub use sleep::compactor::{CompactionStats, Compactor, PairwiseVerifier};
 pub use sleep::conflict_resolver::{
     ConflictJudgeLlm, ConflictResolver, ConflictResponse, ConflictStats,
 };
-pub use sleep::corrections_abstractor::{
-    AbstractionLlm, AbstractionResponse, AbstractionStats, CorrectionsAbstractor,
-};
 pub use sleep::decay::{DecayConfig, DecayEngine, KgDecayStats, PruneCandidate};
 pub use sleep::orphan_archiver::{OrphanArchiver, OrphanArchiverStats};
 pub use sleep::pattern_extractor::{
@@ -405,10 +402,6 @@ pub struct MemorySettings {
     /// memory provider; SQLite remains only for conversations/execution state.
     #[serde(default)]
     pub provider: MemoryProviderSettings,
-    /// Minimum hours between corrections-abstraction LLM calls.
-    /// Default: 24. Set to 0 to run on every sleep cycle (hourly).
-    #[serde(default = "default_corrections_abstractor_interval_hours")]
-    pub corrections_abstractor_interval_hours: u32,
     /// Minimum hours between conflict-resolution LLM judge passes.
     /// Default: 24. Set to 0 to run on every sleep cycle (hourly).
     #[serde(default = "default_conflict_resolver_interval_hours")]
@@ -440,10 +433,6 @@ pub struct MemorySettings {
     pub procedure_recommendation: ProcedureRecommendationConfig,
 }
 
-pub fn default_corrections_abstractor_interval_hours() -> u32 {
-    24
-}
-
 pub fn default_conflict_resolver_interval_hours() -> u32 {
     24
 }
@@ -452,7 +441,6 @@ impl Default for MemorySettings {
     fn default() -> Self {
         Self {
             provider: MemoryProviderSettings::default(),
-            corrections_abstractor_interval_hours: default_corrections_abstractor_interval_hours(),
             conflict_resolver_interval_hours: default_conflict_resolver_interval_hours(),
             belief_network: BeliefNetworkConfig::default(),
             mmr: MmrConfig::default(),
@@ -867,10 +855,10 @@ impl Default for ProcedureRecommendationConfig {
 }
 
 /// Hierarchical-memory configuration (Phase H-3). Toggled by a master
-/// `enabled` flag; when off, the sleep-time `HierarchyBuilder` is never
+/// `enabled` flag; when off, the sleep-time hierarchy build is never
 /// constructed and the existing recall path is byte-for-byte unchanged.
 ///
-/// All tuning knobs map 1:1 onto `sleep::hierarchy_builder::HierarchyConfig`
+/// All tuning knobs map 1:1 onto `sleep::hierarchy_engram::HierarchyConfig`
 /// fields — see that struct's docs for the per-knob semantics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1369,10 +1357,6 @@ mod tests {
         let m: MemorySettings = serde_json::from_str(json).unwrap();
         assert_eq!(m.conflict_resolver_interval_hours, 6);
         assert_eq!(m.provider.mode, MemoryProviderMode::Engram);
-        assert_eq!(
-            m.corrections_abstractor_interval_hours, 24,
-            "default preserved"
-        );
     }
 
     #[test]
@@ -1673,19 +1657,12 @@ mod tests {
     // AC4 — the V1 preset pins approved tuning and built-in identity.
     #[test]
     fn zbot_recommended_v1_pins_memory_tuning_and_builtin_embeddings() {
-        let defaults = serde_json::to_value(MemorySettings::default()).unwrap();
         let profile = MemorySettings::zbot_recommended_v1();
         let approved: serde_json::Value =
             serde_json::from_str(include_str!("../templates/zbot-recommended-v1-memory.json"))
                 .unwrap();
 
         assert_eq!(serde_json::to_value(&profile).unwrap(), approved);
-        assert_eq!(
-            defaults["correctionsAbstractorIntervalHours"],
-            serde_json::json!(24)
-        );
-
-        assert_eq!(profile.corrections_abstractor_interval_hours, 1);
         assert!(profile.belief_network.enabled);
         assert_eq!(profile.belief_network.interval_hours, 0);
         assert_eq!(profile.belief_network.contradiction_budget_per_cycle, 200);

@@ -26,7 +26,7 @@ use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::sleep::hierarchy_builder::{
+use crate::sleep::hierarchy_engram::{
     AggregateEntityLlm, AggregateMemberContext, AggregateResponse,
 };
 use crate::util::parse_llm_json;

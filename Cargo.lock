@@ -2886,6 +2886,7 @@ dependencies = [
  "engram-belief",
  "engram-consolidation",
  "engram-domain",
+ "engram-hierarchy",
  "engram-reflection",
  "engram-rerank-mmr",
  "engram-retrieval",

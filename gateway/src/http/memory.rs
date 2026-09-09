@@ -5,6 +5,7 @@
 //! entity/relationship part of `stats`) so the underlying backend is
 //! abstracted from the HTTP surface.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use axum::{
@@ -71,9 +72,9 @@ fn validate_public_fact_input(
     if matches!(category, "ctx" | "instruction" | "correction") {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("category '{category}' is internal-only"),
-            }),
+            Json(ErrorResponse::new(format!(
+                "category '{category}' is internal-only"
+            ))),
         ));
     }
     if key.is_empty()
@@ -84,10 +85,9 @@ fn validate_public_fact_input(
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "key must contain only ASCII letters, numbers, '.', '_', '-', ':', or '/'"
-                    .to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "key must contain only ASCII letters, numbers, '.', '_', '-', ':', or '/'",
+            )),
         ));
     }
     Ok(())
@@ -101,9 +101,7 @@ fn public_internal_error(
     tracing::error!("{}: {}", log_context, e);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: public_message.to_string(),
-        }),
+        Json(ErrorResponse::new(public_message.to_string())),
     )
 }
 
@@ -159,12 +157,6 @@ pub struct MemoryListResponse {
     pub total: usize,
 }
 
-/// Error response.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 // ============================================================================
 // HANDLERS
 // ============================================================================
@@ -176,17 +168,7 @@ pub async fn list_memory_facts(
     Query(query): Query<MemoryListQuery>,
 ) -> Result<Json<MemoryListResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Routed through the trait surface.
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store = super::require(&state.memory_store, "Memory service not available")?;
 
     let raw_facts = memory_store
         .list_memory_facts(
@@ -227,17 +209,7 @@ pub async fn search_memory_facts(
     Path(agent_id): Path<String>,
     Query(query): Query<MemorySearchQuery>,
 ) -> Result<Json<MemoryListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store = super::require(&state.memory_store, "Memory service not available")?;
 
     let mode = query.mode.as_deref().unwrap_or("hybrid");
     let ward_id = query.ward_id.as_deref();
@@ -257,9 +229,9 @@ pub async fn search_memory_facts(
                     tracing::debug!("semantic memory search embedding unavailable: {e}");
                     (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Embedding backend unavailable".to_string(),
-                        }),
+                        Json(ErrorResponse::new(
+                            "Embedding backend unavailable".to_string(),
+                        )),
                     )
                 })?;
             emb.into_iter().next()
@@ -336,17 +308,7 @@ pub async fn get_memory_fact(
     State(state): State<AppState>,
     Path((agent_id, fact_id)): Path<(String, String)>,
 ) -> Result<Json<MemoryFactResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store = super::require(&state.memory_store, "Memory service not available")?;
 
     let raw = memory_store
         .get_memory_fact_by_id(&fact_id)
@@ -361,22 +323,20 @@ pub async fn get_memory_fact(
     match fact {
         Some(f) if f.agent_id == agent_id && !is_public_memory_fact(&f) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact is not available through public memory endpoints".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact is not available through public memory endpoints".to_string(),
+            )),
         )),
         Some(f) if f.agent_id == agent_id => Ok(Json(f)),
         Some(_) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact does not belong to this agent".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact does not belong to this agent".to_string(),
+            )),
         )),
         None => Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Memory fact not found".to_string(),
-            }),
+            Json(ErrorResponse::new("Memory fact not found".to_string())),
         )),
     }
 }
@@ -386,17 +346,7 @@ pub async fn delete_memory_fact(
     State(state): State<AppState>,
     Path((agent_id, fact_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store = super::require(&state.memory_store, "Memory service not available")?;
 
     // First verify the fact belongs to this agent
     let raw = memory_store
@@ -415,9 +365,9 @@ pub async fn delete_memory_fact(
     match fact {
         Some(f) if f.agent_id == agent_id && !is_public_memory_fact(&f) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact is not available through public memory endpoints".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact is not available through public memory endpoints".to_string(),
+            )),
         )),
         Some(f) if f.agent_id == agent_id => {
             let deleted = memory_store
@@ -436,23 +386,19 @@ pub async fn delete_memory_fact(
             } else {
                 Err((
                     StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: "Memory fact not found".to_string(),
-                    }),
+                    Json(ErrorResponse::new("Memory fact not found".to_string())),
                 ))
             }
         }
         Some(_) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact does not belong to this agent".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact does not belong to this agent".to_string(),
+            )),
         )),
         None => Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Memory fact not found".to_string(),
-            }),
+            Json(ErrorResponse::new("Memory fact not found".to_string())),
         )),
     }
 }
@@ -483,17 +429,7 @@ pub async fn create_memory_fact(
     Path(agent_id): Path<String>,
     Json(request): Json<CreateMemoryFactRequest>,
 ) -> Result<(StatusCode, Json<MemoryFactResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store = super::require(&state.memory_store, "Memory service not available")?;
 
     validate_public_fact_input(&request.category, &request.key)?;
 
@@ -601,17 +537,7 @@ pub async fn search_all_memory_facts(
     // The trait method does not accept a category filter; for now we
     // post-filter on the deserialized Value rows. Migrating the
     // category filter into the trait surface is a follow-up.
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store = super::require(&state.memory_store, "Memory service not available")?;
 
     let raw = memory_store
         .search_memory_facts_hybrid(None, &query.q, "fts", query.limit, None, None, None)
@@ -646,17 +572,7 @@ pub async fn list_all_memory_facts(
     // Route through the trait surface so the underlying backend is abstracted
     // when the user has opted in via Settings → Persistence. The legacy
     // concrete `state.memory_repo` is no longer the source of truth here.
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store = super::require(&state.memory_store, "Memory service not available")?;
 
     let raw_facts = memory_store
         .list_memory_facts(

@@ -14,6 +14,7 @@
 //! Unavailable` with a helpful message — *not* `404`, because the route
 //! exists; the feature is just dormant.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -145,11 +146,6 @@ pub struct ContradictionListResponse {
     pub contradictions: Vec<BeliefContradictionResponse>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ListBeliefsQuery {
     #[serde(default = "default_list_limit")]
@@ -237,9 +233,9 @@ pub async fn get_belief_detail(
     if belief.partition_id != agent_id {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Belief does not belong to this agent".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Belief does not belong to this agent".to_string(),
+            )),
         ));
     }
 
@@ -322,14 +318,7 @@ fn require_belief_store(
     state: &AppState,
 ) -> Result<&std::sync::Arc<dyn zbot_stores_traits::BeliefStore>, (StatusCode, Json<ErrorResponse>)>
 {
-    state.belief_store.as_ref().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: BELIEF_DISABLED_MSG.to_string(),
-            }),
-        )
-    })
+    super::require(&state.belief_store, BELIEF_DISABLED_MSG)
 }
 
 fn require_contradiction_store(
@@ -338,30 +327,21 @@ fn require_contradiction_store(
     &std::sync::Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
     (StatusCode, Json<ErrorResponse>),
 > {
-    state.belief_contradiction_store.as_ref().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: BELIEF_DISABLED_MSG.to_string(),
-            }),
-        )
-    })
+    super::require(&state.belief_contradiction_store, BELIEF_DISABLED_MSG)
 }
 
 fn internal(e: String) -> (StatusCode, Json<ErrorResponse>) {
     tracing::error!("belief endpoint error: {e}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse { error: e }),
+        Json(ErrorResponse::new(e)),
     )
 }
 
 fn not_found(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorResponse {
-            error: msg.to_string(),
-        }),
+        Json(ErrorResponse::new(msg.to_string())),
     )
 }
 
@@ -372,12 +352,10 @@ fn parse_resolution(s: &str) -> Result<Resolution, (StatusCode, Json<ErrorRespon
         "compatible" => Ok(Resolution::Compatible),
         other => Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "Invalid resolution '{}' (expected: a_won | b_won | compatible)",
-                    other
-                ),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Invalid resolution '{}' (expected: a_won | b_won | compatible)",
+                other
+            ))),
         )),
     }
 }

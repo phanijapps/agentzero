@@ -18,7 +18,8 @@ use zbot_conversation::AutonomyState;
 
 use crate::state::AppState;
 
-use super::autonomy::{AutonomyDetailResponse, ErrorResponse};
+use super::autonomy::AutonomyDetailResponse;
+use super::ErrorResponse;
 use super::{HttpErrorResponse, SameOrigin};
 
 /// Saved surface with the execution that produced it — the UI interleaves
@@ -183,9 +184,7 @@ pub async fn invoke_action(
 fn rejected(message: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::FORBIDDEN,
-        Json(ErrorResponse {
-            error: message.to_owned(),
-        }),
+        Json(ErrorResponse::new(message.to_owned())),
     )
 }
 
@@ -193,9 +192,7 @@ fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<ErrorRespo
     tracing::error!(error = %error, "surface action rejected by gateway");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: "surface action failed".to_owned(),
-        }),
+        Json(ErrorResponse::new("surface action failed".to_owned())),
     )
 }
 

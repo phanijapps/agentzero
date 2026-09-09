@@ -2,6 +2,7 @@
 //!
 //! Endpoints for listing available tools.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use agent_runtime::{ContextCapability, ContextCapabilityCatalog};
 use axum::{
@@ -10,13 +11,7 @@ use axum::{
     Json,
 };
 use gateway_execution::invoke::RuntimeActorKind;
-use serde::{Deserialize, Serialize};
-
-/// Error response for tool catalog endpoints.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
+use serde::Deserialize;
 
 /// Query parameters for actor-filtered tool catalog snapshots.
 #[derive(Debug, Default, Deserialize)]
@@ -64,9 +59,7 @@ pub async fn get_tool(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("tool not found: {name}"),
-                }),
+                Json(ErrorResponse::new(format!("tool not found: {name}"))),
             )
         })
 }
@@ -85,9 +78,9 @@ fn parse_actor_kind(
         "ward_agent" | "ward-agent" | "ward" => Ok(RuntimeActorKind::WardAgent),
         other => Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("unsupported actor kind: {other}"),
-            }),
+            Json(ErrorResponse::new(format!(
+                "unsupported actor kind: {other}"
+            ))),
         )),
     }
 }

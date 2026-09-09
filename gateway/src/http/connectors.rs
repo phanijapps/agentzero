@@ -2,6 +2,7 @@
 //!
 //! REST API for managing external connectors.
 
+use super::ErrorResponse;
 use crate::bus::{GatewayBus, HttpGatewayBus, SessionRequest};
 use crate::connectors::{
     ConnectorServiceError, CreateConnectorRequest, InboundLogEntry, InboundPayload, InboundResult,
@@ -15,44 +16,29 @@ use axum::{
     Json,
 };
 use execution_state::TriggerSource;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{error, info};
 
-/// Error response for connector operations.
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    error: String,
-    code: String,
+fn err_not_found(id: &str) -> ErrorResponse {
+    ErrorResponse::with_code(
+        format!("Connector not found: {}", id),
+        "CONNECTOR_NOT_FOUND",
+    )
 }
 
-impl ErrorResponse {
-    fn not_found(id: &str) -> Self {
-        Self {
-            error: format!("Connector not found: {}", id),
-            code: "CONNECTOR_NOT_FOUND".to_string(),
-        }
-    }
+fn err_already_exists(id: &str) -> ErrorResponse {
+    ErrorResponse::with_code(
+        format!("Connector already exists: {}", id),
+        "CONNECTOR_EXISTS",
+    )
+}
 
-    fn already_exists(id: &str) -> Self {
-        Self {
-            error: format!("Connector already exists: {}", id),
-            code: "CONNECTOR_EXISTS".to_string(),
-        }
-    }
+fn err_invalid_id(msg: &str) -> ErrorResponse {
+    ErrorResponse::with_code(msg.to_string(), "INVALID_ID")
+}
 
-    fn invalid_id(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            code: "INVALID_ID".to_string(),
-        }
-    }
-
-    fn internal(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            code: "INTERNAL_ERROR".to_string(),
-        }
-    }
+fn err_internal(msg: &str) -> ErrorResponse {
+    ErrorResponse::with_code(msg.to_string(), "INTERNAL_ERROR")
 }
 
 /// GET /api/connectors - List all connectors.
@@ -63,7 +49,7 @@ pub async fn list_connectors(State(state): State<AppState>) -> impl IntoResponse
             error!(error = %e, "Failed to list connectors");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::internal(&e.to_string())),
+                Json(err_internal(&e.to_string())),
             )
                 .into_response()
         }
@@ -82,21 +68,17 @@ pub async fn create_connector(
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
             match &e {
-                ConnectorServiceError::AlreadyExists(id) => (
-                    StatusCode::CONFLICT,
-                    Json(ErrorResponse::already_exists(id)),
-                )
-                    .into_response(),
-                ConnectorServiceError::InvalidId(msg) => (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse::invalid_id(msg)),
-                )
-                    .into_response(),
+                ConnectorServiceError::AlreadyExists(id) => {
+                    (StatusCode::CONFLICT, Json(err_already_exists(id))).into_response()
+                }
+                ConnectorServiceError::InvalidId(msg) => {
+                    (StatusCode::BAD_REQUEST, Json(err_invalid_id(msg))).into_response()
+                }
                 _ => {
                     error!(error = %e, "Failed to create connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -116,13 +98,13 @@ pub async fn get_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to get connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -145,13 +127,13 @@ pub async fn update_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to update connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -173,13 +155,13 @@ pub async fn delete_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to delete connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -199,13 +181,13 @@ pub async fn get_connector_metadata(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to get connector metadata");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -234,13 +216,13 @@ pub async fn test_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to test connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -272,13 +254,13 @@ pub async fn enable_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to enable connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -310,13 +292,13 @@ pub async fn disable_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to disable connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -339,11 +321,11 @@ pub async fn inbound(
         Err(e) => {
             return match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::internal(&e.to_string())),
+                    Json(err_internal(&e.to_string())),
                 )
                     .into_response(),
             };
@@ -354,10 +336,10 @@ pub async fn inbound(
     if !connector.enabled {
         return (
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: format!("Connector '{}' is disabled", id),
-                code: "CONNECTOR_DISABLED".to_string(),
-            }),
+            Json(ErrorResponse::with_code(
+                format!("Connector '{}' is disabled", id),
+                "CONNECTOR_DISABLED",
+            )),
         )
             .into_response();
     }
@@ -365,10 +347,10 @@ pub async fn inbound(
     if !connector.inbound_enabled {
         return (
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: format!("Inbound not enabled for connector '{}'", id),
-                code: "INBOUND_DISABLED".to_string(),
-            }),
+            Json(ErrorResponse::with_code(
+                format!("Inbound not enabled for connector '{}'", id),
+                "INBOUND_DISABLED",
+            )),
         )
             .into_response();
     }
@@ -379,7 +361,7 @@ pub async fn inbound(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::internal("Execution runner not initialized")),
+                Json(err_internal("Execution runner not initialized")),
             )
                 .into_response();
         }
@@ -466,7 +448,7 @@ pub async fn inbound(
             error!(connector_id = %id, error = %e, "Failed to submit inbound session");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::internal(&e.to_string())),
+                Json(err_internal(&e.to_string())),
             )
                 .into_response()
         }
@@ -496,11 +478,11 @@ pub async fn get_inbound_log(
         Err(e) => {
             return match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::internal(&e.to_string())),
+                    Json(err_internal(&e.to_string())),
                 )
                     .into_response(),
             };

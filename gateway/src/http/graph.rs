@@ -2,6 +2,7 @@
 //!
 //! HTTP API for querying the knowledge graph.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -208,12 +209,6 @@ impl From<Subgraph> for SubgraphResponse {
     }
 }
 
-/// Error response.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 // ============================================================================
 // HANDLERS
 // ============================================================================
@@ -386,9 +381,9 @@ fn require_kg_store(
     state.kg_store.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "Knowledge graph store unavailable".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Knowledge graph store unavailable".to_string(),
+            )),
         )
     })
 }
@@ -400,33 +395,28 @@ fn store_err_to_http(err: zbot_stores::StoreError) -> (StatusCode, Json<ErrorRes
     match err {
         StoreError::NotFound => (
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Entity not found".to_string(),
-            }),
+            Json(ErrorResponse::new("Entity not found".to_string())),
         ),
         StoreError::Conflict(msg) => (
             StatusCode::CONFLICT,
-            Json(ErrorResponse {
-                error: format!("Conflict: {}", msg),
-            }),
+            Json(ErrorResponse::new(format!("Conflict: {}", msg))),
         ),
         StoreError::Invalid(msg) => (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("Invalid request: {}", msg),
-            }),
+            Json(ErrorResponse::new(format!("Invalid request: {}", msg))),
         ),
         StoreError::Unavailable { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "Knowledge graph store temporarily unavailable".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Knowledge graph store temporarily unavailable".to_string(),
+            )),
         ),
         StoreError::Schema(msg) | StoreError::Backend(msg) | StoreError::Config(msg) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Knowledge graph error: {}", msg),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Knowledge graph error: {}",
+                msg
+            ))),
         ),
     }
 }
@@ -489,9 +479,10 @@ pub async fn distillation_status(
         Ok(stats) => Ok(Json(stats)),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to get distillation stats: {}", e),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Failed to get distillation stats: {}",
+                e
+            ))),
         )),
     }
 }
@@ -512,9 +503,10 @@ pub async fn undistilled_sessions(
         Ok(sessions) => Ok(Json(sessions)),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to get undistilled sessions: {}", e),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Failed to get undistilled sessions: {}",
+                e
+            ))),
         )),
     }
 }
@@ -539,9 +531,9 @@ pub async fn trigger_distillation(
         None => {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Distillation service not available".to_string(),
-                }),
+                Json(ErrorResponse::new(
+                    "Distillation service not available".to_string(),
+                )),
             ));
         }
     };
@@ -552,17 +544,19 @@ pub async fn trigger_distillation(
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Session '{}' not found", session_id),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Session '{}' not found",
+                    session_id
+                ))),
             ));
         }
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to look up session: {}", e),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Failed to look up session: {}",
+                    e
+                ))),
             ));
         }
     };

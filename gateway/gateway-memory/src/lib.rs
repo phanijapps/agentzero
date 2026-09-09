@@ -22,19 +22,20 @@ pub use recall::{
     UnifiedRecallSourceStatus, UnifiedRecallSourceSummary, UnifiedRecallTaxonomyCandidate,
     UnifiedRecallTaxonomyRelation, UnifiedRecallTaxonomyTrace,
 };
-pub use sleep::belief_contradiction_detector::{
-    BeliefContradictionConfig, BeliefContradictionDetector, ContradictionDetectionStats,
-    ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision, LlmContradictionJudge,
+pub use sleep::belief_engram::{
+    BeliefConsolidation, BeliefConsolidationParts, BeliefContradictionConfig,
+    ContradictionDetectionStats, ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision,
+    LlmContradictionJudge,
+};
+pub use sleep::belief_engram::{
+    BeliefSynthesisLlm, BeliefSynthesisStats, LlmBeliefSynthesizer, SynthesisLlmResponse,
+    ZbotBeliefSink, ZbotBeliefSynthesizer, ZbotContradictionArm, ZbotContradictionDetector,
 };
 pub use sleep::belief_network_activity::{
     RecentBeliefNetworkActivity, TimestampedContradictionStats, TimestampedPropagationStats,
     TimestampedSynthesisStats, RECENT_CAPACITY as BELIEF_NETWORK_RECENT_CAPACITY,
 };
 pub use sleep::belief_propagator::{BeliefPropagationStats, BeliefPropagator};
-pub use sleep::belief_synthesizer::{
-    BeliefSynthesisLlm, BeliefSynthesisStats, BeliefSynthesizer, LlmBeliefSynthesizer,
-    SynthesisLlmResponse,
-};
 pub use sleep::compactor::{CompactionStats, Compactor, PairwiseVerifier};
 pub use sleep::conflict_resolver::{
     ConflictJudgeLlm, ConflictResolver, ConflictResponse, ConflictStats,

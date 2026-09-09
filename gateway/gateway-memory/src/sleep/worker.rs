@@ -13,9 +13,8 @@ use tokio::sync::mpsc;
 
 use crate::sleep::hierarchy_builder::HierarchyBuilder;
 use crate::sleep::{
-    BeliefContradictionDetector, BeliefSynthesizer, Compactor, ConflictResolver,
-    CorrectionsAbstractor, DecayEngine, OrphanArchiver, PatternExtractor, Pruner,
-    RecentBeliefNetworkActivity, Synthesizer,
+    BeliefConsolidation, Compactor, ConflictResolver, CorrectionsAbstractor, DecayEngine,
+    OrphanArchiver, PatternExtractor, Pruner, RecentBeliefNetworkActivity, Synthesizer,
 };
 
 /// Bundle of optional sleep-time ops passed to [`SleepTimeWorker::start`].
@@ -28,15 +27,11 @@ pub struct SleepOps {
     pub orphan_archiver: Option<Arc<OrphanArchiver>>,
     pub corrections_abstractor: Option<Arc<CorrectionsAbstractor>>,
     pub conflict_resolver: Option<Arc<ConflictResolver>>,
-    /// Belief Network synthesizer (Phase B-1). When `None`, the cycle
-    /// skips the belief step entirely — beliefs are opt-in via
-    /// `MemorySettings.belief_network.enabled`.
-    pub belief_synthesizer: Option<Arc<BeliefSynthesizer>>,
-    /// Belief contradiction detector (Phase B-2). Runs strictly AFTER
-    /// `belief_synthesizer` so freshly-synthesized beliefs are visible
-    /// to the pairwise judge. When `None`, the cycle skips the detection
-    /// step entirely — same opt-in flag as B-1.
-    pub belief_contradiction_detector: Option<Arc<BeliefContradictionDetector>>,
+    /// Belief Network consolidation (Phases B-1 + B-2 as one engram
+    /// consolidation cycle: synthesis then contradiction detection). When
+    /// `None`, the cycle skips the belief step entirely — beliefs are
+    /// opt-in via `MemorySettings.belief_network.enabled`.
+    pub belief_consolidation: Option<Arc<BeliefConsolidation>>,
     /// Recorder for recent Belief Network worker stats (Phase B-6). When
     /// `Some`, every successful synthesizer / detector cycle writes a
     /// timestamped snapshot here for the Observatory UI to read. `None`
@@ -325,37 +320,23 @@ async fn run_cycle(
         }
     }
 
-    // Belief synthesis — opt-in. Runs after conflict resolution so the
-    // active fact set is stable. No-op when the synthesizer is None.
-    if let Some(bs) = ops.belief_synthesizer.as_ref() {
-        match bs.run_cycle(&run_id, agent_id).await {
-            Ok(s) => {
-                stats.beliefs_synthesized = s.beliefs_synthesized;
-                if let Some(act) = ops.belief_network_activity.as_ref() {
-                    act.record_synthesis(s);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%run_id, error = %e, "belief synthesizer cycle failed");
-            }
-        }
-    }
-
-    // Belief contradiction detection — opt-in. Runs strictly AFTER
-    // synthesis so the fresh belief set is visible to the pair-wise
-    // judge. Same opt-in flag as B-1 (the detector is only Some when
-    // both the contradiction store and the network are enabled).
-    if let Some(detector) = ops.belief_contradiction_detector.as_ref() {
-        match detector.run_cycle(&run_id, agent_id).await {
-            Ok(s) => {
+    // Belief consolidation — opt-in. One engram consolidation cycle:
+    // synthesis first (so the fresh belief set exists), then
+    // contradiction detection over it. Runs after conflict resolution
+    // so the active fact set is stable.
+    if let Some(bc) = ops.belief_consolidation.as_ref() {
+        match bc.execute(&run_id, agent_id).await {
+            Ok((synthesis, contradiction)) => {
+                stats.beliefs_synthesized = synthesis.beliefs_synthesized;
                 stats.belief_contradictions_detected =
-                    s.contradictions_logical + s.contradictions_tension;
+                    contradiction.contradictions_logical + contradiction.contradictions_tension;
                 if let Some(act) = ops.belief_network_activity.as_ref() {
-                    act.record_contradiction(s);
+                    act.record_synthesis(synthesis);
+                    act.record_contradiction(contradiction);
                 }
             }
             Err(e) => {
-                tracing::warn!(%run_id, error = %e, "belief contradiction detector cycle failed");
+                tracing::warn!(%run_id, error = %e, "belief consolidation cycle failed");
             }
         }
     }
@@ -588,8 +569,7 @@ mod tests {
             orphan_archiver: Some(archiver),
             corrections_abstractor: None,
             conflict_resolver: None,
-            belief_synthesizer: None,
-            belief_contradiction_detector: None,
+            belief_consolidation: None,
             belief_network_activity: None,
             hierarchy_builder: None,
         };
@@ -693,8 +673,7 @@ mod tests {
             orphan_archiver: None,
             corrections_abstractor: None,
             conflict_resolver: None,
-            belief_synthesizer: None,
-            belief_contradiction_detector: None,
+            belief_consolidation: None,
             belief_network_activity: None,
             hierarchy_builder: None,
         };

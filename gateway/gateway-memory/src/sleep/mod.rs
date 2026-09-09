@@ -1,10 +1,9 @@
 //! Sleep-time memory components — moved here from gateway/gateway-execution/src/sleep/
 //! during the gateway-memory crate extraction (Phase B).
 
-pub mod belief_contradiction_detector;
+pub mod belief_engram;
 pub mod belief_network_activity;
 pub mod belief_propagator;
-pub mod belief_synthesizer;
 pub mod clustering;
 pub mod compactor;
 pub mod conflict_resolver;
@@ -22,19 +21,20 @@ pub mod worker;
 // Convenience re-exports so `crate::sleep::Compactor` etc. resolve inside
 // gateway-memory (used by `worker.rs` and the `services` factory). External
 // callers still hit the crate-root re-exports in `lib.rs`.
-pub use belief_contradiction_detector::{
-    BeliefContradictionConfig, BeliefContradictionDetector, ContradictionDetectionStats,
-    ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision, LlmContradictionJudge,
+pub use belief_engram::{
+    BeliefConsolidation, BeliefConsolidationParts, BeliefContradictionConfig,
+    ContradictionDetectionStats, ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision,
+    LlmContradictionJudge,
+};
+pub use belief_engram::{
+    BeliefSynthesisLlm, BeliefSynthesisStats, LlmBeliefSynthesizer, SynthesisLlmResponse,
+    ZbotBeliefSink, ZbotBeliefSynthesizer, ZbotContradictionArm, ZbotContradictionDetector,
 };
 pub use belief_network_activity::{
     RecentBeliefNetworkActivity, TimestampedContradictionStats, TimestampedPropagationStats,
     TimestampedSynthesisStats, RECENT_CAPACITY,
 };
 pub use belief_propagator::{BeliefPropagationStats, BeliefPropagator};
-pub use belief_synthesizer::{
-    BeliefSynthesisLlm, BeliefSynthesisStats, BeliefSynthesizer, LlmBeliefSynthesizer,
-    SynthesisLlmResponse,
-};
 pub use compactor::{CompactionStats, Compactor, PairwiseVerifier};
 pub use conflict_resolver::{
     ConflictJudgeLlm, ConflictResolver, ConflictResponse, ConflictStats, LlmConflictJudge,

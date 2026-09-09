@@ -230,6 +230,33 @@ impl EpisodeRepository {
         })
     }
 
+    /// Failed episodes for a ward in the same 14-day window, newest
+    /// first, with non-empty learnings — the avoid-list companion to
+    /// [`fetch_recent_successful_by_ward`].
+    pub fn fetch_recent_failed_by_ward(
+        &self,
+        ward_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEpisode>, String> {
+        let cutoff = (Utc::now() - Duration::days(14)).to_rfc3339();
+        self.db.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, session_id, agent_id, ward_id, task_summary, outcome, \
+                        strategy_used, key_learnings, token_cost, created_at \
+                 FROM session_episodes \
+                 WHERE ward_id = ?1 \
+                   AND outcome = 'failed' \
+                   AND key_learnings IS NOT NULL \
+                   AND key_learnings != '' \
+                   AND created_at > ?2 \
+                 ORDER BY created_at DESC \
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![ward_id, cutoff, limit as i64], row_to_episode)?;
+            rows.collect::<Result<Vec<_>, _>>()
+        })
+    }
+
     /// LIKE-based keyword search over `task_summary` and
     /// `key_learnings`, newest-first. Used as the FTS-mode fallback by
     /// the unified memory-search endpoint when no embedding is

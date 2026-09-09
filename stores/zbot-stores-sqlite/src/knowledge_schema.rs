@@ -638,34 +638,6 @@ CREATE INDEX IF NOT EXISTS idx_belief_contradictions_b ON kg_belief_contradictio
 CREATE INDEX IF NOT EXISTS idx_belief_contradictions_unresolved ON kg_belief_contradictions(detected_at) WHERE resolved_at IS NULL;
 "#;
 
-#[allow(dead_code)] // retained for reference/tests; runtime uses initialize_vec_tables_with_dim
-const VEC0_SQL: &str = r#"
-CREATE VIRTUAL TABLE IF NOT EXISTS kg_name_index USING vec0(
-    entity_id TEXT PRIMARY KEY,
-    name_embedding FLOAT[384]
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_index USING vec0(
-    fact_id TEXT PRIMARY KEY,
-    embedding FLOAT[384]
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS wiki_articles_index USING vec0(
-    article_id TEXT PRIMARY KEY,
-    embedding FLOAT[384]
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS procedures_index USING vec0(
-    procedure_id TEXT PRIMARY KEY,
-    embedding FLOAT[384]
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS session_episodes_index USING vec0(
-    episode_id TEXT PRIMARY KEY,
-    embedding FLOAT[384]
-);
-"#;
-
 const TRIGGERS_SQL: &str = r#"
 -- Clean up vec0 partner rows when base rows are deleted.
 

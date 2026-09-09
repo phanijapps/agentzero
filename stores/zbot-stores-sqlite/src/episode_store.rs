@@ -98,6 +98,14 @@ impl EpisodeStore for GatewayEpisodeStore {
         self.repo.fetch_recent_successful_by_ward(ward_id, limit)
     }
 
+    async fn fetch_recent_failed_by_ward(
+        &self,
+        ward_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEpisode>, String> {
+        self.repo.fetch_recent_failed_by_ward(ward_id, limit)
+    }
+
     async fn episode_stats(&self) -> Result<EpisodeStats, String> {
         let total = self.repo.count()?;
         Ok(EpisodeStats { total })

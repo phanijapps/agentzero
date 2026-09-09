@@ -145,7 +145,6 @@ pub fn should_send_to_scope(
 // =============================================================================
 
 /// Client connection state
-#[allow(dead_code)]
 struct Client {
     id: ClientId,
     sender: mpsc::UnboundedSender<ServerMessage>,
@@ -159,7 +158,6 @@ struct Client {
 
 /// Per-subscription state including scope and cached identifiers.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct SubscriptionEntry {
     /// Client ID
     client_id: ClientId,

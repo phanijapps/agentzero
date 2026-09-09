@@ -1818,7 +1818,6 @@ dependencies = [
  "chrono",
  "execution-state",
  "futures",
- "gateway-events",
  "gateway-services",
  "gateway-templates",
  "knowledge-graph",

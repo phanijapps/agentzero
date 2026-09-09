@@ -3,10 +3,6 @@
 // Search, explore neighbors, and get contextual subgraphs from the knowledge graph.
 // ============================================================================
 
-// Public API types — consumed by downstream crates (e.g., pi-mono) that wire
-// a concrete GraphStorageAccess into the tool. No internal caller yet.
-#![allow(dead_code)]
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 

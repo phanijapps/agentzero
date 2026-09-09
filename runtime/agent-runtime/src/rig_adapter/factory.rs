@@ -82,7 +82,7 @@ pub fn build_engine(
         ),
         restored,
     ));
-    let model = LlmCompletionModel::new(prepared.llm_client, cfg.model)
+    let model = LlmCompletionModel::new(prepared.llm_client)
         .with_single_action_mode(cfg.single_action_mode)
         .with_context_policy(policy.clone());
     RigAgentEngine::with_hooks(rig_config, model, tools, shared, hooks_arc)

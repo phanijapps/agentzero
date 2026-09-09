@@ -19,7 +19,7 @@ pub(super) struct ProgressPolicy {
 impl Default for ProgressPolicy {
     fn default() -> Self {
         Self {
-            tracker: ProgressTracker::new(0),
+            tracker: ProgressTracker::new(),
             prompt_tokens: 0,
             turn_warned: false,
             context_warned: false,

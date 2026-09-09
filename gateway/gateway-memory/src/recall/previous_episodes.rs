@@ -5,6 +5,10 @@
 //! unified recall pool so the agent can continue the chain of work rather than
 //! starting cold. This is the Memory v2 Phase 6 "episode chain" wiring.
 //!
+//! Failed episodes with recorded learnings join the pool as an avoid-list:
+//! the agent sees what already failed in this ward and why, so it doesn't
+//! repeat a known-bad approach.
+//!
 //! Phase E6c: backend-agnostic — takes `Arc<dyn EpisodeStore>` so the
 //! same recall path works on the configured backend.
 
@@ -25,22 +29,45 @@ impl PreviousEpisodesAdapter {
         Self { store }
     }
 
-    /// Fetch up to 3 prior episodes for `ward_id` (most recent first) and
-    /// return them as [`ScoredItem`]s with `kind = Episode`.
+    /// Fetch up to 3 prior successful/partial episodes for `ward_id`
+    /// (most recent first) plus up to 2 failed episodes with recorded
+    /// learnings, and return them as [`ScoredItem`]s — chain items with
+    /// `kind = Episode`, avoid items with `kind = Episode` and an
+    /// `[AVOID]`-prefixed content.
     ///
     /// The per-item score is `1.0 / (rank + 1)` — i.e. `1.0, 0.5, 0.333…`
     /// for 3 results. RRF later re-ranks these against the other pools.
+    /// Avoid items start one rank down so chain context outranks failures.
     pub async fn fetch(&self, agent_id: &str, ward_id: &str) -> Result<Vec<ScoredItem>, String> {
         let episodes = self
             .store
             .fetch_recent_successful_by_ward(ward_id, 3)
             .await?;
-        Ok(episodes
+        let mut items: Vec<ScoredItem> = episodes
             .iter()
             .filter(|episode| episode.agent_id == agent_id)
             .enumerate()
             .map(|(rank, ep)| episode_to_item(ep, rank))
-            .collect())
+            .collect();
+
+        let failed = self.store.fetch_recent_failed_by_ward(ward_id, 2).await?;
+        let base = items.len();
+        items.extend(
+            failed
+                .iter()
+                .filter(|episode| episode.agent_id == agent_id)
+                .filter(|episode| {
+                    episode
+                        .key_learnings
+                        .as_deref()
+                        .map(|l| !l.trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .enumerate()
+                .map(|(rank, ep)| failed_episode_to_item(ep, base + rank)),
+        );
+
+        Ok(items)
     }
 }
 
@@ -66,6 +93,38 @@ pub fn episode_to_item(ep: &SessionEpisode, rank: usize) -> ScoredItem {
             // This adapter has already selected a record by authenticated
             // agent and ward. The originating session is audit provenance,
             // not a permission boundary for a durable episode summary.
+            session_id: Some("__global__".to_string()),
+            ward_id: Some(ep.ward_id.clone()),
+        },
+        route_hint: Some(
+            RouteHint::new(ep.ward_id.clone(), RouteSourceKind::Episode)
+                .with_memory_id(ep.id.clone())
+                .with_session_id(Some(ep.session_id.clone())),
+        ),
+    }
+}
+
+/// Project a failed [`SessionEpisode`] into an avoid-list [`ScoredItem`].
+///
+/// Content is prefixed `[AVOID]` and leads with the learnings — the point
+/// is "this failed; don't do it again" — so downstream prompt assembly
+/// can style avoid items distinctly from chain items.
+pub fn failed_episode_to_item(ep: &SessionEpisode, rank: usize) -> ScoredItem {
+    let learnings = ep.key_learnings.as_deref().unwrap_or("").trim();
+    let content = format!(
+        "[AVOID] [{}, {}] {} — this approach failed. Learnings: {}",
+        ep.outcome, ep.created_at, ep.task_summary, learnings
+    );
+    let rank_one = (rank as f64) + 1.0;
+    let score = 1.0 / (rank_one + 1.0);
+    ScoredItem {
+        kind: ItemKind::Episode,
+        id: format!("{}#avoid", ep.id),
+        content,
+        score,
+        provenance: Provenance {
+            source: "session_episodes".to_string(),
+            source_id: ep.id.clone(),
             session_id: Some("__global__".to_string()),
             ward_id: Some(ep.ward_id.clone()),
         },
@@ -151,6 +210,29 @@ mod tests {
         assert_eq!(item.provenance.session_id.as_deref(), Some("__global__"));
     }
 
+    #[test]
+    fn failed_episode_to_item_marks_avoid_and_leads_with_learnings() {
+        let ep = SessionEpisode {
+            id: "ep-f".into(),
+            session_id: "s-f".into(),
+            agent_id: "a".into(),
+            ward_id: "finance".into(),
+            task_summary: "pull earnings data".into(),
+            outcome: "failed".into(),
+            strategy_used: None,
+            key_learnings: Some("API rejects bulk ranges; fetch per-ticker".into()),
+            token_cost: None,
+            embedding: None,
+            created_at: "2026-04-01T00:00:00Z".into(),
+        };
+        let item = failed_episode_to_item(&ep, 0);
+        assert_eq!(item.id, "ep-f#avoid");
+        assert!(item.content.starts_with("[AVOID]"));
+        assert!(item.content.contains("pull earnings data"));
+        assert!(item.content.contains("API rejects bulk ranges"));
+        assert!((item.score - 0.5).abs() < 1e-9);
+    }
+
     #[tokio::test]
     async fn fetch_returns_top3_newest_first_filtered_by_ward_and_window() {
         let (_tmp, repo, store) = setup();
@@ -168,16 +250,20 @@ mod tests {
         );
         // 1 in a different ward.
         insert_ep(&repo, "ep-other", "hr", "success", &now_offset_days(1));
-        // 1 failed — excluded.
+        // 1 failed with learnings — surfaces as an avoid item.
         insert_ep(&repo, "ep-fail", "finance", "failed", &now_offset_days(1));
 
         let adapter = PreviousEpisodesAdapter::new(store);
         let items = adapter.fetch("agent-a", "finance").await.expect("fetch");
 
-        assert_eq!(items.len(), 3, "exactly 3 in-window finance ep/partial");
+        assert_eq!(items.len(), 4, "3 chain + 1 avoid");
         assert_eq!(items[0].id, "ep-new", "newest first");
         assert_eq!(items[1].id, "ep-mid");
         assert_eq!(items[2].id, "ep-old");
+        let avoid = &items[3];
+        assert_eq!(avoid.id, "ep-fail#avoid");
+        assert!(avoid.content.starts_with("[AVOID]"));
+        assert!(avoid.content.contains("Learnings: learn-ep-fail"));
 
         // Scores are 1/(rank+1): rank 0 → 1/2, rank 1 → 1/3, rank 2 → 1/4.
         assert!((items[0].score - 0.5).abs() < 1e-9);

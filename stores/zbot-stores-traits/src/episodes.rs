@@ -144,6 +144,18 @@ pub trait EpisodeStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Most recent failed episodes for a ward, newest first. Consumers
+    /// surface these as an avoid-list at session start so the agent
+    /// doesn't repeat known failures. Backends that don't track
+    /// outcomes gracefully degrade to empty.
+    async fn fetch_recent_failed_by_ward(
+        &self,
+        _ward_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<SessionEpisode>, String> {
+        Ok(Vec::new())
+    }
+
     /// Aggregate counts. Default returns zero so backends that don't
     /// track this gracefully degrade.
     async fn episode_stats(&self) -> Result<EpisodeStats, String> {

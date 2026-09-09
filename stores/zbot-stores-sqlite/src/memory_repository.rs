@@ -105,12 +105,6 @@ impl MemoryRepository {
         Self { db, vec_index }
     }
 
-    /// Internal accessor for the vector index, used by the hybrid search path.
-    #[allow(dead_code)]
-    fn vec_index(&self) -> &Arc<dyn VectorIndex> {
-        &self.vec_index
-    }
-
     /// Test-only accessor for the underlying KnowledgeDatabase.
     #[cfg(test)]
     pub(crate) fn db_for_tests(&self) -> Arc<crate::KnowledgeDatabase> {

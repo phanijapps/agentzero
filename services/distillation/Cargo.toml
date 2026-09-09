@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 agent-runtime = { path = "../../runtime/agent-runtime" }
 agent-primitives = { path = "../../runtime/agent-primitives" }
-gateway-events = { path = "../../gateway/gateway-events" }
 gateway-services = { path = "../../gateway/gateway-services" }
 gateway-templates = { path = "../../gateway/gateway-templates" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }

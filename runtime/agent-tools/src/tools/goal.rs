@@ -3,10 +3,6 @@
 // Create, update, list, and get agent goals. Active goals steer recall.
 // ============================================================================
 
-// Public API types — consumed by downstream (gateway) that wires a concrete
-// GoalAccess into the tool. No in-crate caller yet.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use async_trait::async_trait;

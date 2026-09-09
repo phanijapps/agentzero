@@ -980,6 +980,26 @@ impl EpisodeStore for EngramSidecarStores {
         .collect()
     }
 
+    async fn fetch_recent_failed_by_ward(
+        &self,
+        ward_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEpisode>, String> {
+        self.row_jsons(
+            "SELECT record_json FROM episodes
+             WHERE ward_id = ?1 AND outcome = 'failed'
+               AND key_learnings IS NOT NULL AND key_learnings != ''
+             ORDER BY created_at DESC, id ASC LIMIT ?2",
+            vec![
+                SqlValue::Text(ward_id.to_string()),
+                SqlValue::Integer(limit as i64),
+            ],
+        )?
+        .into_iter()
+        .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
+        .collect()
+    }
+
     async fn episode_stats(&self) -> Result<EpisodeStats, String> {
         let total = self
             .connection()?

@@ -416,23 +416,8 @@ impl MemoryFactStore for EngramMemoryFactStore {
         limit: usize,
         as_of: Option<DateTime<Utc>>,
     ) -> Result<Value, String> {
-        let query = bounded_recall_query(query);
-        let (query_embedding, degraded_reason) = self.embed_query(&query).await;
-        let query_identity = query_embedding.as_ref().map(|_| self.query_identity());
-        let rows = self
-            .search_memory_facts_hybrid_with_identity(
-                Some(agent_id),
-                &query,
-                "hybrid",
-                limit,
-                None,
-                query_embedding.as_deref(),
-                query_identity.as_ref(),
-                as_of,
-            )
-            .await?;
-        let rows = tag_degraded_rows(rows, degraded_reason);
-        Ok(recall_value(&query, rows, degraded_reason))
+        self.recall_facts_prioritized_scoped(agent_id, query, None, limit, as_of)
+            .await
     }
 
     async fn recall_facts_prioritized_scoped(

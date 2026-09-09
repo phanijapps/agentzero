@@ -36,7 +36,6 @@ can't write skills.
 | 11 | **Recall monolith split** — `recall/mod.rs` 4,249 lines with a 676-line function on the hottest read path | debt H1 | maintainable recall; add recency/usage scoring here (agent #3) |
 | 12 | **`ProviderServiceLlmFactory` promotion + 6-site migration** | dry #2 | ~200 lines; factory exists, call sites ignore it |
 | 13 | **`GraphStorage::run/tx` wrappers** — 42× double-closure ritual in 5,467-line file | dry #8 | ~200 lines, biggest readability win in largest file |
-| 14 | **`WriteSkillTool`** — agent writes its own skills after successful sessions | agent #4 | strongest learning loop; closes session→skill cycle |
 | 15 | **`ward_artifact_indexer` → services/** — 987 lines, zero execution deps | debt H6/arch | gateway-execution slims further |
 | 16 | **`VaultPaths` → `agent-primitives`** — kills 6 of 12 upward store→gateway edges in one edit | arch #1 | dependency graph un-inverts |
 | 17 | **Recency + usage scoring in recall** — `updated_at` stored but never used in ranking | agent #3 | fresh corrections outrank stale facts |
@@ -56,6 +55,7 @@ can't write skills.
 
 ### Explicitly not doing now
 
+- **`WriteSkillTool`** — skills are markdown files and the agent already has `write_file`; a tool would wrap a file write. If the agent should author skills, teach it via instructions ("write skills/{name}/SKILL.md"), not new machinery
 - Critic pass before respond (agent #8) — L effort, unclear payoff until failure feedback (#6) proves insufficient
 - Hierarchical summaries (agent #9) — L, context_policy budget-reject works today
 - Rebuild of memory engine — hybrid RRF + MMR + query gate already strong; improve scoring incrementally instead

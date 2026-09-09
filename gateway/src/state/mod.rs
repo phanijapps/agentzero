@@ -1359,31 +1359,15 @@ impl AppState {
     /// that can be delegated to.
     pub async fn seed_defaults(&self) {
         // Get default provider ID
-        let default_provider_id = self
-            .provider_service
-            .list()
-            .ok()
-            .and_then(|providers| {
-                providers
-                    .iter()
-                    .find(|p| p.is_default)
-                    .or_else(|| providers.first())
-                    .and_then(|p| p.id.clone())
-            })
+        let providers = self.provider_service.list().unwrap_or_default();
+        let selected = gateway_services::select_provider(&providers, None);
+        let default_provider_id = selected
+            .and_then(|p| p.id.clone())
             .unwrap_or_else(|| "default".to_string());
 
         // Resolve default model from default provider (first model in list)
-        let default_model = self
-            .provider_service
-            .list()
-            .ok()
-            .and_then(|providers| {
-                providers
-                    .iter()
-                    .find(|p| p.is_default)
-                    .or_else(|| providers.first())
-                    .and_then(|p| p.default_model().to_string().into())
-            })
+        let default_model = selected
+            .map(|p| p.default_model().to_string())
             .unwrap_or_else(|| "gpt-4o".to_string());
 
         // Seed default agents from bundled templates (configs + AGENTS.md instructions)
@@ -1614,30 +1598,31 @@ impl AppState {
                 continue;
             }
 
-            let fact_value = serde_json::json!({
-                "id": format!("policy-{}", uuid::Uuid::new_v4()),
-                "session_id": null,
-                "agent_id": "root",
-                "scope": "agent",
-                "category": category,
-                "key": key,
-                "content": content,
-                "confidence": confidence,
-                "mention_count": 5,
-                "source_summary": "Default policy",
-                "ward_id": "__global__",
-                "contradicted_by": null,
-                "created_at": now,
-                "updated_at": now,
-                "expires_at": null,
-                "valid_from": null,
-                "valid_until": null,
-                "superseded_by": null,
-                "pinned": pinned,
-                "epistemic_class": "current",
-                "source_episode_id": null,
-                "source_ref": null,
-            });
+            let fact_value = zbot_stores_domain::MemoryFact {
+                id: format!("policy-{}", uuid::Uuid::new_v4()),
+                session_id: None,
+                agent_id: "root".to_string(),
+                scope: "agent".to_string(),
+                category: category.to_string(),
+                key: key.to_string(),
+                content: content.to_string(),
+                confidence,
+                mention_count: 5,
+                source_summary: Some("Default policy".to_string()),
+                ward_id: "__global__".to_string(),
+                contradicted_by: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                expires_at: None,
+                valid_from: None,
+                valid_until: None,
+                superseded_by: None,
+                pinned,
+                epistemic_class: Some("current".to_string()),
+                source_episode_id: None,
+                source_ref: None,
+                embedding: None,
+            };
 
             match memory_store.upsert_typed_fact(fact_value, None).await {
                 Ok(()) => count += 1,

@@ -1,5 +1,6 @@
 //! `KnowledgeGraphStore` implementation backed by Engram knowledge/hierarchy records.
 
+use agent_primitives::vec_math::cosine_f64_opt;
 use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::Path,
@@ -1626,7 +1627,7 @@ impl KnowledgeGraphSidecar {
                 ) {
                     return None;
                 }
-                let score = cosine_similarity(query_embedding, entry.embedding.as_deref()?)?;
+                let score = cosine_f64_opt(query_embedding, entry.embedding.as_deref()?)?;
                 Some(EmbeddingHit { entry, score })
             })
             .collect::<Vec<_>>();
@@ -2724,27 +2725,4 @@ fn confidence_for(entity: &Entity) -> f64 {
         .get("confidence")
         .and_then(Value::as_f64)
         .unwrap_or(1.0)
-}
-
-fn cosine_similarity(query: &[f32], embedding: &[f32]) -> Option<f64> {
-    if query.len() != embedding.len() || query.is_empty() {
-        return None;
-    }
-    let (dot, query_norm, embedding_norm) =
-        query
-            .iter()
-            .zip(embedding)
-            .fold((0.0_f64, 0.0_f64, 0.0_f64), |acc, (left, right)| {
-                let left = f64::from(*left);
-                let right = f64::from(*right);
-                (
-                    acc.0 + left * right,
-                    acc.1 + left * left,
-                    acc.2 + right * right,
-                )
-            });
-    if query_norm == 0.0 || embedding_norm == 0.0 {
-        return None;
-    }
-    Some(dot / query_norm.sqrt() / embedding_norm.sqrt())
 }

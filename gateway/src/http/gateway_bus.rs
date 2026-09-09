@@ -34,6 +34,7 @@
 //! requests.post(f"http://localhost:18791/api/gateway/cancel/{handle['session_id']}")
 //! ```
 
+use super::ErrorResponse;
 use crate::bus::{BusError, GatewayBus, HttpGatewayBus, SessionHandle, SessionRequest};
 use crate::state::AppState;
 use axum::{
@@ -54,13 +55,6 @@ pub struct StatusResponse {
     pub status: String,
 }
 
-/// Response for error cases.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    pub code: String,
-}
-
 /// Convert a BusError into an API error response.
 fn bus_error_to_response(err: BusError) -> ApiError {
     let (status, code) = match &err {
@@ -73,10 +67,7 @@ fn bus_error_to_response(err: BusError) -> ApiError {
     };
     (
         status,
-        Json(ErrorResponse {
-            error: err.to_string(),
-            code: code.to_string(),
-        }),
+        Json(ErrorResponse::with_code(err.to_string(), code.to_string())),
     )
 }
 

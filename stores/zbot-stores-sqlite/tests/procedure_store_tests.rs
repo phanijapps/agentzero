@@ -164,8 +164,7 @@ async fn dedupe_procedures_by_name_keeps_highest_sc_per_name() {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         };
-        let v = serde_json::to_value(&proc).unwrap();
-        store.upsert_procedure(v, None).await.unwrap();
+        store.upsert_procedure(proc, None).await.unwrap();
     }
 
     let deleted = store.dedupe_procedures_by_name().await.unwrap();
@@ -215,8 +214,7 @@ async fn dedupe_procedures_by_name_noop_when_no_duplicates() {
         created_at: "2026-01-01T00:00:00Z".into(),
         updated_at: "2026-01-01T00:00:00Z".into(),
     };
-    let v = serde_json::to_value(&proc).unwrap();
-    store.upsert_procedure(v, None).await.unwrap();
+    store.upsert_procedure(proc, None).await.unwrap();
     let deleted = store.dedupe_procedures_by_name().await.unwrap();
     assert_eq!(deleted, 0);
     assert!(store

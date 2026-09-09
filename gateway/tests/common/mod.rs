@@ -69,37 +69,34 @@ pub fn setup_with_state_service() -> (TestServer, Arc<StateService<DatabaseManag
 // ---------------------------------------------------------------------------
 
 pub fn upsert_wiki_article(state: &AppState, article: &WikiArticle) {
-    let value = serde_json::to_value(article).expect("encode WikiArticle");
     futures::executor::block_on(
         state
             .wiki_store
             .as_ref()
             .expect("wiki_store")
-            .upsert_article(value, None),
+            .upsert_article(article.clone(), None),
     )
     .expect("upsert wiki");
 }
 
 pub fn upsert_procedure(state: &AppState, procedure: &Procedure) {
-    let value = serde_json::to_value(procedure).expect("encode Procedure");
     futures::executor::block_on(
         state
             .procedure_store
             .as_ref()
             .expect("procedure_store")
-            .upsert_procedure(value, None),
+            .upsert_procedure(procedure.clone(), None),
     )
     .expect("upsert procedure");
 }
 
 pub fn insert_episode(state: &AppState, episode: &SessionEpisode) {
-    let value = serde_json::to_value(episode).expect("encode SessionEpisode");
     futures::executor::block_on(
         state
             .episode_store
             .as_ref()
             .expect("episode_store")
-            .insert_episode(value, None),
+            .insert_episode(episode.clone(), None),
     )
     .expect("insert episode");
 }

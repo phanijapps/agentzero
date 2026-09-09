@@ -4,6 +4,7 @@
 //! framework concepts. Keeping them here preserves the existing store-trait
 //! contracts without pushing zbot-only schema into Engram.
 
+use agent_primitives::vec_math::cosine_f64;
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -563,11 +564,9 @@ impl ProcedureStore for EngramSidecarStores {
 
     async fn upsert_procedure(
         &self,
-        procedure: Value,
+        mut procedure: Procedure,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut procedure: Procedure = serde_json::from_value(procedure)
-            .map_err(|error| format!("decode Procedure: {error}"))?;
         procedure.embedding = None;
         self.mirror_procedure(&procedure).await?;
         self.upsert_procedure_record(&procedure, embedding.as_deref())
@@ -623,7 +622,7 @@ impl ProcedureStore for EngramSidecarStores {
             if !stored_identity_compatible(&self.embedding_identity, identity_json, stored.len())? {
                 continue;
             }
-            let score = cosine_similarity(embedding, &stored);
+            let score = cosine_f64(embedding, &stored);
             if score > 0.0 {
                 scored.push((
                     serde_json::from_str::<Value>(&record_json).map_err(|e| e.to_string())?,
@@ -812,11 +811,9 @@ impl EpisodeStore for EngramSidecarStores {
 
     async fn insert_episode(
         &self,
-        episode: Value,
+        mut episode: SessionEpisode,
         embedding: Option<Vec<f32>>,
     ) -> Result<String, String> {
-        let mut episode: SessionEpisode = serde_json::from_value(episode)
-            .map_err(|error| format!("decode SessionEpisode: {error}"))?;
         if episode.id.is_empty() {
             episode.id = format!("ep-{}", Uuid::new_v4());
         }
@@ -911,7 +908,7 @@ impl EpisodeStore for EngramSidecarStores {
             if !stored_identity_compatible(&self.embedding_identity, identity_json, stored.len())? {
                 continue;
             }
-            let score = cosine_similarity(embedding, &stored);
+            let score = cosine_f64(embedding, &stored);
             if score >= f64::from(threshold) {
                 scored.push((
                     serde_json::from_str::<Value>(&record_json).map_err(|e| e.to_string())?,
@@ -1892,28 +1889,6 @@ fn stored_identity_compatible(
     ))
 }
 
-fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
-    if left.len() != right.len() || left.is_empty() {
-        return 0.0;
-    }
-
-    let mut dot = 0.0;
-    let mut left_norm = 0.0;
-    let mut right_norm = 0.0;
-    for (left, right) in left.iter().zip(right.iter()) {
-        let left = f64::from(*left);
-        let right = f64::from(*right);
-        dot += left * right;
-        left_norm += left * left;
-        right_norm += right * right;
-    }
-    if left_norm == 0.0 || right_norm == 0.0 {
-        0.0
-    } else {
-        dot / (left_norm.sqrt() * right_norm.sqrt())
-    }
-}
-
 fn now() -> String {
     Utc::now().to_rfc3339()
 }
@@ -1974,13 +1949,9 @@ mod tests {
         let store = EngramSidecarStores::open(governed_config(&root)).expect("store");
         let procedure = procedure();
 
-        ProcedureStore::upsert_procedure(
-            &store,
-            serde_json::to_value(&procedure).expect("procedure json"),
-            None,
-        )
-        .await
-        .expect("procedure write");
+        ProcedureStore::upsert_procedure(&store, procedure, None)
+            .await
+            .expect("procedure write");
 
         let scope = store
             .mapper
@@ -2026,13 +1997,9 @@ mod tests {
             embedding: None,
             created_at: "2026-07-13T00:00:00Z".to_string(),
         };
-        EpisodeStore::insert_episode(
-            &store,
-            serde_json::to_value(&episode).expect("episode json"),
-            None,
-        )
-        .await
-        .expect("episode write");
+        EpisodeStore::insert_episode(&store, episode, None)
+            .await
+            .expect("episode write");
         let episode_scope = store
             .mapper
             .memory_fact_scope("ward-a", Some("sess-a"))

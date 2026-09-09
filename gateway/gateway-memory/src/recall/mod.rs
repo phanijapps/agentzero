@@ -3060,7 +3060,7 @@ mod tests {
 
         async fn upsert_typed_fact(
             &self,
-            fact: serde_json::Value,
+            fact: MemoryFact,
             embedding: Option<Vec<f32>>,
         ) -> Result<(), String> {
             self.inner.upsert_typed_fact(fact, embedding).await
@@ -3087,7 +3087,7 @@ mod tests {
         let now = chrono::Utc::now().to_rfc3339();
         store
             .upsert_typed_fact(
-                serde_json::json!({
+                serde_json::from_value(serde_json::json!({
                     "id": "agent-scoped-home-base",
                     "session_id": null,
                     "agent_id": "agent",
@@ -3110,7 +3110,8 @@ mod tests {
                     "epistemic_class": "current",
                     "source_episode_id": null,
                     "source_ref": null,
-                }),
+                }))
+                .unwrap(),
                 None,
             )
             .await

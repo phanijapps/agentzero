@@ -1,5 +1,6 @@
 //! HTTP lifecycle surface for durable decision threads.
 
+use super::ErrorResponse;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -55,11 +56,6 @@ pub struct AutonomyDetailResponse {
     #[serde(flatten)]
     pub item: AutonomyItem,
     pub evidence: Vec<AutonomyEvidence>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
 }
 
 /// A resume result deliberately contains no packet or copied source content.
@@ -334,27 +330,21 @@ pub async fn transition_item(
 fn bad_request(message: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::BAD_REQUEST,
-        Json(ErrorResponse {
-            error: message.to_string(),
-        }),
+        Json(ErrorResponse::new(message.to_string())),
     )
 }
 
 fn not_found(id: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorResponse {
-            error: format!("autonomy item not found: {id}"),
-        }),
+        Json(ErrorResponse::new(format!("autonomy item not found: {id}"))),
     )
 }
 
 fn conflict(message: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::CONFLICT,
-        Json(ErrorResponse {
-            error: message.to_string(),
-        }),
+        Json(ErrorResponse::new(message.to_string())),
     )
 }
 
@@ -362,8 +352,8 @@ fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<ErrorRespo
     tracing::error!(error = %error, "autonomy ledger request failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: "internal autonomy ledger error".to_string(),
-        }),
+        Json(ErrorResponse::new(
+            "internal autonomy ledger error".to_string(),
+        )),
     )
 }

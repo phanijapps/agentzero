@@ -46,13 +46,12 @@ async fn returns_four_content_types_with_age_buckets() {
         source_episode_id: None,
         source_ref: None,
     };
-    let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
     futures::executor::block_on(
         state
             .memory_store
             .as_ref()
             .expect("memory_store")
-            .upsert_typed_fact(fact_v, None),
+            .upsert_typed_fact(fact.clone(), None),
     )
     .expect("upsert fact");
 
@@ -216,13 +215,12 @@ async fn ward_content_filters_internal_reserved_memory_facts() {
             source_episode_id: None,
             source_ref: None,
         };
-        let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
         futures::executor::block_on(
             state
                 .memory_store
                 .as_ref()
                 .expect("memory_store")
-                .upsert_typed_fact(fact_v, None),
+                .upsert_typed_fact(fact.clone(), None),
         )
         .expect("upsert internal fact");
     }
@@ -271,13 +269,12 @@ async fn ward_list_ignores_reserved_only_wards() {
             source_episode_id: None,
             source_ref: None,
         };
-        let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
         futures::executor::block_on(
             state
                 .memory_store
                 .as_ref()
                 .expect("memory_store")
-                .upsert_typed_fact(fact_v, None),
+                .upsert_typed_fact(fact.clone(), None),
         )
         .expect("upsert internal fact");
     }

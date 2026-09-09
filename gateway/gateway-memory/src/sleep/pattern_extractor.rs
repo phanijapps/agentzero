@@ -10,6 +10,7 @@
 //! procedure writes flow through `Arc<dyn ...>` so the cycle runs against
 //! either backend; each backend implements the operations natively.
 
+use agent_primitives::vec_math::cosine_f64;
 use std::sync::Arc;
 
 use agent_runtime::llm::embedding::EmbeddingClient;
@@ -315,7 +316,7 @@ fn build_matching_pairs(
                 // Keep patterns within a single agent for now.
                 continue;
             }
-            if cosine_similarity(ea, eb) >= PAIR_COSINE_THRESHOLD {
+            if cosine_f64(ea, eb) >= PAIR_COSINE_THRESHOLD {
                 stats.pairs_matched += 1;
                 pairs.push(MatchedPair { idx_a: i, idx_b: j });
             }
@@ -405,26 +406,6 @@ fn sanitize_name(raw: &str) -> String {
         .flatten()
         .collect();
     trimmed
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0f64;
-    let mut na = 0f64;
-    let mut nb = 0f64;
-    for (x, y) in a.iter().zip(b.iter()) {
-        let x = *x as f64;
-        let y = *y as f64;
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
 }
 
 // ============================================================================
@@ -826,12 +807,12 @@ mod tests {
     fn cosine_threshold_behavior() {
         let a = normalize(vec![1.0, 0.0, 0.0]);
         let b = normalize(vec![1.0, 0.0, 0.0]);
-        assert!(cosine_similarity(&a, &b) >= PAIR_COSINE_THRESHOLD);
+        assert!(cosine_f64(&a, &b) >= PAIR_COSINE_THRESHOLD);
         let c = normalize(vec![0.0, 1.0, 0.0]);
-        assert!(cosine_similarity(&a, &c) < PAIR_COSINE_THRESHOLD);
+        assert!(cosine_f64(&a, &c) < PAIR_COSINE_THRESHOLD);
         // ~0.85 > threshold
         let d = normalize(vec![0.85, 0.5267, 0.0]);
-        assert!(cosine_similarity(&a, &d) >= PAIR_COSINE_THRESHOLD);
+        assert!(cosine_f64(&a, &d) >= PAIR_COSINE_THRESHOLD);
     }
 
     #[test]

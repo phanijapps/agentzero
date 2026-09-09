@@ -301,7 +301,7 @@ async fn strategy_fact_synthesis_uses_memory_sidecar() {
     contradicted.contradicted_by = Some("fact-other".to_string());
     contradicted.updated_at = "2026-07-07T00:00:00Z".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(contradicted).expect("json"), None)
+        .upsert_typed_fact(contradicted, None)
         .await
         .expect("upsert contradicted");
 

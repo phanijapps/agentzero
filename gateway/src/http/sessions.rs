@@ -2,6 +2,7 @@
 //!
 //! HTTP API for archiving and restoring session transcripts.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -50,12 +51,6 @@ pub struct RestoreResponse {
     pub records_restored: usize,
 }
 
-/// Error response.
-#[derive(Debug, Serialize)]
-pub struct SessionErrorResponse {
-    pub error: String,
-}
-
 // ============================================================================
 // HANDLERS
 // ============================================================================
@@ -65,15 +60,15 @@ pub struct SessionErrorResponse {
 pub async fn archive_sessions(
     State(state): State<AppState>,
     Json(body): Json<ArchiveRequest>,
-) -> Result<Json<ArchiveResponse>, (StatusCode, Json<SessionErrorResponse>)> {
+) -> Result<Json<ArchiveResponse>, (StatusCode, Json<ErrorResponse>)> {
     let archiver = match &state.session_archiver {
         Some(a) => a,
         None => {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(SessionErrorResponse {
-                    error: "Session archiver not available".to_string(),
-                }),
+                Json(ErrorResponse::new(
+                    "Session archiver not available".to_string(),
+                )),
             ));
         }
     };
@@ -97,9 +92,7 @@ pub async fn archive_sessions(
         }
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SessionErrorResponse {
-                error: format!("Archive failed: {}", e),
-            }),
+            Json(ErrorResponse::new(format!("Archive failed: {}", e))),
         )),
     }
 }
@@ -109,15 +102,15 @@ pub async fn archive_sessions(
 pub async fn restore_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<RestoreResponse>, (StatusCode, Json<SessionErrorResponse>)> {
+) -> Result<Json<RestoreResponse>, (StatusCode, Json<ErrorResponse>)> {
     let archiver = match &state.session_archiver {
         Some(a) => a,
         None => {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(SessionErrorResponse {
-                    error: "Session archiver not available".to_string(),
-                }),
+                Json(ErrorResponse::new(
+                    "Session archiver not available".to_string(),
+                )),
             ));
         }
     };
@@ -129,9 +122,7 @@ pub async fn restore_session(
         })),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SessionErrorResponse {
-                error: format!("Restore failed: {}", e),
-            }),
+            Json(ErrorResponse::new(format!("Restore failed: {}", e))),
         )),
     }
 }
@@ -140,7 +131,7 @@ pub async fn restore_session(
 pub async fn get_session_state(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<SessionState>, (StatusCode, Json<SessionErrorResponse>)> {
+) -> Result<Json<SessionState>, (StatusCode, Json<ErrorResponse>)> {
     let builder = SessionStateBuilder::new(
         state.log_service.clone(),
         state.messages.clone(),
@@ -151,15 +142,17 @@ pub async fn get_session_state(
         Ok(Some(session_state)) => Ok(Json(session_state)),
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
-            Json(SessionErrorResponse {
-                error: format!("Session not found: {}", session_id),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Session not found: {}",
+                session_id
+            ))),
         )),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SessionErrorResponse {
-                error: format!("Failed to build session state: {}", e),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Failed to build session state: {}",
+                e
+            ))),
         )),
     }
 }
@@ -182,7 +175,7 @@ pub async fn get_session_state(
 pub async fn delete_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<SessionErrorResponse>)> {
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     match state
         .state_service
         .delete_session_recursive_cascade(&session_id)
@@ -193,9 +186,7 @@ pub async fn delete_session(
         }
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SessionErrorResponse {
-                error: format!("Delete failed: {}", e),
-            }),
+            Json(ErrorResponse::new(format!("Delete failed: {}", e))),
         )),
     }
 }

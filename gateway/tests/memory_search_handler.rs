@@ -47,13 +47,12 @@ fn setup_with_seeded_fact(agent_id: &str) -> (TestServer, TempDir) {
         source_episode_id: None,
         source_ref: None,
     };
-    let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
     futures::executor::block_on(
         state
             .memory_store
             .as_ref()
             .expect("memory_store")
-            .upsert_typed_fact(fact_v, None),
+            .upsert_typed_fact(fact.clone(), None),
     )
     .expect("upsert fact");
 

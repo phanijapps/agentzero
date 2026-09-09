@@ -3,6 +3,7 @@
 // Implements MemoryFactStore trait using MemoryRepository + EmbeddingClient
 // ============================================================================
 
+use agent_primitives::vec_math::cosine_f64;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -734,15 +735,11 @@ impl MemoryFactStore for GatewayMemoryFactStore {
 
     async fn upsert_typed_fact(
         &self,
-        fact: Value,
+        mut typed: MemoryFact,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut typed: MemoryFact =
-            serde_json::from_value(fact).map_err(|e| format!("decode MemoryFact: {e}"))?;
         validate_fact_content(&typed.category, &typed.content)?;
-        if embedding.is_some() {
-            typed.embedding = embedding;
-        }
+        typed.embedding = embedding;
         self.memory_repo.upsert_memory_fact(&typed)
     }
 
@@ -884,7 +881,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                 Some(v) => v,
                 None => continue,
             };
-            let sim = cosine_similarity_f64(embedding, &stored);
+            let sim = cosine_f64(embedding, &stored);
             if sim >= threshold as f64 {
                 return Ok(Some(StrategyFactMatch {
                     fact_id: fact.id,
@@ -1069,29 +1066,6 @@ fn fact_valid_at(fact: &MemoryFact, cutoff: chrono::DateTime<chrono::Utc>) -> bo
         }
     }
     true
-}
-
-/// Cosine similarity in `f64` precision. Matches the synthesizer's
-/// historical computation; pulled in here so the strategy-similarity
-/// scan stays self-contained.
-fn cosine_similarity_f64(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0f64;
-    let mut na = 0f64;
-    let mut nb = 0f64;
-    for (x, y) in a.iter().zip(b.iter()) {
-        let x = *x as f64;
-        let y = *y as f64;
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
 }
 
 #[cfg(test)]

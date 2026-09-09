@@ -88,10 +88,7 @@ fn make_curator_llm(state: &AppState) -> Result<Arc<dyn LlmClient>, String> {
             .provider_service
             .get(id)
             .map_err(|e| format!("provider {id}: {e}"))?,
-        None => providers
-            .iter()
-            .find(|p| p.is_default)
-            .or_else(|| providers.first())
+        None => gateway_services::select_provider(&providers, None)
             .cloned()
             .ok_or_else(|| "no providers configured".to_string())?,
     };

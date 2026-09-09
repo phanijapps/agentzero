@@ -43,14 +43,10 @@ impl WikiStore for GatewayWikiStore {
 
     async fn upsert_article(
         &self,
-        article: Value,
+        mut typed: WikiArticle,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut typed: WikiArticle =
-            serde_json::from_value(article).map_err(|e| format!("decode WikiArticle: {e}"))?;
-        if embedding.is_some() {
-            typed.embedding = embedding;
-        }
+        typed.embedding = embedding;
         self.repo.upsert_article(&typed)
     }
 

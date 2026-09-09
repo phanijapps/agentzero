@@ -2,6 +2,7 @@
 //!
 //! CRUD operations for MCP server configurations.
 
+use super::ErrorResponse;
 use crate::services::{
     mcp::{McpServerSummary, McpUpdateError},
     McpOAuthService, McpOAuthStartResponse,
@@ -24,12 +25,6 @@ const DEFAULT_OAUTH_REDIRECT_URI: &str = "http://localhost:18791/api/mcps/oauth/
 #[derive(Debug, Serialize)]
 pub struct McpListResponse {
     pub servers: Vec<McpServerSummary>,
-}
-
-/// Error response.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
 }
 
 /// OAuth status response.
@@ -252,21 +247,21 @@ pub async fn create_mcp(
     Json(request): Json<CreateMcpRequest>,
 ) -> Result<Json<McpServerConfig>, (StatusCode, Json<ErrorResponse>)> {
     let config = try_mcp_config(request)
-        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })))?;
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(error))))?;
 
     if requires_local_origin_guard(&config) {
         require_local_origin(&headers)?;
     }
 
     if let Err(e) = validate_mcp_config(&config) {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })));
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))));
     }
 
     match state.mcp_service.add(config.clone()) {
         Ok(()) => Ok(Json(config)),
         Err(e) => {
             tracing::error!("Failed to create MCP server: {}", e);
-            Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))
+            Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))))
         }
     }
 }
@@ -282,21 +277,19 @@ pub async fn update_mcp(
     if state.mcp_service.get(&id).is_err() {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("MCP server not found: {}", id),
-            }),
+            Json(ErrorResponse::new(format!("MCP server not found: {}", id))),
         ));
     }
 
     let config = try_mcp_config(request)
-        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })))?;
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(error))))?;
 
     if requires_local_origin_guard(&config) {
         require_local_origin(&headers)?;
     }
 
     if let Err(e) = validate_mcp_config(&config) {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })));
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))));
     }
 
     match state.mcp_service.update(&id, config.clone()) {
@@ -342,7 +335,7 @@ fn mcp_update_error_response(error: McpUpdateError) -> (StatusCode, Json<ErrorRe
             "Failed to update MCP server".to_string(),
         ),
     };
-    (status, Json(ErrorResponse { error: message }))
+    (status, Json(ErrorResponse::new(message)))
 }
 
 /// DELETE /api/mcps/:id - Delete an MCP server.
@@ -354,7 +347,7 @@ pub async fn delete_mcp(
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(e) => {
             tracing::warn!("Failed to delete MCP server: {} - {}", id, e);
-            Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: e })))
+            Err((StatusCode::NOT_FOUND, Json(ErrorResponse::new(e))))
         }
     }
 }
@@ -367,9 +360,7 @@ pub async fn mcp_oauth_status(
     if state.mcp_service.get(&id).is_err() {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("MCP server not found: {}", id),
-            }),
+            Json(ErrorResponse::new(format!("MCP server not found: {}", id))),
         ));
     }
     let oauth = McpOAuthService::new(state.mcp_service.clone());
@@ -392,7 +383,7 @@ pub async fn start_mcp_oauth(
         .begin_authorization(&id, &redirect_uri)
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))))
 }
 
 /// POST /api/mcps/:id/oauth/disconnect - Remove OAuth tokens/state.
@@ -405,7 +396,7 @@ pub async fn disconnect_mcp_oauth(
     let oauth = McpOAuthService::new(state.mcp_service.clone());
     oauth
         .disconnect(&id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))))?;
     Ok(Json(McpOAuthStatusResponse {
         status: oauth.status(&id).as_str().to_string(),
     }))
@@ -514,9 +505,9 @@ fn validate_mcp_oauth_redirect_uri(uri: &str) -> Result<(), (StatusCode, Json<Er
 
     Err((
         StatusCode::BAD_REQUEST,
-        Json(ErrorResponse {
-            error: "OAuth redirectUri must be a localhost /api/mcps/oauth/callback URL".to_string(),
-        }),
+        Json(ErrorResponse::new(
+            "OAuth redirectUri must be a localhost /api/mcps/oauth/callback URL".to_string(),
+        )),
     ))
 }
 
@@ -559,9 +550,9 @@ fn require_local_origin(headers: &HeaderMap) -> Result<(), (StatusCode, Json<Err
 
     Err((
         StatusCode::FORBIDDEN,
-        Json(ErrorResponse {
-            error: "OAuth MCP mutations require a localhost Origin or Referer".to_string(),
-        }),
+        Json(ErrorResponse::new(
+            "OAuth MCP mutations require a localhost Origin or Referer".to_string(),
+        )),
     ))
 }
 
@@ -702,7 +693,7 @@ pub async fn test_mcp(
             } else {
                 StatusCode::BAD_REQUEST
             };
-            return Err((status, Json(ErrorResponse { error: e })));
+            return Err((status, Json(ErrorResponse::new(e))));
         }
     };
 

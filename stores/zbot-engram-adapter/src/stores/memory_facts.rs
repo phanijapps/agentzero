@@ -1,5 +1,6 @@
 //! `MemoryFactStore` implementation backed by Engram memory records.
 
+use agent_primitives::vec_math::cosine_f64;
 use std::{
     collections::HashMap,
     path::Path,
@@ -738,15 +739,13 @@ impl MemoryFactStore for EngramMemoryFactStore {
 
     async fn upsert_typed_fact(
         &self,
-        fact: Value,
+        mut fact: MemoryFact,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut fact: MemoryFact =
-            serde_json::from_value(fact).map_err(|error| format!("decode MemoryFact: {error}"))?;
-        if let Some(embedding) = embedding {
-            fact.embedding = Some(embedding);
-        }
-        let embedding = fact.embedding.clone();
+        // The `embedding` parameter is the sole vector channel — the struct
+        // field is `#[serde(skip)]` and was always dropped by the old Value
+        // round-trip, so keep honoring only the explicit argument here.
+        fact.embedding = embedding.clone();
         self.upsert_fact_record(fact, embedding).await
     }
 
@@ -928,7 +927,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             if !embedding_compatible(&entry, &self.sidecar.embedding_identity, embedding) {
                 continue;
             }
-            if cosine_similarity(embedding, stored) >= f64::from(threshold) {
+            if cosine_f64(embedding, stored) >= f64::from(threshold) {
                 return Ok(Some(StrategyFactMatch {
                     fact_id: entry.fact.id,
                     source_episode_id: entry.fact.source_episode_id,
@@ -2324,30 +2323,8 @@ fn is_generic_token(token: &str) -> bool {
 
 fn semantic_score(query_embedding: Option<&[f32]>, fact_embedding: Option<&[f32]>) -> f64 {
     match (query_embedding, fact_embedding) {
-        (Some(query), Some(fact)) => cosine_similarity(query, fact),
+        (Some(query), Some(fact)) => cosine_f64(query, fact),
         _ => 0.0,
-    }
-}
-
-fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
-    if left.len() != right.len() || left.is_empty() {
-        return 0.0;
-    }
-
-    let mut dot = 0.0;
-    let mut left_norm = 0.0;
-    let mut right_norm = 0.0;
-    for (left, right) in left.iter().zip(right.iter()) {
-        let left = f64::from(*left);
-        let right = f64::from(*right);
-        dot += left * right;
-        left_norm += left * left;
-        right_norm += right * right;
-    }
-    if left_norm == 0.0 || right_norm == 0.0 {
-        0.0
-    } else {
-        dot / (left_norm.sqrt() * right_norm.sqrt())
     }
 }
 

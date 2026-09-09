@@ -44,14 +44,10 @@ impl ProcedureStore for GatewayProcedureStore {
 
     async fn upsert_procedure(
         &self,
-        procedure: Value,
+        mut typed: Procedure,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut typed: Procedure =
-            serde_json::from_value(procedure).map_err(|e| format!("decode Procedure: {e}"))?;
-        if embedding.is_some() {
-            typed.embedding = embedding;
-        }
+        typed.embedding = embedding;
         self.repo.upsert_procedure(&typed)
     }
 

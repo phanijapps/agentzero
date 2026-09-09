@@ -8,6 +8,7 @@ description = "AgentZero compatibility adapter scaffold for Engram-backed stores
 
 [dependencies]
 agent-runtime = { path = "../../runtime/agent-runtime" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 engram-domain = { git = "https://github.com/phanijapps/engram", branch = "main" }

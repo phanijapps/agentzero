@@ -31,13 +31,13 @@ pub trait ProcedureStore: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Upsert a procedure. The `procedure` Value carries the full
-    /// `Procedure` shape; `embedding` is optional.
+    /// Upsert a procedure; `embedding` is optional.
     async fn upsert_procedure(
         &self,
-        _procedure: Value,
-        _embedding: Option<Vec<f32>>,
+        procedure: Procedure,
+        embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
+        let _ = (procedure, embedding);
         Err("upsert_procedure not implemented for this store".to_string())
     }
 

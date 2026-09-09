@@ -18,6 +18,7 @@
 //! relevance still applies and they remain selectable.
 
 use crate::recall::ScoredItem;
+use agent_primitives::vec_math::cosine_f64;
 
 /// Input row for [`mmr_select`]. Pairs a [`ScoredItem`] with its optional
 /// embedding vector.
@@ -136,36 +137,12 @@ fn max_similarity_to_selected(
             Some(e) => e,
             None => continue,
         };
-        let sim = cosine_similarity(cand_emb, sel_emb);
+        let sim = cosine_f64(cand_emb, sel_emb);
         if sim > max_sim {
             max_sim = sim;
         }
     }
     max_sim
-}
-
-/// Cosine similarity in `f64` between two equal-length embeddings.
-///
-/// Returns `0.0` for empty, mismatched-length, or zero-magnitude inputs
-/// so callers never propagate `NaN` into the MMR score.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0_f64;
-    let mut na = 0.0_f64;
-    let mut nb = 0.0_f64;
-    for (x, y) in a.iter().zip(b.iter()) {
-        let x = *x as f64;
-        let y = *y as f64;
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
 }
 
 #[cfg(test)]
@@ -451,24 +428,24 @@ mod tests {
 
     #[test]
     fn cosine_similarity_handles_mismatched_lengths() {
-        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0, 0.0]), 0.0);
+        assert_eq!(cosine_f64(&[1.0, 0.0], &[1.0, 0.0, 0.0]), 0.0);
     }
 
     #[test]
     fn cosine_similarity_handles_zero_vectors() {
-        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
-        assert_eq!(cosine_similarity(&[1.0, 0.0], &[0.0, 0.0]), 0.0);
+        assert_eq!(cosine_f64(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
+        assert_eq!(cosine_f64(&[1.0, 0.0], &[0.0, 0.0]), 0.0);
     }
 
     #[test]
     fn cosine_similarity_identical_is_one() {
-        let s = cosine_similarity(&[1.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
+        let s = cosine_f64(&[1.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
         assert!((s - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn cosine_similarity_orthogonal_is_zero() {
-        let s = cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]);
+        let s = cosine_f64(&[1.0, 0.0], &[0.0, 1.0]);
         assert!(s.abs() < 1e-9);
     }
 }

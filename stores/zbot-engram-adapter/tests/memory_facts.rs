@@ -354,10 +354,7 @@ async fn typed_upsert_preserves_embedding_sidecar() {
     fact.scope = "global".to_string();
 
     store
-        .upsert_typed_fact(
-            serde_json::to_value(&fact).expect("fact json"),
-            Some(vec![0.1, 0.2, 0.3]),
-        )
+        .upsert_typed_fact(fact.clone(), Some(vec![0.1, 0.2, 0.3]))
         .await
         .expect("upsert");
 
@@ -391,7 +388,7 @@ async fn session_ctx_facts_are_excluded_from_public_search_candidates() {
     fact.embedding = None;
 
     store
-        .upsert_typed_fact(serde_json::to_value(&fact).expect("fact json"), None)
+        .upsert_typed_fact(fact.clone(), None)
         .await
         .expect("upsert ctx");
 
@@ -437,7 +434,7 @@ async fn supported_search_respects_agent_ward_and_as_of_filters() {
 
     for fact in [&agent_a, &agent_b, &expired] {
         store
-            .upsert_typed_fact(serde_json::to_value(fact).expect("json"), None)
+            .upsert_typed_fact(fact.clone(), None)
             .await
             .expect("upsert");
     }
@@ -496,10 +493,7 @@ async fn recall_prioritized_without_embedder_returns_structured_degraded_reason(
     fact.content = "AMD valuation analysis uses relative valuation methodology".to_string();
     fact.embedding = Some(vec![0.0, 1.0]);
     store
-        .upsert_typed_fact(
-            serde_json::to_value(&fact).expect("json"),
-            fact.embedding.clone(),
-        )
+        .upsert_typed_fact(fact.clone(), fact.embedding.clone())
         .await
         .expect("upsert");
 
@@ -538,7 +532,7 @@ async fn recall_embedding_error_degrades_without_fuzzy_lexical_results() {
     fact.category = "domain".to_string();
     fact.content = "AMD valuation analysis uses relative valuation methodology".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(&fact).expect("json"), None)
+        .upsert_typed_fact(fact.clone(), None)
         .await
         .expect("upsert");
 
@@ -564,7 +558,7 @@ async fn generic_academic_tokens_do_not_return_unrelated_domain_fact() {
     amd.category = "domain".to_string();
     amd.content = "AMD valuation analysis uses relative valuation methodology".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(&amd).expect("json"), None)
+        .upsert_typed_fact(amd.clone(), None)
         .await
         .expect("upsert");
 
@@ -594,7 +588,7 @@ async fn scope_and_category_do_not_bypass_content_relevance_gate() {
     fact.category = "domain".to_string();
     fact.content = "AMD valuation analysis uses relative valuation methodology".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(&fact).expect("json"), None)
+        .upsert_typed_fact(fact.clone(), None)
         .await
         .expect("upsert");
 
@@ -640,10 +634,7 @@ async fn rrf_fuses_dense_and_specific_sparse_ahead_of_newer_generic_hit() {
 
     for fact in [&semantic_specific, &newer_generic] {
         store
-            .upsert_typed_fact(
-                serde_json::to_value(fact).expect("json"),
-                fact.embedding.clone(),
-            )
+            .upsert_typed_fact(fact.clone(), fact.embedding.clone())
             .await
             .expect("upsert");
     }
@@ -686,7 +677,7 @@ async fn recency_noise_does_not_hide_older_exact_match_before_ranking() {
     exact.content = "Paper under review: arxiv 2602.03315".to_string();
     exact.updated_at = "2026-07-06T01:00:00Z".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(&exact).expect("json"), None)
+        .upsert_typed_fact(exact.clone(), None)
         .await
         .expect("upsert exact");
 
@@ -697,7 +688,7 @@ async fn recency_noise_does_not_hide_older_exact_match_before_ranking() {
         noise.content = format!("Unrelated recent memory row {idx}");
         noise.updated_at = format!("2026-07-07T05:{idx:02}:00Z");
         store
-            .upsert_typed_fact(serde_json::to_value(&noise).expect("json"), None)
+            .upsert_typed_fact(noise.clone(), None)
             .await
             .expect("upsert noise");
     }
@@ -726,7 +717,7 @@ async fn scoped_fact_tie_breaks_before_newer_global_fact() {
     scoped.content = "Project alpha pin".to_string();
     scoped.updated_at = "2026-07-06T00:00:00Z".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(&scoped).expect("json"), None)
+        .upsert_typed_fact(scoped.clone(), None)
         .await
         .expect("upsert scoped");
 
@@ -736,7 +727,7 @@ async fn scoped_fact_tie_breaks_before_newer_global_fact() {
     global.scope = "global".to_string();
     global.updated_at = "2026-07-07T00:00:00Z".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(&global).expect("json"), None)
+        .upsert_typed_fact(global.clone(), None)
         .await
         .expect("upsert global");
 
@@ -770,7 +761,7 @@ async fn degraded_recall_allows_exact_identifier_not_generic_category_inference(
     arxiv.category = "domain".to_string();
     arxiv.content = "Paper under review: arxiv 2602.03315".to_string();
     store
-        .upsert_typed_fact(serde_json::to_value(&arxiv).expect("json"), None)
+        .upsert_typed_fact(arxiv.clone(), None)
         .await
         .expect("upsert");
 
@@ -811,10 +802,7 @@ async fn embedding_identity_mismatch_skips_vectors_with_reindex_blocker() {
     fact.id = "fact-model-mismatch".to_string();
     fact.embedding = Some(vec![1.0, 0.0]);
     store
-        .upsert_typed_fact(
-            serde_json::to_value(&fact).expect("json"),
-            fact.embedding.clone(),
-        )
+        .upsert_typed_fact(fact.clone(), fact.embedding.clone())
         .await
         .expect("upsert");
 
@@ -867,10 +855,7 @@ async fn external_query_embedding_without_identity_fails_closed() {
     fact.id = "fact-no-query-identity".to_string();
     fact.embedding = Some(vec![1.0, 0.0]);
     store
-        .upsert_typed_fact(
-            serde_json::to_value(&fact).expect("json"),
-            fact.embedding.clone(),
-        )
+        .upsert_typed_fact(fact.clone(), fact.embedding.clone())
         .await
         .expect("upsert");
 
@@ -903,10 +888,7 @@ async fn external_query_embedding_identity_mismatch_fails_closed() {
     fact.id = "fact-query-identity-mismatch".to_string();
     fact.embedding = Some(vec![1.0, 0.0]);
     store
-        .upsert_typed_fact(
-            serde_json::to_value(&fact).expect("json"),
-            fact.embedding.clone(),
-        )
+        .upsert_typed_fact(fact.clone(), fact.embedding.clone())
         .await
         .expect("upsert");
 
@@ -970,10 +952,7 @@ async fn live_embedding_identity_mismatch_degrades_before_vector_search() {
     fact.id = "fact-live-model-drift".to_string();
     fact.embedding = Some(vec![1.0, 0.0]);
     store
-        .upsert_typed_fact(
-            serde_json::to_value(&fact).expect("json"),
-            fact.embedding.clone(),
-        )
+        .upsert_typed_fact(fact.clone(), fact.embedding.clone())
         .await
         .expect("upsert");
 
@@ -995,10 +974,7 @@ async fn live_embedding_identity_mismatch_degrades_before_vector_search() {
     drifted_fact.id = "fact-live-model-drift-write".to_string();
     drifted_fact.embedding = Some(vec![1.0, 0.0]);
     let err = store
-        .upsert_typed_fact(
-            serde_json::to_value(&drifted_fact).expect("json"),
-            drifted_fact.embedding.clone(),
-        )
+        .upsert_typed_fact(drifted_fact.clone(), drifted_fact.embedding.clone())
         .await
         .expect_err("model drift must block vector writes");
     assert!(err.contains("embedding_identity_mismatch"));

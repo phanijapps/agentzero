@@ -647,7 +647,7 @@ async fn memory_get_and_delete_reject_internal_facts_even_by_id() {
                 .memory_store
                 .as_ref()
                 .expect("memory_store")
-                .upsert_typed_fact(serde_json::to_value(fact).expect("encode fact"), None),
+                .upsert_typed_fact(fact.clone(), None),
         )
         .expect("seed internal fact");
 

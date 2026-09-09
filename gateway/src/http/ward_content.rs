@@ -13,6 +13,7 @@
 //! Requests that arrive before stores are wired return `503 Service
 //! Unavailable`.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -73,21 +74,13 @@ pub struct Counts {
     pub episodes: usize,
 }
 
-/// Error response shape (matches the convention used by other HTTP modules).
-#[derive(Debug, Serialize)]
-pub struct ErrorBody {
-    pub error: String,
-}
-
-pub type HandlerError = (StatusCode, Json<ErrorBody>);
+pub type HandlerError = (StatusCode, Json<ErrorResponse>);
 
 fn internal(context: &str, e: impl std::fmt::Display) -> HandlerError {
     tracing::error!("{}: {}", context, e);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorBody {
-            error: format!("{}: {}", context, e),
-        }),
+        Json(ErrorResponse::new(format!("{}: {}", context, e))),
     )
 }
 
@@ -142,12 +135,7 @@ fn build_summary(ward_id: &str, wiki: &[WikiArticle]) -> WardSummary {
 /// state). Returns 503 so the UI can surface a clean error instead of a
 /// panic.
 fn store_unavailable(what: &str) -> HandlerError {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(ErrorBody {
-            error: format!("{what} store unavailable"),
-        }),
-    )
+    ErrorResponse::service_disabled(&format!("{what} store unavailable"))
 }
 
 fn fact_to_value(fact: MemoryFact, now: DateTime<Utc>) -> Value {

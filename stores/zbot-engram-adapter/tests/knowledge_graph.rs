@@ -169,10 +169,7 @@ async fn wiki_articles_round_trip_through_engram_knowledge() {
     );
 
     store
-        .upsert_article(
-            serde_json::to_value(&article).expect("article json"),
-            Some(vec![0.25, 0.5, 0.75]),
-        )
+        .upsert_article(article.clone(), Some(vec![0.25, 0.5, 0.75]))
         .await
         .expect("upsert");
 
@@ -226,7 +223,7 @@ async fn wiki_articles_round_trip_through_engram_knowledge() {
 
     article.content = "Updated content about Engram knowledge mapping.".to_string();
     store
-        .upsert_article(serde_json::to_value(&article).expect("article json"), None)
+        .upsert_article(article.clone(), None)
         .await
         .expect("update");
     let updated = store

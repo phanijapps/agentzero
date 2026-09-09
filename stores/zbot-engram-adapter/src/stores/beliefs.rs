@@ -1,5 +1,6 @@
 //! `BeliefStore` and `BeliefContradictionStore` backed by Engram belief records.
 
+use agent_primitives::vec_math::cosine_f64;
 use std::{
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
@@ -605,7 +606,7 @@ impl BeliefSidecar {
                 ) {
                     return None;
                 }
-                let score = cosine_similarity(query_embedding, &embedding);
+                let score = cosine_f64(query_embedding, &embedding);
                 Some(ScoredBelief {
                     belief: entry.belief,
                     score,
@@ -921,28 +922,6 @@ fn decode_embedding_bytes(bytes: &[u8]) -> Option<Vec<f32>> {
             Some(f32::from_le_bytes(array))
         })
         .collect()
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let (dot, left_norm, right_norm) =
-        a.iter()
-            .zip(b)
-            .fold((0.0_f64, 0.0_f64, 0.0_f64), |acc, (left, right)| {
-                let left = f64::from(*left);
-                let right = f64::from(*right);
-                (
-                    acc.0 + left * right,
-                    acc.1 + left * left,
-                    acc.2 + right * right,
-                )
-            });
-    if left_norm == 0.0 || right_norm == 0.0 {
-        return 0.0;
-    }
-    dot / left_norm.sqrt() / right_norm.sqrt()
 }
 
 fn canonicalize_zbot_contradiction(contradiction: &BeliefContradiction) -> BeliefContradiction {

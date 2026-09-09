@@ -1,5 +1,6 @@
 //! `WikiStore` implementation backed by Engram knowledge records.
 
+use agent_primitives::vec_math::cosine_f64_opt;
 use std::{
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
@@ -196,7 +197,7 @@ impl WikiStore for EngramWikiStore {
                             embedding.len(),
                         )
                     })
-                    .and_then(|(query, embedding)| cosine_similarity(query, embedding));
+                    .and_then(|(query, embedding)| cosine_f64_opt(query, embedding));
                 let score = text_score + vector_score.unwrap_or(0.0);
                 if score <= 0.0 {
                     return None;
@@ -272,7 +273,7 @@ impl WikiStore for EngramWikiStore {
                 ) {
                     return None;
                 }
-                let score = cosine_similarity(embedding, entry.embedding.as_deref()?)?;
+                let score = cosine_f64_opt(embedding, entry.embedding.as_deref()?)?;
                 Some((entry.article, score))
             })
             .collect::<Vec<_>>();
@@ -683,27 +684,4 @@ fn text_score(article: &WikiArticle, query_terms: &[String]) -> f64 {
         .iter()
         .filter(|term| haystack.contains(term.as_str()))
         .count() as f64
-}
-
-fn cosine_similarity(query: &[f32], embedding: &[f32]) -> Option<f64> {
-    if query.len() != embedding.len() || query.is_empty() {
-        return None;
-    }
-    let (dot, query_norm, embedding_norm) =
-        query
-            .iter()
-            .zip(embedding)
-            .fold((0.0_f64, 0.0_f64, 0.0_f64), |acc, (left, right)| {
-                let left = f64::from(*left);
-                let right = f64::from(*right);
-                (
-                    acc.0 + left * right,
-                    acc.1 + left * left,
-                    acc.2 + right * right,
-                )
-            });
-    if query_norm == 0.0 || embedding_norm == 0.0 {
-        return None;
-    }
-    Some(dot / query_norm.sqrt() / embedding_norm.sqrt())
 }

@@ -4,6 +4,7 @@
 //! the same topic disagree, the lower-confidence/older one is marked with
 //! `superseded_by` pointing to the winner. Recall filters superseded facts.
 
+use agent_primitives::vec_math::cosine_f32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -154,7 +155,7 @@ impl ConflictResolver {
                     continue;
                 }
                 let sim = match (facts[i].embedding.as_ref(), facts[j].embedding.as_ref()) {
-                    (Some(a), Some(b)) => cosine(a, b),
+                    (Some(a), Some(b)) => cosine_f32(a, b),
                     _ => continue,
                 };
                 if sim < MIN_SIMILARITY {
@@ -270,27 +271,6 @@ fn pick_winner<'a>(a: &'a MemoryFact, b: &'a MemoryFact) -> (&'a MemoryFact, &'a
     }
 }
 
-/// Cosine similarity between two `f32` vectors. Returns 0.0 for empty or
-/// mismatched-length inputs (caller treats below-threshold as no candidate).
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    if a.is_empty() || a.len() != b.len() {
-        return 0.0;
-    }
-    let mut dot = 0.0_f32;
-    let mut na = 0.0_f32;
-    let mut nb = 0.0_f32;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
-    }
-}
-
 // ============================================================================
 // LLM-backed implementation
 // ============================================================================
@@ -396,7 +376,7 @@ mod tests {
     }
 
     /// Seed two schema facts with identical embeddings → guaranteed similar
-    /// (cosine == 1.0, well above MIN_SIMILARITY = 0.85). Uses
+    /// (cosine_f32 == 1.0, well above MIN_SIMILARITY = 0.85). Uses
     /// `upsert_typed_fact` so the embedding is persisted regardless of whether
     /// the test harness has an embedder client configured.
     async fn seed_two_schemas(
@@ -408,7 +388,7 @@ mod tests {
         use serde_json::json;
         let now = chrono::Utc::now().to_rfc3339();
         // 384-dim unit vector along axis 0 — matches the sqlite-vec DDL dimension
-        // and cosine(v, v) == 1.0, well above MIN_SIMILARITY = 0.85.
+        // and cosine_f32(v, v) == 1.0, well above MIN_SIMILARITY = 0.85.
         let mut embedding: Vec<f32> = vec![0.0; 384];
         embedding[0] = 1.0;
 
@@ -450,11 +430,11 @@ mod tests {
 
     #[tokio::test]
     async fn cosine_handles_empty_and_mismatched() {
-        assert_eq!(cosine(&[], &[]), 0.0);
-        assert_eq!(cosine(&[1.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(cosine_f32(&[], &[]), 0.0);
+        assert_eq!(cosine_f32(&[1.0], &[1.0, 2.0]), 0.0);
         let v = vec![1.0_f32, 0.0, 0.0];
         // identical vectors → 1.0
-        assert!((cosine(&v, &v) - 1.0).abs() < 1e-6);
+        assert!((cosine_f32(&v, &v) - 1.0).abs() < 1e-6);
     }
 
     #[test]

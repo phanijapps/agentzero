@@ -8,6 +8,7 @@
 // `memory_facts`. The `source_fact_ids` column holds a JSON-encoded
 // `Vec<String>`; callers see a typed `Vec<String>` via `Belief`.
 
+use agent_primitives::vec_math::cosine_f64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -317,7 +318,7 @@ impl BeliefStore for SqliteBeliefStore {
             .filter_map(|b| {
                 let bytes = b.embedding.as_deref()?;
                 let emb = embedding_from_bytes(bytes)?;
-                let score = cosine_similarity_f64(query_embedding, &emb);
+                let score = cosine_f64(query_embedding, &emb);
                 Some(ScoredBelief { belief: b, score })
             })
             .collect();
@@ -415,29 +416,6 @@ fn embedding_from_bytes(bytes: &[u8]) -> Option<Vec<f32>> {
         out.push(f32::from_le_bytes(arr));
     }
     Some(out)
-}
-
-/// Cosine similarity in `f64` precision between two equal-length
-/// embeddings. Returns `0.0` for empty / mismatched / zero-magnitude
-/// inputs so search ranks them last rather than panicking.
-fn cosine_similarity_f64(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0f64;
-    let mut na = 0f64;
-    let mut nb = 0f64;
-    for (x, y) in a.iter().zip(b.iter()) {
-        let x = *x as f64;
-        let y = *y as f64;
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
 }
 
 #[cfg(test)]

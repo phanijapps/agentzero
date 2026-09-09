@@ -2847,6 +2847,7 @@ dependencies = [
 name = "gateway-memory"
 version = "2026.8.4"
 dependencies = [
+ "agent-primitives",
  "agent-runtime",
  "async-trait",
  "chrono",
@@ -7956,6 +7957,7 @@ dependencies = [
 name = "zbot-engram-adapter"
 version = "2026.8.4"
 dependencies = [
+ "agent-primitives",
  "agent-runtime",
  "async-trait",
  "chrono",

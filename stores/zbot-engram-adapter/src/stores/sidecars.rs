@@ -4,6 +4,7 @@
 //! framework concepts. Keeping them here preserves the existing store-trait
 //! contracts without pushing zbot-only schema into Engram.
 
+use agent_primitives::vec_math::cosine_f64;
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -623,7 +624,7 @@ impl ProcedureStore for EngramSidecarStores {
             if !stored_identity_compatible(&self.embedding_identity, identity_json, stored.len())? {
                 continue;
             }
-            let score = cosine_similarity(embedding, &stored);
+            let score = cosine_f64(embedding, &stored);
             if score > 0.0 {
                 scored.push((
                     serde_json::from_str::<Value>(&record_json).map_err(|e| e.to_string())?,
@@ -911,7 +912,7 @@ impl EpisodeStore for EngramSidecarStores {
             if !stored_identity_compatible(&self.embedding_identity, identity_json, stored.len())? {
                 continue;
             }
-            let score = cosine_similarity(embedding, &stored);
+            let score = cosine_f64(embedding, &stored);
             if score >= f64::from(threshold) {
                 scored.push((
                     serde_json::from_str::<Value>(&record_json).map_err(|e| e.to_string())?,
@@ -1890,28 +1891,6 @@ fn stored_identity_compatible(
         actual.as_ref(),
         vector_dimensions,
     ))
-}
-
-fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
-    if left.len() != right.len() || left.is_empty() {
-        return 0.0;
-    }
-
-    let mut dot = 0.0;
-    let mut left_norm = 0.0;
-    let mut right_norm = 0.0;
-    for (left, right) in left.iter().zip(right.iter()) {
-        let left = f64::from(*left);
-        let right = f64::from(*right);
-        dot += left * right;
-        left_norm += left * left;
-        right_norm += right * right;
-    }
-    if left_norm == 0.0 || right_norm == 0.0 {
-        0.0
-    } else {
-        dot / (left_norm.sqrt() * right_norm.sqrt())
-    }
 }
 
 fn now() -> String {

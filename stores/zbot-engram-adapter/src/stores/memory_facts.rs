@@ -38,7 +38,6 @@ const CTX_CATEGORY: &str = "ctx";
 const PRIMITIVE_AGENT_SENTINEL: &str = "__ward__";
 const PRIMITIVE_SCOPE: &str = "global";
 const PRIMITIVE_CATEGORY: &str = "primitive";
-const RRF_K: f64 = 60.0;
 const MIN_SEMANTIC_SCORE: f64 = 0.20;
 const MAX_RECALL_QUERY_CHARS: usize = 500;
 const MAX_SEARCH_LIMIT: usize = 50;
@@ -1886,16 +1885,6 @@ struct SparseMatch {
     high_specificity: bool,
 }
 
-#[derive(Default)]
-struct HybridSignal {
-    fact: Option<MemoryFact>,
-    score: f64,
-    semantic: bool,
-    sparse: bool,
-    high_specificity: bool,
-    semantic_score: f64,
-}
-
 struct SearchRequest<'a> {
     agent_id: Option<&'a str>,
     query: &'a str,
@@ -2075,74 +2064,64 @@ fn rank_hybrid_entries(
         }
     }
 
-    semantic_ranked.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    sparse_ranked.sort_by(|left, right| {
-        right
-            .1
-            .score
-            .partial_cmp(&left.1.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Engram-composed fusion: semantic + lexical lanes plus a recency
+    // lane derived from the matched set, fused by engram's weighted
+    // ReciprocalRankFusion (see retrieval_composition). Recency reorders
+    // the matched set; it never widens it.
+    let semantic_specificity: HashMap<String, f64> = semantic_ranked
+        .iter()
+        .map(|(id, score, _)| (id.clone(), *score))
+        .collect();
+    let lexical_specificity: HashMap<String, bool> = sparse_ranked
+        .iter()
+        .map(|(id, sparse, _)| (id.clone(), sparse.high_specificity))
+        .collect();
 
-    let mut fused = HashMap::<String, HybridSignal>::new();
-    for (rank_zero, (id, score, fact)) in semantic_ranked.into_iter().enumerate() {
-        let rank = (rank_zero as f64) + 1.0;
-        let signal = fused.entry(id).or_default();
-        signal.fact.get_or_insert(fact);
-        signal.score += 1.0 / (RRF_K + rank);
-        signal.semantic = true;
-        signal.semantic_score = signal.semantic_score.max(score);
-    }
-    for (rank_zero, (id, sparse, fact)) in sparse_ranked.into_iter().enumerate() {
-        let rank = (rank_zero as f64) + 1.0;
-        let signal = fused.entry(id).or_default();
-        signal.fact.get_or_insert(fact);
-        signal.score += 1.0 / (RRF_K + rank);
-        signal.sparse = true;
-        signal.high_specificity |= sparse.high_specificity;
-    }
-
-    let mut hits = fused
-        .into_values()
-        .filter(|signal| signal.semantic_score >= MIN_SEMANTIC_SCORE || signal.high_specificity)
-        .filter_map(|signal| {
-            let fact = signal.fact?;
-            Some(SearchHit {
-                fact,
-                score: normalize_rrf_score(signal.score),
-                match_source: match (signal.semantic, signal.sparse) {
-                    (true, true) => "hybrid",
-                    (true, false) => "vec",
-                    (false, true) => "fts",
-                    (false, false) => return None,
-                }
-                .to_string(),
-                degraded_reason: None,
-            })
+    let semantic_lane = semantic_ranked
+        .into_iter()
+        .map(|(_id, score, fact)| super::retrieval_composition::LaneCandidate { fact, score })
+        .collect::<Vec<_>>();
+    let lexical_lane = sparse_ranked
+        .into_iter()
+        .map(|(_id, sparse, fact)| super::retrieval_composition::LaneCandidate {
+            fact,
+            score: sparse.score,
         })
         .collect::<Vec<_>>();
-    hits.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    hits
+
+    super::retrieval_composition::fuse_fact_lanes(semantic_lane, lexical_lane, 50, chrono::Utc::now())
+        .into_iter()
+        .filter(|fused| {
+            // Same admission guard as the hand-rolled version: weak
+            // semantic matches only survive with a high-specificity
+            // lexical hit.
+            let semantic_score = semantic_specificity.get(&fused.fact.id).copied();
+            let high_specificity = lexical_specificity
+                .get(&fused.fact.id)
+                .copied()
+                .unwrap_or(false);
+            semantic_score.is_none_or(|score| score >= MIN_SEMANTIC_SCORE) || high_specificity
+        })
+        .map(|fused| SearchHit {
+            score: normalize_fused_score(fused.score),
+            match_source: match (fused.semantic, fused.sparse) {
+                (true, true) => "hybrid",
+                (true, false) => "vec",
+                (false, true) => "fts",
+                (false, false) => "fts",
+            }
+            .to_string(),
+            fact: fused.fact,
+            degraded_reason: None,
+        })
+        .collect::<Vec<_>>()
 }
 
-fn normalize_rrf_score(score: f64) -> f64 {
-    // RRF scores are small (roughly 1 / (k + rank)). Multiplying by `k`
-    // then clamping made every hit present in both sparse and semantic lists
-    // exactly 1.0, destroying the ranking before unified recall could use it.
-    // This monotonic transform keeps the adapter's [0, 1) score contract
-    // without collapsing distinct fused scores.
-    let scaled = (score * RRF_K).max(0.0);
-    scaled / (1.0 + scaled)
+/// Monotonic transform of the fused RRF score onto the adapter's [0, 1)
+/// contract (same shape as the previous normalize_rrf_score).
+fn normalize_fused_score(score: f64) -> f64 {
+    let score = score.max(0.0);
+    score / (1.0 + score)
 }
 
 fn embedding_compatible(
@@ -2386,8 +2365,8 @@ mod tests {
 
     #[test]
     fn hybrid_rrf_normalization_preserves_distinct_scores() {
-        let top = normalize_rrf_score((1.0 / 61.0) + (1.0 / 61.0));
-        let next = normalize_rrf_score((1.0 / 62.0) + (1.0 / 62.0));
+        let top = normalize_fused_score((1.0 / 61.0) + (1.0 / 61.0));
+        let next = normalize_fused_score((1.0 / 62.0) + (1.0 / 62.0));
 
         assert!(
             top > next,

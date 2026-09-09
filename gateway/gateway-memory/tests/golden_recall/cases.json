@@ -1,0 +1,425 @@
+{
+  "corpus_version": "golden-recall-v1",
+  "cases": [
+    {
+      "id": "c01-research-first-correction",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "pull real market data for the valuation",
+      "description": "highest-value class: research-first correction must surface for data-gathering intents",
+      "tag": "correction",
+      "expected": {
+        "fact_keys_any": ["policy.research_first"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c02-web-research-tools",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "web research tooling for scraping data",
+      "description": "correction steering toward skills over raw shell",
+      "tag": "correction",
+      "expected": {
+        "fact_keys_any": ["policy.web_research_tools"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c03-atomic-delegation",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "delegation task output files per topic",
+      "description": "correction on delegation granularity",
+      "tag": "correction",
+      "expected": {
+        "fact_keys_any": ["policy.atomic_delegation"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c04-ward-first",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "start working in the ward snapshot",
+      "description": "correction on ward-first workflow",
+      "tag": "correction",
+      "expected": {
+        "fact_keys_any": ["policy.ward_first"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c05-citations",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "cite numbers in the research output",
+      "description": "correction on citations",
+      "tag": "correction",
+      "expected": {
+        "fact_keys_any": ["policy.citations"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c06-stale-verdict-suppressed",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "AAPL overvalued or fairly valued verdict",
+      "description": "stale-suppression: superseded v1 verdict must not surface; fresh v2 must",
+      "tag": "stale",
+      "expected": {
+        "fact_keys_any": ["aapl.valuation_verdict.v2"],
+        "fact_keys_none": ["aapl.valuation_verdict.v1"],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c07-financial-analysis-flow",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "how to structure a financial analysis session",
+      "description": "session-shape pattern recall",
+      "tag": "pattern",
+      "expected": {
+        "fact_keys_any": ["pattern.financial_analysis_flow"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c08-comparison-table-recipe",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "build a comparison table of peers",
+      "description": "pattern + procedure lane both fire on table intent",
+      "tag": "pattern",
+      "expected": {
+        "fact_keys_any": ["pattern.comparison_table_steps"],
+        "fact_keys_none": [],
+        "kinds_any": ["Procedure"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c09-ticker-metric-schema",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "ticker metrics table schema",
+      "description": "schema category recall (highest category weight)",
+      "tag": "pattern",
+      "expected": {
+        "fact_keys_any": ["schema.comparison_table"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c10-visualization-guide",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "charts after building data tables",
+      "description": "secondary pattern recall",
+      "tag": "pattern",
+      "expected": {
+        "fact_keys_any": ["pattern.visualization_guide"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c11-peer-tickers",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "AAPL peer set tickers",
+      "description": "domain fact recall",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["peers.tickers"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c12-scrape-avoid",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "scrape financial websites for quotes",
+      "description": "avoid-list: failed-approach episode surfaces alongside the correction",
+      "tag": "avoid",
+      "expected": {
+        "fact_keys_any": ["policy.web_research_tools"],
+        "fact_keys_none": [],
+        "kinds_any": ["Episode"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c13-curl-blocked-learnings",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "curl scraping blocked",
+      "description": "avoid-list learnings reach the pool for the exact failed approach",
+      "tag": "avoid",
+      "expected": {
+        "fact_keys_any": ["policy.web_research_tools"],
+        "fact_keys_none": [],
+        "kinds_any": ["Episode"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c14-research-publish-procedure",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "research and publish comparison",
+      "description": "proven procedure surfaces as a plan candidate",
+      "tag": "pattern",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": ["Procedure"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c15-pinned-name-survives",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "the user's name",
+      "description": "pinned fact survives despite 90d age (baseline: supersession only; phases must keep this)",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["user.name"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c16-user-location",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "where does the user live",
+      "description": "durable user fact recall",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["user.location.home_base"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c17-earnings-date",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "AAPL earnings date",
+      "description": "fresh domain fact recall",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["aapl.earnings_date"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c18-revenue-mix",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "AAPL revenue breakdown segments",
+      "description": "domain fact recall",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["aapl.revenue_mix"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c19-aapl-belief",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "what do we believe about AAPL valuation",
+      "description": "belief lane fires on stance query",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": ["Belief"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c20-wiki-howto",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "comparison table how to guide",
+      "description": "wiki lane fires on how-to query",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": ["Wiki"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c21-wiki-data-sources",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "valuation data sources",
+      "description": "wiki lane on data-sourcing query",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": ["Wiki"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c22-graph-aapl-entity",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "AAPL company overview",
+      "description": "KG name-embedding lane fires on entity query",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": ["GraphNode"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c23-graph-tool-entity",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "which tool fetches market data",
+      "description": "KG lane surfaces the research-agent tool entity",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": ["GraphNode"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c24-ward-isolation-hr",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "vacation days policy",
+      "description": "ward scoping: hr-ward fact must not leak into finance recall",
+      "tag": "stale",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": ["vacation.policy"],
+        "kinds_any": [],
+        "must_be_nonempty": false
+      }
+    },
+    {
+      "id": "c25-ward-isolation-journal",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "journal workflow steps",
+      "description": "ward scoping: journal-ward pattern must not leak into finance recall",
+      "tag": "stale",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": ["pattern.journal_workflow"],
+        "kinds_any": [],
+        "must_be_nonempty": false
+      }
+    },
+    {
+      "id": "c26-skill-lookup",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "portfolio risk diagnostics skill",
+      "description": "skill-index fact recall",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["skill.yf-risk"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c27-agent-lookup",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "who fixes software code",
+      "description": "agent-index fact recall",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["agent.builder-agent"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c28-multi-topic",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "AAPL valuation and comparison table",
+      "description": "multi-topic query still returns a non-degenerate pool",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": ["Fact"],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c29-generic-market-data",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "market data",
+      "description": "generic query: pool non-empty, no low-relevance flood assertion",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": [],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    },
+    {
+      "id": "c30-msft-premium",
+      "agent_id": "agent-a",
+      "ward_id": "finance",
+      "query": "MSFT premium versus peers",
+      "description": "second-domain fact recall",
+      "tag": "recall",
+      "expected": {
+        "fact_keys_any": ["msft.valuation_verdict"],
+        "fact_keys_none": [],
+        "kinds_any": [],
+        "must_be_nonempty": true
+      }
+    }
+  ]
+}

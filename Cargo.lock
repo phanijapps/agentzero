@@ -7971,6 +7971,7 @@ dependencies = [
  "engram-integration",
  "engram-knowledge",
  "engram-memory",
+ "engram-retrieval",
  "knowledge-graph",
  "rusqlite",
  "serde",

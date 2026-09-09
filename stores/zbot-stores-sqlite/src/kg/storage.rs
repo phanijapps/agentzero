@@ -2631,7 +2631,7 @@ pub struct OrphanCandidate {
 }
 
 /// Row shape returned by `GraphStorage::find_archivable_orphans`.
-/// Maps to `zbot_stores::types::ArchivableEntity` in the trait impl.
+/// Maps to `knowledge_graph::kg_trait::kg_types::ArchivableEntity` in the trait impl.
 #[derive(Debug, Clone)]
 pub struct ArchivableEntityRow {
     pub id: String,

@@ -2330,7 +2330,7 @@ impl KnowledgeGraphSidecar {
             .map_err(to_backend)?;
         let top_aggregates = aggregate_statement
             .query_map(params![agent_id, top_n as i64], |row| {
-                Ok(zbot_stores::AggregateSummary {
+                Ok(knowledge_graph::kg_trait::AggregateSummary {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     layer: row.get(2)?,

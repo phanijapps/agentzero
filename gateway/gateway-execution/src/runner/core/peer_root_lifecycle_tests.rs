@@ -21,7 +21,7 @@ async fn captured_invokers_observe_stores_installed_after_construction() {
     adapter_config.embedding_provider.model = "gateway-execution-test".to_string();
     adapter_config.embedding_provider.dimensions = 8;
     let provider = EngramProvider::open(adapter_config.clone()).unwrap();
-    let graph: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(
+    let graph: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> = Arc::new(
         EngramKnowledgeGraphStore::from_provider(adapter_config.clone(), &provider).unwrap(),
     );
     let episodes: Arc<dyn zbot_stores_traits::KgEpisodeStore> =

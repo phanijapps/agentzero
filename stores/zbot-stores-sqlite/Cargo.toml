@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 # Trait surfaces / domain types this crate implements
-zbot-stores = { path = "../zbot-stores" }
 zbot-stores-traits = { path = "../zbot-stores-traits" }
 zbot-stores-domain = { path = "../zbot-stores-domain" }
 knowledge-graph = { path = "../../services/knowledge-graph" }

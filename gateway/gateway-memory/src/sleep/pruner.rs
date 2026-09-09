@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use zbot_stores::types::EntityId;
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::kg_types::EntityId;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::CompactionStore;
 
 use crate::sleep::decay::PruneCandidate;

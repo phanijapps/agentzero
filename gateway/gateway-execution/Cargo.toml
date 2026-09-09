@@ -30,7 +30,6 @@ gateway-templates = { path = "../gateway-templates" }
 distillation = { path = "../../services/distillation" }
 gateway-bridge = { path = "../gateway-bridge" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
-zbot-stores = { path = "../../stores/zbot-stores" }
 zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }
 zbot-trace = { path = "../../stores/zbot-trace" }

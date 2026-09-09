@@ -18,8 +18,8 @@ use agent_tools::{
     EvidenceRecord, IngestionAccess, StructuredCounts, StructuredEntity, StructuredRelationship,
 };
 use chrono::Utc;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::{Entity, EntityType, Relationship, RelationshipType};
-use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_traits::KgEpisodeStore;
 
 use crate::ingest::{
@@ -153,7 +153,7 @@ impl IngestionAccess for IngestionAdapter {
     }
 }
 
-/// Map the generic agent-tools shapes onto `zbot_stores::ExtractedKnowledge`.
+/// Map the generic agent-tools shapes onto `knowledge_graph::kg_trait::ExtractedKnowledge`.
 /// Returns the trait-side type so the result can be passed straight to
 /// `KnowledgeGraphStore::store_knowledge`.
 fn build_knowledge(
@@ -161,7 +161,7 @@ fn build_knowledge(
     ward_id: Option<&str>,
     entities: Vec<StructuredEntity>,
     relationships: Vec<StructuredRelationship>,
-) -> zbot_stores::ExtractedKnowledge {
+) -> knowledge_graph::kg_trait::ExtractedKnowledge {
     let now = Utc::now();
 
     let kg_entities: Vec<Entity> = entities
@@ -200,7 +200,7 @@ fn build_knowledge(
         })
         .collect();
 
-    zbot_stores::ExtractedKnowledge {
+    knowledge_graph::kg_trait::ExtractedKnowledge {
         entities: kg_entities,
         relationships: kg_relationships,
     }
@@ -237,7 +237,7 @@ mod tests {
             &self,
             _episode_id: &str,
             _chunk_text: &str,
-            _kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
+            _kg_store: &Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
         ) -> Result<(), ExecutionError> {
             Ok(())
         }
@@ -475,7 +475,7 @@ mod tests {
         // ("e1"), so fetch by id and verify the name + property mapping.
         let stored = h
             .kg_store
-            .get_entity(&zbot_stores::EntityId::from("e1"))
+            .get_entity(&knowledge_graph::kg_trait::EntityId::from("e1"))
             .await
             .expect("get entity")
             .expect("EntityOne should be retrievable");
@@ -546,15 +546,17 @@ mod tests {
 
         assert!(error.contains("built-in ontology predicate"));
         assert_eq!(
-            zbot_stores::KnowledgeGraphStore::count_all_entities(kg_store.as_ref())
+            knowledge_graph::kg_trait::KnowledgeGraphStore::count_all_entities(kg_store.as_ref())
                 .await
                 .expect("entity count"),
             0
         );
         assert_eq!(
-            zbot_stores::KnowledgeGraphStore::count_all_relationships(kg_store.as_ref())
-                .await
-                .expect("relationship count"),
+            knowledge_graph::kg_trait::KnowledgeGraphStore::count_all_relationships(
+                kg_store.as_ref()
+            )
+            .await
+            .expect("relationship count"),
             0
         );
     }

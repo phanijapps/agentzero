@@ -221,7 +221,7 @@ impl AggregateEntityLlm for LlmAggregateEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zbot_stores::types::EntityId;
+    use knowledge_graph::kg_trait::kg_types::EntityId;
 
     fn member(name: &str, description: Option<&str>) -> AggregateMemberContext {
         AggregateMemberContext {

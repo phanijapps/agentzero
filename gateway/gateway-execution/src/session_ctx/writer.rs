@@ -16,7 +16,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
-use zbot_stores::MemoryFactStore;
+use zbot_stores_traits::MemoryFactStore;
 
 /// Write the session's meta fact.
 ///

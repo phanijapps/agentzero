@@ -12,6 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use agent_primitives::vault_paths::VaultPaths;
 use agent_runtime::llm::embedding::EmbeddingClient;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_engram_adapter::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout,
     AllowUnclassifiedPolicy, EmbeddingMode, EngramBeliefStore, EngramKnowledgeGraphStore,
@@ -19,7 +20,7 @@ use zbot_engram_adapter::{
     EngramWikiStore, GovernanceCapabilityHealth, GovernanceOverlay, GovernancePolicy,
     GovernanceSelection, MigrationMode, ScopeTarget, SkosExpansionPolicy, ValidationMode,
 };
-use zbot_stores::{KnowledgeGraphStore, MemoryFactStore};
+use zbot_stores_traits::MemoryFactStore;
 
 /// Engram trait-object bundle used by `AppState` when configured.
 #[derive(Clone)]

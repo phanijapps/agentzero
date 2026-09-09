@@ -52,9 +52,9 @@ pub struct ExecutionStream {
     pub distiller: Option<Arc<distillation::SessionDistiller>>,
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub paths: SharedVaultPaths,
-    pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    pub kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
-    pub memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    pub memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
     pub connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     pub bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
     pub bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
@@ -120,7 +120,7 @@ struct EventHandlerDeps<'a> {
     handle: &'a ExecutionHandle,
     tool_result_context: &'a ToolResultContextConfig,
     kg_episode_store: Option<&'a Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
-    kg_store: Option<&'a Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    kg_store: Option<&'a Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     ingestion_adapter: Option<&'a Arc<dyn agent_tools::IngestionAccess>>,
 }
 
@@ -673,8 +673,9 @@ impl ExecutionStream {
                     let ward_id_for_indexer = session_ward.clone();
                     // The indexer receives the active backend-neutral stores.
                     let kg_episode_store_for_indexer = self.kg_episode_store.clone();
-                    let kg_store_for_indexer: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
-                        self.kg_store.clone();
+                    let kg_store_for_indexer: Option<
+                        Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
+                    > = self.kg_store.clone();
                     let paths_for_indexer = self.paths.clone();
                     tokio::spawn(async move {
                         if let Err(e) = distiller.distill(&sid, &aid).await {

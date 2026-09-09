@@ -6,7 +6,6 @@
 resolver = "2"
 members = [
     # Stores - Backend-agnostic persistence interfaces
-    "stores/zbot-stores",
     "stores/zbot-conversation",
     "stores/zbot-trace",
     "stores/zbot-engram-adapter",

@@ -8,14 +8,15 @@ use knowledge_graph::types::{
 };
 
 use crate::kg::storage::{ArchivableEntityRow, GraphStorage};
-use zbot_stores::error::GraphStoreError;
-use zbot_stores::extracted::ExtractedKnowledge;
-use zbot_stores::types::{
-    ArchivableEntity, Direction, EntityId, KgStats, Neighbor, ReindexReport, RelationshipId,
-    ResolveOutcome, StoreOutcome, TraversalHit, VecIndexHealth,
+use knowledge_graph::kg_trait::error::GraphStoreError;
+use knowledge_graph::kg_trait::kg_types::{
+    ArchivableEntity, EntityId, KgStats, Neighbor, ReindexReport, RelationshipId, ResolveOutcome,
+    StoreOutcome, TraversalHit, VecIndexHealth,
 };
-use zbot_stores::KnowledgeGraphStore;
-use zbot_stores::{GraphStoreResult, KgNodesForEpisodes};
+use knowledge_graph::kg_trait::ExtractedKnowledge;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::{GraphStoreResult, KgNodesForEpisodes};
+use knowledge_graph::types::Direction;
 
 use crate::blocking::{block, map_graph_err};
 use crate::reindex;
@@ -271,7 +272,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         max_hops: usize,
         min_edge_confidence: f64,
         limit: usize,
-    ) -> GraphStoreResult<Vec<zbot_stores::WeightedTraversalHit>> {
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::WeightedTraversalHit>> {
         let storage = self.storage.clone();
         let seed = seed.0.clone();
         let agent_id = agent_id.to_string();
@@ -298,10 +299,10 @@ impl KnowledgeGraphStore for SqliteKgStore {
             // (hop ASC, edge_conf_product DESC) so the first occurrence
             // of each entity_id is the winner.
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut deduped: Vec<zbot_stores::WeightedTraversalHit> = Vec::new();
+            let mut deduped: Vec<knowledge_graph::kg_trait::WeightedTraversalHit> = Vec::new();
             for r in rows {
                 if seen.insert(r.entity_id.clone()) {
-                    deduped.push(zbot_stores::WeightedTraversalHit {
+                    deduped.push(knowledge_graph::kg_trait::WeightedTraversalHit {
                         entity_id: EntityId(r.entity_id),
                         name: r.name,
                         entity_type: r.entity_type,
@@ -365,7 +366,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         &self,
         agent_id: &str,
         query: &str,
-        view: zbot_stores::GraphView,
+        view: knowledge_graph::kg_trait::GraphView,
         limit: usize,
     ) -> GraphStoreResult<Vec<Entity>> {
         let service = crate::kg::service::GraphService::new(self.storage.clone());
@@ -380,7 +381,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         agent_id: &str,
         query_embedding: &[f32],
         top_k: usize,
-    ) -> GraphStoreResult<Vec<zbot_stores::EntityNameEmbeddingHit>> {
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::EntityNameEmbeddingHit>> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         let query_embedding = query_embedding.to_vec();
@@ -390,7 +391,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
                 .map(|rows| {
                     rows.into_iter()
                         .map(|(id, name, entity_type, distance, confidence)| {
-                            zbot_stores::EntityNameEmbeddingHit {
+                            knowledge_graph::kg_trait::EntityNameEmbeddingHit {
                                 id,
                                 name,
                                 entity_type,
@@ -642,8 +643,8 @@ impl KnowledgeGraphStore for SqliteKgStore {
     async fn connectivity_strength(
         &self,
         agent_id: &str,
-        cluster_a: &[zbot_stores::types::EntityId],
-        cluster_b: &[zbot_stores::types::EntityId],
+        cluster_a: &[knowledge_graph::kg_trait::kg_types::EntityId],
+        cluster_b: &[knowledge_graph::kg_trait::kg_types::EntityId],
     ) -> GraphStoreResult<usize> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
@@ -661,11 +662,11 @@ impl KnowledgeGraphStore for SqliteKgStore {
         &self,
         agent_id: &str,
         layer: i64,
-        members: &[zbot_stores::types::EntityId],
+        members: &[knowledge_graph::kg_trait::kg_types::EntityId],
         name: &str,
         description: &str,
         embedding: Option<Vec<f32>>,
-    ) -> GraphStoreResult<zbot_stores::types::EntityId> {
+    ) -> GraphStoreResult<knowledge_graph::kg_trait::kg_types::EntityId> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         let members: Vec<String> = members.iter().map(|e| e.0.clone()).collect();
@@ -681,7 +682,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
                     &description,
                     embedding,
                 )
-                .map(zbot_stores::types::EntityId)
+                .map(knowledge_graph::kg_trait::kg_types::EntityId)
                 .map_err(map_graph_err)
         })
         .await
@@ -691,10 +692,10 @@ impl KnowledgeGraphStore for SqliteKgStore {
         &self,
         agent_id: &str,
         layer: i64,
-        source_aggregate: &zbot_stores::types::EntityId,
-        target_aggregate: &zbot_stores::types::EntityId,
+        source_aggregate: &knowledge_graph::kg_trait::kg_types::EntityId,
+        target_aggregate: &knowledge_graph::kg_trait::kg_types::EntityId,
         relationship_type: &str,
-    ) -> GraphStoreResult<zbot_stores::types::RelationshipId> {
+    ) -> GraphStoreResult<knowledge_graph::kg_trait::kg_types::RelationshipId> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         let src = source_aggregate.0.clone();
@@ -703,7 +704,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         block(move || {
             storage
                 .write_inter_cluster_relation(&agent_id, layer, &src, &tgt, &rel_type)
-                .map(zbot_stores::types::RelationshipId)
+                .map(knowledge_graph::kg_trait::kg_types::RelationshipId)
                 .map_err(map_graph_err)
         })
         .await
@@ -714,7 +715,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         agent_id: &str,
         layer: i64,
         limit: usize,
-    ) -> GraphStoreResult<Vec<zbot_stores::EntityWithEmbedding>> {
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::EntityWithEmbedding>> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         block(move || {
@@ -722,10 +723,12 @@ impl KnowledgeGraphStore for SqliteKgStore {
                 .list_entities_with_embeddings_at_layer(&agent_id, layer, limit)
                 .map(|rows| {
                     rows.into_iter()
-                        .map(|(id, embedding)| zbot_stores::EntityWithEmbedding {
-                            id: zbot_stores::types::EntityId(id),
-                            embedding,
-                        })
+                        .map(
+                            |(id, embedding)| knowledge_graph::kg_trait::EntityWithEmbedding {
+                                id: knowledge_graph::kg_trait::kg_types::EntityId(id),
+                                embedding,
+                            },
+                        )
                         .collect()
                 })
                 .map_err(map_graph_err)
@@ -737,20 +740,20 @@ impl KnowledgeGraphStore for SqliteKgStore {
         &self,
         agent_id: &str,
         top_n: usize,
-    ) -> GraphStoreResult<zbot_stores::HierarchySummary> {
+    ) -> GraphStoreResult<knowledge_graph::kg_trait::HierarchySummary> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         block(move || {
             storage
                 .hierarchy_summary(&agent_id, top_n)
                 .map(|(layer_counts, inter_cluster_relations, aggs)| {
-                    zbot_stores::HierarchySummary {
+                    knowledge_graph::kg_trait::HierarchySummary {
                         layer_counts,
                         inter_cluster_relations,
                         top_aggregates: aggs
                             .into_iter()
                             .map(|(id, name, layer, member_count, description)| {
-                                zbot_stores::AggregateSummary {
+                                knowledge_graph::kg_trait::AggregateSummary {
                                     id,
                                     name,
                                     layer,
@@ -769,8 +772,8 @@ impl KnowledgeGraphStore for SqliteKgStore {
     async fn list_inter_cluster_relations(
         &self,
         agent_id: &str,
-        entity_ids: &[zbot_stores::types::EntityId],
-    ) -> GraphStoreResult<Vec<zbot_stores::InterClusterRelationHit>> {
+        entity_ids: &[knowledge_graph::kg_trait::kg_types::EntityId],
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::InterClusterRelationHit>> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         let ids: Vec<String> = entity_ids.iter().map(|e| e.0.clone()).collect();
@@ -780,7 +783,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
                 .map(|rows| {
                     rows.into_iter()
                         .map(|(id, src, tgt, rel_type, layer)| {
-                            zbot_stores::InterClusterRelationHit {
+                            knowledge_graph::kg_trait::InterClusterRelationHit {
                                 id,
                                 source_entity_id: src,
                                 target_entity_id: tgt,
@@ -798,19 +801,24 @@ impl KnowledgeGraphStore for SqliteKgStore {
     async fn compute_lca_path(
         &self,
         agent_id: &str,
-        seed_entity_ids: &[zbot_stores::types::EntityId],
-    ) -> GraphStoreResult<zbot_stores::LcaPath> {
+        seed_entity_ids: &[knowledge_graph::kg_trait::kg_types::EntityId],
+    ) -> GraphStoreResult<knowledge_graph::kg_trait::LcaPath> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         let seeds: Vec<String> = seed_entity_ids.iter().map(|e| e.0.clone()).collect();
         block(move || {
             storage
                 .compute_lca_path(&agent_id, &seeds)
-                .map(|(lca, path, max_layer)| zbot_stores::LcaPath {
-                    lca: lca.map(zbot_stores::types::EntityId),
-                    path_entities: path.into_iter().map(zbot_stores::types::EntityId).collect(),
-                    max_layer,
-                })
+                .map(
+                    |(lca, path, max_layer)| knowledge_graph::kg_trait::LcaPath {
+                        lca: lca.map(knowledge_graph::kg_trait::kg_types::EntityId),
+                        path_entities: path
+                            .into_iter()
+                            .map(knowledge_graph::kg_trait::kg_types::EntityId)
+                            .collect(),
+                        max_layer,
+                    },
+                )
                 .map_err(map_graph_err)
         })
         .await
@@ -861,7 +869,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         entity_type: &knowledge_graph::EntityType,
         threshold: f32,
         limit: usize,
-    ) -> GraphStoreResult<Vec<zbot_stores::DuplicateCandidate>> {
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::DuplicateCandidate>> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         let type_str = entity_type.as_str().to_string();
@@ -871,13 +879,13 @@ impl KnowledgeGraphStore for SqliteKgStore {
                 .map(|pairs| {
                     pairs
                         .into_iter()
-                        .map(
-                            |(loser_id, winner_id, score)| zbot_stores::DuplicateCandidate {
+                        .map(|(loser_id, winner_id, score)| {
+                            knowledge_graph::kg_trait::DuplicateCandidate {
                                 loser_entity_id: loser_id,
                                 winner_entity_id: winner_id,
                                 cosine_similarity: score,
-                            },
-                        )
+                            }
+                        })
                         .collect()
                 })
                 .map_err(map_graph_err)
@@ -903,7 +911,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         agent_id: &str,
         min_age_days: i64,
         limit: usize,
-    ) -> GraphStoreResult<Vec<zbot_stores::DecayCandidate>> {
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::DecayCandidate>> {
         let storage = self.storage.clone();
         let agent_id = agent_id.to_string();
         block(move || {
@@ -911,7 +919,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
                 .list_orphan_old_candidates(&agent_id, min_age_days, limit)
                 .map(|rows| {
                     rows.into_iter()
-                        .map(|c| zbot_stores::DecayCandidate {
+                        .map(|c| knowledge_graph::kg_trait::DecayCandidate {
                             id: c.id,
                             name: c.name,
                             entity_type: c.entity_type,
@@ -937,7 +945,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         min_sessions: i64,
         lookback_days: i64,
         limit: usize,
-    ) -> GraphStoreResult<Vec<zbot_stores::StrategyCandidate>> {
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::StrategyCandidate>> {
         let db = self.storage.knowledge_db().clone();
         let limit_i64 = limit as i64;
         block(move || {
@@ -963,7 +971,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
                 let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt
                     .query_map(rusqlite::params![min_sessions, limit_i64], |row| {
-                        Ok(zbot_stores::StrategyCandidate {
+                        Ok(knowledge_graph::kg_trait::StrategyCandidate {
                             entity_id: row.get(0)?,
                             agent_id: row.get(1)?,
                             name: row.get(2)?,
@@ -983,7 +991,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
         entity_id: &str,
         lookback_days: i64,
         edge_limit: usize,
-    ) -> GraphStoreResult<zbot_stores::RelationshipContext> {
+    ) -> GraphStoreResult<knowledge_graph::kg_trait::RelationshipContext> {
         let db = self.storage.knowledge_db().clone();
         let entity_id = entity_id.to_string();
         let edge_limit_i64 = edge_limit as i64;
@@ -1034,7 +1042,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
                         })?
                         .collect::<Result<Vec<_>, _>>()?;
                 }
-                Ok(zbot_stores::RelationshipContext {
+                Ok(knowledge_graph::kg_trait::RelationshipContext {
                     summaries,
                     session_ids,
                 })

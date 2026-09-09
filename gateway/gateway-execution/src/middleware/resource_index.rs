@@ -8,7 +8,7 @@
 use gateway_services::{
     AgentService, McpService, SharedVaultPaths, SkillFileInfo, SkillService, SkillSource,
 };
-use zbot_stores::{MemoryFactStore, SkillIndexRow};
+use zbot_stores_traits::{MemoryFactStore, SkillIndexRow};
 
 /// Embedding-content schema version. Bump when `SkillFileInfo.indexed_content`
 /// changes shape — the diff treats any row whose stored version is lower as

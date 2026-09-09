@@ -15,12 +15,12 @@
 use crate::errors::ExecutionError;
 use crate::indexer::relationship_rules;
 use agent_primitives::vault_paths::SharedVaultPaths;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::{Entity, EntityType, Relationship};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_domain::EpisodeSource;
 use zbot_stores_traits::KgEpisodeStore;
 
@@ -226,7 +226,7 @@ async fn index_one_file(
     let count = all_entities.len();
     if count > 0 {
         apply_trusted_ward_scope(&mut all_entities, &mut all_rels, ward_id);
-        let knowledge = zbot_stores::ExtractedKnowledge {
+        let knowledge = knowledge_graph::kg_trait::ExtractedKnowledge {
             entities: all_entities,
             relationships: all_rels,
         };
@@ -666,7 +666,7 @@ pub(crate) async fn run_session_index(
     session_id: &str,
     agent_id: &str,
     kg_episode_store: Option<&Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
-    kg_store: Option<&Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    kg_store: Option<&Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     paths: &SharedVaultPaths,
 ) {
     let (Some(wid), Some(ep_store), Some(kg)) = (ward_id, kg_episode_store, kg_store) else {
@@ -940,7 +940,7 @@ mod tests {
         .await;
 
         assert!(created >= 2, "primary and related organization are indexed");
-        let ada = zbot_stores::KnowledgeGraphStore::get_entity_by_name(
+        let ada = knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
             kg_store.as_ref(),
             "root",
             "Ada Lovelace",
@@ -959,7 +959,7 @@ mod tests {
         assert!(!ada.properties.contains_key("governance_ontology_ids"));
         assert!(!ada.properties.contains_key("governance_record_kind"));
 
-        let relationships = zbot_stores::KnowledgeGraphStore::list_relationships(
+        let relationships = knowledge_graph::kg_trait::KnowledgeGraphStore::list_relationships(
             kg_store.as_ref(),
             "root",
             None,

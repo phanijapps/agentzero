@@ -1,6 +1,6 @@
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
+use knowledge_graph::types::Direction;
 use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
-use zbot_stores::types::Direction;
-use zbot_stores::KnowledgeGraphStore;
 
 mod fixtures;
 

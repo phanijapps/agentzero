@@ -7,7 +7,7 @@ use agent_runtime::rig_adapter::RigToolAdapter;
 use agent_tools::MemorySearchTool;
 use gateway_services::providers::Provider;
 use std::sync::Arc;
-use zbot_stores::MemoryFactStore;
+use zbot_stores_traits::MemoryFactStore;
 use zbot_stores_traits::ProcedureStore;
 
 pub struct IntentAgentDeps {

@@ -22,7 +22,7 @@ fn normalized(v: Vec<f32>) -> Vec<f32> {
 }
 
 async fn kg_store_upsert(
-    kg: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
+    kg: &Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
     agent_id: &str,
     entity: Entity,
 ) {

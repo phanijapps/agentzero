@@ -261,8 +261,8 @@ impl Default for RecallSkosExpansionLimits {
 /// this struct's signatures.
 pub struct MemoryRecall {
     embedding_client: Option<Arc<dyn EmbeddingClient>>,
-    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
+    kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>>,
     wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>>,
     procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
@@ -373,12 +373,12 @@ impl MemoryRecall {
     }
 
     /// Wire the memory-fact store (hybrid FTS + vector recall path).
-    pub fn set_memory_store(&mut self, store: Arc<dyn zbot_stores::MemoryFactStore>) {
+    pub fn set_memory_store(&mut self, store: Arc<dyn zbot_stores_traits::MemoryFactStore>) {
         self.memory_store = Some(store);
     }
 
     /// Wire the KG store (graph ANN recall path).
-    pub fn set_kg_store(&mut self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) {
+    pub fn set_kg_store(&mut self, store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>) {
         self.kg_store = Some(store);
     }
 
@@ -684,7 +684,7 @@ impl MemoryRecall {
         let mut graph_unavailable = false;
         let (mut graph_items, mut graph_seed_ids): (
             Vec<ScoredItem>,
-            Vec<zbot_stores::types::EntityId>,
+            Vec<knowledge_graph::kg_trait::kg_types::EntityId>,
         ) = match (self.kg_store.as_ref(), query_emb.as_ref()) {
             (Some(store), Some(emb)) => match store
                 .search_entities_by_name_embedding_with_identity(
@@ -700,10 +700,10 @@ impl MemoryRecall {
                         .into_iter()
                         .filter(|h| h.confidence >= min_kg_conf)
                         .collect();
-                    let seed_ids: Vec<zbot_stores::types::EntityId> = hits
+                    let seed_ids: Vec<knowledge_graph::kg_trait::kg_types::EntityId> = hits
                         .iter()
                         .filter(|h| !h.id.is_empty())
-                        .map(|h| zbot_stores::types::EntityId(h.id.clone()))
+                        .map(|h| knowledge_graph::kg_trait::kg_types::EntityId(h.id.clone()))
                         .collect();
                     let items: Vec<ScoredItem> = hits
                         .into_iter()
@@ -755,7 +755,9 @@ impl MemoryRecall {
             graph_seed_ids = graph_items
                 .iter()
                 .filter(|item| item.kind == ItemKind::GraphNode)
-                .map(|item| zbot_stores::types::EntityId(item.provenance.source_id.clone()))
+                .map(|item| {
+                    knowledge_graph::kg_trait::kg_types::EntityId(item.provenance.source_id.clone())
+                })
                 .collect();
         }
 
@@ -2683,7 +2685,7 @@ mod tests {
     async fn make_memory_store_with_embedder(
         tmp: &tempfile::TempDir,
         embed: Arc<dyn EmbeddingClient>,
-    ) -> Arc<dyn zbot_stores::MemoryFactStore> {
+    ) -> Arc<dyn zbot_stores_traits::MemoryFactStore> {
         // Production wiring: the engram adapter store, with the test
         // embedder's identity propagated so identity-aware hybrid paths
         // are exercised for real (no sqlite fallback wrapper needed).
@@ -2710,7 +2712,7 @@ mod tests {
     /// `kg_name_index` path is exercised rather than mocked.
     async fn make_kg_store_with_apple_entity(
         tmp: &tempfile::TempDir,
-    ) -> Arc<dyn zbot_stores::KnowledgeGraphStore> {
+    ) -> Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> {
         // Production wiring: the engram KG store, with the fixture
         // embedder's identity dimensions so the kg_name_index path is
         // exercised for real.
@@ -2726,7 +2728,7 @@ mod tests {
         config.embedding_provider.model = embedder.model_name();
         config.embedding_provider.dimensions = embedder.dimensions() as u32;
         let provider = EngramProvider::open(config.clone()).expect("provider opens");
-        let store: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(
+        let store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> = Arc::new(
             EngramKnowledgeGraphStore::from_provider(config, &provider).expect("kg fixture opens"),
         );
         let mut entity = Entity::new(
@@ -3272,7 +3274,7 @@ mod tests {
         }
 
         #[async_trait]
-        impl zbot_stores::MemoryFactStore for RecordingExpandedQueryStore {
+        impl zbot_stores_traits::MemoryFactStore for RecordingExpandedQueryStore {
             async fn save_fact(
                 &self,
                 _agent_id: &str,
@@ -3303,7 +3305,7 @@ mod tests {
                 _limit: usize,
                 _ward_id: Option<&str>,
                 _query_embedding: Option<&[f32]>,
-                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                _query_identity: Option<&zbot_stores_traits::EmbeddingQueryIdentity>,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
             ) -> StoreResult<Vec<serde_json::Value>> {
                 *self.saw_query.lock().unwrap() = Some(query.to_string());
@@ -3337,9 +3339,10 @@ mod tests {
         }
 
         let saw_query = Arc::new(Mutex::new(None));
-        let store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(RecordingExpandedQueryStore {
-            saw_query: saw_query.clone(),
-        });
+        let store: Arc<dyn zbot_stores_traits::MemoryFactStore> =
+            Arc::new(RecordingExpandedQueryStore {
+                saw_query: saw_query.clone(),
+            });
         let embed: Arc<dyn EmbeddingClient> = Arc::new(TestEmbed);
         let mut recall = MemoryRecall::new(Some(embed), Arc::new(RecallConfig::default()));
         recall.set_memory_store(store);
@@ -3472,7 +3475,7 @@ mod tests {
         struct FailingFactStore;
 
         #[async_trait]
-        impl zbot_stores::MemoryFactStore for FailingFactStore {
+        impl zbot_stores_traits::MemoryFactStore for FailingFactStore {
             async fn save_fact(
                 &self,
                 _agent_id: &str,
@@ -3503,7 +3506,7 @@ mod tests {
                 _limit: usize,
                 _ward_id: Option<&str>,
                 _query_embedding: Option<&[f32]>,
-                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                _query_identity: Option<&zbot_stores_traits::EmbeddingQueryIdentity>,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
             ) -> StoreResult<Vec<serde_json::Value>> {
                 Err(zbot_stores_traits::StoreError::Backend(
@@ -3567,7 +3570,7 @@ mod tests {
         struct RrfScaleStore;
 
         #[async_trait]
-        impl zbot_stores::MemoryFactStore for RrfScaleStore {
+        impl zbot_stores_traits::MemoryFactStore for RrfScaleStore {
             async fn save_fact(
                 &self,
                 _agent_id: &str,
@@ -3625,7 +3628,7 @@ mod tests {
                 limit: usize,
                 ward_id: Option<&str>,
                 query_embedding: Option<&[f32]>,
-                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                _query_identity: Option<&zbot_stores_traits::EmbeddingQueryIdentity>,
                 as_of: Option<chrono::DateTime<chrono::Utc>>,
             ) -> StoreResult<Vec<serde_json::Value>> {
                 self.search_memory_facts_hybrid(
@@ -3667,7 +3670,7 @@ mod tests {
         struct RrfScaleStore;
 
         #[async_trait]
-        impl zbot_stores::MemoryFactStore for RrfScaleStore {
+        impl zbot_stores_traits::MemoryFactStore for RrfScaleStore {
             async fn save_fact(
                 &self,
                 _agent_id: &str,
@@ -3725,7 +3728,7 @@ mod tests {
                 limit: usize,
                 ward_id: Option<&str>,
                 query_embedding: Option<&[f32]>,
-                _query_identity: Option<&zbot_stores::EmbeddingQueryIdentity>,
+                _query_identity: Option<&zbot_stores_traits::EmbeddingQueryIdentity>,
                 as_of: Option<chrono::DateTime<chrono::Utc>>,
             ) -> StoreResult<Vec<serde_json::Value>> {
                 self.search_memory_facts_hybrid(

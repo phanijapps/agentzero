@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_runtime::llm::embedding::EmbeddingClient;
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::{
     BeliefContradictionStore, BeliefStore, CompactionStore, EpisodeStore, MemoryFactStore,
     ProcedureStore,

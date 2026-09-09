@@ -9,12 +9,13 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
+use knowledge_graph::types::Direction as StoreDirection;
 use knowledge_graph::{Direction, Entity, GraphStats, Relationship, Subgraph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use zbot_engram_adapter::GovernanceCapabilityHealth;
-use zbot_stores::{Direction as StoreDirection, KnowledgeGraphStore};
 use zbot_stores_domain::{DistillationStats, UndistilledSession};
 
 // ============================================================================
@@ -388,10 +389,12 @@ fn require_kg_store(
     })
 }
 
-/// Map a [`zbot_stores::GraphStoreError`] to the HTTP error pair used by graph
+/// Map a [`knowledge_graph::kg_trait::GraphStoreError`] to the HTTP error pair used by graph
 /// handlers: `(StatusCode, Json<ErrorResponse>)`.
-fn store_err_to_http(err: zbot_stores::GraphStoreError) -> (StatusCode, Json<ErrorResponse>) {
-    use zbot_stores::GraphStoreError;
+fn store_err_to_http(
+    err: knowledge_graph::kg_trait::GraphStoreError,
+) -> (StatusCode, Json<ErrorResponse>) {
+    use knowledge_graph::kg_trait::GraphStoreError;
     match err {
         GraphStoreError::NotFound => (
             StatusCode::NOT_FOUND,
@@ -779,8 +782,8 @@ async fn reindex_ward_directories(
 #[cfg(test)]
 mod reindex_scope_tests {
     use super::{reindex_ward_directories, valid_ward_directory_id};
+    use knowledge_graph::kg_trait::KnowledgeGraphStore;
     use std::sync::Arc;
-    use zbot_stores::KnowledgeGraphStore;
 
     #[test]
     fn ward_directory_scope_requires_a_single_valid_component() {
@@ -850,7 +853,7 @@ mod reindex_scope_tests {
 
         assert_eq!(response.wards_processed, 1);
         assert!(response.entities_created >= 2);
-        let ada = zbot_stores::KnowledgeGraphStore::get_entity_by_name(
+        let ada = knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
             kg_store.as_ref(),
             "root",
             "Ada Lovelace",
@@ -862,29 +865,35 @@ mod reindex_scope_tests {
             ada.properties.get("ward_id"),
             Some(&serde_json::json!("research-ward"))
         );
-        assert!(zbot_stores::KnowledgeGraphStore::get_entity_by_name(
-            kg_store.as_ref(),
-            "root",
-            "Must Not Index"
-        )
-        .await
-        .expect("query invalid artifact")
-        .is_none());
-        assert!(zbot_stores::KnowledgeGraphStore::get_entity_by_name(
-            kg_store.as_ref(),
-            "root",
-            "Must Not Follow Ward Symlink"
-        )
-        .await
-        .expect("query Ward symlink artifact")
-        .is_none());
-        assert!(zbot_stores::KnowledgeGraphStore::get_entity_by_name(
-            kg_store.as_ref(),
-            "root",
-            "Must Not Follow Nested Symlink"
-        )
-        .await
-        .expect("query nested symlink artifact")
-        .is_none());
+        assert!(
+            knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+                kg_store.as_ref(),
+                "root",
+                "Must Not Index"
+            )
+            .await
+            .expect("query invalid artifact")
+            .is_none()
+        );
+        assert!(
+            knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+                kg_store.as_ref(),
+                "root",
+                "Must Not Follow Ward Symlink"
+            )
+            .await
+            .expect("query Ward symlink artifact")
+            .is_none()
+        );
+        assert!(
+            knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+                kg_store.as_ref(),
+                "root",
+                "Must Not Follow Nested Symlink"
+            )
+            .await
+            .expect("query nested symlink artifact")
+            .is_none()
+        );
     }
 }

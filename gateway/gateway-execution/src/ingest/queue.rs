@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
 
 use crate::ingest::extractor::Extractor;
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::KgEpisodeStore;
 
 const WAKE_CHANNEL_CAPACITY: usize = 256;

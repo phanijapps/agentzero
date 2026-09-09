@@ -24,11 +24,11 @@ fn open_provider(root: &std::path::Path, subdir: &str) -> (AdapterConfig, Engram
 pub fn kg_and_episode_stores(
     tmp: &tempfile::TempDir,
 ) -> (
-    Arc<dyn zbot_stores::KnowledgeGraphStore>,
+    Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
     Arc<dyn zbot_stores_traits::KgEpisodeStore>,
 ) {
     let (config, provider) = open_provider(tmp.path(), "engram-ingest");
-    let kg: Arc<dyn zbot_stores::KnowledgeGraphStore> = Arc::new(
+    let kg: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> = Arc::new(
         EngramKnowledgeGraphStore::from_provider(config.clone(), &provider)
             .expect("kg store opens"),
     );

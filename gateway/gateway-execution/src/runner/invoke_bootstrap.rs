@@ -111,8 +111,8 @@ struct ExecutionInputs {
     available_skills: Vec<serde_json::Value>,
     tool_settings: agent_tools::ToolSettings,
     hook_context: Option<serde_json::Value>,
-    fact_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    fact_store_for_indexing: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    fact_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
+    fact_store_for_indexing: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
     connector_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>>,
     rate_limiter: Arc<agent_runtime::ProviderRateLimiter>,
 }
@@ -125,7 +125,7 @@ struct IntentAnalysisCtx<'a> {
     execution_id: &'a str,
     is_root: bool,
     user_message: Option<&'a str>,
-    fact_store: Option<&'a Arc<dyn zbot_stores::MemoryFactStore>>,
+    fact_store: Option<&'a Arc<dyn zbot_stores_traits::MemoryFactStore>>,
 }
 
 struct IntentOutcome {
@@ -1132,7 +1132,7 @@ impl InvokeBootstrap {
                     .and_then(|ctx| serde_json::to_value(ctx).ok())
             })
             .flatten();
-        let fact_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
+        let fact_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> =
             self.ctx.memory_store.clone();
         let fact_store_for_indexing = fact_store.clone();
 
@@ -1270,7 +1270,7 @@ impl InvokeBootstrap {
         execution_id: &str,
         user_message: Option<&str>,
         effective_ward_id: &mut Option<String>,
-        fact_store_for_indexing: Option<&Arc<dyn zbot_stores::MemoryFactStore>>,
+        fact_store_for_indexing: Option<&Arc<dyn zbot_stores_traits::MemoryFactStore>>,
     ) -> Result<(Vec<String>, ExecutorBuilder), ExecutionError> {
         let mut recommended_skills = Vec::new();
         if let Some(out) = outcome {
@@ -1825,7 +1825,7 @@ mod tests {
         handles: Arc<RwLock<HashMap<String, ExecutionHandle>>>,
         state_service: Arc<StateService<zbot_runtime_sqlite::DatabaseManager>>,
         log_service: Arc<LogService<zbot_runtime_sqlite::DatabaseManager>>,
-        memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+        memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
         peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
         memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
         procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,

@@ -88,7 +88,7 @@ pub struct ExecutionRunnerConfig {
     // --- Optional integrations ---
     pub connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     /// Trait-routed memory store — wired.
-    pub memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    pub memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
     pub distiller: Option<Arc<distillation::SessionDistiller>>,
     pub handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
@@ -393,7 +393,7 @@ impl ExecutionRunner {
     }
 
     /// Install the graph store for current and pre-captured execution paths.
-    pub fn set_kg_store(&mut self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) {
+    pub fn set_kg_store(&mut self, store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>) {
         self.ctx.integrations.set_kg_store(store);
     }
 

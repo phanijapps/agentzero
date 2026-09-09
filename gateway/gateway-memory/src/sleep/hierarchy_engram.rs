@@ -34,9 +34,9 @@ use engram_domain::{
 };
 use engram_hierarchy::HierarchyBuilder as EngramHierarchyBuilder;
 use engram_runtime::{CoreError, CoreResult};
+use knowledge_graph::kg_trait::kg_types::EntityId;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use tracing::{debug, info, warn};
-use zbot_stores::types::EntityId;
-use zbot_stores::KnowledgeGraphStore;
 
 use crate::sleep::clustering::{
     cluster_sparsity, kmeans_cosine, should_stop_layering, DEFAULT_KMEANS_MAX_ITER,

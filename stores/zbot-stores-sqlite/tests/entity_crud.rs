@@ -1,5 +1,5 @@
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::types::{Entity, EntityType};
-use zbot_stores::KnowledgeGraphStore;
 
 mod fixtures;
 

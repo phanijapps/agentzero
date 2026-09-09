@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::MemoryFactStore;
 
 use crate::sleep::belief_propagator::{BeliefPropagationStats, BeliefPropagator};

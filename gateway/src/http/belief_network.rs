@@ -382,7 +382,7 @@ fn is_resolved(c: &BeliefContradiction) -> bool {
 // ============================================================================
 
 async fn push_belief_events(
-    store: &Arc<dyn zbot_stores::BeliefStore>,
+    store: &Arc<dyn zbot_stores_traits::BeliefStore>,
     pull: usize,
     out: &mut Vec<BeliefActivityEvent>,
 ) {
@@ -421,7 +421,7 @@ async fn push_belief_events(
 }
 
 async fn push_contradiction_events(
-    store: &Arc<dyn zbot_stores::BeliefContradictionStore>,
+    store: &Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
     pull: usize,
     out: &mut Vec<BeliefActivityEvent>,
 ) {

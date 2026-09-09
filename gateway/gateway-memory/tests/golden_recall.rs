@@ -32,12 +32,12 @@ use std::sync::Arc;
 use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
 use async_trait::async_trait;
 use gateway_memory::{ItemKind, MemoryRecall, RecallConfig, ScoredItem};
+use knowledge_graph::kg_trait::KnowledgeGraphStore as _KgStoreTrait;
 use serde::Deserialize;
 use zbot_engram_adapter::{
     AdapterConfig, EngramBeliefStore, EngramKnowledgeGraphStore, EngramMemoryFactStore,
     EngramProvider, EngramSidecarStores, EngramWikiStore,
 };
-use zbot_stores::KnowledgeGraphStore as _KgStoreTrait;
 use zbot_stores_domain::{Belief, MemoryFact, Procedure, SessionEpisode, WikiArticle};
 
 use zbot_stores_traits::{BeliefStore, EpisodeStore, MemoryFactStore, ProcedureStore, StoreError};

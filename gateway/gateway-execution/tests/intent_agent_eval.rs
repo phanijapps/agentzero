@@ -7,7 +7,7 @@ use gateway_execution::middleware::intent::agent::{run_intent_agent, IntentAgent
 use gateway_services::providers::Provider;
 use serde_json::Value;
 use std::sync::Arc;
-use zbot_stores::MemoryFactStore;
+use zbot_stores_traits::MemoryFactStore;
 
 // ---------------------------------------------------------------------------
 // Mock fact store — returns static indexed resources

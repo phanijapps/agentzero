@@ -16,9 +16,9 @@ use std::sync::Arc;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
+use knowledge_graph::kg_trait::{KnowledgeGraphStore, StrategyCandidate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use zbot_stores::{KnowledgeGraphStore, StrategyCandidate};
 use zbot_stores_traits::{
     CompactionStore, EmbeddingQueryIdentity, EpisodeStore, MemoryFactStore, StrategyFactInsert,
 };

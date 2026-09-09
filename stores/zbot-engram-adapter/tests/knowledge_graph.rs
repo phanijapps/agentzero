@@ -1,4 +1,6 @@
 use chrono::Utc;
+use knowledge_graph::kg_trait::{ExtractedKnowledge, KnowledgeGraphStore};
+use knowledge_graph::types::Direction;
 use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
 use serde_json::json;
 use zbot_engram_adapter::{
@@ -6,7 +8,6 @@ use zbot_engram_adapter::{
     AdapterConfig, AdapterFeature, CapabilityReport, EngramKnowledgeGraphStore, EngramWikiStore,
     GovernancePolicy, GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID,
 };
-use zbot_stores::{types::Direction, ExtractedKnowledge, KnowledgeGraphStore};
 use zbot_stores_domain::WikiArticle;
 use zbot_stores_traits::{EmbeddingQueryIdentity, WikiStore};
 
@@ -336,7 +337,7 @@ async fn graph_entities_relationships_and_read_models_round_trip() {
             .resolve_entity("agent-a", &EntityType::Person, "Ada", None)
             .await
             .expect("resolve"),
-        zbot_stores::types::ResolveOutcome::Match(found) if found == alice_id
+        knowledge_graph::kg_trait::kg_types::ResolveOutcome::Match(found) if found == alice_id
     ));
 
     let mut rel = Relationship::new(
@@ -749,7 +750,9 @@ async fn admission_gate_rejects_unclassified_entity_and_predicate_before_persist
         .to_string()
         .contains("built-in ontology class"));
     assert!(store
-        .get_entity(&zbot_stores::types::EntityId("entity-unclassified".into()))
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
+            "entity-unclassified".into()
+        ))
         .await
         .expect("read rejected entity")
         .is_none());
@@ -820,7 +823,9 @@ async fn admission_gate_rejects_cross_agent_entity_id_takeover_direct_and_in_bat
         .to_string()
         .contains("entity id belongs to another agent"));
     let retained = store
-        .get_entity(&zbot_stores::types::EntityId("entity-shared-id".into()))
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
+            "entity-shared-id".into(),
+        ))
         .await
         .expect("read owner")
         .expect("owner retained");
@@ -843,7 +848,7 @@ async fn admission_gate_rejects_cross_agent_entity_id_takeover_direct_and_in_bat
         .to_string()
         .contains("entity id belongs to another agent"));
     assert!(store
-        .get_entity(&zbot_stores::types::EntityId(
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
             "entity-fresh-before-collision".into()
         ))
         .await
@@ -872,7 +877,7 @@ async fn concurrent_cross_agent_entity_claim_has_exactly_one_owner() {
         "exactly one agent must acquire a fresh entity ID"
     );
     let retained = store
-        .get_entity(&zbot_stores::types::EntityId(
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
             "entity-concurrent-claim".into(),
         ))
         .await

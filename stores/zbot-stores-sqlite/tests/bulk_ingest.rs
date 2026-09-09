@@ -1,6 +1,6 @@
+use knowledge_graph::kg_trait::ExtractedKnowledge;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
-use zbot_stores::extracted::ExtractedKnowledge;
-use zbot_stores::KnowledgeGraphStore;
 
 mod fixtures;
 

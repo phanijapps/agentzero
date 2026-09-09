@@ -11,7 +11,7 @@ use tempfile::tempdir;
 
 use agent_primitives::vault_paths::VaultPaths;
 use gateway_memory::sleep::{Compactor, DecayConfig, DecayEngine, Pruner, SleepTimeWorker};
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_sqlite::kg::storage::GraphStorage;
 use zbot_stores_sqlite::{
     CompactionRepository, GatewayCompactionStore, KnowledgeDatabase, SqliteKgStore,

@@ -36,10 +36,10 @@ pub struct TraversalNode {
 // owner of `TraversalNode`) instead of in `zbot-stores` to avoid that
 // crate having to depend on `zbot-stores-sqlite`. Relocated from
 // `zbot-stores/src/types.rs` during Slice D6b.
-impl From<TraversalNode> for zbot_stores::types::TraversalHit {
+impl From<TraversalNode> for knowledge_graph::kg_trait::kg_types::TraversalHit {
     fn from(n: TraversalNode) -> Self {
-        zbot_stores::types::TraversalHit {
-            entity_id: zbot_stores::types::EntityId(n.entity_id),
+        knowledge_graph::kg_trait::kg_types::TraversalHit {
+            entity_id: knowledge_graph::kg_trait::kg_types::EntityId(n.entity_id),
             hop: n.hop_distance as usize,
             path: n.path,
             mention_count: n.mention_count,

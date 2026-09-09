@@ -27,7 +27,9 @@ pub(crate) fn kg_episode_store(tmp: &tempfile::TempDir) -> Arc<dyn KgEpisodeStor
 }
 
 /// An engram-backed knowledge-graph store for unit-test fixtures.
-pub(crate) fn kg_store(tmp: &tempfile::TempDir) -> Arc<dyn zbot_stores::KnowledgeGraphStore> {
+pub(crate) fn kg_store(
+    tmp: &tempfile::TempDir,
+) -> Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> {
     let (config, provider) = open_provider(tmp.path(), "engram-kg");
     Arc::new(EngramKnowledgeGraphStore::from_provider(config, &provider).expect("kg store opens"))
 }

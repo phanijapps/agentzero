@@ -24,8 +24,8 @@
 
 use std::sync::Arc;
 
-use zbot_stores::types::EntityId;
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::kg_types::EntityId;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::CompactionStore;
 
 /// Minimum age (in hours) an entity must have before it becomes a candidate

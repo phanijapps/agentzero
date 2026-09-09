@@ -1,6 +1,6 @@
+use knowledge_graph::kg_trait::kg_types::ResolveOutcome;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::types::{Entity, EntityType};
-use zbot_stores::types::ResolveOutcome;
-use zbot_stores::KnowledgeGraphStore;
 
 mod fixtures;
 

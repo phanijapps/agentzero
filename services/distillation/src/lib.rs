@@ -70,8 +70,8 @@ pub struct SessionDistiller {
     embedding_client: Option<Arc<dyn EmbeddingClient>>,
     messages: Arc<dyn zbot_conversation::MessageStore>,
     session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
-    memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
+    kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     /// Trait-routed distillation store. Run-tracking writes flow
     /// through this handle.
     distillation_store: Option<Arc<dyn zbot_stores_traits::DistillationStore>>,
@@ -267,13 +267,13 @@ impl SessionDistiller {
 
     /// Wire the trait-routed memory store. Upsert + supersede route
     /// through this handle.
-    pub fn set_memory_store(&mut self, store: Arc<dyn zbot_stores::MemoryFactStore>) {
+    pub fn set_memory_store(&mut self, store: Arc<dyn zbot_stores_traits::MemoryFactStore>) {
         self.memory_store = Some(store);
     }
 
     /// Wire the trait-routed knowledge-graph store. Entity / relationship
     /// writes route through this handle.
-    pub fn set_kg_store(&mut self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) {
+    pub fn set_kg_store(&mut self, store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>) {
         self.kg_store = Some(store);
     }
 
@@ -1595,7 +1595,7 @@ impl GraphProjectionOutcome {
 /// Project only ontology-governed candidates into the graph through its store
 /// trait. Facts are intentionally handled by the separate memory-fact path.
 async fn project_distilled_graph(
-    store: &dyn zbot_stores::KnowledgeGraphStore,
+    store: &dyn knowledge_graph::kg_trait::KnowledgeGraphStore,
     agent_id: &str,
     entities: &[ExtractedEntity],
     relationships: &[ExtractedRelationship],
@@ -1630,7 +1630,7 @@ async fn project_distilled_graph(
         match find_entity_by_normalized_name(store, agent_id, &entity_candidate.name).await {
             Some(id) => {
                 if let Err(error) = store
-                    .bump_entity_mention(&zbot_stores::EntityId::from(id.clone()))
+                    .bump_entity_mention(&knowledge_graph::kg_trait::EntityId::from(id.clone()))
                     .await
                 {
                     tracing::warn!(error = %error, "Failed to bump graph entity mention");
@@ -1724,7 +1724,7 @@ async fn project_distilled_graph(
 /// Backend implementations may only provide the trait's default exact matcher,
 /// so normalize the candidate before lookup and verify the returned surface.
 async fn find_entity_by_normalized_name(
-    store: &dyn zbot_stores::KnowledgeGraphStore,
+    store: &dyn knowledge_graph::kg_trait::KnowledgeGraphStore,
     agent_id: &str,
     name: &str,
 ) -> Option<String> {
@@ -1745,7 +1745,7 @@ async fn find_entity_by_normalized_name(
 /// governance rejects a candidate, its fact counterpart still routes through
 /// the configured memory store exactly as it did before this projection.
 async fn upsert_distilled_fact(
-    store: Option<&dyn zbot_stores::MemoryFactStore>,
+    store: Option<&dyn zbot_stores_traits::MemoryFactStore>,
     fact: &MemoryFact,
 ) -> Result<(), DistillationError> {
     let store = store.ok_or_else(|| DistillationError::Resource("no memory store wired".into()))?;
@@ -1758,7 +1758,7 @@ async fn upsert_distilled_fact(
 /// Resolve a relationship endpoint only when it is an extracted candidate or
 /// an existing graph entity. This deliberately never creates an `unknown` stub.
 async fn resolve_relationship_endpoint(
-    store: &dyn zbot_stores::KnowledgeGraphStore,
+    store: &dyn knowledge_graph::kg_trait::KnowledgeGraphStore,
     agent_id: &str,
     name: &str,
     entity_map: &mut std::collections::HashMap<String, String>,
@@ -2630,7 +2630,7 @@ mod tests {
         let storage = Arc::new(
             zbot_stores_sqlite::kg::storage::GraphStorage::new(db).expect("graph storage"),
         );
-        let store: Arc<dyn zbot_stores::KnowledgeGraphStore> =
+        let store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> =
             Arc::new(zbot_stores_sqlite::SqliteKgStore::new(storage));
         let agent_id = "distillation-governance";
 
@@ -2691,8 +2691,8 @@ mod tests {
         );
         let neighbors = store
             .get_neighbors(
-                &zbot_stores::EntityId::from(existing.id),
-                zbot_stores::Direction::Outgoing,
+                &knowledge_graph::kg_trait::EntityId::from(existing.id),
+                knowledge_graph::types::Direction::Outgoing,
                 10,
             )
             .await
@@ -2712,7 +2712,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl zbot_stores::MemoryFactStore for RecordingMemoryStore {
+    impl zbot_stores_traits::MemoryFactStore for RecordingMemoryStore {
         async fn save_fact(
             &self,
             _agent_id: &str,

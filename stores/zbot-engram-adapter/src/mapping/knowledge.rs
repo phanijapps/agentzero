@@ -395,7 +395,7 @@ pub fn aggregate_entity_to_hierarchy_node(
     entity: &Entity,
     mapper: &ScopeMapper,
     layer: i64,
-    member_ids: &[zbot_stores::types::EntityId],
+    member_ids: &[knowledge_graph::kg_trait::kg_types::EntityId],
 ) -> AdapterResult<HierarchyNode> {
     aggregate_entity_to_hierarchy_node_with_governance(entity, mapper, layer, member_ids, None)
 }
@@ -406,7 +406,7 @@ pub fn aggregate_entity_to_hierarchy_node_with_governance(
     entity: &Entity,
     mapper: &ScopeMapper,
     layer: i64,
-    member_ids: &[zbot_stores::types::EntityId],
+    member_ids: &[knowledge_graph::kg_trait::kg_types::EntityId],
     governance: Option<&GovernancePolicy>,
 ) -> AdapterResult<HierarchyNode> {
     let ward_id = ward_id_from_properties(&entity.properties);
@@ -874,7 +874,9 @@ mod tests {
             &entity(EntityType::Concept),
             &mapper(),
             2,
-            &[zbot_stores::types::EntityId("member-1".to_string())],
+            &[knowledge_graph::kg_trait::kg_types::EntityId(
+                "member-1".to_string(),
+            )],
             Some(&governance()),
         )
         .expect("hierarchy node");

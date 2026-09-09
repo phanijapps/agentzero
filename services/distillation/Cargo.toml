@@ -9,7 +9,6 @@ agent-primitives = { path = "../../runtime/agent-primitives" }
 gateway-services = { path = "../../gateway/gateway-services" }
 gateway-templates = { path = "../../gateway/gateway-templates" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }
-zbot-stores = { path = "../../stores/zbot-stores" }
 zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
 zbot-engram-adapter = { path = "../../stores/zbot-engram-adapter" }

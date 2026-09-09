@@ -24,7 +24,6 @@ uuid = { workspace = true }
 
 # Knowledge-graph store traits (used by Pruner, OrphanArchiver, DecayEngine,
 # and the recall adapters/MemoryRecall).
-zbot-stores = { path = "../../stores/zbot-stores" }
 agent-primitives = { path = "../../runtime/agent-primitives" }
 zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 

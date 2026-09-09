@@ -15,7 +15,7 @@ use tempfile::tempdir;
 mod common;
 
 use gateway_execution::ingest::{extractor::Extractor, IngestionQueue};
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 
 struct PanicExtractor {
     invocations: Arc<AtomicU64>,

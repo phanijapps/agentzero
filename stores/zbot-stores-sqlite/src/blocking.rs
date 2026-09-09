@@ -1,4 +1,4 @@
-use zbot_stores::error::GraphStoreError;
+use knowledge_graph::kg_trait::error::GraphStoreError;
 
 /// Run a synchronous closure on the blocking thread pool, mapping any
 /// panic or join error into `GraphStoreError::Backend`.

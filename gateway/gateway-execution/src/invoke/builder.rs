@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use zbot_conversation::MessageStore;
 use zbot_runtime_sqlite::DatabaseManager;
-use zbot_stores::MemoryFactStore;
+use zbot_stores_traits::MemoryFactStore;
 
 use super::executor::resolve_thinking_flag;
 use super::policy::{
@@ -174,7 +174,7 @@ pub struct ExecutorBuilder {
     ward_audience_override: Option<agent_tools::WardAudience>,
     subagent_non_streaming: bool,
     /// Trait-routed kg store for the `graph_query` tool.
-    kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
     /// Observer for ward-tool creation events — bumps the curator sidecar's
@@ -361,7 +361,10 @@ impl ExecutorBuilder {
     }
 
     /// Set the trait-routed kg store for the `graph_query` tool.
-    pub fn with_kg_store(mut self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) -> Self {
+    pub fn with_kg_store(
+        mut self,
+        store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
+    ) -> Self {
         self.kg_store = Some(store);
         self
     }

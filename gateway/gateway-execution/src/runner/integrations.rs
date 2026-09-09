@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Default)]
 pub struct RunnerIntegrations {
-    pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    pub kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
     pub ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
     pub goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
@@ -21,7 +21,7 @@ impl SharedIntegrations {
             .expect("execution integrations lock poisoned")
             .clone()
     }
-    pub fn set_kg_store(&self, store: Arc<dyn zbot_stores::KnowledgeGraphStore>) {
+    pub fn set_kg_store(&self, store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>) {
         self.0
             .write()
             .expect("execution integrations lock poisoned")

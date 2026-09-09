@@ -10,9 +10,9 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
+use knowledge_graph::kg_trait::kg_types::EntityId;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::{Entity, EntityType};
-use zbot_stores::types::EntityId;
-use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_traits::CompactionStore;
 
 /// Default cosine threshold for considering two entities near-duplicates.

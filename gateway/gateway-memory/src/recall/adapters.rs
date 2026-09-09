@@ -6,7 +6,7 @@
 //! consumed by the weighted-RRF fuser (`fuse_source_lists`).
 
 use crate::recall::scored_item::{ItemKind, Provenance, ScoredItem};
-use zbot_stores::types::EntityId;
+use knowledge_graph::kg_trait::kg_types::EntityId;
 use zbot_stores_domain::{Belief, MemoryFact, Procedure, RouteHint, RouteSourceKind, WikiArticle};
 
 /// Project a [`MemoryFact`] into a [`ScoredItem`].
@@ -169,7 +169,7 @@ use std::sync::Arc;
 /// via rank during fusion, so this per-source score only matters for the
 /// adapter-local order, which we preserve by sorting by `(rank, cosine)`.
 pub async fn graph_ann_to_items(
-    kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
+    kg_store: &Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
     query_embedding: &[f32],
     top_k: usize,
     agent_id: &str,

@@ -388,7 +388,7 @@ mod tests {
         tmp: tempfile::TempDir,
         kg_store: Arc<dyn KnowledgeGraphStore>,
         compaction_store: Arc<dyn zbot_stores_traits::CompactionStore>,
-        memory_store: Arc<dyn zbot_stores::MemoryFactStore>,
+        memory_store: Arc<dyn zbot_stores_traits::MemoryFactStore>,
         procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore>,
         message_store: Arc<dyn zbot_conversation::MessageStore>,
     }
@@ -486,7 +486,7 @@ mod tests {
         let kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
         let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
             test_support::episode_store(&h.tmp);
-        let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = h.memory_store.clone();
+        let memory_store: Arc<dyn zbot_stores_traits::MemoryFactStore> = h.memory_store.clone();
         let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
             h.compaction_store.clone();
         let synth = Arc::new(MemorySynthesisConsolidation::new(Arc::new(
@@ -581,7 +581,7 @@ mod tests {
         let kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
         let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
             test_support::episode_store(&h.tmp);
-        let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = h.memory_store.clone();
+        let memory_store: Arc<dyn zbot_stores_traits::MemoryFactStore> = h.memory_store.clone();
         let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
             h.compaction_store.clone();
         let synth = Arc::new(MemorySynthesisConsolidation::new(Arc::new(

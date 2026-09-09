@@ -12,6 +12,8 @@ pub enum DistillationError {
     Provider(String),
     #[error("store: {0}")]
     Store(String),
+    #[error("store failure: {0}")]
+    StoreTyped(#[from] zbot_stores_traits::StoreError),
     #[error("resource: {0}")]
     Resource(String),
     #[error("parse: {0}")]
@@ -628,7 +630,7 @@ impl SessionDistiller {
                         Some(store) => store
                             .supersede_fact(&existing.id, &fact_id, chrono::Utc::now())
                             .await
-                            .map_err(DistillationError::Store),
+                            .map_err(|e| DistillationError::Store(e.to_string())),
                         None => Err(DistillationError::Resource("no memory store wired".into())),
                     };
                     if let Err(e) = supersede_res {
@@ -1238,7 +1240,7 @@ impl SessionDistiller {
                     Some(store) => store
                         .supersede_fact(&existing.id, &strategy_fact_id, chrono::Utc::now())
                         .await
-                        .map_err(DistillationError::Store),
+                        .map_err(|e| DistillationError::Store(e.to_string())),
                     None => Err(DistillationError::Resource("no memory store wired".into())),
                 };
                 if let Err(e) = supersede_res {
@@ -1387,7 +1389,7 @@ impl SessionDistiller {
                     Some(store) => store
                         .supersede_fact(&existing.id, &correction_fact_id, chrono::Utc::now())
                         .await
-                        .map_err(DistillationError::Store),
+                        .map_err(|e| DistillationError::Store(e.to_string())),
                     None => Err(DistillationError::Resource("no memory store wired".into())),
                 };
                 if let Err(e) = supersede_res {
@@ -1434,7 +1436,7 @@ impl SessionDistiller {
                 .insert_episode(episode.clone(), emb)
                 .await
                 .map(|_| ())
-                .map_err(DistillationError::Store)
+                .map_err(|e| DistillationError::Store(e.to_string()))
         } else {
             Err(DistillationError::from(
                 "no episode store wired".to_string(),
@@ -1747,7 +1749,7 @@ async fn upsert_distilled_fact(
     store
         .upsert_typed_fact(fact.clone(), fact.embedding.clone())
         .await
-        .map_err(DistillationError::Store)
+        .map_err(|e| DistillationError::Store(e.to_string()))
 }
 
 /// Resolve a relationship endpoint only when it is an extracted candidate or
@@ -2292,6 +2294,7 @@ fn default_distillation_prompt() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zbot_stores_traits::StoreResult;
 
     #[test]
     fn test_parse_facts_from_json_array() {
@@ -2712,7 +2715,7 @@ mod tests {
             _confidence: f64,
             _session_id: Option<&str>,
             _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             Ok(serde_json::json!({"saved": true}))
         }
 
@@ -2721,7 +2724,7 @@ mod tests {
             _agent_id: &str,
             _query: &str,
             _limit: usize,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             Ok(serde_json::json!([]))
         }
 
@@ -2734,7 +2737,7 @@ mod tests {
             _ward_id: Option<&str>,
             _query_embedding: Option<&[f32]>,
             _as_of: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Vec<serde_json::Value>, String> {
+        ) -> StoreResult<Vec<serde_json::Value>> {
             Ok(Vec::new())
         }
 
@@ -2742,7 +2745,7 @@ mod tests {
             &self,
             fact: zbot_stores_traits::MemoryFact,
             _embedding: Option<Vec<f32>>,
-        ) -> Result<(), String> {
+        ) -> StoreResult<()> {
             self.typed_facts
                 .lock()
                 .expect("typed facts lock")
@@ -2933,7 +2936,7 @@ mod tests {
                 &self,
                 procedure: zbot_stores_traits::Procedure,
                 embedding: Option<Vec<f32>>,
-            ) -> Result<(), String> {
+            ) -> StoreResult<()> {
                 self.upserts.lock().unwrap().push((procedure, embedding));
                 Ok(())
             }

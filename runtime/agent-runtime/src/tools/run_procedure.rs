@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use zbot_stores_traits::{PatternStep, ProcedureStore};
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use crate::tools::registry::ToolRegistry;
 
@@ -168,13 +169,12 @@ impl RunProcedureTool {
     }
 }
 
-fn required_parameters(
-    proc: &zbot_stores_traits::Procedure,
-) -> std::result::Result<Vec<String>, String> {
+fn required_parameters(proc: &zbot_stores_traits::Procedure) -> StoreResult<Vec<String>> {
     let Some(raw) = proc.parameters.as_deref() else {
         return Ok(Vec::new());
     };
-    serde_json::from_str(raw).map_err(|error| format!("procedure parameters unparseable: {error}"))
+    serde_json::from_str(raw)
+        .map_err(|error| StoreError::Invalid(format!("procedure parameters unparseable: {error}")))
 }
 
 #[async_trait]
@@ -238,7 +238,8 @@ impl Tool for RunProcedureTool {
             .get("args")
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
-        let declared = required_parameters(&proc).map_err(AgentError::Tool)?;
+        let declared =
+            required_parameters(&proc).map_err(|e: StoreError| AgentError::Tool(e.to_string()))?;
         let missing: Vec<_> = declared
             .iter()
             .filter(|name| top_args.get(name.as_str()).is_none())
@@ -416,7 +417,7 @@ mod tests {
             &self,
             _agent_id: &str,
             name: &str,
-        ) -> std::result::Result<Option<Procedure>, String> {
+        ) -> StoreResult<Option<Procedure>> {
             let p = self.proc.lock().await;
             if p.name == name {
                 Ok(Some(p.clone()))
@@ -429,14 +430,14 @@ mod tests {
             id: &str,
             _duration_ms: Option<i64>,
             _token_cost: Option<i64>,
-        ) -> std::result::Result<(), String> {
+        ) -> StoreResult<()> {
             let mut p = self.proc.lock().await;
             if p.id == id {
                 p.success_count += 1;
             }
             Ok(())
         }
-        async fn increment_failure(&self, id: &str) -> std::result::Result<(), String> {
+        async fn increment_failure(&self, id: &str) -> StoreResult<()> {
             let mut p = self.proc.lock().await;
             if p.id == id {
                 p.failure_count += 1;

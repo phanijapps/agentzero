@@ -1,4 +1,4 @@
-use crate::error::StoreResult;
+use crate::error::GraphStoreResult;
 use crate::extracted::ExtractedKnowledge;
 use crate::memory_facts::EmbeddingQueryIdentity;
 use crate::types::*;
@@ -19,35 +19,35 @@ pub use zbot_stores_domain::{
 #[async_trait]
 pub trait KnowledgeGraphStore: Send + Sync {
     // ---- Entities ---------------------------------------------------------
-    async fn upsert_entity(&self, agent_id: &str, entity: Entity) -> StoreResult<EntityId>;
-    async fn get_entity(&self, id: &EntityId) -> StoreResult<Option<Entity>>;
-    async fn delete_entity(&self, id: &EntityId) -> StoreResult<()>;
-    async fn bump_entity_mention(&self, id: &EntityId) -> StoreResult<()>;
+    async fn upsert_entity(&self, agent_id: &str, entity: Entity) -> GraphStoreResult<EntityId>;
+    async fn get_entity(&self, id: &EntityId) -> GraphStoreResult<Option<Entity>>;
+    async fn delete_entity(&self, id: &EntityId) -> GraphStoreResult<()>;
+    async fn bump_entity_mention(&self, id: &EntityId) -> GraphStoreResult<()>;
 
     // ---- Aliases & resolution --------------------------------------------
-    async fn add_alias(&self, entity_id: &EntityId, surface: &str) -> StoreResult<()>;
+    async fn add_alias(&self, entity_id: &EntityId, surface: &str) -> GraphStoreResult<()>;
     async fn resolve_entity(
         &self,
         agent_id: &str,
         entity_type: &EntityType,
         name: &str,
         embedding: Option<&[f32]>,
-    ) -> StoreResult<ResolveOutcome>;
+    ) -> GraphStoreResult<ResolveOutcome>;
 
     // ---- Relationships ---------------------------------------------------
     async fn upsert_relationship(
         &self,
         agent_id: &str,
         rel: Relationship,
-    ) -> StoreResult<RelationshipId>;
-    async fn delete_relationship(&self, id: &RelationshipId) -> StoreResult<()>;
+    ) -> GraphStoreResult<RelationshipId>;
+    async fn delete_relationship(&self, id: &RelationshipId) -> GraphStoreResult<()>;
 
     // ---- Bulk ingest -----------------------------------------------------
     async fn store_knowledge(
         &self,
         agent_id: &str,
         knowledge: ExtractedKnowledge,
-    ) -> StoreResult<StoreOutcome>;
+    ) -> GraphStoreResult<StoreOutcome>;
 
     // ---- Read paths ------------------------------------------------------
     async fn get_neighbors(
@@ -55,14 +55,14 @@ pub trait KnowledgeGraphStore: Send + Sync {
         id: &EntityId,
         direction: Direction,
         limit: usize,
-    ) -> StoreResult<Vec<Neighbor>>;
+    ) -> GraphStoreResult<Vec<Neighbor>>;
 
     async fn traverse(
         &self,
         seed: &EntityId,
         max_hops: usize,
         limit: usize,
-    ) -> StoreResult<Vec<TraversalHit>>;
+    ) -> GraphStoreResult<Vec<TraversalHit>>;
 
     /// MEM-001 Part B-2 — confidence-aware BFS traversal for recall.
     ///
@@ -88,7 +88,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _max_hops: usize,
         _min_edge_confidence: f64,
         _limit: usize,
-    ) -> StoreResult<Vec<WeightedTraversalHit>> {
+    ) -> GraphStoreResult<Vec<WeightedTraversalHit>> {
         Ok(Vec::new())
     }
 
@@ -97,13 +97,17 @@ pub trait KnowledgeGraphStore: Send + Sync {
         agent_id: &str,
         query: &str,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>>;
+    ) -> GraphStoreResult<Vec<Entity>>;
 
     /// Exact-name lookup for an entity. Used by tools that resolve a
     /// human-typed name to an entity id before traversing neighbours.
     /// Default falls back to filtering `search_entities_by_name` so
     /// backends without an indexed lookup still work.
-    async fn get_entity_by_name(&self, agent_id: &str, name: &str) -> StoreResult<Option<Entity>> {
+    async fn get_entity_by_name(
+        &self,
+        agent_id: &str,
+        name: &str,
+    ) -> GraphStoreResult<Option<Entity>> {
         let matches = self.search_entities_by_name(agent_id, name, 16).await?;
         Ok(matches.into_iter().find(|e| e.name == name))
     }
@@ -116,7 +120,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         &self,
         agent_id: &str,
         normalized_name: &str,
-    ) -> StoreResult<Option<Entity>> {
+    ) -> GraphStoreResult<Option<Entity>> {
         self.get_entity_by_name(agent_id, normalized_name).await
     }
 
@@ -131,7 +135,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         query: &str,
         _view: GraphView,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>> {
+    ) -> GraphStoreResult<Vec<Entity>> {
         self.search_entities_by_name(agent_id, query, limit).await
     }
 
@@ -146,7 +150,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _agent_id: &str,
         _query_embedding: &[f32],
         _top_k: usize,
-    ) -> StoreResult<Vec<EntityNameEmbeddingHit>> {
+    ) -> GraphStoreResult<Vec<EntityNameEmbeddingHit>> {
         Ok(Vec::new())
     }
 
@@ -159,15 +163,15 @@ pub trait KnowledgeGraphStore: Send + Sync {
         query_embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         top_k: usize,
-    ) -> StoreResult<Vec<EntityNameEmbeddingHit>> {
+    ) -> GraphStoreResult<Vec<EntityNameEmbeddingHit>> {
         let _ = query_identity;
         self.search_entities_by_name_embedding(agent_id, query_embedding, top_k)
             .await
     }
 
     // ---- Maintenance -----------------------------------------------------
-    async fn reindex_embeddings(&self, new_dim: usize) -> StoreResult<ReindexReport>;
-    async fn stats(&self) -> StoreResult<KgStats>;
+    async fn reindex_embeddings(&self, new_dim: usize) -> GraphStoreResult<ReindexReport>;
+    async fn stats(&self) -> GraphStoreResult<KgStats>;
 
     /// Find entities that satisfy the orphan-archival heuristic:
     /// `mention_count = 1`, `confidence < 0.5`, `first_seen_at` older
@@ -179,14 +183,14 @@ pub trait KnowledgeGraphStore: Send + Sync {
         &self,
         min_age_hours: u32,
         limit: usize,
-    ) -> StoreResult<Vec<ArchivableEntity>>;
+    ) -> GraphStoreResult<Vec<ArchivableEntity>>;
 
     /// Soft-delete an entity by marking it archival. Sets the entity's
     /// `epistemic_class` to `'archival'`, records `reason` in
     /// `compressed_into`, and removes the entity's name-index row (so
     /// future searches don't surface it). Used by the sleep-time orphan
     /// archiver. Atomically applies all writes via a single transaction.
-    async fn mark_entity_archival(&self, id: &EntityId, reason: &str) -> StoreResult<()>;
+    async fn mark_entity_archival(&self, id: &EntityId, reason: &str) -> GraphStoreResult<()>;
 
     /// Apply temporal confidence decay to non-archival entities for an agent.
     ///
@@ -199,7 +203,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _half_life_days: f64,
         _min_confidence: f64,
         _skip_recent_hours: i64,
-    ) -> StoreResult<u64> {
+    ) -> GraphStoreResult<u64> {
         Ok(0)
     }
 
@@ -210,7 +214,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _half_life_days: f64,
         _min_confidence: f64,
         _skip_recent_hours: i64,
-    ) -> StoreResult<u64> {
+    ) -> GraphStoreResult<u64> {
         Ok(0)
     }
 
@@ -222,7 +226,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
     /// shape (vs. [`KnowledgeGraphStore::stats`]) is intentional —
     /// `stats` returns global counts only and is used by maintenance
     /// jobs; this is the per-agent UI view.
-    async fn graph_stats(&self, agent_id: &str) -> StoreResult<GraphStats>;
+    async fn graph_stats(&self, agent_id: &str) -> GraphStoreResult<GraphStats>;
 
     /// List entities for an agent with optional `entity_type` filter and
     /// LIMIT/OFFSET pagination. Order is `mention_count DESC`.
@@ -232,7 +236,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         entity_type: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> StoreResult<Vec<Entity>>;
+    ) -> GraphStoreResult<Vec<Entity>>;
 
     /// List relationships for an agent with optional `relationship_type`
     /// filter and LIMIT/OFFSET pagination. Order is `mention_count DESC`.
@@ -242,7 +246,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         relationship_type: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> StoreResult<Vec<Relationship>>;
+    ) -> GraphStoreResult<Vec<Relationship>>;
 
     /// Get full neighbor info (entity + relationship + direction) for an
     /// entity. Unlike [`KnowledgeGraphStore::get_neighbors`] which
@@ -254,7 +258,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         entity_id: &str,
         direction: Direction,
         limit: usize,
-    ) -> StoreResult<Vec<NeighborInfo>>;
+    ) -> GraphStoreResult<Vec<NeighborInfo>>;
 
     /// BFS subgraph centered on `center_entity_id` out to `max_hops`.
     /// Used by `GET /api/graph/:agent_id/entities/:entity_id/subgraph`.
@@ -263,14 +267,14 @@ pub trait KnowledgeGraphStore: Send + Sync {
         agent_id: &str,
         center_entity_id: &str,
         max_hops: usize,
-    ) -> StoreResult<Subgraph>;
+    ) -> GraphStoreResult<Subgraph>;
 
     /// Count all entities across all agents. Used by the Observatory
     /// aggregate stats endpoint.
-    async fn count_all_entities(&self) -> StoreResult<usize>;
+    async fn count_all_entities(&self) -> GraphStoreResult<usize>;
 
     /// Count all relationships across all agents.
-    async fn count_all_relationships(&self) -> StoreResult<usize>;
+    async fn count_all_relationships(&self) -> GraphStoreResult<usize>;
 
     /// List entities across all agents with optional ward/type filters.
     /// Used by `GET /api/graph/all/entities`.
@@ -279,18 +283,18 @@ pub trait KnowledgeGraphStore: Send + Sync {
         ward_id: Option<&str>,
         entity_type: Option<&str>,
         limit: usize,
-    ) -> StoreResult<Vec<Entity>>;
+    ) -> GraphStoreResult<Vec<Entity>>;
 
     /// List all relationships across all agents.
     /// Used by `GET /api/graph/all/relationships`.
-    async fn list_all_relationships(&self, limit: usize) -> StoreResult<Vec<Relationship>>;
+    async fn list_all_relationships(&self, limit: usize) -> GraphStoreResult<Vec<Relationship>>;
 
     /// Vec0-index health snapshot: which of the expected vector tables
     /// exist in the backing store and how many rows are indexed in
     /// total. Backend-specific in implementation (SQLite-vec aux tables,
     /// SurrealDB index counts) but the trait surface stays the same.
     /// Used by `GET /api/embeddings/health`.
-    async fn vec_index_health(&self) -> StoreResult<VecIndexHealth>;
+    async fn vec_index_health(&self) -> GraphStoreResult<VecIndexHealth>;
 
     // ---- Sleep-time maintenance (Phase D2) -------------------------------
     //
@@ -311,7 +315,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _entity_type: &knowledge_graph::EntityType,
         _threshold: f32,
         _limit: usize,
-    ) -> StoreResult<Vec<DuplicateCandidate>> {
+    ) -> GraphStoreResult<Vec<DuplicateCandidate>> {
         Ok(Vec::new())
     }
 
@@ -320,8 +324,12 @@ pub trait KnowledgeGraphStore: Send + Sync {
     /// then mark `loser` as merged. Backend chooses the atomicity
     /// primitive (SQLite transaction, SurrealDB BEGIN/COMMIT block).
     /// Default: no-op error so misuse is loud.
-    async fn merge_entity_into(&self, _loser: &EntityId, _winner: &EntityId) -> StoreResult<()> {
-        Err(crate::StoreError::Backend(
+    async fn merge_entity_into(
+        &self,
+        _loser: &EntityId,
+        _winner: &EntityId,
+    ) -> GraphStoreResult<()> {
+        Err(crate::GraphStoreError::Backend(
             "merge_entity_into not implemented for this store".to_string(),
         ))
     }
@@ -335,7 +343,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _agent_id: &str,
         _min_age_days: i64,
         _limit: usize,
-    ) -> StoreResult<Vec<DecayCandidate>> {
+    ) -> GraphStoreResult<Vec<DecayCandidate>> {
         Ok(Vec::new())
     }
 
@@ -343,8 +351,8 @@ pub trait KnowledgeGraphStore: Send + Sync {
     /// from `mark_entity_archival` so operators can tell decay-driven
     /// prunes apart from orphan archival. Used by the Pruner.
     /// Default: no-op error.
-    async fn mark_entity_pruned(&self, _id: &EntityId) -> StoreResult<()> {
-        Err(crate::StoreError::Backend(
+    async fn mark_entity_pruned(&self, _id: &EntityId) -> GraphStoreResult<()> {
+        Err(crate::GraphStoreError::Backend(
             "mark_entity_pruned not implemented for this store".to_string(),
         ))
     }
@@ -368,7 +376,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _min_sessions: i64,
         _lookback_days: i64,
         _limit: usize,
-    ) -> StoreResult<Vec<StrategyCandidate>> {
+    ) -> GraphStoreResult<Vec<StrategyCandidate>> {
         Ok(Vec::new())
     }
 
@@ -381,7 +389,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _entity_id: &str,
         _lookback_days: i64,
         _edge_limit: usize,
-    ) -> StoreResult<RelationshipContext> {
+    ) -> GraphStoreResult<RelationshipContext> {
         Ok(RelationshipContext::default())
     }
 
@@ -392,7 +400,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         &self,
         _entity_id: &str,
         _lookback_days: i64,
-    ) -> StoreResult<Vec<String>> {
+    ) -> GraphStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 
@@ -419,7 +427,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         &self,
         _agent_id: &str,
         _episode_ids: &[String],
-    ) -> StoreResult<KgNodesForEpisodes> {
+    ) -> GraphStoreResult<KgNodesForEpisodes> {
         Ok(KgNodesForEpisodes::default())
     }
 
@@ -432,7 +440,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _entity_ids: &[EntityId],
         _factor: f64,
         _min_floor: f64,
-    ) -> StoreResult<u64> {
+    ) -> GraphStoreResult<u64> {
         Ok(0)
     }
 
@@ -444,7 +452,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _relationship_ids: &[RelationshipId],
         _factor: f64,
         _min_floor: f64,
-    ) -> StoreResult<u64> {
+    ) -> GraphStoreResult<u64> {
         Ok(0)
     }
 
@@ -478,7 +486,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _agent_id: &str,
         _cluster_a: &[EntityId],
         _cluster_b: &[EntityId],
-    ) -> StoreResult<usize> {
+    ) -> GraphStoreResult<usize> {
         Ok(0)
     }
 
@@ -510,8 +518,8 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _name: &str,
         _description: &str,
         _embedding: Option<Vec<f32>>,
-    ) -> StoreResult<EntityId> {
-        Err(crate::StoreError::Backend(
+    ) -> GraphStoreResult<EntityId> {
+        Err(crate::GraphStoreError::Backend(
             "promote_cluster_to_aggregate not implemented for this store".to_string(),
         ))
     }
@@ -538,8 +546,8 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _source_aggregate: &EntityId,
         _target_aggregate: &EntityId,
         _relationship_type: &str,
-    ) -> StoreResult<RelationshipId> {
-        Err(crate::StoreError::Backend(
+    ) -> GraphStoreResult<RelationshipId> {
+        Err(crate::GraphStoreError::Backend(
             "write_inter_cluster_relation not implemented for this store".to_string(),
         ))
     }
@@ -565,7 +573,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         _agent_id: &str,
         _layer: i64,
         _limit: usize,
-    ) -> StoreResult<Vec<EntityWithEmbedding>> {
+    ) -> GraphStoreResult<Vec<EntityWithEmbedding>> {
         Ok(Vec::new())
     }
 
@@ -597,7 +605,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         &self,
         _agent_id: &str,
         _seed_entity_ids: &[EntityId],
-    ) -> StoreResult<LcaPath> {
+    ) -> GraphStoreResult<LcaPath> {
         Ok(LcaPath::default())
     }
 
@@ -620,7 +628,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         &self,
         _agent_id: &str,
         _entity_ids: &[EntityId],
-    ) -> StoreResult<Vec<InterClusterRelationHit>> {
+    ) -> GraphStoreResult<Vec<InterClusterRelationHit>> {
         Ok(Vec::new())
     }
 
@@ -640,7 +648,7 @@ pub trait KnowledgeGraphStore: Send + Sync {
         &self,
         _agent_id: &str,
         _top_n: usize,
-    ) -> StoreResult<HierarchySummary> {
+    ) -> GraphStoreResult<HierarchySummary> {
         Ok(HierarchySummary::default())
     }
 }

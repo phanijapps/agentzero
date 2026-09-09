@@ -3,6 +3,7 @@
 // Abstract interface for durable memory fact storage
 // ============================================================================
 
+use crate::error::{StoreError, StoreResult};
 use async_trait::async_trait;
 use serde_json::Value;
 // Domain types live in `zbot-stores-domain`; re-export here so the
@@ -131,17 +132,14 @@ pub trait MemoryFactStore: Send + Sync {
         confidence: f64,
         session_id: Option<&str>,
         valid_from: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Value, String>;
+    ) -> StoreResult<Value>;
 
     /// Save a fact together with the execution scope that produced it.
     ///
     /// The default preserves the legacy contract for stores that have not
     /// implemented ward/source provenance yet. Canonical semantic stores
     /// should override this method rather than dropping the supplied context.
-    async fn save_fact_with_context(
-        &self,
-        request: MemoryFactWriteRequest,
-    ) -> Result<Value, String> {
+    async fn save_fact_with_context(&self, request: MemoryFactWriteRequest) -> StoreResult<Value> {
         self.save_fact(
             &request.agent_id,
             &request.category,
@@ -158,12 +156,7 @@ pub trait MemoryFactStore: Send + Sync {
     ///
     /// Combines FTS5 keyword matching and vector cosine similarity
     /// (when embeddings are available). Returns a JSON array of results.
-    async fn recall_facts(
-        &self,
-        agent_id: &str,
-        query: &str,
-        limit: usize,
-    ) -> Result<Value, String>;
+    async fn recall_facts(&self, agent_id: &str, query: &str, limit: usize) -> StoreResult<Value>;
 
     /// Recall facts with priority scoring applied (category weights, etc.).
     ///
@@ -183,7 +176,7 @@ pub trait MemoryFactStore: Send + Sync {
         query: &str,
         limit: usize,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         let _ = as_of;
         self.recall_facts(agent_id, query, limit).await
     }
@@ -195,7 +188,7 @@ pub trait MemoryFactStore: Send + Sync {
         ward_id: Option<&str>,
         limit: usize,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Value, String> {
+    ) -> StoreResult<Value> {
         let _ = ward_id;
         self.recall_facts_prioritized(agent_id, query, limit, as_of)
             .await
@@ -210,7 +203,7 @@ pub trait MemoryFactStore: Send + Sync {
     ///
     /// Default implementation returns `Ok(None)` for stores that don't
     /// support ctx storage.
-    async fn get_ctx_fact(&self, _ward_id: &str, _key: &str) -> Result<Option<Value>, String> {
+    async fn get_ctx_fact(&self, _ward_id: &str, _key: &str) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
@@ -237,8 +230,10 @@ pub trait MemoryFactStore: Send + Sync {
         _content: &str,
         _owner: &str,
         _pinned: bool,
-    ) -> Result<Value, String> {
-        Err("ctx storage not implemented for this store".to_string())
+    ) -> StoreResult<Value> {
+        Err(StoreError::Unavailable(
+            "ctx storage not implemented for this store".into(),
+        ))
     }
 
     /// Upsert a ward-scoped primitive (function signature) extracted
@@ -262,15 +257,17 @@ pub trait MemoryFactStore: Send + Sync {
         _key: &str,
         _signature: &str,
         _summary: &str,
-    ) -> Result<Value, String> {
-        Err("primitive storage not implemented for this store".to_string())
+    ) -> StoreResult<Value> {
+        Err(StoreError::Unavailable(
+            "primitive storage not implemented for this store".into(),
+        ))
     }
 
     /// List all primitives for a ward, grouped for ward-snapshot rendering.
     ///
     /// Returns an array of {key, signature, summary} ordered by key.
     /// Default implementation returns an empty array.
-    async fn list_primitives(&self, _ward_id: &str) -> Result<Value, String> {
+    async fn list_primitives(&self, _ward_id: &str) -> StoreResult<Value> {
         Ok(serde_json::json!({ "primitives": [] }))
     }
 
@@ -278,7 +275,7 @@ pub trait MemoryFactStore: Send + Sync {
     /// Used by the ward snapshot builder so it gets the raw key /
     /// content / source_summary triple without re-decoding the
     /// rendered JSON. Default returns empty.
-    async fn list_primitives_for_ward(&self, _ward_id: &str) -> Result<Vec<MemoryFact>, String> {
+    async fn list_primitives_for_ward(&self, _ward_id: &str) -> StoreResult<Vec<MemoryFact>> {
         Ok(Vec::new())
     }
 
@@ -290,7 +287,7 @@ pub trait MemoryFactStore: Send + Sync {
         &self,
         _session_id: &str,
         _limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(Vec::new())
     }
 
@@ -304,23 +301,23 @@ pub trait MemoryFactStore: Send + Sync {
     /// Delete every fact matching `(category, key)`. Used by the skill
     /// reindexer to clear ghost embeddings when a skill is removed from
     /// disk. Returns the number of rows deleted.
-    async fn delete_facts_by_key(&self, _category: &str, _key: &str) -> Result<usize, String> {
+    async fn delete_facts_by_key(&self, _category: &str, _key: &str) -> StoreResult<usize> {
         Ok(0)
     }
 
     /// Read every row from the per-skill staleness tracker. Returns an
     /// empty Vec when the table is missing or empty (e.g. fresh DB).
-    async fn list_skill_index(&self) -> Result<Vec<SkillIndexRow>, String> {
+    async fn list_skill_index(&self) -> StoreResult<Vec<SkillIndexRow>> {
         Ok(Vec::new())
     }
 
     /// Insert or replace one row in the per-skill staleness tracker.
-    async fn upsert_skill_index(&self, _row: SkillIndexRow) -> Result<(), String> {
+    async fn upsert_skill_index(&self, _row: SkillIndexRow) -> StoreResult<()> {
         Ok(())
     }
 
     /// Delete a single row from the per-skill staleness tracker.
-    async fn delete_skill_index(&self, _name: &str) -> Result<bool, String> {
+    async fn delete_skill_index(&self, _name: &str) -> StoreResult<bool> {
         Ok(false)
     }
 
@@ -334,20 +331,20 @@ pub trait MemoryFactStore: Send + Sync {
     /// Aggregate counts across memory_facts, kg_episodes, procedures,
     /// ward_wiki_articles, and active kg_goals. Used by the memory
     /// stats endpoint. Default returns all zeros.
-    async fn aggregate_stats(&self) -> Result<MemoryAggregateStats, String> {
+    async fn aggregate_stats(&self) -> StoreResult<MemoryAggregateStats> {
         Ok(MemoryAggregateStats::default())
     }
 
     /// Counts of pending / running / failed episodes for the memory
     /// health endpoint. Default returns all zeros.
-    async fn health_metrics(&self) -> Result<MemoryHealthMetrics, String> {
+    async fn health_metrics(&self) -> StoreResult<MemoryHealthMetrics> {
         Ok(MemoryHealthMetrics::default())
     }
 
     /// Count of all memory facts visible to `agent_id` (`Some`) or
     /// across all agents (`None`). Used by aggregate graph stats. The
     /// default returns `0`.
-    async fn count_all_facts(&self, _agent_id: Option<&str>) -> Result<i64, String> {
+    async fn count_all_facts(&self, _agent_id: Option<&str>) -> StoreResult<i64> {
         Ok(0)
     }
 
@@ -362,7 +359,7 @@ pub trait MemoryFactStore: Send + Sync {
         _scope: Option<&str>,
         _limit: usize,
         _offset: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
@@ -376,25 +373,28 @@ pub trait MemoryFactStore: Send + Sync {
         scope: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         let rows = self
             .list_memory_facts(agent_id, category, scope, limit, offset)
             .await?;
         rows.into_iter()
-            .map(|v| serde_json::from_value(v).map_err(|e| format!("decode MemoryFact: {e}")))
+            .map(|v| {
+                serde_json::from_value(v)
+                    .map_err(|e| StoreError::Invalid(format!("decode MemoryFact: {e}")))
+            })
             .collect()
     }
 
     /// Fetch a single memory fact by id. Returns `None` if the row is
     /// absent. The shape mirrors the same JSON layout that
     /// `list_memory_facts` emits per row.
-    async fn get_memory_fact_by_id(&self, _fact_id: &str) -> Result<Option<Value>, String> {
+    async fn get_memory_fact_by_id(&self, _fact_id: &str) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
     /// Delete a single memory fact by id. Returns `true` if a row was
     /// removed, `false` if the id was absent.
-    async fn delete_memory_fact(&self, _fact_id: &str) -> Result<bool, String> {
+    async fn delete_memory_fact(&self, _fact_id: &str) -> StoreResult<bool> {
         Ok(false)
     }
 
@@ -406,9 +406,11 @@ pub trait MemoryFactStore: Send + Sync {
         &self,
         fact: MemoryFact,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let _ = (fact, embedding);
-        Err("upsert_typed_fact not implemented for this store".to_string())
+        Err(StoreError::Unavailable(
+            "upsert_typed_fact not implemented for this store".into(),
+        ))
     }
 
     /// Mark a fact as superseded by a newer fact. Both ids should already
@@ -422,12 +424,14 @@ pub trait MemoryFactStore: Send + Sync {
         _old_id: &str,
         _new_id: &str,
         _transition_time: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), String> {
-        Err("supersede_fact not implemented for this store".to_string())
+    ) -> StoreResult<()> {
+        Err(StoreError::Unavailable(
+            "supersede_fact not implemented for this store".into(),
+        ))
     }
 
     /// Mark a fact as archived (soft-delete). Used by sleep-time pruning.
-    async fn archive_fact(&self, _fact_id: &str) -> Result<bool, String> {
+    async fn archive_fact(&self, _fact_id: &str) -> StoreResult<bool> {
         Ok(false)
     }
 
@@ -455,7 +459,7 @@ pub trait MemoryFactStore: Send + Sync {
         _ward_id: Option<&str>,
         _query_embedding: Option<&[f32]>,
         _as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
@@ -476,13 +480,12 @@ pub trait MemoryFactStore: Send + Sync {
         query_embedding: Option<&[f32]>,
         query_identity: Option<&EmbeddingQueryIdentity>,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         if mode == "semantic" || (mode == "hybrid" && query_embedding.is_some()) {
             let _ = query_identity;
-            return Err(
-                "embedding identity validation is not supported by this memory fact store"
-                    .to_string(),
-            );
+            return Err(StoreError::Unavailable(
+                "embedding identity validation is not supported by this memory fact store".into(),
+            ));
         }
         self.search_memory_facts_hybrid(
             agent_id,
@@ -516,7 +519,7 @@ pub trait MemoryFactStore: Send + Sync {
         ward_id: Option<&str>,
         query_embedding: Option<&[f32]>,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Vec<(MemoryFact, f64, String)>, String> {
+    ) -> StoreResult<Vec<(MemoryFact, f64, String)>> {
         self.search_memory_facts_hybrid_typed_with_identity(
             agent_id,
             query,
@@ -542,7 +545,7 @@ pub trait MemoryFactStore: Send + Sync {
         query_embedding: Option<&[f32]>,
         query_identity: Option<&EmbeddingQueryIdentity>,
         as_of: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Vec<(MemoryFact, f64, String)>, String> {
+    ) -> StoreResult<Vec<(MemoryFact, f64, String)>> {
         let rows = self
             .search_memory_facts_hybrid_with_identity(
                 agent_id,
@@ -587,7 +590,7 @@ pub trait MemoryFactStore: Send + Sync {
         _embedding: &[f32],
         _threshold: f32,
         _scan_limit: usize,
-    ) -> Result<Option<StrategyFactMatch>, String> {
+    ) -> StoreResult<Option<StrategyFactMatch>> {
         Ok(None)
     }
 
@@ -601,7 +604,7 @@ pub trait MemoryFactStore: Send + Sync {
         query_identity: Option<&EmbeddingQueryIdentity>,
         threshold: f32,
         scan_limit: usize,
-    ) -> Result<Option<StrategyFactMatch>, String> {
+    ) -> StoreResult<Option<StrategyFactMatch>> {
         let _ = query_identity;
         self.find_strategy_fact_by_similarity(agent_id, embedding, threshold, scan_limit)
             .await
@@ -616,16 +619,20 @@ pub trait MemoryFactStore: Send + Sync {
         _fact_id: &str,
         _merged_source_episode_id: &str,
         _now_rfc3339: &str,
-    ) -> Result<(), String> {
-        Err("bump_strategy_fact_episodes not implemented for this store".to_string())
+    ) -> StoreResult<()> {
+        Err(StoreError::Unavailable(
+            "bump_strategy_fact_episodes not implemented for this store".into(),
+        ))
     }
 
     /// Insert a synthesised strategy fact. Returns the fact id used.
     /// The trait crate stays dep-light by taking a purpose-built
     /// `StrategyFactInsert` rather than a full `MemoryFact` struct
     /// (which lives in `zbot-stores-sqlite`). Default: no-op error.
-    async fn insert_strategy_fact(&self, _req: StrategyFactInsert) -> Result<String, String> {
-        Err("insert_strategy_fact not implemented for this store".to_string())
+    async fn insert_strategy_fact(&self, _req: StrategyFactInsert) -> StoreResult<String> {
+        Err(StoreError::Unavailable(
+            "insert_strategy_fact not implemented for this store".into(),
+        ))
     }
 
     /// Get facts in a specific category for an agent, ordered by
@@ -637,7 +644,7 @@ pub trait MemoryFactStore: Send + Sync {
         _agent_id: &str,
         _category: &str,
         _limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(Vec::new())
     }
 
@@ -649,7 +656,7 @@ pub trait MemoryFactStore: Send + Sync {
         _agent_id: Option<&str>,
         _threshold: f64,
         _limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(Vec::new())
     }
 
@@ -663,7 +670,7 @@ pub trait MemoryFactStore: Send + Sync {
         _scope: &str,
         _ward_id: &str,
         _key: &str,
-    ) -> Result<Option<MemoryFact>, String> {
+    ) -> StoreResult<Option<MemoryFact>> {
         Ok(None)
     }
 
@@ -673,7 +680,7 @@ pub trait MemoryFactStore: Send + Sync {
     /// if no embedding has been indexed for it. Backends that keep
     /// embeddings in a side-table (e.g. sqlite-vec) implement this;
     /// others return the default `Ok(None)`.
-    async fn get_fact_embedding(&self, _fact_id: &str) -> Result<Option<Vec<f32>>, String> {
+    async fn get_fact_embedding(&self, _fact_id: &str) -> StoreResult<Option<Vec<f32>>> {
         Ok(None)
     }
 
@@ -686,7 +693,7 @@ pub trait MemoryFactStore: Send + Sync {
         &self,
         _content_hash: &str,
         _model_name: &str,
-    ) -> Result<Option<Vec<f32>>, String> {
+    ) -> StoreResult<Option<Vec<f32>>> {
         Ok(None)
     }
 
@@ -698,7 +705,7 @@ pub trait MemoryFactStore: Send + Sync {
         _content_hash: &str,
         _model_name: &str,
         _embedding: &[f32],
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         Ok(())
     }
 
@@ -710,7 +717,7 @@ pub trait MemoryFactStore: Send + Sync {
         _agent_id: &str,
         _scope: Option<&str>,
         _limit: usize,
-    ) -> Result<Vec<MemoryFact>, String> {
+    ) -> StoreResult<Vec<MemoryFact>> {
         Ok(Vec::new())
     }
 
@@ -726,7 +733,7 @@ pub trait MemoryFactStore: Send + Sync {
         &self,
         _agent_id: &str,
         _since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<String>, String> {
+    ) -> StoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 }
@@ -753,7 +760,7 @@ mod tests {
             _confidence: f64,
             _session_id: Option<&str>,
             _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Value, String> {
+        ) -> StoreResult<Value> {
             Ok(json!({"success": true}))
         }
 
@@ -762,7 +769,7 @@ mod tests {
             _agent_id: &str,
             _query: &str,
             _limit: usize,
-        ) -> Result<Value, String> {
+        ) -> StoreResult<Value> {
             Ok(json!([]))
         }
 
@@ -775,7 +782,7 @@ mod tests {
             _ward_id: Option<&str>,
             _query_embedding: Option<&[f32]>,
             _as_of: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Vec<Value>, String> {
+        ) -> StoreResult<Vec<Value>> {
             Ok(vec![json!({"id": "lexical"})])
         }
     }

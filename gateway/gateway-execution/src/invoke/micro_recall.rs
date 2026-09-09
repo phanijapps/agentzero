@@ -350,7 +350,10 @@ async fn handle_pre_delegation(
     if let Some(store) = &ctx.memory_store {
         push_corrections(
             wm,
-            store.get_facts_by_category(agent_id, "correction", 5).await,
+            store
+                .get_facts_by_category(agent_id, "correction", 5)
+                .await
+                .map_err(|e| e.to_string()),
             None,
             "pre-delegation correction",
         );
@@ -358,7 +361,8 @@ async fn handle_pre_delegation(
             wm,
             store
                 .get_facts_by_category(&ctx.agent_id, "correction", 10)
-                .await,
+                .await
+                .map_err(|e| e.to_string()),
             Some(agent_id),
             "pre-delegation self-correction",
         );

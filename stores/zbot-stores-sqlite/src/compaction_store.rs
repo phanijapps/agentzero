@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use zbot_stores_traits::{CompactionRunSummary, CompactionStore};
+use zbot_stores_traits::{CompactionRunSummary, CompactionStore, StoreError, StoreResult};
 
 use crate::compaction_repository::CompactionRepository;
 
@@ -35,9 +35,10 @@ impl CompactionStore for GatewayCompactionStore {
         loser_entity_id: &str,
         winner_entity_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.repo
             .record_merge(run_id, loser_entity_id, winner_entity_id, reason)
+            .map_err(StoreError::from)
     }
 
     async fn record_synthesis(
@@ -45,8 +46,10 @@ impl CompactionStore for GatewayCompactionStore {
         run_id: &str,
         fact_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
-        self.repo.record_synthesis(run_id, fact_id, reason)
+    ) -> StoreResult<String> {
+        self.repo
+            .record_synthesis(run_id, fact_id, reason)
+            .map_err(StoreError::from)
     }
 
     async fn record_pattern(
@@ -54,8 +57,10 @@ impl CompactionStore for GatewayCompactionStore {
         run_id: &str,
         procedure_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
-        self.repo.record_pattern(run_id, procedure_id, reason)
+    ) -> StoreResult<String> {
+        self.repo
+            .record_pattern(run_id, procedure_id, reason)
+            .map_err(StoreError::from)
     }
 
     async fn record_prune(
@@ -64,7 +69,7 @@ impl CompactionStore for GatewayCompactionStore {
         entity_id: Option<&str>,
         relationship_id: Option<&str>,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         // The SQLite `CompactionRepository::record_prune` only stores
         // `entity_id`. Relationship-only prunes are folded into the
         // reason string so the audit trail still carries the info,
@@ -74,7 +79,9 @@ impl CompactionStore for GatewayCompactionStore {
             Some(rid) => format!("{reason} (relationship {rid})"),
             None => reason.to_string(),
         };
-        self.repo.record_prune(run_id, eid, &reason_full)
+        self.repo
+            .record_prune(run_id, eid, &reason_full)
+            .map_err(StoreError::from)
     }
 
     async fn record_archival(
@@ -82,15 +89,17 @@ impl CompactionStore for GatewayCompactionStore {
         run_id: &str,
         entity_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         // SQLite repo doesn't distinguish archival from prune —
         // archival rows go into `kg_compactions` as 'prune' with the
         // reason carrying the archival context. Same wire shape, just
         // a tagged reason. Surreal can choose to keep them separate.
-        self.repo.record_prune(run_id, entity_id, reason)
+        self.repo
+            .record_prune(run_id, entity_id, reason)
+            .map_err(StoreError::from)
     }
 
-    async fn latest_run_summary(&self) -> Result<Option<CompactionRunSummary>, String> {
+    async fn latest_run_summary(&self) -> StoreResult<Option<CompactionRunSummary>> {
         Ok(self
             .repo
             .latest_run_summary()?

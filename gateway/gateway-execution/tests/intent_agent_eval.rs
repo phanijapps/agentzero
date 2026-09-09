@@ -26,7 +26,7 @@ impl MemoryFactStore for MockFactStore {
         _e: f64,
         _f: Option<&str>,
         _g: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Value, String> {
+    ) -> zbot_stores_traits::StoreResult<Value> {
         Ok(serde_json::json!({}))
     }
 
@@ -35,7 +35,7 @@ impl MemoryFactStore for MockFactStore {
         _agent: &str,
         query: &str,
         _limit: usize,
-    ) -> Result<Value, String> {
+    ) -> zbot_stores_traits::StoreResult<Value> {
         // Return static results so MemorySearchTool has data
         let _q = query.to_lowercase();
         let mut results = Vec::new();

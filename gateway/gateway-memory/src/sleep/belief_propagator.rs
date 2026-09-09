@@ -188,7 +188,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use zbot_stores_traits::Belief;
+    use zbot_stores_traits::{Belief, StoreResult};
 
     /// In-memory `BeliefStore` for propagator-level tests. Tracks each
     /// mutating call so assertions can verify both the outcome and the
@@ -230,37 +230,41 @@ mod tests {
             _: &str,
             _: &str,
             _: Option<DateTime<Utc>>,
-        ) -> Result<Option<Belief>, String> {
+        ) -> StoreResult<Option<Belief>> {
             Ok(None)
         }
-        async fn list_beliefs(&self, _: &str, _: usize) -> Result<Vec<Belief>, String> {
+        async fn list_beliefs(&self, _: &str, _: usize) -> StoreResult<Vec<Belief>> {
             Ok(self.beliefs.lock().unwrap().clone())
         }
-        async fn upsert_belief(&self, _: &Belief) -> Result<(), String> {
+        async fn upsert_belief(&self, _: &Belief) -> StoreResult<()> {
             Ok(())
         }
-        async fn supersede_belief(&self, _: &str, _: &str, _: DateTime<Utc>) -> Result<(), String> {
+        async fn supersede_belief(&self, _: &str, _: &str, _: DateTime<Utc>) -> StoreResult<()> {
             Ok(())
         }
-        async fn mark_stale(&self, belief_id: &str) -> Result<(), String> {
+        async fn mark_stale(&self, belief_id: &str) -> StoreResult<()> {
             let mut bs = self.beliefs.lock().unwrap();
             if let Some(b) = bs.iter_mut().find(|b| b.id == belief_id) {
                 b.stale = true;
                 Ok(())
             } else {
-                Err(format!("not found: {belief_id}"))
+                Err(zbot_stores_traits::StoreError::NotFound(format!(
+                    "not found: {belief_id}"
+                )))
             }
         }
-        async fn retract_belief(&self, belief_id: &str, t: DateTime<Utc>) -> Result<(), String> {
+        async fn retract_belief(&self, belief_id: &str, t: DateTime<Utc>) -> StoreResult<()> {
             let mut bs = self.beliefs.lock().unwrap();
             if let Some(b) = bs.iter_mut().find(|b| b.id == belief_id) {
                 b.valid_until = Some(t);
                 Ok(())
             } else {
-                Err(format!("not found: {belief_id}"))
+                Err(zbot_stores_traits::StoreError::NotFound(format!(
+                    "not found: {belief_id}"
+                )))
             }
         }
-        async fn beliefs_referencing_fact(&self, fact_id: &str) -> Result<Vec<String>, String> {
+        async fn beliefs_referencing_fact(&self, fact_id: &str) -> StoreResult<Vec<String>> {
             if self.fail_referencing {
                 return Err("induced failure".into());
             }
@@ -273,7 +277,7 @@ mod tests {
                 .map(|b| b.id.clone())
                 .collect())
         }
-        async fn get_belief_by_id(&self, belief_id: &str) -> Result<Option<Belief>, String> {
+        async fn get_belief_by_id(&self, belief_id: &str) -> StoreResult<Option<Belief>> {
             Ok(self
                 .beliefs
                 .lock()
@@ -282,7 +286,7 @@ mod tests {
                 .find(|b| b.id == belief_id)
                 .cloned())
         }
-        async fn list_stale(&self, _: &str, _: usize) -> Result<Vec<Belief>, String> {
+        async fn list_stale(&self, _: &str, _: usize) -> StoreResult<Vec<Belief>> {
             Ok(self
                 .beliefs
                 .lock()
@@ -292,7 +296,7 @@ mod tests {
                 .cloned()
                 .collect())
         }
-        async fn clear_stale(&self, belief_id: &str) -> Result<(), String> {
+        async fn clear_stale(&self, belief_id: &str) -> StoreResult<()> {
             let mut bs = self.beliefs.lock().unwrap();
             if let Some(b) = bs.iter_mut().find(|b| b.id == belief_id) {
                 b.stale = false;
@@ -304,7 +308,7 @@ mod tests {
             _: &str,
             _: &[f32],
             _: usize,
-        ) -> Result<Vec<zbot_stores_traits::ScoredBelief>, String> {
+        ) -> StoreResult<Vec<zbot_stores_traits::ScoredBelief>> {
             Ok(vec![])
         }
     }

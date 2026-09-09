@@ -192,6 +192,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::Mutex;
+    use zbot_stores_traits::StoreResult;
 
     /// Recorded `save_ctx_fact` call — (agent, key, value, category, scope, persistent).
     type RecordedCall = (String, String, String, String, String, bool);
@@ -224,7 +225,7 @@ mod tests {
             _confidence: f64,
             _session_id: Option<&str>,
             _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Value, String> {
+        ) -> StoreResult<Value> {
             Ok(json!({"success": true}))
         }
 
@@ -233,7 +234,7 @@ mod tests {
             _agent_id: &str,
             _query: &str,
             _limit: usize,
-        ) -> Result<Value, String> {
+        ) -> StoreResult<Value> {
             Ok(json!({"results": []}))
         }
 
@@ -245,7 +246,7 @@ mod tests {
             content: &str,
             owner: &str,
             pinned: bool,
-        ) -> Result<Value, String> {
+        ) -> StoreResult<Value> {
             self.calls.lock().unwrap().push((
                 session_id.to_string(),
                 ward_id.to_string(),

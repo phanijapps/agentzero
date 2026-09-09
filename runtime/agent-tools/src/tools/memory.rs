@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use agent_primitives::{AgentError, Result, Tool, ToolContext, ToolPermissions};
-use zbot_stores_traits::{MemoryFactStore, MemoryFactWriteRequest};
+use zbot_stores_traits::{MemoryFactStore, MemoryFactWriteRequest, StoreError, StoreResult};
 
 use super::ingest::{EvidenceRecord, IngestionAccess};
 // ============================================================================
@@ -300,7 +300,7 @@ impl MemoryTool {
             intake
                 .record_evidence(record)
                 .await
-                .map_err(AgentError::Tool)?;
+                .map_err(|e| AgentError::Tool(e.to_string()))?;
         }
 
         // Use DB-backed fact store if available
@@ -332,7 +332,7 @@ impl MemoryTool {
                     valid_from: None,
                 })
                 .await
-                .map_err(AgentError::Tool),
+                .map_err(|e| AgentError::Tool(e.to_string())),
             None => Err(AgentError::Tool(
                 "Durable memory facts require a DB-backed fact store (not available in this runtime)"
                     .to_string(),
@@ -365,7 +365,8 @@ impl MemoryTool {
         // Pure-function permission check. Returns the session id on
         // success so we can pass it to the store; on failure it carries
         // the user-facing error message.
-        let sid = check_ctx_write_permission(is_delegated, key).map_err(AgentError::Tool)?;
+        let sid = check_ctx_write_permission(is_delegated, key)
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
         let current_sid = ctx.session_id();
         if sid != current_sid {
             return Err(AgentError::Tool(format!(
@@ -395,7 +396,7 @@ impl MemoryTool {
             Some(store) => store
                 .save_ctx_fact(&sid, &ward_id, key, content, &owner, pinned)
                 .await
-                .map_err(AgentError::Tool),
+                .map_err(|e| AgentError::Tool(e.to_string())),
             None => Err(AgentError::Tool(
                 "Ctx facts require a DB-backed fact store (not available in this runtime)"
                     .to_string(),
@@ -422,7 +423,8 @@ impl MemoryTool {
             )));
         }
 
-        let requested_sid = parse_ctx_key_session_id(key).map_err(AgentError::Tool)?;
+        let requested_sid =
+            parse_ctx_key_session_id(key).map_err(|e| AgentError::Tool(e.to_string()))?;
         if requested_sid != ctx.session_id() {
             return Err(AgentError::Tool(format!(
                 "get_fact can only read ctx facts for the current session '{}'. Got key for session '{}'.",
@@ -441,7 +443,7 @@ impl MemoryTool {
                 let result = store
                     .get_ctx_fact(&ward_id, key)
                     .await
-                    .map_err(AgentError::Tool)?;
+                    .map_err(|e| AgentError::Tool(e.to_string()))?;
                 match result {
                     Some(value) => Ok(value),
                     None => Ok(json!({ "found": false, "key": key })),
@@ -467,10 +469,7 @@ impl MemoryTool {
 ///   they cannot overwrite root-owned canonicals (intent, prompt,
 ///   plan, session.meta, ward_briefing, memory) nor invent sub-keys
 ///   outside the `state.*` namespace.
-fn check_ctx_write_permission(
-    is_delegated: bool,
-    key: &str,
-) -> std::result::Result<String, String> {
+fn check_ctx_write_permission(is_delegated: bool, key: &str) -> StoreResult<String> {
     let (sid, sub_key) = parse_ctx_key(key)?;
 
     if !is_delegated {
@@ -488,45 +487,45 @@ fn check_ctx_write_permission(
     ];
 
     if ROOT_OWNED.contains(&sub_key) {
-        return Err(format!(
+        return Err(StoreError::Invalid(format!(
             "Subagent cannot write to root-owned ctx key '{}'. Root owns: {}. Subagents may only write 'ctx.<sid>.state.<...>'.",
             key,
             ROOT_OWNED.join(", ")
-        ));
+        )));
     }
 
     if !sub_key.starts_with("state.") {
-        return Err(format!(
+        return Err(StoreError::Invalid(format!(
             "Subagent ctx writes must target 'ctx.<sid>.state.<...>'. Got sub-key '{}'.",
             sub_key
-        ));
+        )));
     }
 
     Ok(sid.to_string())
 }
 
-fn parse_ctx_key_session_id(key: &str) -> std::result::Result<&str, String> {
+fn parse_ctx_key_session_id(key: &str) -> StoreResult<&str> {
     parse_ctx_key(key).map(|(sid, _)| sid)
 }
 
-fn parse_ctx_key(key: &str) -> std::result::Result<(&str, &str), String> {
+fn parse_ctx_key(key: &str) -> StoreResult<(&str, &str)> {
     let Some(rest) = key.strip_prefix("ctx.") else {
-        return Err(format!(
+        return Err(StoreError::Invalid(format!(
             "Ctx key '{}' must start with 'ctx.<session_id>.'",
             key
-        ));
+        )));
     };
     let Some((sid, sub_key)) = rest.split_once('.') else {
-        return Err(format!(
+        return Err(StoreError::Invalid(format!(
             "Ctx key '{}' must include session_id: ctx.<sid>.<sub_key>",
             key
-        ));
+        )));
     };
     if sid.trim().is_empty() {
-        return Err(format!(
+        return Err(StoreError::Invalid(format!(
             "Ctx key '{}' must include session_id: ctx.<sid>.<sub_key>",
             key
-        ));
+        )));
     }
     Ok((sid, sub_key))
 }
@@ -752,26 +751,26 @@ mod tests {
     #[test]
     fn test_ctx_perm_subagent_rejected_on_intent() {
         let err = check_ctx_write_permission(true, "ctx.sess-abc.intent").unwrap_err();
-        assert!(err.contains("root-owned"), "error was: {}", err);
-        assert!(err.contains("intent"), "error was: {}", err);
+        assert!(err.detail().contains("root-owned"), "error was: {}", err);
+        assert!(err.to_string().contains("intent"), "error was: {}", err);
     }
 
     #[test]
     fn test_ctx_perm_subagent_rejected_on_prompt() {
         let err = check_ctx_write_permission(true, "ctx.sess-abc.prompt").unwrap_err();
-        assert!(err.contains("root-owned"), "error was: {}", err);
+        assert!(err.detail().contains("root-owned"), "error was: {}", err);
     }
 
     #[test]
     fn test_ctx_perm_subagent_rejected_on_plan() {
         let err = check_ctx_write_permission(true, "ctx.sess-abc.plan").unwrap_err();
-        assert!(err.contains("root-owned"), "error was: {}", err);
+        assert!(err.detail().contains("root-owned"), "error was: {}", err);
     }
 
     #[test]
     fn test_ctx_perm_subagent_rejected_on_session_meta() {
         let err = check_ctx_write_permission(true, "ctx.sess-abc.session.meta").unwrap_err();
-        assert!(err.contains("root-owned"), "error was: {}", err);
+        assert!(err.detail().contains("root-owned"), "error was: {}", err);
     }
 
     #[test]
@@ -785,19 +784,19 @@ mod tests {
         // Anything not root-owned and not state.* is outside the
         // namespace shape subagents are allowed to invent.
         let err = check_ctx_write_permission(true, "ctx.sess-abc.scratchpad").unwrap_err();
-        assert!(err.contains("state"), "error was: {}", err);
+        assert!(err.detail().contains("state"), "error was: {}", err);
     }
 
     #[test]
     fn test_ctx_perm_malformed_no_ctx_prefix() {
         let err = check_ctx_write_permission(false, "state.exec-1").unwrap_err();
-        assert!(err.contains("ctx."), "error was: {}", err);
+        assert!(err.detail().contains("ctx."), "error was: {}", err);
     }
 
     #[test]
     fn test_ctx_perm_malformed_no_session_id() {
         let err = check_ctx_write_permission(false, "ctx.").unwrap_err();
-        assert!(err.contains("session_id"), "error was: {}", err);
+        assert!(err.detail().contains("session_id"), "error was: {}", err);
     }
 
     #[tokio::test]
@@ -845,14 +844,16 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> std::result::Result<Value, String> {
-                Err("legacy write path must not be used".to_string())
+            ) -> StoreResult<Value> {
+                Err(StoreError::Unavailable(
+                    "legacy write path must not be used".into(),
+                ))
             }
 
             async fn save_fact_with_context(
                 &self,
                 request: MemoryFactWriteRequest,
-            ) -> std::result::Result<Value, String> {
+            ) -> StoreResult<Value> {
                 self.writes.lock().unwrap().push(request);
                 Ok(json!({ "success": true }))
             }
@@ -862,7 +863,7 @@ mod tests {
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> std::result::Result<Value, String> {
+            ) -> StoreResult<Value> {
                 Ok(json!([]))
             }
         }
@@ -916,7 +917,7 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> std::result::Result<Value, String> {
+            ) -> StoreResult<Value> {
                 self.events.lock().unwrap().push("fact");
                 self.calls.lock().unwrap().push(key.to_string());
                 Ok(json!({"success": true}))
@@ -927,7 +928,7 @@ mod tests {
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> std::result::Result<Value, String> {
+            ) -> StoreResult<Value> {
                 Ok(json!([]))
             }
 
@@ -937,7 +938,7 @@ mod tests {
                 _query: &str,
                 _limit: usize,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> std::result::Result<Value, String> {
+            ) -> StoreResult<Value> {
                 Ok(json!({"results": []}))
             }
         }

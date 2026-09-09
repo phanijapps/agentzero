@@ -4,6 +4,7 @@
 //! grouped here to keep the file count tractable while still giving each one
 //! a clean trait. Each is sized to its actual usage in the runtime.
 
+use crate::error::{StoreError, StoreResult};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -15,22 +16,24 @@ use serde_json::Value;
 #[async_trait]
 pub trait GoalStore: Send + Sync {
     /// Get a goal by id.
-    async fn get_goal(&self, _goal_id: &str) -> Result<Option<Value>, String> {
+    async fn get_goal(&self, _goal_id: &str) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
     /// Active goals for an agent — used for intent boost in unified recall.
-    async fn list_active_goals(&self, _agent_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_active_goals(&self, _agent_id: &str) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
     /// Create a new goal. Returns the persisted id.
-    async fn create_goal(&self, _goal: Value) -> Result<String, String> {
-        Err("create_goal not implemented for this store".to_string())
+    async fn create_goal(&self, _goal: Value) -> StoreResult<String> {
+        Err(StoreError::Unavailable(
+            "create_goal not implemented for this store".into(),
+        ))
     }
 
     /// Move a goal to a new state (active / blocked / satisfied / abandoned).
-    async fn update_goal_state(&self, _goal_id: &str, _new_state: &str) -> Result<(), String> {
+    async fn update_goal_state(&self, _goal_id: &str, _new_state: &str) -> StoreResult<()> {
         Ok(())
     }
 
@@ -42,7 +45,7 @@ pub trait GoalStore: Send + Sync {
         &self,
         _goal_id: &str,
         _filled_slots_json: &str,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         Ok(())
     }
 }
@@ -55,15 +58,15 @@ pub trait GoalStore: Send + Sync {
 /// recall (don't re-surface the same fact every turn).
 #[async_trait]
 pub trait RecallLogStore: Send + Sync {
-    async fn log_recall(&self, _session_id: &str, _fact_key: &str) -> Result<(), String> {
+    async fn log_recall(&self, _session_id: &str, _fact_key: &str) -> StoreResult<()> {
         Ok(())
     }
 
-    async fn get_keys_for_session(&self, _session_id: &str) -> Result<Vec<String>, String> {
+    async fn get_keys_for_session(&self, _session_id: &str) -> StoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 
-    async fn get_keys_for_sessions(&self, _session_ids: &[String]) -> Result<Vec<String>, String> {
+    async fn get_keys_for_sessions(&self, _session_ids: &[String]) -> StoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 }
@@ -77,26 +80,24 @@ pub trait RecallLogStore: Send + Sync {
 #[async_trait]
 pub trait DistillationStore: Send + Sync {
     /// Insert a new distillation run row.
-    async fn insert_run(&self, _run: Value) -> Result<(), String> {
-        Err("insert_run not implemented for this store".to_string())
+    async fn insert_run(&self, _run: Value) -> StoreResult<()> {
+        Err(StoreError::Unavailable(
+            "insert_run not implemented for this store".into(),
+        ))
     }
 
     /// Get the run row for a session (if any).
-    async fn get_run_by_session(&self, _session_id: &str) -> Result<Option<Value>, String> {
+    async fn get_run_by_session(&self, _session_id: &str) -> StoreResult<Option<Value>> {
         Ok(None)
     }
 
     /// Bump the retry counter for a failed run.
-    async fn update_retry(&self, _session_id: &str) -> Result<(), String> {
+    async fn update_retry(&self, _session_id: &str) -> StoreResult<()> {
         Ok(())
     }
 
     /// Mark a run successful. `summary` is a free-form post-mortem string.
-    async fn update_success(
-        &self,
-        _session_id: &str,
-        _summary: Option<String>,
-    ) -> Result<(), String> {
+    async fn update_success(&self, _session_id: &str, _summary: Option<String>) -> StoreResult<()> {
         Ok(())
     }
 
@@ -119,7 +120,7 @@ pub trait DistillationStore: Send + Sync {
         _session_id: &str,
         _status: &str,
         _error: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         Ok(())
     }
 
@@ -134,7 +135,7 @@ pub trait DistillationStore: Send + Sync {
         _relationships: i32,
         _episode_created: bool,
         _duration_ms: i64,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         Ok(())
     }
 
@@ -147,7 +148,7 @@ pub trait DistillationStore: Send + Sync {
         _status: &str,
         _retry_count: i32,
         _error: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         Ok(())
     }
 }

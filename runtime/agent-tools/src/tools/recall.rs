@@ -821,19 +821,22 @@ impl RecallTool {
                     .to_string(),
             ));
         };
-        let value = store
-            .recall_facts_prioritized_scoped(
-                &authorization.agent_id,
-                &query,
-                authorization.ward_id.as_deref(),
-                limit,
-                as_of,
-            )
-            .await
-            .map_err(|error| match classify_fact_recall_degradation(&error) {
-                Some(code) => AgentError::Tool(code.safe_message().to_string()),
-                None => AgentError::Tool(error),
-            })?;
+        let value =
+            store
+                .recall_facts_prioritized_scoped(
+                    &authorization.agent_id,
+                    &query,
+                    authorization.ward_id.as_deref(),
+                    limit,
+                    as_of,
+                )
+                .await
+                .map_err(|error: zbot_stores_traits::StoreError| {
+                    match classify_fact_recall_degradation(error.detail()) {
+                        Some(code) => AgentError::Tool(code.safe_message().to_string()),
+                        None => AgentError::Tool(error.to_string()),
+                    }
+                })?;
         Ok(facts_recall_response(query, limit, value))
     }
 }
@@ -1501,16 +1504,20 @@ mod tests {
                 _confidence: f64,
                 _session_id: Option<&str>,
                 _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> std::result::Result<Value, String> {
-                Err("not used".to_string())
+            ) -> zbot_stores_traits::StoreResult<Value> {
+                Err(zbot_stores_traits::StoreError::Unavailable(
+                    "not used".into(),
+                ))
             }
             async fn recall_facts(
                 &self,
                 _agent_id: &str,
                 _query: &str,
                 _limit: usize,
-            ) -> std::result::Result<Value, String> {
-                Err("not used".to_string())
+            ) -> zbot_stores_traits::StoreResult<Value> {
+                Err(zbot_stores_traits::StoreError::Unavailable(
+                    "not used".into(),
+                ))
             }
             async fn recall_facts_prioritized(
                 &self,
@@ -1518,7 +1525,7 @@ mod tests {
                 query: &str,
                 limit: usize,
                 as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> std::result::Result<Value, String> {
+            ) -> zbot_stores_traits::StoreResult<Value> {
                 self.recall_facts_prioritized_scoped(agent_id, query, None, limit, as_of)
                     .await
             }
@@ -1529,7 +1536,7 @@ mod tests {
                 ward_id: Option<&str>,
                 limit: usize,
                 as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> std::result::Result<Value, String> {
+            ) -> zbot_stores_traits::StoreResult<Value> {
                 self.calls.lock().unwrap().push((
                     agent_id.to_string(),
                     ward_id.map(str::to_string),

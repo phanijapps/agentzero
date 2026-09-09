@@ -8,6 +8,7 @@
 pub mod bootstrap;
 
 use std::{collections::BTreeSet, path::PathBuf};
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use engram_domain::Metadata;
 use knowledge_graph::{EntityType, RelationshipType};
@@ -248,19 +249,22 @@ pub struct SkosConceptDefinition {
 }
 
 /// Validate direct SKOS references in a concept scheme.
-pub fn validate_skos_scheme(scheme: &SkosSchemeDefinition) -> Result<(), String> {
+pub fn validate_skos_scheme(scheme: &SkosSchemeDefinition) -> StoreResult<()> {
     let ids: BTreeSet<&str> = scheme
         .concepts
         .iter()
         .map(|concept| concept.id.as_str())
         .collect();
     if ids.len() != scheme.concepts.len() {
-        return Err("duplicate concept id".to_string());
+        return Err(StoreError::Invalid("duplicate concept id".into()));
     }
 
     for concept in &scheme.concepts {
         if concept.pref_label.trim().is_empty() {
-            return Err(format!("concept `{}` has empty prefLabel", concept.id));
+            return Err(StoreError::Invalid(format!(
+                "concept `{}` has empty prefLabel",
+                concept.id
+            )));
         }
         for reference in concept
             .broader
@@ -269,10 +273,10 @@ pub fn validate_skos_scheme(scheme: &SkosSchemeDefinition) -> Result<(), String>
             .chain(concept.related.iter())
         {
             if !ids.contains(reference.as_str()) {
-                return Err(format!(
+                return Err(StoreError::Invalid(format!(
                     "concept `{}` references missing concept `{reference}`",
                     concept.id
-                ));
+                )));
             }
         }
     }

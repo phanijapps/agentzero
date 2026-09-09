@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 use zbot_stores_domain::{WikiArticle, WikiHit};
-use zbot_stores_traits::{WikiStats, WikiStore};
+use zbot_stores_traits::{StoreError, StoreResult, WikiStats, WikiStore};
 
 use crate::wiki_repository::WardWikiRepository;
 
@@ -26,15 +26,15 @@ impl GatewayWikiStore {
 
 #[async_trait]
 impl WikiStore for GatewayWikiStore {
-    async fn list_articles(&self, ward_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_articles(&self, ward_id: &str) -> StoreResult<Vec<Value>> {
         let articles = self.repo.list_articles(ward_id)?;
         articles
             .into_iter()
-            .map(|a| serde_json::to_value(a).map_err(|e| e.to_string()))
+            .map(|a| serde_json::to_value(a).map_err(|e| StoreError::Backend(e.to_string())))
             .collect()
     }
 
-    async fn get_article(&self, ward_id: &str, title: &str) -> Result<Option<Value>, String> {
+    async fn get_article(&self, ward_id: &str, title: &str) -> StoreResult<Option<Value>> {
         match self.repo.get_article(ward_id, title)? {
             Some(a) => Ok(Some(serde_json::to_value(a).map_err(|e| e.to_string())?)),
             None => Ok(None),
@@ -45,13 +45,15 @@ impl WikiStore for GatewayWikiStore {
         &self,
         mut typed: WikiArticle,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         typed.embedding = embedding;
-        self.repo.upsert_article(&typed)
+        self.repo.upsert_article(&typed).map_err(StoreError::from)
     }
 
-    async fn delete_article(&self, ward_id: &str, title: &str) -> Result<bool, String> {
-        self.repo.delete_article(ward_id, title)
+    async fn delete_article(&self, ward_id: &str, title: &str) -> StoreResult<bool> {
+        self.repo
+            .delete_article(ward_id, title)
+            .map_err(StoreError::from)
     }
 
     async fn search_wiki_hybrid(
@@ -60,7 +62,7 @@ impl WikiStore for GatewayWikiStore {
         query: &str,
         limit: usize,
         query_embedding: Option<&[f32]>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let hits =
             self.repo
                 .search_hybrid(query, ward_id, query_embedding.map(|e| e.to_vec()), limit)?;
@@ -81,14 +83,15 @@ impl WikiStore for GatewayWikiStore {
         query: &str,
         limit: usize,
         query_embedding: Option<&[f32]>,
-    ) -> Result<Vec<WikiHit>, String> {
+    ) -> StoreResult<Vec<WikiHit>> {
         // Override the trait default to skip the JSON round-trip — the
         // SQLite repo already returns the typed shape we want.
         self.repo
             .search_hybrid(query, ward_id, query_embedding.map(|e| e.to_vec()), limit)
+            .map_err(StoreError::from)
     }
 
-    async fn wiki_stats(&self) -> Result<WikiStats, String> {
+    async fn wiki_stats(&self) -> StoreResult<WikiStats> {
         // The repo only counts per-ward; cross-ward aggregate isn't a method
         // it exposes. Return zero (the trait contract is "best-effort
         // snapshot"). Backends that track this differently can override.
@@ -100,7 +103,9 @@ impl WikiStore for GatewayWikiStore {
         ward_id: &str,
         embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<(WikiArticle, f64)>, String> {
-        self.repo.search_by_similarity(ward_id, embedding, limit)
+    ) -> StoreResult<Vec<(WikiArticle, f64)>> {
+        self.repo
+            .search_by_similarity(ward_id, embedding, limit)
+            .map_err(StoreError::from)
     }
 }

@@ -626,6 +626,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use zbot_stores_domain::MemoryFact;
+    use zbot_stores_traits::StoreResult;
 
     // ---- Mock MemoryFactStore ----
 
@@ -669,7 +670,7 @@ mod tests {
             _confidence: f64,
             _session_id: Option<&str>,
             _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             *self.save_fact_calls.lock().unwrap() += 1;
             self.facts
                 .lock()
@@ -683,7 +684,7 @@ mod tests {
             _agent_id: &str,
             _query: &str,
             _limit: usize,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             Ok(serde_json::json!([]))
         }
 
@@ -693,7 +694,7 @@ mod tests {
             _scope: &str,
             _ward_id: &str,
             key: &str,
-        ) -> Result<Option<MemoryFact>, String> {
+        ) -> StoreResult<Option<MemoryFact>> {
             let content = self.facts.lock().unwrap().get(key).cloned();
             Ok(content.map(|c| MemoryFact {
                 id: "mock".to_string(),
@@ -726,7 +727,7 @@ mod tests {
             &self,
             _ward_id: &str,
             key: &str,
-        ) -> Result<Option<serde_json::Value>, String> {
+        ) -> StoreResult<Option<serde_json::Value>> {
             Ok(self.ctx_facts.lock().unwrap().get(key).map(|content| {
                 serde_json::json!({
                     "found": true,
@@ -746,7 +747,7 @@ mod tests {
             content: &str,
             _owner: &str,
             _pinned: bool,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             self.ctx_facts
                 .lock()
                 .unwrap()
@@ -759,7 +760,7 @@ mod tests {
             _agent_id: &str,
             category: &str,
             _limit: usize,
-        ) -> Result<Vec<MemoryFact>, String> {
+        ) -> StoreResult<Vec<MemoryFact>> {
             if category != "correction" {
                 return Ok(Vec::new());
             }

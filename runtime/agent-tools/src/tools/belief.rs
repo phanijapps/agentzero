@@ -82,7 +82,7 @@ impl BeliefTool {
         let belief = store
             .get_belief(&partition_id, subject, as_of)
             .await
-            .map_err(AgentError::Tool)?;
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
 
         let payload = match belief {
             Some(b) => json!({
@@ -133,7 +133,7 @@ impl BeliefTool {
             store
                 .for_belief(belief_id)
                 .await
-                .map_err(AgentError::Tool)?
+                .map_err(|e| AgentError::Tool(e.to_string()))?
         } else {
             let partition_id = ctx
                 .get_state("ward_id")
@@ -142,7 +142,7 @@ impl BeliefTool {
             store
                 .list_recent(&partition_id, limit)
                 .await
-                .map_err(AgentError::Tool)?
+                .map_err(|e| AgentError::Tool(e.to_string()))?
         };
 
         let serialized: Vec<Value> = rows
@@ -256,6 +256,7 @@ impl Tool for BeliefTool {
 mod tests {
     use super::*;
     use agent_primitives::{CallbackContext, Content, EventActions, ReadonlyContext};
+    use zbot_stores_traits::StoreResult;
 
     fn ctx_with_session(session_id: &str) -> impl ToolContext + 'static {
         struct Ctx(String);
@@ -318,20 +319,17 @@ mod tests {
                 _partition_id: &str,
                 _subject: &str,
                 _as_of: Option<chrono::DateTime<chrono::Utc>>,
-            ) -> std::result::Result<Option<zbot_stores_traits::Belief>, String> {
+            ) -> StoreResult<Option<zbot_stores_traits::Belief>> {
                 Ok(self.stored.lock().unwrap().clone())
             }
             async fn list_beliefs(
                 &self,
                 _partition_id: &str,
                 _limit: usize,
-            ) -> std::result::Result<Vec<zbot_stores_traits::Belief>, String> {
+            ) -> StoreResult<Vec<zbot_stores_traits::Belief>> {
                 Ok(vec![])
             }
-            async fn upsert_belief(
-                &self,
-                b: &zbot_stores_traits::Belief,
-            ) -> std::result::Result<(), String> {
+            async fn upsert_belief(&self, b: &zbot_stores_traits::Belief) -> StoreResult<()> {
                 *self.stored.lock().unwrap() = Some(b.clone());
                 Ok(())
             }
@@ -340,39 +338,36 @@ mod tests {
                 _old_id: &str,
                 _new_id: &str,
                 _t: chrono::DateTime<chrono::Utc>,
-            ) -> std::result::Result<(), String> {
+            ) -> StoreResult<()> {
                 Ok(())
             }
-            async fn mark_stale(&self, _belief_id: &str) -> std::result::Result<(), String> {
+            async fn mark_stale(&self, _belief_id: &str) -> StoreResult<()> {
                 Ok(())
             }
             async fn retract_belief(
                 &self,
                 _belief_id: &str,
                 _t: chrono::DateTime<chrono::Utc>,
-            ) -> std::result::Result<(), String> {
+            ) -> StoreResult<()> {
                 Ok(())
             }
-            async fn beliefs_referencing_fact(
-                &self,
-                _fact_id: &str,
-            ) -> std::result::Result<Vec<String>, String> {
+            async fn beliefs_referencing_fact(&self, _fact_id: &str) -> StoreResult<Vec<String>> {
                 Ok(vec![])
             }
             async fn get_belief_by_id(
                 &self,
                 _belief_id: &str,
-            ) -> std::result::Result<Option<zbot_stores_traits::Belief>, String> {
+            ) -> StoreResult<Option<zbot_stores_traits::Belief>> {
                 Ok(self.stored.lock().unwrap().clone())
             }
             async fn list_stale(
                 &self,
                 _partition_id: &str,
                 _limit: usize,
-            ) -> std::result::Result<Vec<zbot_stores_traits::Belief>, String> {
+            ) -> StoreResult<Vec<zbot_stores_traits::Belief>> {
                 Ok(vec![])
             }
-            async fn clear_stale(&self, _belief_id: &str) -> std::result::Result<(), String> {
+            async fn clear_stale(&self, _belief_id: &str) -> StoreResult<()> {
                 Ok(())
             }
             async fn search_beliefs(
@@ -380,7 +375,7 @@ mod tests {
                 _partition_id: &str,
                 _query_embedding: &[f32],
                 _limit: usize,
-            ) -> std::result::Result<Vec<zbot_stores_traits::ScoredBelief>, String> {
+            ) -> StoreResult<Vec<zbot_stores_traits::ScoredBelief>> {
                 Ok(vec![])
             }
         }
@@ -459,30 +454,26 @@ mod tests {
         async fn insert_contradiction(
             &self,
             _c: &zbot_stores_traits::BeliefContradiction,
-        ) -> std::result::Result<(), String> {
+        ) -> StoreResult<()> {
             Ok(())
         }
         async fn for_belief(
             &self,
             _belief_id: &str,
-        ) -> std::result::Result<Vec<zbot_stores_traits::BeliefContradiction>, String> {
+        ) -> StoreResult<Vec<zbot_stores_traits::BeliefContradiction>> {
             Ok(self.for_belief_rows.lock().unwrap().clone())
         }
         async fn list_recent(
             &self,
             _partition_id: &str,
             _limit: usize,
-        ) -> std::result::Result<Vec<zbot_stores_traits::BeliefContradiction>, String> {
+        ) -> StoreResult<Vec<zbot_stores_traits::BeliefContradiction>> {
             Ok(self.list_recent_rows.lock().unwrap().clone())
         }
-        async fn pair_exists(&self, _a: &str, _b: &str) -> std::result::Result<bool, String> {
+        async fn pair_exists(&self, _a: &str, _b: &str) -> StoreResult<bool> {
             Ok(false)
         }
-        async fn resolve(
-            &self,
-            _id: &str,
-            _r: zbot_stores_traits::Resolution,
-        ) -> std::result::Result<(), String> {
+        async fn resolve(&self, _id: &str, _r: zbot_stores_traits::Resolution) -> StoreResult<()> {
             Ok(())
         }
     }

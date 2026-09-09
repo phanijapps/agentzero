@@ -388,30 +388,32 @@ fn require_kg_store(
     })
 }
 
-/// Map a [`zbot_stores::StoreError`] to the HTTP error pair used by graph
+/// Map a [`zbot_stores::GraphStoreError`] to the HTTP error pair used by graph
 /// handlers: `(StatusCode, Json<ErrorResponse>)`.
-fn store_err_to_http(err: zbot_stores::StoreError) -> (StatusCode, Json<ErrorResponse>) {
-    use zbot_stores::StoreError;
+fn store_err_to_http(err: zbot_stores::GraphStoreError) -> (StatusCode, Json<ErrorResponse>) {
+    use zbot_stores::GraphStoreError;
     match err {
-        StoreError::NotFound => (
+        GraphStoreError::NotFound => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse::new("Entity not found".to_string())),
         ),
-        StoreError::Conflict(msg) => (
+        GraphStoreError::Conflict(msg) => (
             StatusCode::CONFLICT,
             Json(ErrorResponse::new(format!("Conflict: {}", msg))),
         ),
-        StoreError::Invalid(msg) => (
+        GraphStoreError::Invalid(msg) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(format!("Invalid request: {}", msg))),
         ),
-        StoreError::Unavailable { .. } => (
+        GraphStoreError::Unavailable { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new(
                 "Knowledge graph store temporarily unavailable".to_string(),
             )),
         ),
-        StoreError::Schema(msg) | StoreError::Backend(msg) | StoreError::Config(msg) => (
+        GraphStoreError::Schema(msg)
+        | GraphStoreError::Backend(msg)
+        | GraphStoreError::Config(msg) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse::new(format!(
                 "Knowledge graph error: {}",

@@ -344,7 +344,7 @@ async fn record_time_history_is_explicitly_unsupported() {
         .await
         .expect_err("record-time history unsupported");
 
-    assert!(err.contains("unsupported: record_time_history"));
+    assert!(err.to_string().contains("unsupported: record_time_history"));
 }
 
 #[test]

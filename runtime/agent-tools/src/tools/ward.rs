@@ -2279,7 +2279,7 @@ mod tests {
             _confidence: f64,
             _session_id: Option<&str>,
             _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> std::result::Result<Value, String> {
+        ) -> zbot_stores_traits::StoreResult<Value> {
             Ok(json!({"saved": true}))
         }
 
@@ -2288,7 +2288,7 @@ mod tests {
             _agent_id: &str,
             _query: &str,
             limit: usize,
-        ) -> std::result::Result<Value, String> {
+        ) -> zbot_stores_traits::StoreResult<Value> {
             Ok(Self::envelope(limit))
         }
 
@@ -2298,7 +2298,7 @@ mod tests {
             _query: &str,
             limit: usize,
             _as_of: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> std::result::Result<Value, String> {
+        ) -> zbot_stores_traits::StoreResult<Value> {
             self.requested_limit.lock().unwrap().push(limit);
             Ok(Self::envelope(limit))
         }

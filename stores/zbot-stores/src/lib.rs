@@ -17,7 +17,7 @@ pub use belief::{Belief, BeliefStore, ScoredBelief};
 pub use belief_contradiction::{
     BeliefContradiction, BeliefContradictionStore, ContradictionType, Resolution,
 };
-pub use error::{StoreError, StoreResult};
+pub use error::{GraphStoreError, GraphStoreResult};
 pub use extracted::ExtractedKnowledge;
 pub use knowledge_graph::{
     AggregateSummary, DecayCandidate, DuplicateCandidate, EntityNameEmbeddingHit,
@@ -29,3 +29,4 @@ pub use memory_facts::{
     MemoryHealthMetrics, SkillIndexRow, StrategyFactInsert, StrategyFactMatch,
 };
 pub use types::*;
+pub use zbot_stores_traits::{StoreError, StoreResult};

@@ -1,3 +1,4 @@
+use crate::error::StoreResult;
 use async_trait::async_trait;
 
 /// Bounded request for SKOS-style recall query expansion.
@@ -45,5 +46,5 @@ pub trait RecallTaxonomyExpander: Send + Sync {
     async fn expand_recall_query(
         &self,
         request: RecallTaxonomyExpansionRequest,
-    ) -> Result<RecallTaxonomyExpansion, String>;
+    ) -> StoreResult<RecallTaxonomyExpansion>;
 }

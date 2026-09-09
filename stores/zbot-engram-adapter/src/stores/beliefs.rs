@@ -5,6 +5,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -88,7 +89,7 @@ impl EngramBeliefStore {
         subject: &str,
         valid_at: DateTime<Utc>,
         recorded_at: DateTime<Utc>,
-    ) -> Result<Option<Belief>, String> {
+    ) -> StoreResult<Option<Belief>> {
         let scope = self.scope_for_partition(partition_id)?;
         let query = BeliefQuery {
             scope,
@@ -102,7 +103,9 @@ impl EngramBeliefStore {
         self.beliefs
             .get_belief(query)
             .await
-            .map_err(|error| format!("unsupported: record_time_history: {error}"))?
+            .map_err(|error| {
+                StoreError::Backend(format!("unsupported: record_time_history: {error}"))
+            })?
             .map(|record| {
                 let mut belief =
                     belief_record_to_belief(&record).map_err(AdapterError::into_trait_error)?;
@@ -112,13 +115,13 @@ impl EngramBeliefStore {
             .transpose()
     }
 
-    fn scope_for_partition(&self, partition_id: &str) -> Result<Scope, String> {
+    fn scope_for_partition(&self, partition_id: &str) -> StoreResult<Scope> {
         self.mapper
             .partition_scope(partition_id)
             .map_err(AdapterError::into_trait_error)
     }
 
-    async fn write_belief(&self, belief: &Belief) -> Result<(), String> {
+    async fn write_belief(&self, belief: &Belief) -> StoreResult<()> {
         let mut belief = belief.clone();
         if let Some(existing) =
             self.sidecar
@@ -134,7 +137,7 @@ impl EngramBeliefStore {
         self.beliefs
             .upsert_belief(record)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         belief.embedding = None;
         self.sidecar.store_belief(&belief, embedding.as_deref())
     }
@@ -142,7 +145,7 @@ impl EngramBeliefStore {
     async fn update_belief_from_record(
         &self,
         record: engram_domain::Belief,
-    ) -> Result<Belief, String> {
+    ) -> StoreResult<Belief> {
         let mut belief =
             belief_record_to_belief(&record).map_err(AdapterError::into_trait_error)?;
         let embedding = self.sidecar.embedding_for_belief(&belief.id)?;
@@ -159,16 +162,16 @@ impl BeliefStore for EngramBeliefStore {
         partition_id: &str,
         subject: &str,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Option<Belief>, String> {
+    ) -> StoreResult<Option<Belief>> {
         self.sidecar
             .get_belief(partition_id, subject, as_of.unwrap_or_else(Utc::now))
     }
 
-    async fn list_beliefs(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String> {
+    async fn list_beliefs(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
         self.sidecar.list_beliefs(partition_id, limit)
     }
 
-    async fn upsert_belief(&self, belief: &Belief) -> Result<(), String> {
+    async fn upsert_belief(&self, belief: &Belief) -> StoreResult<()> {
         self.write_belief(belief).await
     }
 
@@ -177,7 +180,7 @@ impl BeliefStore for EngramBeliefStore {
         old_id: &str,
         new_id: &str,
         transition_time: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let belief = self
             .sidecar
             .get_belief_by_id(old_id)?
@@ -192,11 +195,11 @@ impl BeliefStore for EngramBeliefStore {
                 transition_time,
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.update_belief_from_record(record).await.map(|_| ())
     }
 
-    async fn mark_stale(&self, belief_id: &str) -> Result<(), String> {
+    async fn mark_stale(&self, belief_id: &str) -> StoreResult<()> {
         let belief = self
             .sidecar
             .get_belief_by_id(belief_id)?
@@ -206,7 +209,7 @@ impl BeliefStore for EngramBeliefStore {
             .beliefs
             .mark_stale(&EngramBeliefId::from(belief_id), &scope, Utc::now())
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.update_belief_from_record(record).await.map(|_| ())
     }
 
@@ -214,7 +217,7 @@ impl BeliefStore for EngramBeliefStore {
         &self,
         belief_id: &str,
         transition_time: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let belief = self
             .sidecar
             .get_belief_by_id(belief_id)?
@@ -224,23 +227,23 @@ impl BeliefStore for EngramBeliefStore {
             .beliefs
             .retract_belief(&EngramBeliefId::from(belief_id), &scope, transition_time)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.update_belief_from_record(record).await.map(|_| ())
     }
 
-    async fn beliefs_referencing_fact(&self, fact_id: &str) -> Result<Vec<String>, String> {
+    async fn beliefs_referencing_fact(&self, fact_id: &str) -> StoreResult<Vec<String>> {
         self.sidecar.beliefs_referencing_fact(fact_id)
     }
 
-    async fn get_belief_by_id(&self, belief_id: &str) -> Result<Option<Belief>, String> {
+    async fn get_belief_by_id(&self, belief_id: &str) -> StoreResult<Option<Belief>> {
         self.sidecar.get_belief_by_id(belief_id)
     }
 
-    async fn list_stale(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String> {
+    async fn list_stale(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
         self.sidecar.list_stale(partition_id, limit)
     }
 
-    async fn clear_stale(&self, belief_id: &str) -> Result<(), String> {
+    async fn clear_stale(&self, belief_id: &str) -> StoreResult<()> {
         let belief = self
             .sidecar
             .get_belief_by_id(belief_id)?
@@ -250,7 +253,7 @@ impl BeliefStore for EngramBeliefStore {
             .beliefs
             .clear_stale(&EngramBeliefId::from(belief_id), &scope, Utc::now())
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.update_belief_from_record(record).await.map(|_| ())
     }
 
@@ -259,7 +262,7 @@ impl BeliefStore for EngramBeliefStore {
         partition_id: &str,
         query_embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<ScoredBelief>, String> {
+    ) -> StoreResult<Vec<ScoredBelief>> {
         let _ = (partition_id, query_embedding, limit);
         Ok(Vec::new())
     }
@@ -270,7 +273,7 @@ impl BeliefStore for EngramBeliefStore {
         query_embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         limit: usize,
-    ) -> Result<Vec<ScoredBelief>, String> {
+    ) -> StoreResult<Vec<ScoredBelief>> {
         self.sidecar
             .search_beliefs(partition_id, query_embedding, query_identity, limit)
     }
@@ -278,7 +281,7 @@ impl BeliefStore for EngramBeliefStore {
 
 #[async_trait]
 impl BeliefContradictionStore for EngramBeliefStore {
-    async fn insert_contradiction(&self, c: &BeliefContradiction) -> Result<(), String> {
+    async fn insert_contradiction(&self, c: &BeliefContradiction) -> StoreResult<()> {
         let partition_id = self
             .sidecar
             .partition_for_belief_pair(&c.belief_a_id, &c.belief_b_id)?
@@ -290,14 +293,14 @@ impl BeliefContradictionStore for EngramBeliefStore {
             .beliefs
             .put_contradiction(record)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let persisted = crate::mapping::belief::contradiction_record_to_contradiction(&persisted)
             .map_err(AdapterError::into_trait_error)?;
         self.sidecar
             .store_contradiction(&persisted, &partition_id, true)
     }
 
-    async fn for_belief(&self, belief_id: &str) -> Result<Vec<BeliefContradiction>, String> {
+    async fn for_belief(&self, belief_id: &str) -> StoreResult<Vec<BeliefContradiction>> {
         self.sidecar.contradictions_for_belief(belief_id)
     }
 
@@ -305,15 +308,15 @@ impl BeliefContradictionStore for EngramBeliefStore {
         &self,
         partition_id: &str,
         limit: usize,
-    ) -> Result<Vec<BeliefContradiction>, String> {
+    ) -> StoreResult<Vec<BeliefContradiction>> {
         self.sidecar.list_recent_contradictions(partition_id, limit)
     }
 
-    async fn pair_exists(&self, belief_a_id: &str, belief_b_id: &str) -> Result<bool, String> {
+    async fn pair_exists(&self, belief_a_id: &str, belief_b_id: &str) -> StoreResult<bool> {
         self.sidecar.pair_exists(belief_a_id, belief_b_id)
     }
 
-    async fn resolve(&self, contradiction_id: &str, resolution: Resolution) -> Result<(), String> {
+    async fn resolve(&self, contradiction_id: &str, resolution: Resolution) -> StoreResult<()> {
         let contradiction = self
             .sidecar
             .get_contradiction(contradiction_id)?
@@ -337,7 +340,7 @@ impl BeliefContradictionStore for EngramBeliefStore {
                 record_resolution,
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let mut updated = contradiction;
         updated.resolution = Some(resolution);
         updated.resolved_at = Some(resolved_at);
@@ -426,12 +429,13 @@ impl BeliefSidecar {
         })
     }
 
-    fn store_belief(&self, belief: &Belief, embedding: Option<&[u8]>) -> Result<(), String> {
+    fn store_belief(&self, belief: &Belief, embedding: Option<&[u8]>) -> StoreResult<()> {
         let mut stored = belief.clone();
         stored.embedding = None;
-        let belief_json = serde_json::to_string(&stored).map_err(|error| error.to_string())?;
-        let source_fact_ids_json =
-            serde_json::to_string(&belief.source_fact_ids).map_err(|error| error.to_string())?;
+        let belief_json = serde_json::to_string(&stored)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let source_fact_ids_json = serde_json::to_string(&belief.source_fact_ids)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let valid_from = belief.valid_from.map(|timestamp| timestamp.to_rfc3339());
         let valid_until = belief.valid_until.map(|timestamp| timestamp.to_rfc3339());
         self.lock()?
@@ -470,7 +474,7 @@ impl BeliefSidecar {
                     embedding.map(|_| encode_identity(&self.embedding_identity)),
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         Ok(())
     }
 
@@ -479,7 +483,7 @@ impl BeliefSidecar {
         partition_id: &str,
         subject: &str,
         valid_from: Option<DateTime<Utc>>,
-    ) -> Result<Option<BeliefEntry>, String> {
+    ) -> StoreResult<Option<BeliefEntry>> {
         let valid_from = valid_from.map(|timestamp| timestamp.to_rfc3339());
         self.lock()?
             .query_row(
@@ -491,7 +495,7 @@ impl BeliefSidecar {
                 decode_belief_entry,
             )
             .optional()
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
     fn get_belief(
@@ -499,7 +503,7 @@ impl BeliefSidecar {
         partition_id: &str,
         subject: &str,
         as_of: DateTime<Utc>,
-    ) -> Result<Option<Belief>, String> {
+    ) -> StoreResult<Option<Belief>> {
         let mut beliefs = self
             .load_all_beliefs()?
             .into_iter()
@@ -516,7 +520,7 @@ impl BeliefSidecar {
         Ok(beliefs.into_iter().next())
     }
 
-    fn get_belief_by_id(&self, id: &str) -> Result<Option<Belief>, String> {
+    fn get_belief_by_id(&self, id: &str) -> StoreResult<Option<Belief>> {
         self.lock()?
             .query_row(
                 "SELECT belief_json, embedding, embedding_identity_json FROM zbot_beliefs WHERE id = ?1",
@@ -525,10 +529,10 @@ impl BeliefSidecar {
             )
             .optional()
             .map(|entry| entry.map(|entry| entry.belief))
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn embedding_for_belief(&self, id: &str) -> Result<Option<Vec<u8>>, String> {
+    fn embedding_for_belief(&self, id: &str) -> StoreResult<Option<Vec<u8>>> {
         self.lock()?
             .query_row(
                 "SELECT embedding FROM zbot_beliefs WHERE id = ?1",
@@ -537,10 +541,10 @@ impl BeliefSidecar {
             )
             .optional()
             .map(|value| value.flatten())
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn list_beliefs(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String> {
+    fn list_beliefs(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
         let mut beliefs = self
             .load_all_beliefs()?
             .into_iter()
@@ -552,7 +556,7 @@ impl BeliefSidecar {
         Ok(beliefs)
     }
 
-    fn list_stale(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String> {
+    fn list_stale(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
         let mut beliefs = self
             .load_all_beliefs()?
             .into_iter()
@@ -564,7 +568,7 @@ impl BeliefSidecar {
         Ok(beliefs)
     }
 
-    fn beliefs_referencing_fact(&self, fact_id: &str) -> Result<Vec<String>, String> {
+    fn beliefs_referencing_fact(&self, fact_id: &str) -> StoreResult<Vec<String>> {
         let mut ids = self
             .load_all_beliefs()?
             .into_iter()
@@ -583,7 +587,7 @@ impl BeliefSidecar {
         query_embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         limit: usize,
-    ) -> Result<Vec<ScoredBelief>, String> {
+    ) -> StoreResult<Vec<ScoredBelief>> {
         if !identity_compatible(
             &self.embedding_identity,
             query_identity,
@@ -623,7 +627,7 @@ impl BeliefSidecar {
         Ok(scored)
     }
 
-    fn partition_for_belief_pair(&self, a: &str, b: &str) -> Result<Option<String>, String> {
+    fn partition_for_belief_pair(&self, a: &str, b: &str) -> StoreResult<Option<String>> {
         Ok(self
             .get_belief_by_id(a)?
             .or(self.get_belief_by_id(b)?)
@@ -635,9 +639,9 @@ impl BeliefSidecar {
         contradiction: &BeliefContradiction,
         partition_id: &str,
         insert_only: bool,
-    ) -> Result<(), String> {
-        let contradiction_json =
-            serde_json::to_string(contradiction).map_err(|error| error.to_string())?;
+    ) -> StoreResult<()> {
+        let contradiction_json = serde_json::to_string(contradiction)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let sql = if insert_only {
             r#"
             INSERT INTO zbot_contradictions
@@ -676,11 +680,11 @@ impl BeliefSidecar {
                     contradiction_json,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         Ok(())
     }
 
-    fn get_contradiction(&self, id: &str) -> Result<Option<BeliefContradiction>, String> {
+    fn get_contradiction(&self, id: &str) -> StoreResult<Option<BeliefContradiction>> {
         self.lock()?
             .query_row(
                 "SELECT contradiction_json FROM zbot_contradictions WHERE id = ?1",
@@ -688,13 +692,10 @@ impl BeliefSidecar {
                 decode_contradiction,
             )
             .optional()
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn contradictions_for_belief(
-        &self,
-        belief_id: &str,
-    ) -> Result<Vec<BeliefContradiction>, String> {
+    fn contradictions_for_belief(&self, belief_id: &str) -> StoreResult<Vec<BeliefContradiction>> {
         let mut rows = self.load_all_contradictions()?;
         rows.retain(|row| row.belief_a_id == belief_id || row.belief_b_id == belief_id);
         rows.sort_by_key(|row| std::cmp::Reverse(row.detected_at));
@@ -705,7 +706,7 @@ impl BeliefSidecar {
         &self,
         partition_id: &str,
         limit: usize,
-    ) -> Result<Vec<BeliefContradiction>, String> {
+    ) -> StoreResult<Vec<BeliefContradiction>> {
         let mut rows = self
             .load_all_contradictions_with_partition()?
             .into_iter()
@@ -717,7 +718,7 @@ impl BeliefSidecar {
         Ok(rows)
     }
 
-    fn pair_exists(&self, a: &str, b: &str) -> Result<bool, String> {
+    fn pair_exists(&self, a: &str, b: &str) -> StoreResult<bool> {
         let (a, b) = canonical_pair(a, b);
         self.lock()?
             .query_row(
@@ -727,22 +728,22 @@ impl BeliefSidecar {
             )
             .optional()
             .map(|value| value.is_some())
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn load_all_beliefs(&self) -> Result<Vec<BeliefEntry>, String> {
+    fn load_all_beliefs(&self) -> StoreResult<Vec<BeliefEntry>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare("SELECT belief_json, embedding, embedding_identity_json FROM zbot_beliefs ORDER BY updated_at DESC")
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let rows = statement
             .query_map([], decode_belief_entry)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn load_all_contradictions(&self) -> Result<Vec<BeliefContradiction>, String> {
+    fn load_all_contradictions(&self) -> StoreResult<Vec<BeliefContradiction>> {
         Ok(self
             .load_all_contradictions_with_partition()?
             .into_iter()
@@ -752,28 +753,28 @@ impl BeliefSidecar {
 
     fn load_all_contradictions_with_partition(
         &self,
-    ) -> Result<Vec<(String, BeliefContradiction)>, String> {
+    ) -> StoreResult<Vec<(String, BeliefContradiction)>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT partition_id, contradiction_json FROM zbot_contradictions ORDER BY detected_at DESC",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let rows = statement
             .query_map([], |row| {
                 let partition_id: String = row.get(0)?;
                 let contradiction = decode_contradiction(row)?;
                 Ok((partition_id, contradiction))
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>, String> {
-        self.connection
-            .lock()
-            .map_err(|_| "belief sidecar connection lock poisoned".to_string())
+    fn lock(&self) -> StoreResult<MutexGuard<'_, Connection>> {
+        self.connection.lock().map_err(|_| {
+            StoreError::Unavailable("belief sidecar connection lock poisoned".to_string())
+        })
     }
 }
 

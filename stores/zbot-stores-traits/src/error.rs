@@ -90,7 +90,13 @@ mod tests {
 
     #[test]
     fn variants_are_comparable() {
-        assert_eq!(StoreError::Invalid("k".into()), StoreError::Invalid("k".into()));
-        assert_ne!(StoreError::Invalid("k".into()), StoreError::Conflict("k".into()));
+        assert_eq!(
+            StoreError::Invalid("k".into()),
+            StoreError::Invalid("k".into())
+        );
+        assert_ne!(
+            StoreError::Invalid("k".into()),
+            StoreError::Conflict("k".into())
+        );
     }
 }

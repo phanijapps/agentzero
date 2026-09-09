@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
 };
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use async_trait::async_trait;
 use engram_domain::{Concept, ConceptStatus, Id, Scope};
@@ -112,7 +113,7 @@ impl RecallTaxonomyExpander for EngramTaxonomyRecallExpander {
     async fn expand_recall_query(
         &self,
         request: RecallTaxonomyExpansionRequest,
-    ) -> Result<RecallTaxonomyExpansion, String> {
+    ) -> StoreResult<RecallTaxonomyExpansion> {
         if request.max_candidates == 0 {
             return Ok(RecallTaxonomyExpansion {
                 expanded_query: request.query,
@@ -142,7 +143,9 @@ impl RecallTaxonomyExpander for EngramTaxonomyRecallExpander {
                 .await
                 .map_err(|error| error.to_string())?;
             let Some(definition) = self.definitions.get(&scheme_id) else {
-                return Err("configured taxonomy definition is unavailable".to_string());
+                return Err(StoreError::Unavailable(
+                    "configured taxonomy definition is unavailable".into(),
+                ));
             };
             let configured_concept_ids = definition
                 .concepts

@@ -15,6 +15,7 @@
 //! (operation-oriented), each backend stores it however it stores
 //! things best, and consumers (the maintenance ops) don't care.
 
+use crate::error::StoreResult;
 use async_trait::async_trait;
 
 #[async_trait]
@@ -28,7 +29,7 @@ pub trait CompactionStore: Send + Sync {
         _loser_entity_id: &str,
         _winner_entity_id: &str,
         _reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         Ok(String::new())
     }
 
@@ -39,7 +40,7 @@ pub trait CompactionStore: Send + Sync {
         _run_id: &str,
         _fact_id: &str,
         _reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         Ok(String::new())
     }
 
@@ -50,7 +51,7 @@ pub trait CompactionStore: Send + Sync {
         _run_id: &str,
         _procedure_id: &str,
         _reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         Ok(String::new())
     }
 
@@ -62,7 +63,7 @@ pub trait CompactionStore: Send + Sync {
         _entity_id: Option<&str>,
         _relationship_id: Option<&str>,
         _reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         Ok(String::new())
     }
 
@@ -73,13 +74,13 @@ pub trait CompactionStore: Send + Sync {
         _run_id: &str,
         _entity_id: &str,
         _reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         Ok(String::new())
     }
 
     /// Latest-run summary for the Observatory health bar. Default
     /// returns `None` so backends without audit emit "no runs yet".
-    async fn latest_run_summary(&self) -> Result<Option<CompactionRunSummary>, String> {
+    async fn latest_run_summary(&self) -> StoreResult<Option<CompactionRunSummary>> {
         Ok(None)
     }
 }

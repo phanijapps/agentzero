@@ -528,6 +528,7 @@ fn embedding_query_identity(client: &dyn EmbeddingClient) -> EmbeddingQueryIdent
 mod helpers_tests {
     use super::*;
     use zbot_stores_domain::{MemoryFact, Procedure, SessionEpisode, WikiArticle, WikiHit};
+    use zbot_stores_traits::StoreResult;
 
     fn fact() -> MemoryFact {
         MemoryFact {
@@ -718,7 +719,7 @@ mod helpers_tests {
             _confidence: f64,
             _session_id: Option<&str>,
             _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<Value, String> {
+        ) -> StoreResult<Value> {
             unreachable!()
         }
         async fn recall_facts(
@@ -726,7 +727,7 @@ mod helpers_tests {
             _agent_id: &str,
             _query: &str,
             _limit: usize,
-        ) -> Result<Value, String> {
+        ) -> StoreResult<Value> {
             unreachable!()
         }
     }

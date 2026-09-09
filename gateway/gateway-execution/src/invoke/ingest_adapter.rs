@@ -82,11 +82,16 @@ impl IngestionAccess for IngestionAdapter {
                 record.session_id.as_deref(),
                 &record.agent_id,
             )
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         self.episode_store
             .set_payload(&episode_id, &payload)
-            .await?;
-        self.episode_store.mark_done(&episode_id).await?;
+            .await
+            .map_err(|e| e.to_string())?;
+        self.episode_store
+            .mark_done(&episode_id)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -114,10 +119,12 @@ impl IngestionAccess for IngestionAdapter {
                     session_id,
                     agent_id,
                 )
-                .await?;
+                .await
+                .map_err(|e| e.to_string())?;
             self.episode_store
                 .set_payload(&episode_id, &chunk.text)
-                .await?;
+                .await
+                .map_err(|e| e.to_string())?;
             enqueued += 1;
         }
         self.queue.notify();

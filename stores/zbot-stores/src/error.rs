@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
-pub enum StoreError {
+pub enum GraphStoreError {
     #[error("not found")]
     NotFound,
 
@@ -24,4 +24,4 @@ pub enum StoreError {
     Config(String),
 }
 
-pub type StoreResult<T> = Result<T, StoreError>;
+pub type GraphStoreResult<T> = Result<T, GraphStoreError>;

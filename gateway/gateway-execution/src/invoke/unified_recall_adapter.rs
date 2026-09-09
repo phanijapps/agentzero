@@ -512,6 +512,7 @@ fn project_taxonomy(trace: &gateway_memory::UnifiedRecallTaxonomyTrace) -> Recal
 mod tests {
     use super::*;
     use gateway_memory::{Provenance, ScoredItem};
+    use zbot_stores_traits::StoreResult;
 
     fn authorization() -> RecallAuthorizationContext {
         RecallAuthorizationContext {
@@ -647,7 +648,7 @@ mod tests {
             async fn expand_recall_query(
                 &self,
                 request: zbot_stores_traits::RecallTaxonomyExpansionRequest,
-            ) -> Result<zbot_stores_traits::RecallTaxonomyExpansion, String> {
+            ) -> StoreResult<zbot_stores_traits::RecallTaxonomyExpansion> {
                 Ok(zbot_stores_traits::RecallTaxonomyExpansion {
                     expanded_query: format!("{} taxonomy", request.query),
                     candidates: vec![zbot_stores_traits::RecallTaxonomyExpansionCandidate {
@@ -770,15 +771,11 @@ mod tests {
             _title: &str,
             _description: Option<&str>,
             _slots_json: Option<&str>,
-        ) -> std::result::Result<GoalSummary, String> {
+        ) -> Result<GoalSummary, String> {
             Err("not used".to_string())
         }
 
-        async fn update_state(
-            &self,
-            _goal_id: &str,
-            _new_state: &str,
-        ) -> std::result::Result<(), String> {
+        async fn update_state(&self, _goal_id: &str, _new_state: &str) -> Result<(), String> {
             Err("not used".to_string())
         }
 
@@ -786,14 +783,11 @@ mod tests {
             &self,
             _goal_id: &str,
             _filled_slots_json: &str,
-        ) -> std::result::Result<(), String> {
+        ) -> Result<(), String> {
             Err("not used".to_string())
         }
 
-        async fn list_active(
-            &self,
-            _agent_id: &str,
-        ) -> std::result::Result<Vec<GoalSummary>, String> {
+        async fn list_active(&self, _agent_id: &str) -> Result<Vec<GoalSummary>, String> {
             Ok(vec![
                 GoalSummary {
                     id: "goal-safe-output".to_string(),
@@ -816,7 +810,7 @@ mod tests {
             ])
         }
 
-        async fn get(&self, _goal_id: &str) -> std::result::Result<Option<GoalSummary>, String> {
+        async fn get(&self, _goal_id: &str) -> Result<Option<GoalSummary>, String> {
             Err("not used".to_string())
         }
     }

@@ -330,11 +330,11 @@ fn require_contradiction_store(
     super::require(&state.belief_contradiction_store, BELIEF_DISABLED_MSG)
 }
 
-fn internal(e: String) -> (StatusCode, Json<ErrorResponse>) {
+fn internal(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>) {
     tracing::error!("belief endpoint error: {e}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(e)),
+        Json(ErrorResponse::new(e.to_string())),
     )
 }
 
@@ -405,6 +405,7 @@ fn summarize_fact(fact_id: &str, value: &serde_json::Value) -> Option<SourceFact
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use zbot_stores_traits::StoreResult;
 
     fn make_state() -> (TempDir, AppState) {
         let dir = TempDir::new().expect("temp dir");
@@ -526,14 +527,10 @@ mod tests {
             _partition_id: &str,
             _subject: &str,
             _as_of: Option<DateTime<Utc>>,
-        ) -> Result<Option<Belief>, String> {
+        ) -> StoreResult<Option<Belief>> {
             Ok(None)
         }
-        async fn list_beliefs(
-            &self,
-            partition_id: &str,
-            limit: usize,
-        ) -> Result<Vec<Belief>, String> {
+        async fn list_beliefs(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
             Ok(self
                 .beliefs
                 .iter()
@@ -542,7 +539,7 @@ mod tests {
                 .cloned()
                 .collect())
         }
-        async fn upsert_belief(&self, _b: &Belief) -> Result<(), String> {
+        async fn upsert_belief(&self, _b: &Belief) -> StoreResult<()> {
             Ok(())
         }
         async fn supersede_belief(
@@ -550,25 +547,25 @@ mod tests {
             _old: &str,
             _new: &str,
             _t: DateTime<Utc>,
-        ) -> Result<(), String> {
+        ) -> StoreResult<()> {
             Ok(())
         }
-        async fn mark_stale(&self, _id: &str) -> Result<(), String> {
+        async fn mark_stale(&self, _id: &str) -> StoreResult<()> {
             Ok(())
         }
-        async fn retract_belief(&self, _id: &str, _t: DateTime<Utc>) -> Result<(), String> {
+        async fn retract_belief(&self, _id: &str, _t: DateTime<Utc>) -> StoreResult<()> {
             Ok(())
         }
-        async fn beliefs_referencing_fact(&self, _f: &str) -> Result<Vec<String>, String> {
+        async fn beliefs_referencing_fact(&self, _f: &str) -> StoreResult<Vec<String>> {
             Ok(vec![])
         }
-        async fn get_belief_by_id(&self, id: &str) -> Result<Option<Belief>, String> {
+        async fn get_belief_by_id(&self, id: &str) -> StoreResult<Option<Belief>> {
             Ok(self.beliefs.iter().find(|b| b.id == id).cloned())
         }
-        async fn list_stale(&self, _p: &str, _l: usize) -> Result<Vec<Belief>, String> {
+        async fn list_stale(&self, _p: &str, _l: usize) -> StoreResult<Vec<Belief>> {
             Ok(vec![])
         }
-        async fn clear_stale(&self, _id: &str) -> Result<(), String> {
+        async fn clear_stale(&self, _id: &str) -> StoreResult<()> {
             Ok(())
         }
         async fn search_beliefs(
@@ -576,7 +573,7 @@ mod tests {
             _p: &str,
             _q: &[f32],
             _l: usize,
-        ) -> Result<Vec<ScoredBelief>, String> {
+        ) -> StoreResult<Vec<ScoredBelief>> {
             Ok(vec![])
         }
     }

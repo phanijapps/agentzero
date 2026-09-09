@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rusqlite::params;
 use serde_json::Value;
-use zbot_stores_traits::{EpisodeStats, EpisodeStore, SuccessfulEpisode};
+use zbot_stores_traits::{EpisodeStats, EpisodeStore, StoreError, StoreResult, SuccessfulEpisode};
 
 use crate::episode_repository::EpisodeRepository;
 use zbot_stores_domain::SessionEpisode;
@@ -30,11 +30,11 @@ impl GatewayEpisodeStore {
 
 #[async_trait]
 impl EpisodeStore for GatewayEpisodeStore {
-    async fn list_by_ward(&self, ward_id: &str, limit: usize) -> Result<Vec<Value>, String> {
+    async fn list_by_ward(&self, ward_id: &str, limit: usize) -> StoreResult<Vec<Value>> {
         let episodes = self.repo.list_by_ward(ward_id, limit)?;
         episodes
             .into_iter()
-            .map(|e| serde_json::to_value(e).map_err(|err| err.to_string()))
+            .map(|e| serde_json::to_value(e).map_err(|err| StoreError::Backend(err.to_string())))
             .collect()
     }
 
@@ -42,9 +42,9 @@ impl EpisodeStore for GatewayEpisodeStore {
         &self,
         mut typed: SessionEpisode,
         embedding: Option<Vec<f32>>,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         typed.embedding = embedding;
-        self.repo.insert(&typed)
+        self.repo.insert(&typed).map_err(StoreError::from)
     }
 
     async fn search_episodes_by_similarity(
@@ -53,7 +53,7 @@ impl EpisodeStore for GatewayEpisodeStore {
         embedding: &[f32],
         threshold: f32,
         limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let scored =
             self.repo
                 .search_by_similarity(agent_id, embedding, threshold as f64, limit)?;
@@ -73,11 +73,12 @@ impl EpisodeStore for GatewayEpisodeStore {
         embedding: &[f32],
         threshold: f32,
         limit: usize,
-    ) -> Result<Vec<(SessionEpisode, f64)>, String> {
+    ) -> StoreResult<Vec<(SessionEpisode, f64)>> {
         // Skip the JSON round-trip — the repo already returns the typed
         // shape we want.
         self.repo
             .search_by_similarity(agent_id, embedding, threshold as f64, limit)
+            .map_err(StoreError::from)
     }
 
     async fn keyword_search_episodes(
@@ -85,27 +86,33 @@ impl EpisodeStore for GatewayEpisodeStore {
         query: &str,
         ward_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<SessionEpisode>, String> {
-        self.repo.keyword_search(query, ward_id, limit)
+    ) -> StoreResult<Vec<SessionEpisode>> {
+        self.repo
+            .keyword_search(query, ward_id, limit)
+            .map_err(StoreError::from)
     }
 
     async fn fetch_recent_successful_by_ward(
         &self,
         ward_id: &str,
         limit: usize,
-    ) -> Result<Vec<SessionEpisode>, String> {
-        self.repo.fetch_recent_successful_by_ward(ward_id, limit)
+    ) -> StoreResult<Vec<SessionEpisode>> {
+        self.repo
+            .fetch_recent_successful_by_ward(ward_id, limit)
+            .map_err(StoreError::from)
     }
 
     async fn fetch_recent_failed_by_ward(
         &self,
         ward_id: &str,
         limit: usize,
-    ) -> Result<Vec<SessionEpisode>, String> {
-        self.repo.fetch_recent_failed_by_ward(ward_id, limit)
+    ) -> StoreResult<Vec<SessionEpisode>> {
+        self.repo
+            .fetch_recent_failed_by_ward(ward_id, limit)
+            .map_err(StoreError::from)
     }
 
-    async fn episode_stats(&self) -> Result<EpisodeStats, String> {
+    async fn episode_stats(&self) -> StoreResult<EpisodeStats> {
         let total = self.repo.count()?;
         Ok(EpisodeStats { total })
     }
@@ -116,7 +123,7 @@ impl EpisodeStore for GatewayEpisodeStore {
         &self,
         lookback_days: i64,
         limit: usize,
-    ) -> Result<Vec<SuccessfulEpisode>, String> {
+    ) -> StoreResult<Vec<SuccessfulEpisode>> {
         let db = self.repo.db().clone();
         let limit_i64 = limit as i64;
         let date_modifier = format!("-{lookback_days} days");
@@ -161,7 +168,7 @@ impl EpisodeStore for GatewayEpisodeStore {
     async fn task_summaries_for_sessions(
         &self,
         session_ids: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> StoreResult<Vec<String>> {
         if session_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -183,5 +190,6 @@ impl EpisodeStore for GatewayEpisodeStore {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
+        .map_err(StoreError::from)
     }
 }

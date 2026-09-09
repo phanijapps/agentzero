@@ -5,6 +5,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use async_trait::async_trait;
 use engram_knowledge::KnowledgeRepository;
@@ -75,7 +76,7 @@ impl EngramWikiStore {
     }
 
     /// Return the adapter-preserved article embedding by article id.
-    pub fn get_article_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, String> {
+    pub fn get_article_embedding(&self, id: &str) -> StoreResult<Option<Vec<f32>>> {
         self.sidecar.get_embedding(id)
     }
 
@@ -83,7 +84,7 @@ impl EngramWikiStore {
         &self,
         mut article: WikiArticle,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         if let Some(existing) = self
             .sidecar
             .get_by_title(&article.ward_id, &article.title)?
@@ -105,15 +106,15 @@ impl EngramWikiStore {
         self.knowledge
             .put_source(records.source)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.knowledge
             .put_document(records.document)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         self.knowledge
             .put_chunk(records.chunk)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
 
         let stored_embedding = article.embedding.clone();
         article.embedding = None;
@@ -124,18 +125,24 @@ impl EngramWikiStore {
 
 #[async_trait]
 impl WikiStore for EngramWikiStore {
-    async fn list_articles(&self, ward_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_articles(&self, ward_id: &str) -> StoreResult<Vec<Value>> {
         self.sidecar
             .list_articles(ward_id)?
             .into_iter()
-            .map(|entry| serde_json::to_value(entry.article).map_err(|error| error.to_string()))
+            .map(|entry| {
+                serde_json::to_value(entry.article)
+                    .map_err(|error| StoreError::Backend(error.to_string()))
+            })
             .collect()
     }
 
-    async fn get_article(&self, ward_id: &str, title: &str) -> Result<Option<Value>, String> {
+    async fn get_article(&self, ward_id: &str, title: &str) -> StoreResult<Option<Value>> {
         self.sidecar
             .get_by_title(ward_id, title)?
-            .map(|entry| serde_json::to_value(entry.article).map_err(|error| error.to_string()))
+            .map(|entry| {
+                serde_json::to_value(entry.article)
+                    .map_err(|error| StoreError::Backend(error.to_string()))
+            })
             .transpose()
     }
 
@@ -143,12 +150,12 @@ impl WikiStore for EngramWikiStore {
         &self,
         mut article: WikiArticle,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         article.embedding = embedding.clone();
         self.upsert_article_record(article, embedding).await
     }
 
-    async fn delete_article(&self, ward_id: &str, title: &str) -> Result<bool, String> {
+    async fn delete_article(&self, ward_id: &str, title: &str) -> StoreResult<bool> {
         self.sidecar.delete_article(ward_id, title)
     }
 
@@ -158,7 +165,7 @@ impl WikiStore for EngramWikiStore {
         query: &str,
         limit: usize,
         query_embedding: Option<&[f32]>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         self.search_wiki_hybrid_with_identity(ward_id, query, limit, query_embedding, None)
             .await
     }
@@ -170,7 +177,7 @@ impl WikiStore for EngramWikiStore {
         limit: usize,
         query_embedding: Option<&[f32]>,
         query_identity: Option<&EmbeddingQueryIdentity>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let limit = limit.max(1);
         let query_terms = normalize_terms(query);
         let mut hits = self
@@ -225,7 +232,7 @@ impl WikiStore for EngramWikiStore {
             .collect()
     }
 
-    async fn wiki_stats(&self) -> Result<WikiStats, String> {
+    async fn wiki_stats(&self) -> StoreResult<WikiStats> {
         Ok(WikiStats {
             total: self.sidecar.count_articles()?,
         })
@@ -236,7 +243,7 @@ impl WikiStore for EngramWikiStore {
         ward_id: &str,
         embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<(WikiArticle, f64)>, String> {
+    ) -> StoreResult<Vec<(WikiArticle, f64)>> {
         self.search_wiki_by_similarity_typed_with_identity(ward_id, embedding, None, limit)
             .await
     }
@@ -247,7 +254,7 @@ impl WikiStore for EngramWikiStore {
         embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         limit: usize,
-    ) -> Result<Vec<(WikiArticle, f64)>, String> {
+    ) -> StoreResult<Vec<(WikiArticle, f64)>> {
         if !identity_compatible(
             &self.sidecar.embedding_identity,
             query_identity,
@@ -349,16 +356,13 @@ impl WikiSidecar {
         })
     }
 
-    fn store_article(
-        &self,
-        article: &WikiArticle,
-        embedding: Option<&[f32]>,
-    ) -> Result<(), String> {
-        let article_json = serde_json::to_string(article).map_err(|error| error.to_string())?;
+    fn store_article(&self, article: &WikiArticle, embedding: Option<&[f32]>) -> StoreResult<()> {
+        let article_json = serde_json::to_string(article)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_json = embedding
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_identity_json = embedding.map(|_| encode_identity(&self.embedding_identity));
         self.lock()?
             .execute(
@@ -395,25 +399,25 @@ impl WikiSidecar {
                     embedding_identity_json,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         Ok(())
     }
 
-    fn list_articles(&self, ward_id: &str) -> Result<Vec<WikiSidecarEntry>, String> {
+    fn list_articles(&self, ward_id: &str) -> StoreResult<Vec<WikiSidecarEntry>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT article_json, embedding_json, embedding_identity_json FROM wiki_articles \
                  WHERE ward_id = ?1 ORDER BY title",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let rows = statement
             .query_map(params![ward_id], decode_entry)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         collect_rows(rows)
     }
 
-    fn list_matching_scope(&self, ward_id: Option<&str>) -> Result<Vec<WikiSidecarEntry>, String> {
+    fn list_matching_scope(&self, ward_id: Option<&str>) -> StoreResult<Vec<WikiSidecarEntry>> {
         let connection = self.lock()?;
         if let Some(ward_id) = ward_id {
             let mut statement = connection
@@ -421,25 +425,25 @@ impl WikiSidecar {
                     "SELECT article_json, embedding_json, embedding_identity_json FROM wiki_articles \
                      WHERE ward_id = ?1 ORDER BY title",
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
             let rows = statement
                 .query_map(params![ward_id], decode_entry)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
             collect_rows(rows)
         } else {
             let mut statement = connection
                 .prepare(
                     "SELECT article_json, embedding_json, embedding_identity_json FROM wiki_articles ORDER BY title",
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
             let rows = statement
                 .query_map([], decode_entry)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
             collect_rows(rows)
         }
     }
 
-    fn get_by_title(&self, ward_id: &str, title: &str) -> Result<Option<WikiSidecarEntry>, String> {
+    fn get_by_title(&self, ward_id: &str, title: &str) -> StoreResult<Option<WikiSidecarEntry>> {
         self.lock()?
             .query_row(
                 "SELECT article_json, embedding_json, embedding_identity_json FROM wiki_articles \
@@ -448,10 +452,10 @@ impl WikiSidecar {
                 decode_entry,
             )
             .optional()
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, String> {
+    fn get_embedding(&self, id: &str) -> StoreResult<Option<Vec<f32>>> {
         self.lock()?
             .query_row(
                 "SELECT embedding_json, embedding_identity_json FROM wiki_articles WHERE id = ?1",
@@ -464,7 +468,7 @@ impl WikiSidecar {
                 },
             )
             .optional()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| StoreError::Backend(error.to_string()))?
             .map(|(embedding_json, identity_json)| {
                 let embedding = decode_embedding(embedding_json)?;
                 let Some(vector) = embedding else {
@@ -485,27 +489,27 @@ impl WikiSidecar {
             .map(Option::flatten)
     }
 
-    fn delete_article(&self, ward_id: &str, title: &str) -> Result<bool, String> {
+    fn delete_article(&self, ward_id: &str, title: &str) -> StoreResult<bool> {
         let rows = self
             .lock()?
             .execute(
                 "DELETE FROM wiki_articles WHERE ward_id = ?1 AND title = ?2",
                 params![ward_id, title],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         Ok(rows > 0)
     }
 
-    fn count_articles(&self) -> Result<i64, String> {
+    fn count_articles(&self) -> StoreResult<i64> {
         self.lock()?
             .query_row("SELECT COUNT(*) FROM wiki_articles", [], |row| row.get(0))
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>, String> {
+    fn lock(&self) -> StoreResult<MutexGuard<'_, Connection>> {
         self.connection
             .lock()
-            .map_err(|_| "wiki sidecar connection lock poisoned".to_string())
+            .map_err(|_| StoreError::Backend("wiki sidecar connection lock poisoned".to_string()))
     }
 }
 
@@ -541,19 +545,19 @@ fn decode_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<WikiSidecarEntry> {
     })
 }
 
-fn collect_rows<I>(rows: I) -> Result<Vec<WikiSidecarEntry>, String>
+fn collect_rows<I>(rows: I) -> StoreResult<Vec<WikiSidecarEntry>>
 where
     I: Iterator<Item = rusqlite::Result<WikiSidecarEntry>>,
 {
     rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())
+        .map_err(|error| StoreError::Backend(error.to_string()))
 }
 
-fn decode_embedding(value: Option<String>) -> Result<Option<Vec<f32>>, String> {
+fn decode_embedding(value: Option<String>) -> StoreResult<Option<Vec<f32>>> {
     value
         .map(|json| serde_json::from_str::<Vec<f32>>(&json))
         .transpose()
-        .map_err(|error| format!("decode embedding: {error}"))
+        .map_err(|error| StoreError::Invalid(format!("decode embedding: {error}")))
 }
 
 fn embedding_identity_from_config(config: &AdapterConfig) -> EmbeddingQueryIdentity {
@@ -576,17 +580,18 @@ fn encode_identity(identity: &EmbeddingQueryIdentity) -> String {
     .to_string()
 }
 
-fn decode_identity(value: Option<String>) -> Result<Option<EmbeddingQueryIdentity>, String> {
+fn decode_identity(value: Option<String>) -> StoreResult<Option<EmbeddingQueryIdentity>> {
     let Some(json) = value else {
         return Ok(None);
     };
     let value: Value = serde_json::from_str(&json)
-        .map_err(|error| format!("decode embedding identity: {error}"))?;
+        .map_err(|error| StoreError::Invalid(format!("decode embedding identity: {error}")))?;
     let dimensions = value
         .get("dimensions")
         .and_then(Value::as_u64)
-        .ok_or_else(|| "decode embedding identity: missing dimensions".to_string())?
-        as u32;
+        .ok_or_else(|| {
+            StoreError::Invalid("decode embedding identity: missing dimensions".into())
+        })? as u32;
     Ok(Some(EmbeddingQueryIdentity {
         provider_type: value
             .get("providerType")

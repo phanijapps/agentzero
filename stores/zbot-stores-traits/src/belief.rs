@@ -4,6 +4,7 @@
 //! subject. This trait is dep-light by design so the `agent-tools` crate
 //! can call it without dragging in `zbot-stores-sqlite`.
 
+use crate::error::StoreResult;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use zbot_stores_domain::{Belief, ScoredBelief};
@@ -24,15 +25,15 @@ pub trait BeliefStore: Send + Sync {
         partition_id: &str,
         subject: &str,
         as_of: Option<DateTime<Utc>>,
-    ) -> Result<Option<Belief>, String>;
+    ) -> StoreResult<Option<Belief>>;
 
     /// List recent beliefs for a partition, ordered by `updated_at`
     /// descending.
-    async fn list_beliefs(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String>;
+    async fn list_beliefs(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>>;
 
     /// Insert or update a belief. UPSERT keyed on
     /// `(partition_id, subject, valid_from)`.
-    async fn upsert_belief(&self, belief: &Belief) -> Result<(), String>;
+    async fn upsert_belief(&self, belief: &Belief) -> StoreResult<()>;
 
     /// Mark a belief superseded by another. Mirrors `supersede_fact`
     /// semantics: the old belief's `valid_until` closes at
@@ -42,12 +43,12 @@ pub trait BeliefStore: Send + Sync {
         old_id: &str,
         new_id: &str,
         transition_time: DateTime<Utc>,
-    ) -> Result<(), String>;
+    ) -> StoreResult<()>;
 
     /// Mark a belief stale — the next synthesizer cycle re-derives it
     /// from its (remaining) source facts. B-3 propagation calls this on
     /// a multi-source belief whose source fact was invalidated.
-    async fn mark_stale(&self, belief_id: &str) -> Result<(), String>;
+    async fn mark_stale(&self, belief_id: &str) -> StoreResult<()>;
 
     /// Retract a belief — set its `valid_until` to `transition_time`.
     /// B-3 propagation calls this on a sole-source belief whose only
@@ -57,27 +58,27 @@ pub trait BeliefStore: Send + Sync {
         &self,
         belief_id: &str,
         transition_time: DateTime<Utc>,
-    ) -> Result<(), String>;
+    ) -> StoreResult<()>;
 
     /// Find beliefs whose `source_fact_ids` JSON array contains the given
     /// fact_id and that are still active (valid_until IS NULL). Returns
     /// belief ids only — callers load the full `Belief` on demand via
     /// [`BeliefStore::get_belief_by_id`].
-    async fn beliefs_referencing_fact(&self, fact_id: &str) -> Result<Vec<String>, String>;
+    async fn beliefs_referencing_fact(&self, fact_id: &str) -> StoreResult<Vec<String>>;
 
     /// Load a belief by its primary-key id. Returns `None` when the id
     /// is unknown. Used by B-3 propagation to read `source_fact_ids`
     /// without needing to know the belief's partition.
-    async fn get_belief_by_id(&self, belief_id: &str) -> Result<Option<Belief>, String>;
+    async fn get_belief_by_id(&self, belief_id: &str) -> StoreResult<Option<Belief>>;
 
     /// List stale beliefs in a partition, oldest-first by `updated_at`.
     /// Used by the synthesizer to pick up re-synthesis candidates at the
     /// top of each cycle.
-    async fn list_stale(&self, partition_id: &str, limit: usize) -> Result<Vec<Belief>, String>;
+    async fn list_stale(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>>;
 
     /// Clear the stale flag on a belief. Called by the synthesizer right
     /// after a successful re-synthesis pass.
-    async fn clear_stale(&self, belief_id: &str) -> Result<(), String>;
+    async fn clear_stale(&self, belief_id: &str) -> StoreResult<()>;
 
     /// Search beliefs by semantic similarity to a query embedding
     /// (Phase B-4 — recall integration).
@@ -96,7 +97,7 @@ pub trait BeliefStore: Send + Sync {
         partition_id: &str,
         query_embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<ScoredBelief>, String>;
+    ) -> StoreResult<Vec<ScoredBelief>>;
 
     /// Identity-aware variant of [`BeliefStore::search_beliefs`].
     /// Backends with persisted embedding identities should override this and
@@ -107,7 +108,7 @@ pub trait BeliefStore: Send + Sync {
         query_embedding: &[f32],
         query_identity: Option<&EmbeddingQueryIdentity>,
         limit: usize,
-    ) -> Result<Vec<ScoredBelief>, String> {
+    ) -> StoreResult<Vec<ScoredBelief>> {
         let _ = query_identity;
         self.search_beliefs(partition_id, query_embedding, limit)
             .await

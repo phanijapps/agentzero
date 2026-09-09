@@ -1630,7 +1630,7 @@ impl AppState {
 
             match memory_store.upsert_typed_fact(fact_value, None).await {
                 Ok(()) => count += 1,
-                Err(e) => errors.push((key.to_string(), e)),
+                Err(e) => errors.push((key.to_string(), e.to_string())),
             }
         }
 

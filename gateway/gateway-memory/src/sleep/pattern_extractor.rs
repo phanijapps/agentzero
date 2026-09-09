@@ -137,7 +137,8 @@ impl PatternExtractor {
         let episodes = self
             .episode_store
             .list_successful_episodes_with_embedding(LOOKBACK_DAYS, CANDIDATE_LIMIT)
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         stats.episodes_considered = episodes.len() as u64;
         if episodes.len() < 2 {
             return Ok(stats);
@@ -503,6 +504,7 @@ mod tests {
         GatewayEpisodeStore, GatewayProcedureStore, KnowledgeDatabase, Procedure,
         ProcedureRepository,
     };
+    use zbot_stores_traits::StoreResult;
 
     struct MockLlm {
         response: Mutex<PatternResponse>,
@@ -853,13 +855,13 @@ mod tests {
             &self,
             _agent_id: &str,
             _name: &str,
-        ) -> Result<Option<ProcedureSummary>, String> {
+        ) -> StoreResult<Option<ProcedureSummary>> {
             Ok(None)
         }
         async fn insert_pattern_procedure(
             &self,
             req: PatternProcedureInsert,
-        ) -> Result<String, String> {
+        ) -> StoreResult<String> {
             *self.captured.lock().unwrap() = Some(req);
             Ok("proc-test".into())
         }

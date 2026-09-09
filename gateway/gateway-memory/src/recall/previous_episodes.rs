@@ -42,7 +42,8 @@ impl PreviousEpisodesAdapter {
         let episodes = self
             .store
             .fetch_recent_successful_by_ward(ward_id, 3)
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         let mut items: Vec<ScoredItem> = episodes
             .iter()
             .filter(|episode| episode.agent_id == agent_id)
@@ -50,7 +51,11 @@ impl PreviousEpisodesAdapter {
             .map(|(rank, ep)| episode_to_item(ep, rank))
             .collect();
 
-        let failed = self.store.fetch_recent_failed_by_ward(ward_id, 2).await?;
+        let failed = self
+            .store
+            .fetch_recent_failed_by_ward(ward_id, 2)
+            .await
+            .map_err(|e| e.to_string())?;
         let base = items.len();
         items.extend(
             failed

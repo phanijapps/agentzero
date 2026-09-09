@@ -407,7 +407,10 @@ impl BeliefSynthesizer {
             embedding,
         };
 
-        self.belief_store.upsert_belief(&belief).await?;
+        self.belief_store
+            .upsert_belief(&belief)
+            .await
+            .map_err(|e| e.to_string())?;
 
         tracing::debug!(
             partition_id,

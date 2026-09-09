@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_render_primitives_groups_by_file() {
-        use zbot_stores_sqlite::MemoryFact;
+        use zbot_stores_domain::MemoryFact;
         fn mk(key: &str, content: &str) -> MemoryFact {
             MemoryFact {
                 id: String::new(),

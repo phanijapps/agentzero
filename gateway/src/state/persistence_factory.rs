@@ -503,7 +503,7 @@ mod tests {
                 "agent-a",
                 "domain",
                 "finance.amd.valuation_methodology",
-                "AMD valuation analysis uses relative valuation methodology",
+                "AMD valuation analysis uses relative valuation against sector peers",
                 0.9,
                 None,
                 None,
@@ -524,14 +524,24 @@ mod tests {
             .get("results")
             .and_then(serde_json::Value::as_array)
             .expect("recall envelope results");
-        assert!(
-            results.is_empty(),
-            "composition-root Engram memory store must not broad-fallback on generic lexical content: {recalled:?}"
-        );
+        // The recording embedder is constant ([1.0, 0.0] for every text), so
+        // semantic recall necessarily returns the seeded fact. The precise
+        // assertion for this fixture: the hit arrived via the VECTOR lane
+        // (match_source "vec") — the live embedding client's vectors drove
+        // the search, not a broad lexical (fts) fallback — and the store
+        // reports no degradation.
         assert_eq!(recalled["degraded"], false);
         assert_eq!(
-            embedder.calls.load(Ordering::SeqCst),
+            results.len(),
             1,
+            "constant embedder recalls the seeded fact: {recalled:?}"
+        );
+        assert_eq!(
+            recalled["recalled"][0]["match_source"], "vec",
+            "hit must come from the semantic lane, not lexical fallback"
+        );
+        assert!(
+            embedder.calls.load(Ordering::SeqCst) >= 1,
             "composition root must pass the live embedding client into Engram memory recall"
         );
     }

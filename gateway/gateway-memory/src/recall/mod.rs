@@ -2243,7 +2243,7 @@ mod tests {
         // Sanity test: retain logic drops items whose underlying fact has
         // superseded_by set. Verifies the filter intent directly without the
         // full recall pipeline.
-        use zbot_stores_sqlite::MemoryFact;
+        use zbot_stores_domain::MemoryFact;
 
         let mk_fact = |id: &str, superseded: Option<&str>| MemoryFact {
             id: id.to_string(),
@@ -2663,6 +2663,16 @@ mod tests {
             2
         };
         v[idx] = 1.0;
+        // A tilt toward the fruit axis for color texts: keeps the color
+        // direction dominant (color queries match color facts first) while
+        // putting fruit-direction queries at mid-relevance cosine
+        // (0.5/sqrt(1.25) ≈ 0.45) — above the admission guard so the
+        // diverse candidate enters the fused pool, which is what MMR
+        // diversifies. A pure one-hot made the cross-direction cosine 0
+        // and guard-dropped, leaving MMR nothing to diversify with.
+        if idx == 1 {
+            v[0] = 0.5;
+        }
         v
     }
 

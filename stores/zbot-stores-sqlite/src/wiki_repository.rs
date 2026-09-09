@@ -249,7 +249,7 @@ impl WardWikiRepository {
             }
         };
 
-        let sanitized = crate::memory_repository::sanitize_fts_query(query);
+        let sanitized = sanitize_fts_query(query);
 
         let fts_ids: Vec<String> = self
             .db
@@ -335,6 +335,28 @@ fn blob_to_f32_vec(blob: &[u8]) -> Vec<f32> {
     blob.chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()
+}
+
+/// Sanitize a raw user message for FTS5 MATCH queries.
+/// Extracts alphanumeric words (>2 chars), joins with OR.
+/// Raw messages contain commas, parens, dashes, dollar signs that break FTS5 syntax.
+/// Moved here from the retired memory repository — the wiki search is its
+/// only consumer.
+fn sanitize_fts_query(raw: &str) -> String {
+    let words: Vec<&str> = raw
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|w| w.trim())
+        .filter(|w| w.len() > 2)
+        .filter(|w| {
+            ![
+                "the", "and", "for", "with", "that", "this", "from", "have", "been", "will",
+                "should", "would", "could", "their", "there", "not", "are", "was", "can", "all",
+                "has", "its", "than",
+            ]
+            .contains(w)
+        })
+        .collect();
+    words.join(" OR ")
 }
 
 #[cfg(test)]

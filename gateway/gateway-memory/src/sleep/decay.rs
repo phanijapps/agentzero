@@ -688,7 +688,6 @@ mod tests {
         source_episode_id: &str,
         contradicted_by: &str,
     ) {
-        use zbot_stores_traits::MemoryFactStore as _;
         let now = chrono::Utc::now().to_rfc3339();
         let fact = zbot_stores_domain::MemoryFact {
             id: fact_id.to_string(),

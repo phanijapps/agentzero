@@ -1575,7 +1575,10 @@ mod tests {
         let exact = gateway_memory::MemorySettings::zbot_recommended_v1();
         assert_eq!(preflight_full_memory_profile(&paths, &exact, true), Ok(()));
 
+        // Must differ from BOTH the allowed states (compiled defaults and
+        // the approved recommended profile) to be a real conflict.
         let custom = gateway_memory::MemorySettings {
+            conflict_resolver_interval_hours: 99,
             ..gateway_memory::MemorySettings::default()
         };
         assert_eq!(

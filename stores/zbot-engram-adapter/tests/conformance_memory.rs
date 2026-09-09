@@ -12,7 +12,7 @@ use zbot_engram_adapter::{
     AdapterConfig, EngramMemoryFactStore, EngramProvider, EngramSidecarStores,
 };
 use zbot_stores_conformance as conf;
-use zbot_stores_traits::{MemoryFactStore, ProcedureStore};
+use zbot_stores_traits::ProcedureStore;
 
 /// Deterministic 384-dim embedder — same shape the adapter's own tests use,
 /// so hybrid scenarios exercise the real (embedding-aware) paths.

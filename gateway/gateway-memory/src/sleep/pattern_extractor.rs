@@ -499,9 +499,10 @@ mod tests {
     use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use std::sync::Mutex;
+    use zbot_stores_domain::Procedure;
     use zbot_stores_sqlite::{
         CompactionRepository, DatabaseManager, EpisodeRepository, GatewayCompactionStore,
-        GatewayEpisodeStore, KnowledgeDatabase, Procedure,
+        GatewayEpisodeStore, KnowledgeDatabase,
     };
     use zbot_stores_traits::StoreResult;
 
@@ -740,9 +741,8 @@ mod tests {
         let rows = h.compaction_repo.list_run("run-pe-1").expect("list_run");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].operation, "pattern_extract");
-        assert_eq!(
-            rows[0].entity_id.as_deref().is_some(),
-            true,
+        assert!(
+            rows[0].entity_id.is_some(),
             "audit row names the inserted procedure id"
         );
     }

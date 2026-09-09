@@ -720,6 +720,7 @@ mod tests {
                 epistemic_class: None,
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             }))
         }
 
@@ -792,6 +793,7 @@ mod tests {
                     epistemic_class: None,
                     source_episode_id: None,
                     source_ref: None,
+                    last_accessed: None,
                 })
                 .collect())
         }

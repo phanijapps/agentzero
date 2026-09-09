@@ -45,6 +45,7 @@ async fn returns_four_content_types_with_age_buckets() {
         epistemic_class: Some("current".to_string()),
         source_episode_id: None,
         source_ref: None,
+        last_accessed: None,
     };
     futures::executor::block_on(
         state
@@ -214,6 +215,7 @@ async fn ward_content_filters_internal_reserved_memory_facts() {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         futures::executor::block_on(
             state
@@ -268,6 +270,7 @@ async fn ward_list_ignores_reserved_only_wards() {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         futures::executor::block_on(
             state

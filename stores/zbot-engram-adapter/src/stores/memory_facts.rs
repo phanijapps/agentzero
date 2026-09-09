@@ -367,6 +367,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 epistemic_class: Some("current".to_string()),
                 source_episode_id: None,
                 source_ref: request.source_ref.clone(),
+                last_accessed: None,
             }
         };
 
@@ -485,6 +486,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 epistemic_class: Some("current".to_string()),
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             });
 
         fact.session_id = Some(session_id.to_string());
@@ -577,6 +579,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 epistemic_class: Some("current".to_string()),
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             });
 
         fact.content = content;
@@ -724,6 +727,40 @@ impl MemoryFactStore for EngramMemoryFactStore {
         // round-trip, so keep honoring only the explicit argument here.
         fact.embedding = embedding.clone();
         self.upsert_fact_record(fact, embedding).await
+    }
+
+    async fn touch_facts(&self, fact_ids: &[String]) -> StoreResult<()> {
+        if fact_ids.is_empty() {
+            return Ok(());
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let connection = self.sidecar.connection()?;
+        for id in fact_ids {
+            let fact_json: Option<String> = connection
+                .query_row(
+                    "SELECT fact_json FROM memory_facts WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| storage_error(error).into_trait_error())?;
+            let Some(fact_json) = fact_json else {
+                continue;
+            };
+            let Ok(mut fact) = serde_json::from_str::<MemoryFact>(&fact_json) else {
+                continue;
+            };
+            fact.mention_count = fact.mention_count.saturating_add(1);
+            fact.last_accessed = Some(now.clone());
+            let updated = serde_json::to_string(&fact)
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
+            connection
+                .execute(
+                    "UPDATE memory_facts SET mention_count = ?2, fact_json = ?3 WHERE id = ?1",
+                    rusqlite::params![id, fact.mention_count, updated],
+                )
+                .map_err(|error| storage_error(error).into_trait_error())?;
+        }
+        Ok(())
     }
 
     async fn supersede_fact(
@@ -960,6 +997,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             epistemic_class: Some("convention".to_string()),
             source_episode_id: req.source_episode_id,
             source_ref: None,
+            last_accessed: None,
         };
         let embedding = fact.embedding.clone();
         self.upsert_fact_record(fact, embedding).await?;

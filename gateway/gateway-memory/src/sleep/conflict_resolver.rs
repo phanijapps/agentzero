@@ -464,6 +464,7 @@ mod tests {
             epistemic_class: Some("current".into()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         let mut low = high.clone();
         low.id = "lo".into();

@@ -536,6 +536,7 @@ mod helpers_tests {
             epistemic_class: Some("convention".into()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         let v = fact_to_value(fact, now);
         assert_eq!(v["age_bucket"], "today");

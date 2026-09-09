@@ -90,6 +90,7 @@ async fn recall_unified_skips_sqlite_vector_facts_without_identity_validation() 
         superseded_by: None,
         pinned: false,
         epistemic_class: Some("current".to_string()),
+        last_accessed: None,
     };
     memory_repo.upsert_memory_fact(&fact).unwrap();
 

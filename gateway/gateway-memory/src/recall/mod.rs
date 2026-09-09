@@ -1347,6 +1347,22 @@ impl MemoryRecall {
                 break;
             }
         }
+        // Access reinforcement (ACT-R): facts that made the final packet
+        // get mention_count + last_accessed bumps so their recency decay
+        // slows. Fire-and-forget — a failed touch must not fail recall.
+        if let Some(store) = self.memory_store.as_ref() {
+            let touched: Vec<String> = items
+                .iter()
+                .filter(|item| item.kind == ItemKind::Fact)
+                .map(|item| item.id.clone())
+                .collect();
+            if !touched.is_empty() {
+                if let Err(error) = store.touch_facts(&touched).await {
+                    tracing::debug!(count = touched.len(), %error, "fact touch skipped");
+                }
+            }
+        }
+
         let source_summary = self.unified_source_summary(
             &items,
             query_emb.is_some(),
@@ -2093,6 +2109,7 @@ mod tests {
                 epistemic_class: class.map(|s| s.to_string()),
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             },
             score,
         }
@@ -2398,6 +2415,7 @@ mod tests {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
 
         let facts = vec![

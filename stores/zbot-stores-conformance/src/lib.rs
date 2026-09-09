@@ -696,6 +696,7 @@ pub async fn memory_upsert_typed_fact_round_trip<S: MemoryFactStore>(store: &S) 
         epistemic_class: Some("current".to_string()),
         source_episode_id: None,
         source_ref: None,
+        last_accessed: None,
     };
 
     store

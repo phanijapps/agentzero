@@ -204,6 +204,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
 
         self.memory_repo.upsert_memory_fact(&fact)?;
@@ -572,6 +573,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
 
         self.memory_repo.upsert_memory_fact(&fact)?;
@@ -625,6 +627,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         self.memory_repo.upsert_memory_fact(&fact)?;
         Ok(json!({ "success": true, "key": key, "ward_id": ward_id }))
@@ -1027,6 +1030,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             epistemic_class: Some("convention".to_string()),
             source_episode_id: req.source_episode_id,
             source_ref: None,
+            last_accessed: None,
         };
         self.memory_repo.upsert_memory_fact(&fact)?;
         Ok(id)

@@ -1626,6 +1626,7 @@ impl AppState {
                 source_episode_id: None,
                 source_ref: None,
                 embedding: None,
+                last_accessed: None,
             };
 
             match memory_store.upsert_typed_fact(fact_value, None).await {

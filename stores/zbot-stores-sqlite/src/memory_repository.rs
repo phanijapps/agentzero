@@ -1473,6 +1473,7 @@ fn row_to_memory_fact(row: &rusqlite::Row) -> Result<MemoryFact, rusqlite::Error
         epistemic_class: row.get(19).ok().flatten(),
         source_episode_id: row.get(20).ok().flatten(),
         source_ref: row.get(21).ok().flatten(),
+        last_accessed: None,
     })
 }
 
@@ -1549,6 +1550,7 @@ mod tests {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         }
     }
 
@@ -1832,6 +1834,7 @@ mod tests {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         }
     }
 

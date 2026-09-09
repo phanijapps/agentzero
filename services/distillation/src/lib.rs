@@ -622,6 +622,7 @@ impl SessionDistiller {
                     .or_else(|| Some("current".to_string())),
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             };
 
             if let Some(ref existing) = existing_fact {
@@ -1231,6 +1232,7 @@ impl SessionDistiller {
             epistemic_class: Some("procedural".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
 
         // Supersede old strategy if content differs
@@ -1380,6 +1382,7 @@ impl SessionDistiller {
             epistemic_class: Some("convention".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
 
         // Supersede old correction if content differs
@@ -2783,6 +2786,7 @@ mod tests {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
 
         upsert_distilled_fact(Some(&store), &fact)

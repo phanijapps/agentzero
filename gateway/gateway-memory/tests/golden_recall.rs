@@ -156,6 +156,7 @@ fn fact(
         epistemic_class: Some("current".to_string()),
         source_episode_id: None,
         source_ref: None,
+        last_accessed: None,
     }
 }
 

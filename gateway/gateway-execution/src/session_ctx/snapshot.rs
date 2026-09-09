@@ -360,6 +360,7 @@ mod tests {
                 epistemic_class: None,
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             }
         }
         let facts = vec![

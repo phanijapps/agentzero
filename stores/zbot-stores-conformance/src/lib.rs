@@ -771,6 +771,7 @@ pub async fn memory_hybrid_search_finds_match<S: MemoryFactStore>(store: &S) {
 // =============================================================================
 
 use zbot_stores_traits::{Belief, BeliefStore};
+use zbot_stores_traits::{CompactionStore, EpisodeStore, GoalStore, KgEpisodeStore, WikiStore};
 
 pub async fn belief_upsert_get_round_trip<S: BeliefStore>(store: &S) {
     let now = chrono::Utc::now();
@@ -804,4 +805,239 @@ pub async fn belief_upsert_get_round_trip<S: BeliefStore>(store: &S) {
     assert_eq!(fetched.partition_id, belief.partition_id);
     assert_eq!(fetched.subject, belief.subject);
     assert_eq!(fetched.source_fact_ids, belief.source_fact_ids);
+}
+
+// =============================================================================
+// EpisodeStore — chain + avoid-list contract
+// =============================================================================
+
+/// Insert episodes and verify the successful/partial chain and the failed
+/// avoid-list read paths, including the learnings requirement on failed rows.
+pub async fn episode_insert_and_recent_fetch<S: EpisodeStore>(store: &S) {
+    use zbot_stores_domain::SessionEpisode;
+
+    let episode = |id: &str, outcome: &str| SessionEpisode {
+        id: id.to_string(),
+        session_id: format!("sess-{id}"),
+        agent_id: "conf-agent".to_string(),
+        ward_id: "conf-ward".to_string(),
+        task_summary: format!("task {id}"),
+        outcome: outcome.to_string(),
+        strategy_used: None,
+        key_learnings: Some("learn something".to_string()),
+        token_cost: None,
+        embedding: None,
+        created_at: "2026-09-01T00:00:00Z".to_string(),
+    };
+
+    store
+        .insert_episode(episode("ep-conf-ok", "success"), None)
+        .await
+        .expect("insert success episode");
+    store
+        .insert_episode(episode("ep-conf-fail", "failed"), None)
+        .await
+        .expect("insert failed episode");
+
+    let chain = store
+        .fetch_recent_successful_by_ward("conf-ward", 5)
+        .await
+        .expect("fetch chain");
+    assert!(
+        chain.iter().any(|e| e.id == "ep-conf-ok"),
+        "successful episode must surface in the chain read"
+    );
+    assert!(
+        !chain.iter().any(|e| e.id == "ep-conf-fail"),
+        "failed episodes must not surface in the chain read"
+    );
+
+    let avoid = store
+        .fetch_recent_failed_by_ward("conf-ward", 5)
+        .await
+        .expect("fetch avoid-list");
+    assert!(
+        avoid
+            .iter()
+            .any(|e| e.id == "ep-conf-fail" && e.key_learnings.is_some()),
+        "failed episode with learnings must surface in the avoid-list"
+    );
+}
+
+// =============================================================================
+// WikiStore — article lifecycle contract
+// =============================================================================
+
+/// Upsert → get → list → delete round trip for one ward article.
+pub async fn wiki_article_round_trip<S: WikiStore>(store: &S) {
+    use zbot_stores_domain::WikiArticle;
+
+    let article = WikiArticle {
+        id: "wiki-conf-1".to_string(),
+        ward_id: "conf-ward".to_string(),
+        agent_id: "conf-agent".to_string(),
+        title: "Conformance Article".to_string(),
+        content: "Body text for the conformance article.".to_string(),
+        tags: Some("conformance".to_string()),
+        source_fact_ids: None,
+        embedding: None,
+        version: 1,
+        created_at: "2026-09-01T00:00:00Z".to_string(),
+        updated_at: "2026-09-01T00:00:00Z".to_string(),
+    };
+    store
+        .upsert_article(article, None)
+        .await
+        .expect("upsert article");
+
+    let fetched = store
+        .get_article("conf-ward", "Conformance Article")
+        .await
+        .expect("get article")
+        .expect("article should exist after upsert");
+    assert!(
+        fetched
+            .get("content")
+            .and_then(|value| value.as_str())
+            .is_some_and(|content| content.contains("conformance article")),
+        "fetched article content must round trip: {fetched:?}"
+    );
+
+    let listed = store
+        .list_articles("conf-ward")
+        .await
+        .expect("list articles");
+    assert!(
+        listed.iter().any(|row| row
+            .get("title")
+            .and_then(|value| value.as_str())
+            .is_some_and(|title| title == "Conformance Article")),
+        "listed articles must include the seeded article"
+    );
+
+    let deleted = store
+        .delete_article("conf-ward", "Conformance Article")
+        .await
+        .expect("delete article");
+    assert!(deleted, "delete should report a removed row");
+    let after = store
+        .get_article("conf-ward", "Conformance Article")
+        .await
+        .expect("get after delete");
+    assert!(after.is_none(), "article must be gone after delete");
+}
+
+// =============================================================================
+// KgEpisodeStore — extraction-queue lifecycle contract
+// =============================================================================
+
+/// Pending upsert → claim → done transition with per-source pending counts.
+pub async fn kg_episode_queue_lifecycle<S: KgEpisodeStore>(store: &S) {
+    let id = store
+        .upsert_pending(
+            "ingest",
+            "conf://source/doc.md",
+            "hash-conf-1",
+            Some("sess-conf"),
+            "conf-agent",
+        )
+        .await
+        .expect("upsert pending");
+
+    let claimed = store
+        .claim_next_pending()
+        .await
+        .expect("claim next pending")
+        .expect("seeded pending episode must be claimable");
+    let claimed_id = claimed
+        .get("id")
+        .and_then(|value| value.as_str())
+        .expect("claimed payload carries id")
+        .to_string();
+    assert_eq!(claimed_id, id, "claim must return the seeded episode");
+
+    store.mark_done(&id).await.expect("mark done");
+    // Idempotency: a second done is a no-op, not an error.
+    store.mark_done(&id).await.expect("mark done idempotent");
+}
+
+// =============================================================================
+// CompactionStore — audit-record contract
+// =============================================================================
+
+/// Audit rows record and the latest-run summary reflects them.
+pub async fn compaction_recording_round_trip<S: CompactionStore>(store: &S) {
+    let run = "run-conf-1";
+    let merge_id = store
+        .record_merge(run, "loser-conf", "winner-conf", "conformance merge")
+        .await
+        .expect("record merge");
+    store
+        .record_prune(run, Some("entity-conf"), None, "conformance prune")
+        .await
+        .expect("record prune");
+    assert!(!merge_id.is_empty(), "merge audit row must return a row id");
+
+    let summary = store
+        .latest_run_summary()
+        .await
+        .expect("latest run summary")
+        .expect("summary must exist after recorded runs");
+    assert!(summary.merges >= 1, "summary must count the merge");
+    assert!(summary.prunes >= 1, "summary must count the prune");
+}
+
+// =============================================================================
+// GoalStore — goal lifecycle contract
+// =============================================================================
+
+/// Create → get → active-list → state-transition round trip.
+pub async fn goal_round_trip<S: GoalStore>(store: &S) {
+    use serde_json::json;
+
+    let goal_id = store
+        .create_goal(json!({
+            "agent_id": "conf-agent",
+            "ward_id": "conf-ward",
+            "title": "Conformance goal",
+            "state": "active",
+        }))
+        .await
+        .expect("create goal");
+
+    let fetched = store
+        .get_goal(&goal_id)
+        .await
+        .expect("get goal")
+        .expect("goal must exist after create");
+    assert_eq!(
+        fetched.get("title").and_then(|value| value.as_str()),
+        Some("Conformance goal")
+    );
+
+    let active = store
+        .list_active_goals("conf-agent")
+        .await
+        .expect("list active goals");
+    assert!(
+        active
+            .iter()
+            .any(|goal| goal.get("id").and_then(|value| value.as_str()) == Some(goal_id.as_str())),
+        "active list must include the created goal"
+    );
+
+    store
+        .update_goal_state(&goal_id, "satisfied")
+        .await
+        .expect("update goal state");
+    let after = store
+        .get_goal(&goal_id)
+        .await
+        .expect("get after transition")
+        .expect("goal still exists");
+    assert_eq!(
+        after.get("state").and_then(|value| value.as_str()),
+        Some("satisfied"),
+        "state transition must persist"
+    );
 }

@@ -103,3 +103,19 @@ production improvements, not harness tweaks): stem matching in the sparse
 lane ("scrape" → "scraping") and lexical-evidence admission parity with the
 previous sqlite-backed behavior (ranking handles quality; admission filters
 only zero-evidence semantic noise).
+
+
+## E1-a — FULLY engram harness (all sources re-pointed)
+
+KG, wiki, episodes, beliefs now build through the same EngramProvider +
+adapter stores the production bundle wires (one tempdir, one embedder).
+Zero sqlite stores participate in the harness.
+
+- presence floor 30/30; correction 5/5; avoid 2/2; stale 3/3; pattern 5/5
+- precision@5 76.7%; correction top-5 5/5 (unchanged from facts-only re-point)
+
+Conformance green against the adapter: 17 KG + 11 memory/procedure + 6
+belief/episode/wiki/kg-episode/compaction/goal scenarios. One real parity
+bug fixed during E1-a: adapter `list_entities` now includes explicitly
+global (`__global__`) entities in per-agent listings, matching the sqlite
+contract (shared concepts stay visible in per-agent views).

@@ -1660,7 +1660,14 @@ impl KnowledgeGraphSidecar {
         let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
 
         if let Some(agent_id) = agent_id {
-            conditions.push(format!("agent_id = ?{}", param_values.len() + 1));
+            // Contract parity with the retired sqlite listing: a per-agent
+            // list includes that agent's entities AND explicitly global
+            // (`__global__`) entities — shared concepts must stay visible
+            // in per-agent views. Conformance: list_entities_respects_agent.
+            conditions.push(format!(
+                "(agent_id = ?{} OR agent_id = '__global__')",
+                param_values.len() + 1
+            ));
             param_values.push(Box::new(agent_id.to_string()));
         }
         if let Some(entity_type) = entity_type {

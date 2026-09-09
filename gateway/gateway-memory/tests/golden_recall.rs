@@ -29,24 +29,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_primitives::vault_paths::VaultPaths;
 use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
 use async_trait::async_trait;
 use gateway_memory::{ItemKind, MemoryRecall, RecallConfig, ScoredItem};
 use serde::Deserialize;
 use zbot_engram_adapter::{
-    AdapterConfig, EngramMemoryFactStore, EngramProvider, EngramSidecarStores,
+    AdapterConfig, EngramBeliefStore, EngramKnowledgeGraphStore, EngramMemoryFactStore,
+    EngramProvider, EngramSidecarStores, EngramWikiStore,
 };
 use zbot_stores::KnowledgeGraphStore as _KgStoreTrait;
 use zbot_stores_domain::{Belief, MemoryFact, Procedure, SessionEpisode, WikiArticle};
-use zbot_stores_sqlite::kg::storage::GraphStorage;
-use zbot_stores_sqlite::{
-    EpisodeRepository, GatewayEpisodeStore, GatewayWikiStore, KnowledgeDatabase, SqliteBeliefStore,
-    SqliteKgStore, SqliteVecIndex, WardWikiRepository,
-};
-use zbot_stores_traits::{
-    BeliefStore, EpisodeStore, MemoryFactStore, ProcedureStore, StoreError, WikiStore,
-};
+
+use zbot_stores_traits::{BeliefStore, EpisodeStore, MemoryFactStore, ProcedureStore, StoreError};
 
 // ============================================================================
 // Deterministic embedder — 384 dims to match the vec0 DDL.
@@ -167,15 +161,11 @@ fn fact(
 
 async fn setup_corpus() -> Result<Corpus, String> {
     let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-    let db = Arc::new(KnowledgeDatabase::new(paths).map_err(|e| e.to_string())?);
 
-    // --- memory facts + procedures: the PRODUCTION (engram) path ----------
-    // Facts and procedures are the retrieval surfaces Tier D retires the
-    // sqlite backend for, so the golden set measures them exactly the way
-    // the daemon does: EngramProvider + the adapter stores wired with the
-    // same deterministic embedder. KG/wiki/episodes/beliefs stay sqlite
-    // until their own migration phases.
+    // --- the FULL production (engram) path --------------------------------
+    // E1-a: every recall source is wired exactly the way the daemon wires
+    // it — one EngramProvider + adapter stores sharing this tempdir and
+    // the deterministic embedder. No sqlite store participates.
     let embedder: Arc<dyn EmbeddingClient> = Arc::new(HashEmbedder);
     let engram_root = tmp.path().join("engram");
     std::fs::create_dir_all(&engram_root).map_err(|e| e.to_string())?;
@@ -270,7 +260,8 @@ async fn setup_corpus() -> Result<Corpus, String> {
 
     // --- procedures (engram sidecars, the production path) ----------------
     let procedure_store: Arc<dyn ProcedureStore> = Arc::new(
-        EngramSidecarStores::from_provider(adapter_config, &provider).map_err(|e| e.to_string())?,
+        EngramSidecarStores::from_provider(adapter_config.clone(), &provider)
+            .map_err(|e| e.to_string())?,
     );
     let procedures = vec![
         Procedure {
@@ -342,12 +333,10 @@ async fn setup_corpus() -> Result<Corpus, String> {
     }
 
     // --- wiki -------------------------------------------------------------
-    let wiki_vec = Arc::new(
-        SqliteVecIndex::new(db.clone(), "wiki_articles_index", "article_id")
+    let wiki_store: Arc<dyn zbot_stores_traits::WikiStore> = Arc::new(
+        EngramWikiStore::from_provider(adapter_config.clone(), &provider)
             .map_err(|e| e.to_string())?,
     );
-    let wiki_repo = Arc::new(WardWikiRepository::new(db.clone(), wiki_vec));
-    let wiki_store = Arc::new(GatewayWikiStore::new(wiki_repo));
     let articles = vec![
         WikiArticle {
             id: "w1".into(),
@@ -385,13 +374,10 @@ async fn setup_corpus() -> Result<Corpus, String> {
     }
 
     // --- episodes (chain + avoid-list) ------------------------------------
-    let episode_vec = Arc::new(
-        SqliteVecIndex::new(db.clone(), "session_episodes_index", "episode_id")
+    let episode_store: Arc<dyn EpisodeStore> = Arc::new(
+        EngramSidecarStores::from_provider(adapter_config.clone(), &provider)
             .map_err(|e| e.to_string())?,
     );
-    let episode_repo = Arc::new(EpisodeRepository::new(db.clone(), episode_vec));
-    let episode_store: Arc<dyn EpisodeStore> =
-        Arc::new(GatewayEpisodeStore::new(episode_repo.clone()));
     let episodes = vec![
         SessionEpisode {
             id: "e1".into(),
@@ -438,13 +424,17 @@ async fn setup_corpus() -> Result<Corpus, String> {
         },
     ];
     for e in &episodes {
-        episode_repo
-            .insert(e)
+        episode_store
+            .insert_episode(e.clone(), None)
+            .await
             .map_err(|err| format!("seed episode {}: {err}", e.id))?;
     }
 
     // --- beliefs ----------------------------------------------------------
-    let belief_store = Arc::new(SqliteBeliefStore::new(db.clone()));
+    let belief_store = Arc::new(
+        EngramBeliefStore::from_provider(adapter_config.clone(), &provider)
+            .map_err(|e| e.to_string())?,
+    );
     let beliefs = vec![
         Belief {
             id: "b1".into(),
@@ -499,8 +489,10 @@ async fn setup_corpus() -> Result<Corpus, String> {
     }
 
     // --- knowledge graph (name-embedding lane) ----------------------------
-    let graph_storage = Arc::new(GraphStorage::new(db).map_err(|e| e.to_string())?);
-    let kg_store = Arc::new(SqliteKgStore::new(graph_storage));
+    let kg_store = Arc::new(
+        EngramKnowledgeGraphStore::from_provider(adapter_config.clone(), &provider)
+            .map_err(|e| e.to_string())?,
+    );
     use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
     use std::collections::HashMap as JsonProps;
     let entities: Vec<(String, EntityType)> = vec![

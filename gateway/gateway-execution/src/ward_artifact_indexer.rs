@@ -14,7 +14,7 @@
 
 use crate::errors::ExecutionError;
 use crate::indexer::relationship_rules;
-use gateway_services::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use knowledge_graph::{Entity, EntityType, Relationship};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -691,7 +691,7 @@ pub(crate) async fn run_session_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
     use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
 

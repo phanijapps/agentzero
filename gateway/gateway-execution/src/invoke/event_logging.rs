@@ -38,8 +38,7 @@ pub fn log_delegation(ctx: &StreamContext, child_agent: &str, task: &str) {
     )
     .with_metadata(serde_json::json!({
         "child_agent": child_agent,
-        "task": task,
-    }));
+        "task": task }));
     log_entry(ctx, entry);
 }
 
@@ -64,8 +63,7 @@ pub fn log_tool_call(
     )
     .with_metadata(serde_json::json!({
         "tool_id": tool_id,
-        "tool_name": tool_name,
-    }));
+        "tool_name": tool_name }));
     log_entry(ctx, entry);
 }
 
@@ -132,8 +130,7 @@ fn tool_result_metadata(
     serde_json::json!({
         "tool_id": tool_id,
         "error": error,
-        "blocked_by_hook": blocked_by_hook,
-    })
+        "blocked_by_hook": blocked_by_hook })
 }
 
 /// Log an error event.

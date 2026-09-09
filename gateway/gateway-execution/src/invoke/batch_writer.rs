@@ -290,8 +290,7 @@ async fn batch_writer_loop(
                                         }
                                         Err(err) => tracing::warn!(
                                             "BatchWriter: trace open failed for {session_id}: {err}"
-                                        ),
-                                    }
+                                        ) }
                                 }
                             }
                         } else {
@@ -392,8 +391,8 @@ fn flush_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use api_logs::{LogCategory, LogLevel};
-    use gateway_services::VaultPaths;
     use tempfile::TempDir;
 
     /// Full wiring: temp vault, real DB, services, a seeded session/execution

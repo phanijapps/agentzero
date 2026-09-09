@@ -143,8 +143,7 @@ impl Tool for CapabilityCatalogTool {
             "results": page,
             "cursor": cursor,
             "next_cursor": (end < total).then_some(end),
-            "total": total,
-        }))
+            "total": total }))
     }
 }
 
@@ -165,8 +164,7 @@ fn sanitize_entry(kind: &str, entry: &Value) -> Value {
         "kind": kind,
         "id": id,
         "name": name,
-        "description": description,
-    })
+        "description": description })
 }
 
 fn sanitize_display_text(value: &str, max_chars: usize) -> String {
@@ -205,8 +203,7 @@ mod tests {
             PLANNER_CAPABILITY_CATALOG_STATE.to_string(),
             json!({
                 "skills": [{"id": "research", "name": "Research", "description": "Find evidence", "secret": "never"}],
-                "mcps": [{"id": "blender", "name": "Blender", "description": "Create 3D scenes", "command": "not returned"}],
-            }),
+                "mcps": [{"id": "blender", "name": "Blender", "description": "Create 3D scenes", "command": "not returned"}] }),
         );
         let ctx: Arc<dyn ToolContext> = Arc::new(ConcreteContext::full_with_state(
             "planner-agent".to_string(),
@@ -231,8 +228,7 @@ mod tests {
             PLANNER_CAPABILITY_CATALOG_STATE.to_string(),
             json!({
                 "skills": [],
-                "mcps": [{"id": "blender", "name": "Blender", "description": "x".repeat(600)}],
-            }),
+                "mcps": [{"id": "blender", "name": "Blender", "description": "x".repeat(600)}] }),
         );
         let ctx: Arc<dyn ToolContext> = Arc::new(ConcreteContext::full_with_state(
             "planner-agent".to_string(),
@@ -262,8 +258,7 @@ mod tests {
             PLANNER_CAPABILITY_CATALOG_STATE.to_string(),
             json!({
                 "skills": [],
-                "mcps": [{"id": "safe-id", "name": format!("bad\n{}", "x".repeat(200)), "description": "data"}],
-            }),
+                "mcps": [{"id": "safe-id", "name": format!("bad\n{}", "x".repeat(200)), "description": "data"}] }),
         );
         let ctx: Arc<dyn ToolContext> = Arc::new(ConcreteContext::full_with_state(
             "planner-agent".to_string(),

@@ -833,8 +833,7 @@ fn encode_identity(identity: &EmbeddingQueryIdentity) -> String {
         "model": identity.model,
         "dimensions": identity.dimensions,
         "promptProfile": identity.prompt_profile,
-        "normalization": identity.normalization,
-    })
+        "normalization": identity.normalization })
     .to_string()
 }
 

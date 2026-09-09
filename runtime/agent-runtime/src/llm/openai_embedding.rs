@@ -78,8 +78,7 @@ impl EmbeddingClient for OpenAiEmbeddingClient {
 
         let body = json!({
             "model": self.model,
-            "input": texts,
-        });
+            "input": texts });
 
         tracing::debug!(
             "Embedding {} text(s) via {} (model: {})",

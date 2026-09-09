@@ -349,7 +349,9 @@ mod tests {
 
     fn setup() -> (tempfile::TempDir, KgEpisodeRepository) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         std::fs::create_dir_all(paths.conversations_db().parent().expect("parent")).expect("mkdir");
         let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
         let repo = KgEpisodeRepository::new(db);

@@ -337,7 +337,7 @@ mod tests {
     use super::*;
 
     fn setup_db() -> Arc<zbot_runtime_sqlite::DatabaseManager> {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let dir = tempfile::TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(dir.path().to_path_buf()));

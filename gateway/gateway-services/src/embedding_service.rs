@@ -32,7 +32,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::ollama_client::OllamaClient;
-use crate::paths::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 
 // ============================================================================
 // Public config / health types
@@ -1132,7 +1132,9 @@ mod tests {
 
     fn test_paths() -> (tempfile::TempDir, SharedVaultPaths) {
         let dir = tempdir().unwrap();
-        let paths = Arc::new(crate::paths::VaultPaths::new(dir.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         paths.ensure_dirs_exist().unwrap();
         (dir, paths)
     }

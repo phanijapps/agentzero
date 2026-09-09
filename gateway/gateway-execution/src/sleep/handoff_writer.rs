@@ -734,8 +734,7 @@ mod tests {
                     "content": content,
                     "owner": HANDOFF_CTX_OWNER,
                     "session_id": "mock-session",
-                    "pinned": true,
-                })
+                    "pinned": true })
             }))
         }
 
@@ -1248,8 +1247,7 @@ mod tests {
         let stored_tc = serde_json::json!([{
             "tool_id": "tc-1",
             "tool_name": "memory",
-            "args": {"action": "get_fact"},
-        }])
+            "args": {"action": "get_fact"} }])
         .to_string();
         let msgs = vec![
             zbot_conversation::Message {

@@ -70,7 +70,6 @@ impl Tool for GlobTool {
 
         Ok(json!({
             "matches": matches,
-            "count": matches.len(),
-        }))
+            "count": matches.len() }))
     }
 }

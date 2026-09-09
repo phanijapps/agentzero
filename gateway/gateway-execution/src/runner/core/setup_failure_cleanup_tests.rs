@@ -1,9 +1,10 @@
 use super::*;
+use agent_primitives::vault_paths::VaultPaths;
 use execution_state::{
     DelegationType, ExecutionStatus, Session, SessionStatus, SqliteWorkStore, WorkStore,
 };
 use gateway_bus::LocalWorkTransport;
-use gateway_services::{agents::Agent, providers::Provider, VaultPaths};
+use gateway_services::{agents::Agent, providers::Provider};
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]

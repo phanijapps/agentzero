@@ -220,8 +220,7 @@ impl WikiStore for EngramWikiStore {
                 Ok(json!({
                     "article": entry.article,
                     "score": score,
-                    "match_source": match_source,
-                }))
+                    "match_source": match_source }))
             })
             .collect()
     }
@@ -573,8 +572,7 @@ fn encode_identity(identity: &EmbeddingQueryIdentity) -> String {
         "model": identity.model.clone(),
         "dimensions": identity.dimensions,
         "promptProfile": identity.prompt_profile.clone(),
-        "normalization": identity.normalization.clone(),
-    })
+        "normalization": identity.normalization.clone() })
     .to_string()
 }
 

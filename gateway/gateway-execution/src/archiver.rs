@@ -83,8 +83,7 @@ impl SessionArchiver {
                     "token_count": row.get::<_, i32>(6)?,
                     "tool_calls": row.get::<_, Option<String>>(7)?,
                     "tool_results": row.get::<_, Option<String>>(8)?,
-                    "tool_call_id": row.get::<_, Option<String>>(9)?,
-                }))
+                    "tool_call_id": row.get::<_, Option<String>>(9)? }))
             })?;
             rows.collect::<Result<Vec<_>, _>>()
         })?;
@@ -109,8 +108,7 @@ impl SessionArchiver {
                     "category": row.get::<_, String>(7)?,
                     "message": row.get::<_, String>(8)?,
                     "metadata": row.get::<_, Option<String>>(9)?,
-                    "duration_ms": row.get::<_, Option<i64>>(10)?,
-                }))
+                    "duration_ms": row.get::<_, Option<i64>>(10)? }))
             })?;
             rows.collect::<Result<Vec<_>, _>>()
         })?;
@@ -409,7 +407,7 @@ impl SessionArchiver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use tempfile::TempDir;
 

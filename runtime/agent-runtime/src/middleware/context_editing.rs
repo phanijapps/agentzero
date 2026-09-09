@@ -500,29 +500,25 @@ mod tests {
                 content: vec![Part::Text { text: "Search for something".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: vec![Part::Text { text: String::new() }],
                 tool_calls: Some(vec![tool1, tool2]),
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "Search result: lots of text here that should be cleared when context editing kicks in".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_1".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "2".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_2".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
         ]
     }
 
@@ -1151,8 +1147,7 @@ mod tests {
             content: vec![Part::Text { text: "I'll help you with that. Let me think about the best approach for implementing this feature. We need to consider several factors including performance and maintainability.".to_string() }],
             tool_calls: None,
             tool_call_id: None,
-            is_summary: false,
-        };
+            is_summary: false };
 
         let compressed = compress_assistant_message(&msg, 5);
         assert!(compressed.starts_with("[Turn 5:"));
@@ -1178,43 +1173,37 @@ mod tests {
                 content: vec![Part::Text { text: "Create the files".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: vec![Part::Text { text: "I'll create main.rs and read lib.rs for you. Let me start with the main file.".to_string() }],
                 tool_calls: Some(vec![tool1, tool2]),
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "[cleared]".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_1".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "tool".to_string(),
                 content: vec![Part::Text { text: "[cleared]".to_string() }],
                 tool_calls: None,
                 tool_call_id: Some("call_2".to_string()),
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "user".to_string(),
                 content: vec![Part::Text { text: "Now add tests".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: vec![Part::Text { text: "I'll add tests now.".to_string() }],
                 tool_calls: None,
                 tool_call_id: None,
-                is_summary: false,
-            },
+                is_summary: false },
         ];
 
         let original_assistant_content = messages[1].text_content();

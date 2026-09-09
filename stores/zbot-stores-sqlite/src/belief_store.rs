@@ -422,7 +422,7 @@ fn embedding_from_bytes(bytes: &[u8]) -> Option<Vec<f32>> {
 mod tests {
     use super::*;
     use crate::KnowledgeDatabase;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use tempfile::TempDir;
 
     fn make_store() -> (SqliteBeliefStore, TempDir) {

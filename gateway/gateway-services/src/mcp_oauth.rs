@@ -130,8 +130,7 @@ impl McpOAuthService {
                         })?,
                     redirect_uri,
                 )
-                .await?,
-        };
+                .await? };
 
         let code_verifier = generate_code_verifier();
         let code_challenge = pkce_challenge(&code_verifier);

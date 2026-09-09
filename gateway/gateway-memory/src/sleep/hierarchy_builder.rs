@@ -579,8 +579,8 @@ impl HierarchyBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::llm::EmbeddingError;
-    use gateway_services::VaultPaths;
     use std::sync::Mutex;
     use tempfile::TempDir;
     use zbot_stores_sqlite::kg::storage::GraphStorage;

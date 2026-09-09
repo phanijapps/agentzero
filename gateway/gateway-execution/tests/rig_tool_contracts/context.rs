@@ -192,9 +192,9 @@ async fn real_compaction_and_recovery_preserve_skills_plan_and_effect_scope() {
     .unwrap();
     let endpoint = Endpoint::start().await;
     let registry = Arc::new(gateway_connectors::ConnectorRegistry::new(
-        gateway_connectors::ConnectorService::new(Arc::new(gateway_services::VaultPaths::new(
-            dir.path().into(),
-        ))),
+        gateway_connectors::ConnectorService::new(Arc::new(
+            agent_primitives::vault_paths::VaultPaths::new(dir.path().into()),
+        )),
     ));
     registry.create(serde_json::from_value(json!({"id":"configured","name":"Configured","transport":{"type":"http","callback_url":format!("{}/invoke",endpoint.url)},"metadata":{"resources":[{"name":"fixed","uri":format!("{}/fixed",endpoint.url)}],"capabilities":[{"name":"send","schema":{"type":"object"}}]}})).unwrap()).await.unwrap();
     let resources = Arc::new(gateway_execution::GatewayResourceProvider::new(registry));

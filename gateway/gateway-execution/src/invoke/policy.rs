@@ -265,8 +265,7 @@ impl agent_runtime::EngineHook for SubagentGuardHook {
                 || cmd.contains("tee ")
             {
                 return ToolDecision::Block {
-                    reason: "Use write_file to create files, not shell redirects. Shell is for running commands and reading output.".to_string(),
-                };
+                    reason: "Use write_file to create files, not shell redirects. Shell is for running commands and reading output.".to_string() };
             }
         }
         ToolDecision::Allow

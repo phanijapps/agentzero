@@ -62,8 +62,7 @@ impl EpisodeStore for GatewayEpisodeStore {
             .map(|(ep, score)| {
                 Ok(serde_json::json!({
                     "episode": ep,
-                    "score": score,
-                }))
+                    "score": score }))
             })
             .collect()
     }

@@ -164,12 +164,11 @@ impl NativeMcpClient {
     ) -> Result<T, McpError> {
         let mut canceled = self.canceled.subscribe();
         tokio::select! {
-            biased;
-            _ = canceled.wait_for(|value| *value) => Err(failure("MCP session closed")),
-            result = tokio::time::timeout(self.timeout, request) => result
-                .map_err(|_| failure("MCP request timed out"))?
-                .map_err(|_| failure("MCP request failed")),
-        }
+        biased;
+        _ = canceled.wait_for(|value| *value) => Err(failure("MCP session closed")),
+        result = tokio::time::timeout(self.timeout, request) => result
+            .map_err(|_| failure("MCP request timed out"))?
+            .map_err(|_| failure("MCP request failed")) }
     }
 }
 

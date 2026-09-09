@@ -8,7 +8,7 @@
 //! 3. `config/agent/OS.md` — platform-specific commands (auto-generated for current OS if missing)
 //! 4. Prompts — `config/agent-prompts/{name}.md` overrides embedded defaults; extra files included too
 
-use gateway_services::VaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use rust_embed::RustEmbed;
 use std::path::Path;
 use std::sync::Arc;

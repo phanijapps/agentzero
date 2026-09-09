@@ -410,8 +410,7 @@ impl Tool for ShellTool {
                 "stdout": "",
                 "stderr": guidance,
                 "truncated": false,
-                "shell": "none (arguments were truncated before execution)",
-            }));
+                "shell": "none (arguments were truncated before execution)" }));
         }
 
         // Check if tool is disabled due to elevated privileges
@@ -596,8 +595,7 @@ impl Tool for ShellTool {
                     "stdout": stdout,
                     "stderr": stderr,
                     "truncated": stdout_truncated || stderr_truncated,
-                    "shell": shell,
-                }))
+                    "shell": shell }))
             }
             Ok(Err(e)) => Err(AgentError::Tool(format!(
                 "Failed to execute command: {}",

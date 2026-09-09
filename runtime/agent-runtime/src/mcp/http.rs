@@ -61,10 +61,9 @@ impl HttpMcpClient {
     async fn send_request(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let mut canceled = self.canceled.subscribe();
         tokio::select! {
-            biased;
-            _ = canceled.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
-            result = self.send_request_inner(method, params) => result,
-        }
+        biased;
+        _ = canceled.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
+        result = self.send_request_inner(method, params) => result }
     }
 
     async fn send_request_inner(&self, method: &str, params: Value) -> Result<Value, McpError> {

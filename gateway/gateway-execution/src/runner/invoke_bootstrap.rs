@@ -16,9 +16,10 @@ use crate::errors::ExecutionError;
 use std::path::{Component, Path};
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind, PreparedExecution};
 use gateway_events::GatewayEvent;
-use gateway_services::{McpService, SharedVaultPaths, SkillService};
+use gateway_services::{McpService, SkillService};
 
 use crate::config::ExecutionConfig;
 use crate::handle::ExecutionHandle;
@@ -316,8 +317,7 @@ async fn build_planner_capability_catalog(
             serde_json::json!({
                 "id": skill.name,
                 "name": name,
-                "description": description,
-            })
+                "description": description })
         })
         .collect::<Vec<_>>();
     skills.sort_by(|left, right| {
@@ -343,8 +343,7 @@ async fn build_planner_capability_catalog(
             serde_json::json!({
                 "id": summary.id,
                 "name": name,
-                "description": description,
-            })
+                "description": description })
         })
         .collect::<Vec<_>>();
     mcps.sort_by(|left, right| {
@@ -356,8 +355,7 @@ async fn build_planner_capability_catalog(
     serde_json::json!({
         "skills": skills,
         "mcps": mcps,
-        "intent_guidance": intent_guidance,
-    })
+        "intent_guidance": intent_guidance })
 }
 
 fn is_trivial_chat_prompt(message: &str) -> bool {
@@ -1333,8 +1331,7 @@ impl InvokeBootstrap {
                                 "effective_skills": assignment.skills,
                                 "effective_mcps": resolution.effective_ids,
                                 "unresolved_count": resolution.rejections.len(),
-                                "rejection_codes": rejection_codes,
-                            }));
+                                "rejection_codes": rejection_codes }));
                             let _ = self.ctx.log_service.log(entry);
                         }
                         Err(_) => {
@@ -1354,8 +1351,7 @@ impl InvokeBootstrap {
                                 "effective_skills": assignment.skills,
                                 "effective_mcps": [],
                                 "unresolved_count": assignment.mcps.len(),
-                                "rejection_codes": [],
-                            }));
+                                "rejection_codes": [] }));
                             let _ = self.ctx.log_service.log(entry);
                         }
                     }
@@ -1815,6 +1811,7 @@ impl InvokeBootstrap {
 mod tests {
     use super::*;
     use crate::middleware::intent::{ExecutionStrategy, WardRecommendation};
+    use agent_primitives::vault_paths::VaultPaths;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1887,7 +1884,6 @@ mod tests {
     use arc_swap::ArcSwapOption;
     use execution_state::StateService;
     use gateway_events::EventBus;
-    use gateway_services::VaultPaths;
     use tokio::sync::RwLock;
     use zbot_conversation::AutonomyStore;
     use zbot_runtime_sqlite::DatabaseManager;
@@ -2024,8 +2020,9 @@ mod tests {
     #[test]
     fn list_existing_wards_lists_ward_dirs_with_blurbs() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: SharedVaultPaths =
-            std::sync::Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths: SharedVaultPaths = std::sync::Arc::new(
+            agent_primitives::vault_paths::VaultPaths::new(dir.path().to_path_buf()),
+        );
         let wards = paths.wards_dir();
         std::fs::create_dir_all(wards.join("travel-planning")).unwrap();
         std::fs::write(
@@ -2050,8 +2047,9 @@ mod tests {
     #[test]
     fn canonical_existing_ward_rejects_paths_and_symlinked_wards() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         let wards = paths.wards_dir();
         std::fs::create_dir_all(wards.join("financial-analysis")).unwrap();
 
@@ -2097,8 +2095,9 @@ mod tests {
     #[test]
     fn existing_ward_is_reusable_without_graduation_artifacts() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: SharedVaultPaths =
-            Arc::new(gateway_services::VaultPaths::new(dir.path().to_path_buf()));
+        let paths: SharedVaultPaths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
         std::fs::create_dir_all(paths.wards_dir().join("financial-analysis")).unwrap();
 
         assert_eq!(

@@ -13,6 +13,7 @@ description = "Embedded templates and system prompt assembly for AgentZero"
 
 [dependencies]
 gateway-services = { path = "../gateway-services" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 rust-embed = { workspace = true }
 tracing = { workspace = true }
 

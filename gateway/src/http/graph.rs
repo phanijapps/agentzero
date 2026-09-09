@@ -777,7 +777,7 @@ async fn reindex_ward_directories(
 #[cfg(test)]
 mod reindex_scope_tests {
     use super::{reindex_ward_directories, valid_ward_directory_id};
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Arc;
     use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
     use zbot_stores::KnowledgeGraphStore;

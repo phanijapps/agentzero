@@ -162,8 +162,7 @@ impl DaemonClient {
                 "action_id": action_id,
                 "surface_id": format!("cli:{target}"),
                 "target": target,
-                "expected_state": expected_state,
-            }))
+                "expected_state": expected_state }))
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;

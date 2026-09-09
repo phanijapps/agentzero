@@ -227,8 +227,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "key": key,
             "category": category,
             "confidence": confidence,
-            "message": format!("Fact saved: [{}] {}", category, content),
-        }))
+            "message": format!("Fact saved: [{}] {}", category, content) }))
     }
 
     async fn recall_facts(
@@ -273,8 +272,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                     "content": sf.fact.content,
                     "confidence": sf.fact.confidence,
                     "score": sf.score,
-                    "source": "memory_db",
-                })
+                    "source": "memory_db" })
             })
             .collect();
 
@@ -282,8 +280,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "query": query,
             "results": items,
             "count": items.len(),
-            "source": "memory_db",
-        }))
+            "source": "memory_db" }))
     }
 
     async fn recall_facts_prioritized(
@@ -488,8 +485,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                     "confidence": sf.fact.confidence,
                     "score": sf.score,
                     "source": "memory_db",
-                    "prioritized": true,
-                })
+                    "prioritized": true })
             })
             .collect();
 
@@ -499,8 +495,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "count": items.len(),
             "source": "memory_db",
             "prioritized": true,
-            "formatted": formatted,
-        }))
+            "formatted": formatted }))
     }
 
     /// Exact-key lookup for ctx-namespaced facts.
@@ -531,8 +526,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                 "session_id": f.session_id,
                 "created_at": f.created_at,
                 "updated_at": f.updated_at,
-                "pinned": f.pinned,
-            })
+                "pinned": f.pinned })
         }))
     }
 
@@ -590,8 +584,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
             "action": "save_ctx_fact",
             "key": key,
             "owner": owner,
-            "session_id": session_id,
-        }))
+            "session_id": session_id }))
     }
 
     async fn upsert_primitive(
@@ -655,8 +648,7 @@ impl MemoryFactStore for GatewayMemoryFactStore {
                 json!({
                     "key": f.key,
                     "signature": signature,
-                    "summary": summary,
-                })
+                    "summary": summary })
             })
             .collect();
         Ok(json!({ "primitives": primitives }))
@@ -1094,7 +1086,7 @@ mod tests {
     }
 
     fn create_test_store() -> GatewayMemoryFactStore {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let temp_dir = TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(temp_dir.path().to_path_buf()));

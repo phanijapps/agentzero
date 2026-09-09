@@ -434,7 +434,7 @@ impl SynthesisLlm for LlmSynthesizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use std::sync::Mutex;
     use zbot_stores_sqlite::kg::storage::GraphStorage;

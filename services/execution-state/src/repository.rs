@@ -1568,8 +1568,7 @@ impl<D: StateDbProvider> StateRepository<D> {
                 executions_cancelled,
                 today_sessions,
                 today_tokens,
-                sessions_by_source,
-            })
+                sessions_by_source })
         })
     }
 

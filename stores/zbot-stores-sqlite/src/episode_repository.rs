@@ -463,7 +463,9 @@ mod tests {
 
     fn setup() -> (tempfile::TempDir, EpisodeRepository) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         let db = Arc::new(crate::KnowledgeDatabase::new(paths).expect("knowledge db"));
         let vec_index: Arc<dyn VectorIndex> = Arc::new(
             SqliteVecIndex::new(db.clone(), "session_episodes_index", "episode_id")

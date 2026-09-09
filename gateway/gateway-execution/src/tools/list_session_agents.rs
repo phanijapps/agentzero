@@ -56,15 +56,13 @@ impl Tool for ListSessionAgentsTool {
                     "task": exec.task,
                     "started_at": exec.started_at,
                     "completed_at": exec.completed_at,
-                    "child_session_id": exec.child_session_id,
-                })
+                    "child_session_id": exec.child_session_id })
             })
             .collect();
 
         Ok(json!({
             "session_id": session_id,
-            "agents": agents,
-        }))
+            "agents": agents }))
     }
 }
 
@@ -78,8 +76,8 @@ fn context_session_id(ctx: &dyn ToolContext) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use execution_state::StateService;
-    use gateway_services::VaultPaths;
     use serde_json::json;
     use std::collections::HashMap;
     use tempfile::TempDir;

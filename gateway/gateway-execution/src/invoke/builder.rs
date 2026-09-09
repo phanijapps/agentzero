@@ -4,6 +4,8 @@
 //! data in [`super::tool_catalog`].
 
 use crate::errors::ExecutionError;
+use agent_primitives::vault_paths::SharedVaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use agent_primitives::{ConnectorResourceProvider, FileSystemContext};
 use agent_runtime::{
     ContextCapability, ContextCapabilityCatalog, ContextCapabilityHealth, ContextCapabilityKind,
@@ -22,7 +24,7 @@ use execution_state::StateService;
 use gateway_services::agents::Agent;
 use gateway_services::models::{ModelRegistry, DEFAULT_MAX_INPUT_TOKENS};
 use gateway_services::providers::Provider;
-use gateway_services::{McpService, SettingsService, SharedVaultPaths, SkillService, VaultPaths};
+use gateway_services::{McpService, SettingsService, SkillService};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -660,8 +662,7 @@ impl ExecutorBuilder {
                                 "temperature": mm.temperature,
                                 "maxTokens": mm.max_tokens,
                                 "baseUrl": base_url,
-                                "apiKey": api_key,
-                            }),
+                                "apiKey": api_key }),
                         );
                     }
                 }
@@ -1202,8 +1203,7 @@ pub(crate) fn mcp_startup_failure_observer(
             "effective_mcps": [],
             "startup_failed_mcps": [mcp_id],
             "unresolved_count": 1,
-            "rejection_codes": ["startup_failed"],
-        }));
+            "rejection_codes": ["startup_failed"] }));
         if log_service.log(entry).is_err() {
             tracing::debug!(mcp_id, "Failed to persist MCP startup audit event");
         }
@@ -1248,8 +1248,7 @@ pub async fn collect_agents_summary(
                     summaries.push(serde_json::json!({
                         "id": format!("ward:{name}"),
                         "name": format!("Ward Agent: {name}"),
-                        "description": format!("Delegatable agent for the existing {name} ward"),
-                    }));
+                        "description": format!("Delegatable agent for the existing {name} ward") }));
                 }
             }
         }
@@ -1267,8 +1266,7 @@ pub async fn collect_skills_summary(skill_service: &SkillService) -> Vec<serde_j
             .map(|s| {
                 serde_json::json!({
                     "name": s.name,
-                    "description": s.description,
-                })
+                    "description": s.description })
             })
             .collect(),
         Err(_) => vec![],

@@ -964,8 +964,7 @@ impl KnowledgeGraphStore for SqliteKgStore {
                             agent_id: row.get(1)?,
                             name: row.get(2)?,
                             entity_type: row.get(3)?,
-                            n_sessions: row.get::<_, i64>(4)?,
-                        })
+                            n_sessions: row.get::<_, i64>(4)? })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
@@ -1439,7 +1438,7 @@ fn collect_subgraph_neighbors(
 mod tests {
     use super::*;
     use crate::knowledge_db::KnowledgeDatabase;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
 
     #[tokio::test]
     async fn decay_entity_confidence_reduces_old_entities() {

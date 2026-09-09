@@ -127,9 +127,9 @@ fn context_session_id(ctx: &dyn ToolContext) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::steering::SteeringQueue;
     use execution_state::StateService;
-    use gateway_services::VaultPaths;
     use serde_json::json;
     use std::collections::HashMap;
     use tempfile::TempDir;

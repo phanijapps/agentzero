@@ -173,8 +173,7 @@ impl DependencyChecklist {
                     true,
                 ),
             ],
-            evidence: DependencyEvidence::default(),
-        }
+            evidence: DependencyEvidence::default() }
     }
 
     /// Return all blocker identifiers for provider selection.

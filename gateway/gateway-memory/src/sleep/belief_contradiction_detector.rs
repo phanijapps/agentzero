@@ -490,7 +490,7 @@ impl ContradictionJudgeLlm for LlmContradictionJudge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Mutex as StdMutex;
     use zbot_stores_sqlite::{
         KnowledgeDatabase, SqliteBeliefContradictionStore, SqliteBeliefStore,

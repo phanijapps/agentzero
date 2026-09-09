@@ -85,8 +85,7 @@ impl CausalEdgeStore {
                             relationship: row.get(4)?,
                             confidence: row.get(5)?,
                             session_id: row.get(6)?,
-                            created_at: row.get(7)?,
-                        })
+                            created_at: row.get(7)? })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
 
@@ -115,8 +114,7 @@ impl CausalEdgeStore {
                             relationship: row.get(4)?,
                             confidence: row.get(5)?,
                             session_id: row.get(6)?,
-                            created_at: row.get(7)?,
-                        })
+                            created_at: row.get(7)? })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
 
@@ -129,7 +127,7 @@ impl CausalEdgeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
 

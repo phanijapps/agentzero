@@ -140,7 +140,7 @@ pub fn failed_episode_to_item(ep: &SessionEpisode, rank: usize) -> ScoredItem {
 mod tests {
     use super::*;
     use crate::recall::scored_item::ItemKind;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use zbot_stores_sqlite::{
         EpisodeRepository, GatewayEpisodeStore, KnowledgeDatabase, SqliteVecIndex,
     };

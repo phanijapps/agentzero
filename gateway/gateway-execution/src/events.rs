@@ -29,22 +29,19 @@ pub fn convert_stream_event(
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
             execution_id: execution_id.to_string(),
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::Token { content, .. } => Some(GatewayEvent::Token {
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
             execution_id: execution_id.to_string(),
             delta: content,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::Reasoning { content, .. } => Some(GatewayEvent::Thinking {
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
             execution_id: execution_id.to_string(),
             content,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::ToolCallStart {
             tool_id, tool_name, args, ..
         } => Some(GatewayEvent::ToolCall {
@@ -54,8 +51,7 @@ pub fn convert_stream_event(
             tool_id,
             tool_name,
             args,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::ToolResult {
             tool_id, result, error, ..
         } => Some(GatewayEvent::ToolResult {
@@ -65,22 +61,19 @@ pub fn convert_stream_event(
             tool_id,
             result,
             error,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::Done { final_message, .. } => Some(GatewayEvent::TurnComplete {
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
             execution_id: execution_id.to_string(),
             message: final_message,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::Error { error, .. } => Some(GatewayEvent::Error {
             agent_id: Some(agent_id.to_string()),
             session_id: Some(session_id.to_string()),
             execution_id: Some(execution_id.to_string()),
             message: error,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         // Action events from tools
         StreamEvent::ActionRespond {
             message,
@@ -90,8 +83,7 @@ pub fn convert_stream_event(
             session_id: respond_session_id.unwrap_or_else(|| session_id.to_string()),
             execution_id: execution_id.to_string(),
             message,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         // ActionDelegate is handled by the runner/delegation system directly,
         // which emits DelegationStarted with proper IDs. Don't emit here to avoid
         // duplicate events or confusing the UI.
@@ -100,16 +92,14 @@ pub fn convert_stream_event(
         StreamEvent::Heartbeat { .. } => Some(GatewayEvent::Heartbeat {
             session_id: session_id.to_string(),
             execution_id: execution_id.to_string(),
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         // ContextState is internal state for checkpoint persistence - don't emit to UI.
         StreamEvent::ContextState { .. } => None,
         // Ward changed - agent switched to a different project directory.
         StreamEvent::WardChanged { ward_id, .. } => Some(GatewayEvent::WardChanged {
             session_id: session_id.to_string(),
             execution_id: execution_id.to_string(),
-            ward_id,
-        }),
+            ward_id }),
         // IterationsExtended — auto-extension event from executor
         StreamEvent::IterationsExtended {
             iterations_used, iterations_added, reason, ..
@@ -119,19 +109,16 @@ pub fn convert_stream_event(
             iterations_used,
             iterations_added,
             reason,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::ActionPlanUpdate { plan, explanation, .. } => Some(GatewayEvent::PlanUpdate {
             session_id: session_id.to_string(),
             execution_id: execution_id.to_string(),
             plan,
             explanation,
-            conversation_id: Some(conversation_id.to_string()),
-        }),
+            conversation_id: Some(conversation_id.to_string()) }),
         StreamEvent::SessionTitleChanged { title, .. } => Some(GatewayEvent::SessionTitleChanged {
             session_id: session_id.to_string(),
-            title,
-        }),
+            title }),
         // No gateway equivalents — intentionally not broadcast:
         //   ToolCallEnd: pair with ToolResult, redundant downstream.
         //   ShowContent/RequestInput: generative-UI events handled elsewhere.
@@ -141,8 +128,7 @@ pub fn convert_stream_event(
         StreamEvent::ToolCallEnd { .. }
         | StreamEvent::ShowContent { .. }
         | StreamEvent::RequestInput { .. }
-        | StreamEvent::TokenUpdate { .. } => None,
-    }
+        | StreamEvent::TokenUpdate { .. } => None }
 }
 
 fn validated_surface_event(
@@ -453,7 +439,7 @@ mod tests {
     fn context_state_is_dropped() {
         assert!(convert(StreamEvent::ContextState {
             timestamp: 0,
-            state: serde_json::json!({}),
+            state: serde_json::json!({})
         })
         .is_none());
     }
@@ -474,7 +460,7 @@ mod tests {
             complexity: None,
             mode: None,
             parallel: false,
-            child_execution_id: None,
+            child_execution_id: None
         })
         .is_none());
     }
@@ -485,7 +471,7 @@ mod tests {
             timestamp: 0,
             tool_id: "t1".into(),
             tool_name: "search".into(),
-            args: serde_json::json!(null),
+            args: serde_json::json!(null)
         })
         .is_none());
     }
@@ -500,7 +486,7 @@ mod tests {
             metadata: None,
             file_path: None,
             is_attachment: None,
-            base64: None,
+            base64: None
         })
         .is_none());
     }
@@ -514,7 +500,7 @@ mod tests {
             title: "t".into(),
             description: None,
             schema: serde_json::json!({}),
-            submit_button: None,
+            submit_button: None
         })
         .is_none());
     }
@@ -524,7 +510,7 @@ mod tests {
         assert!(convert(StreamEvent::TokenUpdate {
             timestamp: 0,
             tokens_in: 10,
-            tokens_out: 20,
+            tokens_out: 20
         })
         .is_none());
     }

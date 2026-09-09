@@ -42,8 +42,7 @@ fn episode_to_value(ep: KgEpisode) -> Value {
         "error": ep.error,
         "created_at": ep.created_at,
         "started_at": ep.started_at,
-        "completed_at": ep.completed_at,
-    })
+        "completed_at": ep.completed_at })
 }
 
 #[async_trait]

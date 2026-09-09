@@ -999,15 +999,15 @@ mod tests {
                     workspace_id: Some("workspace-a".to_string()),
                     allowed_ward_ids: vec!["ward-a".to_string()],
                     allowed_session_ids: vec!["sess-a".to_string()],
-                    allowed_global_sources: Vec::new(),
-                },
+                    allowed_global_sources: Vec::new()
+                }
             })
         );
         assert_eq!(
             access.request.lock().unwrap().clone(),
             Some(UnifiedRecallRequest {
                 query: "knowledge graph".to_string(),
-                limit: 4,
+                limit: 4
             })
         );
     }

@@ -169,8 +169,7 @@ pub fn context_packet_delta_for_trigger(
         ),
         MicroRecallTrigger::ToolError {
             tool_name,
-            error_msg,
-        } => (
+            error_msg } => (
             "tool_error",
             format!("tool-error-{tool_name}"),
             "tool_error_context",
@@ -187,8 +186,7 @@ pub fn context_packet_delta_for_trigger(
             format!("entity-mention-{entity_name}"),
             "entity_context",
             format!("New entity mentioned: {entity_name}. Recall graph and memory context before acting on it."),
-        ),
-    };
+        ) };
     build_single_atom_delta(
         &format!("micro-recall:{iteration}:{}", slugify(&atom_id)),
         &ctx.agent_id,

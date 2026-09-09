@@ -299,8 +299,7 @@ pub async fn complete_execution(ctx: CompleteExecution<'_>) {
                     let payload = serde_json::json!({
                         "message": response_text,
                         "execution_id": execution_id,
-                        "conversation_id": conversation_id,
-                    });
+                        "conversation_id": conversation_id });
 
                     tracing::info!(
                         session_id = %session_id,
@@ -344,8 +343,7 @@ pub async fn complete_execution(ctx: CompleteExecution<'_>) {
                 "message": response_text,
                 "execution_id": execution_id,
                 "session_id": session_id,
-                "thread_id": thread_id,
-            });
+                "thread_id": thread_id });
 
             for id in connector_ids {
                 if bridge.is_connected(id).await {
@@ -585,8 +583,8 @@ pub async fn emit_delegation_completed(ctx: DelegationCompletedEvent<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use execution_state::{SessionPlanStepStatus, StateService};
-    use gateway_services::VaultPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
     use zbot_runtime_sqlite::DatabaseManager;

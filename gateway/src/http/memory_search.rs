@@ -123,8 +123,7 @@ fn wiki_hit_to_value(hit: WikiHit) -> Value {
         "updated_at": hit.article.updated_at,
         "score": hit.score,
         "match_source": hit.match_source,
-        "route_hint": route_hint_value(route_hint),
-    })
+        "route_hint": route_hint_value(route_hint) })
 }
 
 fn procedure_to_value(proc: zbot_stores_domain::Procedure, score: f64) -> Value {
@@ -151,8 +150,7 @@ fn procedure_to_value(proc: zbot_stores_domain::Procedure, score: f64) -> Value 
         "updated_at": proc.updated_at,
         "score": score,
         "match_source": "vec",
-        "route_hint": route_hint,
-    })
+        "route_hint": route_hint })
 }
 
 fn episode_to_value(ep: SessionEpisode, score: Option<f64>, source: &str) -> Value {
@@ -171,8 +169,7 @@ fn episode_to_value(ep: SessionEpisode, score: Option<f64>, source: &str) -> Val
         "token_cost": ep.token_cost,
         "created_at": ep.created_at,
         "match_source": source,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     if let (Value::Object(ref mut m), Some(s)) = (&mut v, score) {
         m.insert("score".into(), json!(s));
     }
@@ -201,8 +198,7 @@ fn fact_to_value(fact: zbot_stores_domain::MemoryFact, source: &str, score: Opti
         "pinned": fact.pinned,
         "epistemic_class": fact.epistemic_class,
         "match_source": public_source,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     if let (Value::Object(ref mut m), Some(s)) = (&mut v, score) {
         m.insert("score".into(), json!(s));
     }

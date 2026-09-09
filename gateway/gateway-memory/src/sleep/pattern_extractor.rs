@@ -494,7 +494,7 @@ pub(crate) fn build_pattern_prompt(input: &PatternInput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use std::sync::Mutex;
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};

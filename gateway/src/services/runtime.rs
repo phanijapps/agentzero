@@ -608,8 +608,7 @@ impl RuntimeService {
                         "Gateway placeholder response. Set OPENAI_API_KEY for real execution. Message: {}",
                         message.chars().take(50).collect::<String>()
                     )),
-                    conversation_id: Some(conversation_id.clone()),
-                })
+                    conversation_id: Some(conversation_id.clone()) })
                 .await;
         });
 

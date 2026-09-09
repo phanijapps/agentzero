@@ -33,8 +33,7 @@ pub async fn session_meta(
         "sid": sid,
         "ward": ward,
         "root_agent": root_agent,
-        "started_at": started_at.to_rfc3339(),
-    })
+        "started_at": started_at.to_rfc3339() })
     .to_string();
 
     let key = format!("ctx.{}.session.meta", sid);
@@ -297,8 +296,7 @@ mod tests {
 
         let intent = json!({
             "interpretation": "test interp",
-            "ward_chosen": "w",
-        });
+            "ward_chosen": "w" });
         intent_snapshot(&store, "sess-2", "w", &intent, "original prompt text").await;
 
         let calls = recorder.calls();

@@ -13,7 +13,7 @@ use gateway_services::WardUsage;
 use std::{collections::BTreeSet, sync::Arc};
 
 pub(super) struct ToolCatalog {
-    pub(super) paths: gateway_services::SharedVaultPaths,
+    pub(super) paths: agent_primitives::vault_paths::SharedVaultPaths,
     pub(super) state_service:
         Arc<execution_state::StateService<zbot_runtime_sqlite::DatabaseManager>>,
     pub(super) messages: Arc<dyn zbot_conversation::MessageStore>,
@@ -221,8 +221,7 @@ fn local_context_provider_capabilities(status: LocalProviderStatus) -> Vec<Conte
         audit_policy: Some("context_packet_trace".to_string()),
         default_visible: false,
         visibility_policy: "context_provider_only".to_string(),
-        split_target: Some("context_packet:recall_unified".to_string()),
-    });
+        split_target: Some("context_packet:recall_unified".to_string()) });
 
     capabilities.push(ContextCapability {
         id: "knowledge_graph:entities".to_string(),
@@ -250,8 +249,7 @@ fn local_context_provider_capabilities(status: LocalProviderStatus) -> Vec<Conte
         audit_policy: Some("graph_read_audit".to_string()),
         default_visible: false,
         visibility_policy: "resource_catalog_only".to_string(),
-        split_target: Some("context_graph:knowledge_graph".to_string()),
-    });
+        split_target: Some("context_graph:knowledge_graph".to_string()) });
 
     capabilities.push(ContextCapability {
         id: "knowledge_graph:ingestion_queue".to_string(),
@@ -273,8 +271,7 @@ fn local_context_provider_capabilities(status: LocalProviderStatus) -> Vec<Conte
         audit_policy: Some("evidence_intake_audit".to_string()),
         default_visible: false,
         visibility_policy: "catalog_only".to_string(),
-        split_target: Some("tool:ingest".to_string()),
-    });
+        split_target: Some("tool:ingest".to_string()) });
 
     capabilities.push(ContextCapability {
         id: "memory:compaction".to_string(),

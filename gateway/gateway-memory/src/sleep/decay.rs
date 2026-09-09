@@ -382,7 +382,7 @@ impl DecayEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use knowledge_graph::{Entity, EntityType, ExtractedKnowledge, Relationship, RelationshipType};
     use std::sync::Arc;
     use zbot_stores::KnowledgeGraphStore;

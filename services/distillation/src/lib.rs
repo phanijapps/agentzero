@@ -47,14 +47,13 @@ const GRAPH_CONTROL_PROPERTY_KEYS: [&str; 10] = [
 
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::VaultPaths;
 use agent_runtime::llm::client::LlmClient;
 use agent_runtime::llm::config::LlmConfig;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use agent_runtime::llm::openai::OpenAiClient;
 use agent_runtime::types::ChatMessage;
-use gateway_services::{
-    models::DEFAULT_MAX_OUTPUT_TOKENS, ProviderService, SettingsService, VaultPaths,
-};
+use gateway_services::{models::DEFAULT_MAX_OUTPUT_TOKENS, ProviderService, SettingsService};
 use knowledge_graph::{Entity, EntityType, Relationship, RelationshipType};
 use serde::{Deserialize, Serialize};
 use zbot_stores_domain::{MemoryFact, Procedure, SessionEpisode};
@@ -2912,9 +2911,10 @@ mod tests {
     mod procedure_upsert {
         use super::*;
 
+        use agent_primitives::vault_paths::VaultPaths;
         use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
         use async_trait::async_trait;
-        use gateway_services::{ProviderService, VaultPaths};
+        use gateway_services::ProviderService;
         use std::sync::Arc;
         use std::sync::Mutex;
         use tempfile::tempdir;

@@ -175,7 +175,7 @@ mod tests {
             mapper.ward_scope(" "),
             Err(AdapterError::InvalidScope {
                 component: "ward_id",
-                reason: "empty value".to_string(),
+                reason: "empty value".to_string()
             })
         );
     }
@@ -193,7 +193,7 @@ mod tests {
             mapper.memory_fact_scope("ward-a", Some("session-a")),
             Err(AdapterError::InvalidScope {
                 component: "ward_scope_target",
-                reason: "session scope is reserved for actual session identity".to_string(),
+                reason: "session scope is reserved for actual session identity".to_string()
             })
         );
     }
@@ -211,7 +211,7 @@ mod tests {
             mapper.partition_scope("partition-a"),
             Err(AdapterError::InvalidScope {
                 component: "partition_scope_target",
-                reason: "session scope is reserved for actual session identity".to_string(),
+                reason: "session scope is reserved for actual session identity".to_string()
             })
         );
     }
@@ -226,7 +226,7 @@ mod tests {
             ),
             Err(AdapterError::InvalidScope {
                 component: "tenant",
-                reason: "empty value".to_string(),
+                reason: "empty value".to_string()
             })
         );
     }

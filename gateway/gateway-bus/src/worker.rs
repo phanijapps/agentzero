@@ -588,9 +588,8 @@ impl DurableWorkWorker {
         'worker: loop {
             if active.len() >= limits.concurrency() {
                 tokio::select! {
-                    _ = &mut shutdown_rx => break 'worker,
-                    joined = active.join_next() => log_item_join(joined),
-                }
+                _ = &mut shutdown_rx => break 'worker,
+                joined = active.join_next() => log_item_join(joined) }
                 continue;
             }
 
@@ -601,12 +600,11 @@ impl DurableWorkWorker {
                     blocking_store_call(move || store.recover_expired(&target, Utc::now()));
                 tokio::pin!(recovery);
                 let recovered = tokio::select! {
-                    _ = &mut shutdown_rx => {
-                        let _ = recovery.await;
-                        break 'worker;
-                    }
-                    recovered = &mut recovery => recovered,
-                };
+                _ = &mut shutdown_rx => {
+                    let _ = recovery.await;
+                    break 'worker;
+                }
+                recovered = &mut recovery => recovered };
                 match recovered {
                     Ok(outcome) => {
                         if outcome.requeued != 0 || outcome.dead_lettered != 0 {
@@ -646,27 +644,25 @@ impl DurableWorkWorker {
             });
             tokio::pin!(claim);
             let claimed = tokio::select! {
-                _ = &mut shutdown_rx => {
-                    match claim.await {
-                        Ok(Some(item)) => tracing::info!(
-                            work_id = item.envelope().id(),
-                            target = self.config.target(),
-                            kind = item.envelope().kind(),
-                            attempt = item.attempts(),
-                            transition = "claim_settled_after_shutdown",
-                            "durable work transition"
-                        ),
-                        Ok(None) => {}
-                        Err(reason) => log_store_failure(
-                            self.config.target(),
-                            "shutdown_claim_settlement_failed",
-                            reason,
-                        ),
-                    }
-                    break 'worker;
-                }
-                claimed = &mut claim => claimed,
-            };
+            _ = &mut shutdown_rx => {
+                match claim.await {
+                    Ok(Some(item)) => tracing::info!(
+                        work_id = item.envelope().id(),
+                        target = self.config.target(),
+                        kind = item.envelope().kind(),
+                        attempt = item.attempts(),
+                        transition = "claim_settled_after_shutdown",
+                        "durable work transition"
+                    ),
+                    Ok(None) => {}
+                    Err(reason) => log_store_failure(
+                        self.config.target(),
+                        "shutdown_claim_settlement_failed",
+                        reason,
+                    ) }
+                break 'worker;
+            }
+            claimed = &mut claim => claimed };
 
             match claimed {
                 Ok(Some(_)) if claim_cancellation.is_cancelled() => break 'worker,
@@ -681,11 +677,10 @@ impl DurableWorkWorker {
                 Ok(None) => {
                     needs_recovery = true;
                     tokio::select! {
-                        _ = &mut shutdown_rx => break 'worker,
-                        _ = self.wake.wait() => {},
-                        _ = tokio::time::sleep(limits.poll_interval()) => {},
-                        joined = active.join_next(), if !active.is_empty() => log_item_join(joined),
-                    }
+                    _ = &mut shutdown_rx => break 'worker,
+                    _ = self.wake.wait() => {},
+                    _ = tokio::time::sleep(limits.poll_interval()) => {},
+                    joined = active.join_next(), if !active.is_empty() => log_item_join(joined) }
                 }
                 Err(reason) => {
                     log_store_failure(self.config.target(), "claim_failed", reason);
@@ -818,9 +813,8 @@ async fn wait_backoff_or_shutdown(
     shutdown_rx: &mut oneshot::Receiver<()>,
 ) -> bool {
     tokio::select! {
-        _ = shutdown_rx => true,
-        _ = tokio::time::sleep(duration) => false,
-    }
+    _ = shutdown_rx => true,
+    _ = tokio::time::sleep(duration) => false }
 }
 
 async fn process_item(

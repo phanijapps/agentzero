@@ -8,10 +8,10 @@
 
 #![cfg(feature = "test-stubs")]
 
+use agent_primitives::vault_paths::VaultPaths;
 use execution_state::StateService;
 use gateway_events::{EventBus, GatewayEvent};
 use gateway_execution::runner::{ContinuationSpawner, ContinuationWatcher, StubSessionInvoker};
-use gateway_services::VaultPaths;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

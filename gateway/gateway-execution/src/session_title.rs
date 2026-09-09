@@ -118,8 +118,7 @@ mod tests {
             explicit_title: Some("```md\n# Analyze AAPL, WMT, and peers with a very long instruction tail that should not all fit\n```"),
             intent_title_hint: None,
             first_user_message: None,
-            first_meaningful_activity: None,
-        });
+            first_meaningful_activity: None });
 
         assert_eq!(
             title.as_deref(),

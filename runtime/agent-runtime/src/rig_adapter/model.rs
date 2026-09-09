@@ -421,8 +421,7 @@ pub(crate) fn convert_tools(tools: &[ToolDefinition]) -> Option<Value> {
                     "function": {
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.parameters,
-                    }
+                        "parameters": t.parameters }
                 })
             })
             .collect(),

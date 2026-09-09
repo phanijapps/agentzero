@@ -211,6 +211,5 @@ fn summary_to_value(g: &GoalSummary) -> Value {
         "description": g.description,
         "state": g.state,
         "slots": g.slots,
-        "filled_slots": g.filled_slots,
-    })
+        "filled_slots": g.filled_slots })
 }

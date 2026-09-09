@@ -117,8 +117,7 @@ mod tests {
         let mut text = String::new();
         let calls = vec![serde_json::json!({
             "tool_name": "respond",
-            "args": { "message": "terminal answer" },
-        })];
+            "args": { "message": "terminal answer" } })];
 
         assert_eq!(assistant_turn_content(&mut text, &calls), "terminal answer");
     }
@@ -128,8 +127,7 @@ mod tests {
         let mut text = "progress text".to_owned();
         let calls = vec![serde_json::json!({
             "tool_name": "respond",
-            "args": { "message": "terminal answer" },
-        })];
+            "args": { "message": "terminal answer" } })];
 
         assert_eq!(assistant_turn_content(&mut text, &calls), "progress text");
         assert!(text.is_empty());
@@ -141,16 +139,13 @@ mod tests {
         let calls = vec![
             serde_json::json!({
                 "tool_name": "graph_query",
-                "args": { "query": "memory" },
-            }),
+                "args": { "query": "memory" } }),
             serde_json::json!({
                 "tool_name": "respond",
-                "args": { "text": "first terminal answer", "message": "newer shape" },
-            }),
+                "args": { "text": "first terminal answer", "message": "newer shape" } }),
             serde_json::json!({
                 "tool_name": "respond",
-                "args": { "message": "second terminal answer" },
-            }),
+                "args": { "message": "second terminal answer" } }),
         ];
 
         assert_eq!(
@@ -164,8 +159,7 @@ mod tests {
         let mut text = String::new();
         let calls = vec![serde_json::json!({
             "tool_name": "respond",
-            "args": { "message": "" },
-        })];
+            "args": { "message": "" } })];
 
         assert_eq!(assistant_turn_content(&mut text, &calls), "[tool calls]");
     }

@@ -341,7 +341,7 @@ fn blob_to_f32_vec(blob: &[u8]) -> Vec<f32> {
 mod tests {
     use super::*;
     use crate::vector_index::SqliteVecIndex;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
 
     fn setup() -> (tempfile::TempDir, WardWikiRepository) {
         let tmp = tempfile::tempdir().expect("tempdir");

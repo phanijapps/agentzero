@@ -583,8 +583,8 @@ impl BeliefSynthesisLlm for LlmBeliefSynthesizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use chrono::Duration as ChronoDuration;
-    use gateway_services::VaultPaths;
     use std::sync::Mutex as StdMutex;
     use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
     use zbot_stores_sqlite::{
@@ -804,8 +804,7 @@ mod tests {
                 "pinned": false,
                 "epistemic_class": "current",
                 "source_episode_id": null,
-                "source_ref": null,
-            }))
+                "source_ref": null }))
             .unwrap();
         fact_store
             .upsert_typed_fact(typed_fact, None)
@@ -871,8 +870,7 @@ mod tests {
                 "pinned": false,
                 "epistemic_class": "current",
                 "source_episode_id": null,
-                "source_ref": null,
-            }))
+                "source_ref": null }))
             .unwrap();
         fact_store
             .upsert_typed_fact(typed_fact, None)
@@ -1213,8 +1211,7 @@ mod tests {
                 "pinned": false,
                 "epistemic_class": "current",
                 "source_episode_id": null,
-                "source_ref": null,
-            }))
+                "source_ref": null }))
             .unwrap();
         fact_store
             .upsert_typed_fact(typed_fact, None)

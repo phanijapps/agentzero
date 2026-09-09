@@ -547,11 +547,11 @@ mod tests {
     mod scheduler {
         use super::super::*;
         use crate::bus::{GatewayBus, SessionRequest};
+        use agent_primitives::vault_paths::VaultPaths;
         use async_trait::async_trait;
         use execution_state::SessionStatus;
         use gateway_bus::{BusError, SessionHandle};
         use gateway_cron::{CreateCronJobRequest, CronJobConfig, CronService};
-        use gateway_services::VaultPaths;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
         use tempfile::TempDir;

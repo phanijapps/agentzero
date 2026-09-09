@@ -141,7 +141,7 @@ impl Tool for WaitAgentTool {
 mod tests {
     use super::*;
     use crate::handle::ExecutionHandle;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use serde_json::json;
     use tempfile::TempDir;
     use zbot_runtime_sqlite::DatabaseManager;

@@ -1511,8 +1511,7 @@ impl DistillationStore for EngramSidecarStores {
         let mut run = json!({
             "session_id": session_id,
             "status": status,
-            "retry_count": 0,
-        });
+            "retry_count": 0 });
         if let Some(error) = error {
             set_json_string(&mut run, "error", error);
         }
@@ -1536,9 +1535,8 @@ impl DistillationStore for EngramSidecarStores {
             "entities_extracted": entities,
             "relationships_extracted": relationships,
             "episode_created": episode_created,
-            "duration_ms": duration_ms,
-        }))
-        .await
+            "duration_ms": duration_ms }))
+            .await
     }
 
     async fn record_distillation_failure(
@@ -1551,8 +1549,7 @@ impl DistillationStore for EngramSidecarStores {
         let mut run = json!({
             "session_id": session_id,
             "status": status,
-            "retry_count": retry_count,
-        });
+            "retry_count": retry_count });
         if let Some(error) = error {
             set_json_string(&mut run, "error", error);
         }
@@ -1575,8 +1572,7 @@ impl CompactionStore for EngramSidecarStores {
             json!({
                 "loser_entity_id": loser_entity_id,
                 "winner_entity_id": winner_entity_id,
-                "reason": reason,
-            }),
+                "reason": reason }),
         )
     }
 
@@ -1619,8 +1615,7 @@ impl CompactionStore for EngramSidecarStores {
             json!({
                 "entity_id": entity_id,
                 "relationship_id": relationship_id,
-                "reason": reason,
-            }),
+                "reason": reason }),
         )
     }
 
@@ -1748,8 +1743,7 @@ fn kg_episode_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "error": row.get::<_, Option<String>>(8)?,
         "created_at": row.get::<_, String>(9)?,
         "started_at": row.get::<_, Option<String>>(10)?,
-        "completed_at": row.get::<_, Option<String>>(11)?,
-    }))
+        "completed_at": row.get::<_, Option<String>>(11)? }))
 }
 
 fn status_counts(
@@ -1840,8 +1834,7 @@ fn encode_identity(identity: &EmbeddingQueryIdentity) -> String {
         "model": identity.model.clone(),
         "dimensions": identity.dimensions,
         "promptProfile": identity.prompt_profile.clone(),
-        "normalization": identity.normalization.clone(),
-    })
+        "normalization": identity.normalization.clone() })
     .to_string()
 }
 
@@ -2068,8 +2061,7 @@ mod tests {
                 "source_id": "source-a",
                 "source_type": "connector",
                 "session_id": "sess-a",
-                "ward_id": "ward-a",
-            })
+                "ward_id": "ward-a" })
             .to_string(),
         )
         .await

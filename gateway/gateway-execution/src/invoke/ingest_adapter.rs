@@ -218,7 +218,7 @@ mod tests {
     use super::*;
     use crate::errors::ExecutionError;
     use crate::ingest::extractor::Extractor;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
     use zbot_stores_sqlite::kg::storage::GraphStorage;
     use zbot_stores_sqlite::{

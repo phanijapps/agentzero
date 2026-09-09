@@ -69,82 +69,81 @@ impl DelegationDispatcher {
 
         loop {
             tokio::select! {
-                msg = self.delegation_rx.recv(), if rx_open => {
-                    match msg {
-                        Some(request) => {
-                            let session_id = request.session_id.clone();
+            msg = self.delegation_rx.recv(), if rx_open => {
+                match msg {
+                    Some(request) => {
+                        let session_id = request.session_id.clone();
 
-                            if request.parallel {
-                                // Parallel: skip per-session queue, go straight to global semaphore.
-                                tracing::info!(
-                                    session_id = %session_id,
-                                    child_agent = %request.child_agent_id,
-                                    "Parallel delegation — bypassing per-session queue"
-                                );
-                                self.spawn_with_notification(request, done_tx.clone());
-                            } else if active_sessions.contains(&session_id) {
-                                // Sequential: queue behind the active delegation for this session.
-                                tracing::info!(
-                                    session_id = %session_id,
-                                    agent = %request.child_agent_id,
-                                    queued = queued.get(&session_id).map(|q| q.len()).unwrap_or(0),
-                                    "Queuing delegation (active delegation in progress)"
-                                );
-                                queued.entry(session_id).or_default().push_back(request);
-                            } else {
-                                // Sequential: no active delegation, spawn immediately.
-                                tracing::info!(
-                                    session_id = %session_id,
-                                    parent_agent = %request.parent_agent_id,
-                                    child_agent = %request.child_agent_id,
-                                    "Processing delegation request"
-                                );
-                                active_sessions.insert(session_id.clone());
-                                self.spawn_with_notification(request, done_tx.clone());
-                            }
-                        }
-                        None => {
-                            // Inbound channel closed — stop accepting new requests.
-                            rx_open = false;
-                            tracing::info!("DelegationDispatcher: request channel closed, draining in-flight work");
-                            // If nothing is in-flight, exit immediately.
-                            if active_sessions.is_empty() && queued.is_empty() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                Some(completed_session) = done_rx.recv() => {
-                    active_sessions.remove(&completed_session);
-
-                    // Pop the next queued request for this session (if any).
-                    if let Some(queue) = queued.get_mut(&completed_session) {
-                        if let Some(next) = queue.pop_front() {
+                        if request.parallel {
+                            // Parallel: skip per-session queue, go straight to global semaphore.
                             tracing::info!(
-                                session_id = %completed_session,
-                                agent = %next.child_agent_id,
-                                remaining = queue.len(),
-                                "Dequeuing next delegation"
+                                session_id = %session_id,
+                                child_agent = %request.child_agent_id,
+                                "Parallel delegation — bypassing per-session queue"
                             );
-                            active_sessions.insert(completed_session.clone());
-                            self.spawn_with_notification(next, done_tx.clone());
-                        }
-                        if queued
-                            .get(&completed_session)
-                            .map(|q| q.is_empty())
-                            .unwrap_or(true)
-                        {
-                            queued.remove(&completed_session);
+                            self.spawn_with_notification(request, done_tx.clone());
+                        } else if active_sessions.contains(&session_id) {
+                            // Sequential: queue behind the active delegation for this session.
+                            tracing::info!(
+                                session_id = %session_id,
+                                agent = %request.child_agent_id,
+                                queued = queued.get(&session_id).map(|q| q.len()).unwrap_or(0),
+                                "Queuing delegation (active delegation in progress)"
+                            );
+                            queued.entry(session_id).or_default().push_back(request);
+                        } else {
+                            // Sequential: no active delegation, spawn immediately.
+                            tracing::info!(
+                                session_id = %session_id,
+                                parent_agent = %request.parent_agent_id,
+                                child_agent = %request.child_agent_id,
+                                "Processing delegation request"
+                            );
+                            active_sessions.insert(session_id.clone());
+                            self.spawn_with_notification(request, done_tx.clone());
                         }
                     }
-
-                    // If the inbound channel closed and all work is drained, exit.
-                    if !rx_open && active_sessions.is_empty() && queued.is_empty() {
-                        break;
+                    None => {
+                        // Inbound channel closed — stop accepting new requests.
+                        rx_open = false;
+                        tracing::info!("DelegationDispatcher: request channel closed, draining in-flight work");
+                        // If nothing is in-flight, exit immediately.
+                        if active_sessions.is_empty() && queued.is_empty() {
+                            break;
+                        }
                     }
                 }
-                else => break,
             }
+            Some(completed_session) = done_rx.recv() => {
+                active_sessions.remove(&completed_session);
+
+                // Pop the next queued request for this session (if any).
+                if let Some(queue) = queued.get_mut(&completed_session) {
+                    if let Some(next) = queue.pop_front() {
+                        tracing::info!(
+                            session_id = %completed_session,
+                            agent = %next.child_agent_id,
+                            remaining = queue.len(),
+                            "Dequeuing next delegation"
+                        );
+                        active_sessions.insert(completed_session.clone());
+                        self.spawn_with_notification(next, done_tx.clone());
+                    }
+                    if queued
+                        .get(&completed_session)
+                        .map(|q| q.is_empty())
+                        .unwrap_or(true)
+                    {
+                        queued.remove(&completed_session);
+                    }
+                }
+
+                // If the inbound channel closed and all work is drained, exit.
+                if !rx_open && active_sessions.is_empty() && queued.is_empty() {
+                    break;
+                }
+            }
+            else => break }
         }
     }
 

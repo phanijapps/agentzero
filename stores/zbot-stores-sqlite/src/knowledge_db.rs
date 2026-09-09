@@ -1,7 +1,7 @@
 //! `KnowledgeDatabase` — r2d2 pool for `knowledge.db` with sqlite-vec
 //! extension auto-loaded on every connection.
 
-use gateway_services::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
@@ -192,7 +192,7 @@ fn read_indexed_dim_or_default(paths: &SharedVaultPaths, default: usize) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
 

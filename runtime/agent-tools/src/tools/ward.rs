@@ -766,8 +766,7 @@ fn search_markdown_linux(
             results.push(json!({
                 "path": relative.to_string_lossy().replace('\\', "/"),
                 "title": title,
-                "tags": tags,
-            }));
+                "tags": tags }));
         }
         if truncated {
             break;
@@ -1319,12 +1318,10 @@ impl Tool for WardTool {
                         // null when the packet declares no archetype
                         // (user-created/legacy wards, unavailable template) —
                         // never a fabricated concrete archetype.
-                        "archetype": layout_state.packet.get("archetype").cloned().unwrap_or(Value::Null),
-                    },
+                        "archetype": layout_state.packet.get("archetype").cloned().unwrap_or(Value::Null) },
                     "files": files,
                     "file_count": files.len(),
-                    "agents_md": agents_md,
-                });
+                    "agents_md": agents_md });
 
                 if let Some(knowledge) = ward_knowledge {
                     result["ward_knowledge"] = knowledge;
@@ -1359,8 +1356,7 @@ impl Tool for WardTool {
                             wards.push(json!({
                                 "name": name,
                                 "files": files.len(),
-                                "description": description,
-                            }));
+                                "description": description }));
                         }
                     }
                 }
@@ -1374,8 +1370,7 @@ impl Tool for WardTool {
 
                 Ok(json!({
                     "wards": wards,
-                    "total": wards.len(),
-                }))
+                    "total": wards.len() }))
             }
 
             "info" => {
@@ -1389,8 +1384,7 @@ impl Tool for WardTool {
                     return Ok(json!({
                         "found": false,
                         "name": name,
-                        "message": "Ward not found",
-                    }));
+                        "message": "Ward not found" }));
                 }
 
                 let files = self.list_ward_files(&ward_dir);
@@ -1401,8 +1395,7 @@ impl Tool for WardTool {
                     "name": name,
                     "files": files,
                     "file_count": files.len(),
-                    "agents_md": agents_md,
-                }))
+                    "agents_md": agents_md }))
             }
 
             "lint" => {
@@ -2271,8 +2264,7 @@ mod tests {
                 "results": results,
                 "count": limit,
                 "source": "memory_db",
-                "prioritized": true,
-            })
+                "prioritized": true })
         }
     }
 

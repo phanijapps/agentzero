@@ -291,7 +291,7 @@ async fn restart_filters_removed_concepts_to_the_current_definition_snapshot() {
             session_id: None,
             max_depth: 1,
             max_fan_out: 8,
-            max_candidates: 8,
+            max_candidates: 8
         })
         .await
         .expect("first expansion")

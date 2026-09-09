@@ -1285,8 +1285,7 @@ impl MemoryRecall {
                     "model": identity.model.clone(),
                     "dimensions": identity.dimensions,
                     "promptProfile": identity.prompt_profile.clone(),
-                    "normalization": identity.normalization.clone(),
-                })
+                    "normalization": identity.normalization.clone() })
             });
             bus.publish_sync(gateway_events::GatewayEvent::RecallTrace {
                 agent_id: agent_id.to_string(),
@@ -1905,8 +1904,7 @@ fn taxonomy_trace(candidates: &[RecallTaxonomyExpansionCandidate]) -> Vec<serde_
                 "label": candidate.label,
                 "matchedLabel": candidate.matched_label,
                 "relation": candidate.relation,
-                "depth": candidate.depth,
-            })
+                "depth": candidate.depth })
         })
         .collect()
 }
@@ -2421,8 +2419,8 @@ mod tests {
     // portion is suppressed.
     // ========================================================================
     use crate::recall::query_gate::{GateResponse, QueryGateLlm};
+    use agent_primitives::vault_paths::VaultPaths;
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use knowledge_graph::types::{Entity, EntityType};
     use std::sync::Mutex;
     use zbot_stores_sqlite::kg::storage::GraphStorage;
@@ -3109,8 +3107,7 @@ mod tests {
                     "pinned": false,
                     "epistemic_class": "current",
                     "source_episode_id": null,
-                    "source_ref": null,
-                }))
+                    "source_ref": null }))
                 .unwrap(),
                 None,
             )
@@ -3870,7 +3867,7 @@ mod tests {
             UnifiedRecallSourceStatus {
                 state: UnifiedRecallSourceState::Unavailable,
                 count: 0,
-                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable),
+                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable)
             }
         );
         assert!(format!("{:?}", outcome.source_summary).contains("SourceUnavailable"));
@@ -3934,7 +3931,7 @@ mod tests {
             UnifiedRecallSourceStatus {
                 state: UnifiedRecallSourceState::Unavailable,
                 count: 0,
-                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable),
+                reason_code: Some(UnifiedRecallReasonCode::SourceUnavailable)
             }
         );
         assert!(!format!("{:?}", outcome.source_summary).contains("sqlite:///"));

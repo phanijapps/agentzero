@@ -70,8 +70,7 @@ impl WikiStore for GatewayWikiStore {
                 serde_json::json!({
                     "article": h.article,
                     "score": h.score,
-                    "match_source": h.match_source,
-                })
+                    "match_source": h.match_source })
             })
             .collect())
     }

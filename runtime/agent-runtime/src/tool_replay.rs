@@ -13,13 +13,10 @@ pub(crate) fn intercept(context: &ToolContext, tool_name: &str) -> Option<String
         LookupOutcome::MissLenient => None,
         LookupOutcome::Drift {
             expected_tool,
-            got_tool,
-        } => panic!(
+            got_tool } => panic!(
             "[tool-replay] drift on exec {execution_id}: expected '{expected_tool}' got '{got_tool}'"
         ),
         LookupOutcome::MissStrict {
             exec_id,
-            tool_index,
-        } => panic!("[tool-replay] strict miss on exec {exec_id} tool_index {tool_index}"),
-    }
+            tool_index } => panic!("[tool-replay] strict miss on exec {exec_id} tool_index {tool_index}") }
 }

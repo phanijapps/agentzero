@@ -422,8 +422,7 @@ pub fn apply_migration(
         )
         .map_err(|_| AdapterError::Storage {
             component: MIGRATION_COMPONENT,
-            reason: "migration marker cannot be recorded".to_string(),
-        })?;
+            reason: "migration marker cannot be recorded".to_string() })?;
 
     Ok(MigrationApplyReceipt {
         manifest_fingerprint: accepted_manifest.fingerprint.clone(),

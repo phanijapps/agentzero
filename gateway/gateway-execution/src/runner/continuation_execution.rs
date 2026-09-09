@@ -7,9 +7,9 @@ use crate::invoke::{
     ExecutorBuilder,
 };
 use crate::lifecycle::emit_agent_started;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_runtime::{BoxedAgentEngine, ChatMessage, ContextActorKind};
 use execution_state::SessionPlanSnapshot;
-use gateway_services::SharedVaultPaths;
 use std::sync::Arc;
 
 /// Explicit inputs for a single continuation invocation.
@@ -539,8 +539,8 @@ fn find_latest_plan(specs_dir: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod continuation_message_tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use execution_state::{SessionPlanStep, SessionPlanStepStatus};
-    use gateway_services::VaultPaths;
     use std::sync::Arc;
 
     #[tokio::test]

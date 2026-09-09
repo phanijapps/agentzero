@@ -397,7 +397,7 @@ mod tests {
     async fn create_test_service() -> GraphService {
         let dir = tempdir().unwrap();
         let tmp_path = dir.keep();
-        let paths = Arc::new(gateway_services::VaultPaths::new(tmp_path));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(tmp_path));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = Arc::new(crate::KnowledgeDatabase::new(paths).unwrap());
         let storage = Arc::new(GraphStorage::new(db).unwrap());

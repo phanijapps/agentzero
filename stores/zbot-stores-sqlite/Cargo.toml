@@ -15,7 +15,6 @@ knowledge-graph = { path = "../../services/knowledge-graph" }
 api-logs = { path = "../../services/api-logs" }
 execution-state = { path = "../../services/execution-state" }
 agent-runtime = { path = "../../runtime/agent-runtime" }
-gateway-services = { path = "../../gateway/gateway-services" }
 agent-primitives = { path = "../../runtime/agent-primitives" }
 zbot-runtime-sqlite = { path = "../zbot-runtime-sqlite" }
 
@@ -42,7 +41,6 @@ uuid = { workspace = true }
 tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-gateway-services = { path = "../../gateway/gateway-services" }
 zbot-stores-conformance = { path = "../zbot-stores-conformance" }
 
 [lints]

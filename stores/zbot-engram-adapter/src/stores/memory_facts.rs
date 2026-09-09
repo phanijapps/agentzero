@@ -380,8 +380,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             "key": request.key,
             "category": request.category,
             "confidence": request.confidence,
-            "message": format!("Fact saved: [{}] {}", request.category, request.content),
-        }))
+            "message": format!("Fact saved: [{}] {}", request.category, request.content) }))
     }
 
     async fn recall_facts(
@@ -509,8 +508,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             "action": "save_ctx_fact",
             "key": key,
             "owner": owner,
-            "session_id": session_id,
-        }))
+            "session_id": session_id }))
     }
 
     async fn get_ctx_fact(&self, ward_id: &str, key: &str) -> Result<Option<Value>, String> {
@@ -539,8 +537,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                     "session_id": fact.session_id,
                     "created_at": fact.created_at,
                     "updated_at": fact.updated_at,
-                    "pinned": fact.pinned,
-                })
+                    "pinned": fact.pinned })
             }))
     }
 
@@ -607,8 +604,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 json!({
                     "key": entry.fact.key,
                     "signature": signature,
-                    "summary": summary,
-                })
+                    "summary": summary })
             })
             .collect::<Vec<_>>();
         Ok(json!({ "primitives": primitives }))
@@ -1963,8 +1959,7 @@ fn recall_value(query: &str, rows: Vec<Value>, degraded_reason: Option<&'static 
         "recalled": recalled,
         "count": count,
         "degraded": degraded_reason.is_some(),
-        "source": "memory_db",
-    });
+        "source": "memory_db" });
     if let (Some(reason), Some(object)) = (degraded_reason, value.as_object_mut()) {
         object.insert("reason".to_string(), json!(reason));
         object.insert("degraded_reason".to_string(), json!(reason));

@@ -293,8 +293,7 @@ impl GraphStorage {
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
                 mention_count,
-                name_embedding: None,
-            });
+                name_embedding: None });
         }
 
         Ok(entities)
@@ -404,8 +403,7 @@ impl GraphStorage {
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
                 mention_count,
-                name_embedding: None,
-            });
+                name_embedding: None });
         }
 
         Ok(entities)
@@ -978,8 +976,7 @@ impl GraphStorage {
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
                 mention_count,
-                name_embedding: None,
-            }))
+                name_embedding: None }))
         } else {
             Ok(None)
         }
@@ -1077,8 +1074,7 @@ impl GraphStorage {
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or_else(|_| chrono::Utc::now()),
                     mention_count: e_mentions,
-                    name_embedding: None,
-                };
+                    name_embedding: None };
 
                 let relationship = Relationship {
                     id: r_id,
@@ -1095,14 +1091,12 @@ impl GraphStorage {
                     last_seen_at: chrono::DateTime::parse_from_rfc3339(&r_last)
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or_else(|_| chrono::Utc::now()),
-                    mention_count: r_mentions,
-                };
+                    mention_count: r_mentions };
 
                 neighbors.push(NeighborInfo {
                     entity,
                     relationship,
-                    direction: Direction::Outgoing,
-                });
+                    direction: Direction::Outgoing });
             }
         }
 
@@ -1180,8 +1174,7 @@ impl GraphStorage {
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or_else(|_| chrono::Utc::now()),
                     mention_count: e_mentions,
-                    name_embedding: None,
-                };
+                    name_embedding: None };
 
                 let relationship = Relationship {
                     id: r_id,
@@ -1198,14 +1191,12 @@ impl GraphStorage {
                     last_seen_at: chrono::DateTime::parse_from_rfc3339(&r_last)
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or_else(|_| chrono::Utc::now()),
-                    mention_count: r_mentions,
-                };
+                    mention_count: r_mentions };
 
                 neighbors.push(NeighborInfo {
                     entity,
                     relationship,
-                    direction: Direction::Incoming,
-                });
+                    direction: Direction::Incoming });
             }
         }
 
@@ -1422,8 +1413,7 @@ impl GraphStorage {
                             hop: hop as usize,
                             path,
                             entity_confidence: entity_conf,
-                            edge_confidence_product: edge_conf_prod,
-                        });
+                            edge_confidence_product: edge_conf_prod });
                     }
                     Ok(out)
                 })()
@@ -1664,8 +1654,7 @@ impl GraphStorage {
                                             .to_string();
                                         (mc, desc)
                                     }
-                                    None => (1, String::new()),
-                                };
+                                    None => (1, String::new()) };
                                 Ok((id, name, layer, member_count, description))
                             })
                             .map_err(GraphError::Database)?;
@@ -1882,8 +1871,7 @@ impl GraphStorage {
         let properties = serde_json::json!({
             "description": description,
             "aggregate": true,
-            "member_count": members.len(),
-        })
+            "member_count": members.len() })
         .to_string();
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -3315,7 +3303,7 @@ mod tests {
     fn create_test_storage() -> GraphStorage {
         let dir = tempdir().unwrap();
         let tmp_path = dir.keep();
-        let paths = Arc::new(gateway_services::VaultPaths::new(tmp_path));
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(tmp_path));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
         GraphStorage::new(db).unwrap()
@@ -3701,8 +3689,9 @@ mod tests {
     #[test]
     fn store_entity_seeds_self_alias() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths =
-            std::sync::Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = std::sync::Arc::new(crate::KnowledgeDatabase::new(paths).unwrap());
 
@@ -3736,8 +3725,9 @@ mod tests {
     #[test]
     fn merge_appends_alias_row() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths =
-            std::sync::Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = std::sync::Arc::new(crate::KnowledgeDatabase::new(paths).unwrap());
         let storage = GraphStorage::new(db.clone()).unwrap();
@@ -3789,8 +3779,9 @@ mod tests {
     #[test]
     fn embedding_stage_merges_similar_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths =
-            std::sync::Arc::new(gateway_services::VaultPaths::new(tmp.path().to_path_buf()));
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            tmp.path().to_path_buf(),
+        ));
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let db = std::sync::Arc::new(crate::KnowledgeDatabase::new(paths).unwrap());
         let storage = GraphStorage::new(db.clone()).unwrap();
@@ -4670,8 +4661,7 @@ mod tests {
         let props = serde_json::json!({
             "aggregate": true,
             "member_count": member_count,
-            "description": description,
-        })
+            "description": description })
         .to_string();
         storage
             .db

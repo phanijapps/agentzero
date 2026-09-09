@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::VaultPaths;
 use api_logs::LogService;
 use execution_state::{
     ExecutionStatus, SessionStatus as StateSessionStatus, StateService, TriggerSource,
@@ -18,7 +19,6 @@ use gateway_execution::lifecycle::{
     complete_execution, crash_execution, get_or_create_session, start_execution, stop_execution,
     CompleteExecution, CrashExecution, StopExecution,
 };
-use gateway_services::VaultPaths;
 #[allow(deprecated)]
 use tempfile::tempdir;
 use zbot_runtime_sqlite::DatabaseManager;

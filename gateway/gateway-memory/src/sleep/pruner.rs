@@ -74,7 +74,7 @@ impl Pruner {
 mod tests {
     use super::*;
     use crate::sleep::decay::{DecayConfig, DecayEngine};
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use knowledge_graph::{Entity, EntityType, ExtractedKnowledge};
     use std::sync::Arc;
     use zbot_stores_sqlite::kg::storage::GraphStorage;

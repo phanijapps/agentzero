@@ -425,8 +425,7 @@ impl MemoryRepository {
             match result {
                 Ok(fact) => Ok(Some(fact)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(e),
-            }
+                Err(e) => Err(e) }
         })
     }
 
@@ -1512,7 +1511,7 @@ mod tests {
     use crate::vector_index::SqliteVecIndex;
 
     fn setup() -> (tempfile::TempDir, MemoryRepository) {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));

@@ -260,7 +260,7 @@ fn row_to_contradiction(
 mod tests {
     use super::*;
     use crate::{KnowledgeDatabase, SqliteBeliefStore};
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use tempfile::TempDir;
     use zbot_stores_domain::Belief;
     use zbot_stores_traits::BeliefStore;

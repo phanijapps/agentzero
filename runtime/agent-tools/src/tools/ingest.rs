@@ -345,8 +345,7 @@ impl Tool for IngestTool {
             "text_chunks_enqueued": chunk_count,
             "source_id": resolved_source,
             "evidence": evidence,
-            "status": "ok",
-        }))
+            "status": "ok" }))
     }
 }
 

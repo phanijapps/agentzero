@@ -69,7 +69,7 @@ impl Backpressure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
 
     fn setup() -> (

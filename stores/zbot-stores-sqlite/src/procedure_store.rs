@@ -66,8 +66,7 @@ impl ProcedureStore for GatewayProcedureStore {
             .map(|(p, score)| {
                 serde_json::json!({
                     "procedure": p,
-                    "score": score,
-                })
+                    "score": score })
             })
             .collect())
     }

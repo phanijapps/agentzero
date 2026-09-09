@@ -139,11 +139,11 @@ impl Tool for PresentSurfaceTool {
             .and_then(Value::as_str)
             .ok_or_else(|| tool_error("surface_id must be a string"))?
             .to_owned();
-        let components = object
+        let raw_components = object
             .get("components")
             .cloned()
-            .and_then(|value| serde_json::from_value::<Vec<SurfaceComponent>>(value).ok())
             .ok_or_else(|| tool_error("components have an invalid shape or component type"))?;
+        let components = deserialize_components(raw_components)?;
         if components.is_empty() {
             return Err(tool_error("components must not be empty"));
         }
@@ -193,6 +193,44 @@ fn tool_error(message: &str) -> AgentError {
     AgentError::Tool(message.to_owned())
 }
 
+/// Deserialize components with a diagnostic that names the first failing
+/// index instead of a catch-all — with a 789-component degenerate retry
+/// (sess-c90f1f18), "invalid shape" gave the model nothing to correct.
+fn deserialize_components(raw: Value) -> Result<Vec<SurfaceComponent>> {
+    let items = raw
+        .as_array()
+        .ok_or_else(|| tool_error("components must be an array of component objects"))?;
+    for (index, item) in items.iter().enumerate() {
+        if let Err(error) = serde_json::from_value::<SurfaceComponent>(item.clone()) {
+            let kind = item
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    if item.is_string() {
+                        "bare string".to_owned()
+                    } else if item.is_null() {
+                        "null".to_owned()
+                    } else {
+                        "missing type".to_owned()
+                    }
+                });
+            // Keep the whole message within the bounded-error budget
+            // (tool errors must stay <=256 chars).
+            let detail: String = error.to_string().chars().take(80).collect();
+            return Err(tool_error(&format!(
+                "component {} of {} ({}) is invalid: {}",
+                index + 1,
+                items.len(),
+                kind,
+                detail
+            )));
+        }
+    }
+    serde_json::from_value::<Vec<SurfaceComponent>>(raw)
+        .map_err(|_| tool_error("components have an invalid shape or component type"))
+}
+
 /// Surface a validation failure with the detail the model needs to correct
 /// its next call. Every `SurfaceValidationError` Display string names only
 /// structural identifiers (component type, property name, catalog, id) —
@@ -238,6 +276,32 @@ mod tests {
             }],
             "data": {"rows": [{"ticker": "GOOGL"}]}
         })
+    }
+
+    #[tokio::test]
+    async fn degenerate_retry_names_first_invalid_component() {
+        // sess-c90f1f18: a 789-component degenerate retry got the catch-all
+        // "invalid shape" — naming the first failing index teaches the model
+        // what to fix instead of brute-force simplification.
+        let payload = json!({
+            "surface_id": "s",
+            "components": [
+                {"id": "ok", "type": "Callout", "props": {"message_path": "/m"}},
+                "bare string",
+                {"no": "type"}
+            ],
+            "data": {"m": "x"}
+        });
+        let result = PresentSurfaceTool::new().execute(test_ctx(), payload).await;
+        let message = format!("{}", result.expect_err("bare strings must reject"));
+        assert!(
+            message.contains("component 2 of 3"),
+            "must name the first failing index: {message}"
+        );
+        assert!(
+            message.contains("bare string"),
+            "must name the kind: {message}"
+        );
     }
 
     #[tokio::test]

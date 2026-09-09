@@ -182,11 +182,17 @@ fn dir_has_placeholder_spec(dir: &std::path::Path) -> bool {
 /// this text were the divergence it replaces.
 #[must_use]
 pub fn placeholder_specs_redirect(instead: &str) -> serde_json::Value {
+    redirect_envelope(&format!(
+        "This ward has placeholder specs — planning is not finished. {instead}"
+    ))
+}
+
+/// The one redirect envelope shape shared by every guard helper.
+#[must_use]
+pub fn redirect_envelope(message: &str) -> serde_json::Value {
     serde_json::json!({
         "status": "redirect",
-        "message": format!(
-            "This ward has placeholder specs — planning is not finished. {instead}"
-        )
+        "message": message
     })
 }
 
@@ -197,10 +203,9 @@ pub fn placeholder_specs_redirect(instead: &str) -> serde_json::Value {
 /// second literal copy is how the two drifted messages happened.
 #[must_use]
 pub fn cold_graph_redirect() -> serde_json::Value {
-    serde_json::json!({
-        "status": "redirect",
-        "message": "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call MCP tools or other tools yet."
-    })
+    redirect_envelope(
+        "This is cold graph work. First call ward(action: \"create\" or \"use\") to establish the workspace. That transition starts planner-agent automatically; do not call MCP tools or other tools yet.",
+    )
 }
 
 #[cfg(test)]

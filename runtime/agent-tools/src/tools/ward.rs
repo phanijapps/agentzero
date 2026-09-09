@@ -631,6 +631,80 @@ fn error_envelope(action: &str, ward: &str, digest: &str, code: &str) -> Value {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Ward markdown search — one traversal, two openers.
+//
+// The walk (caps, filtering, matching, envelope) lives once in
+// `walk_ward_markdown`. A `WardSearchFs` backend supplies only the
+// platform-specific, security-relevant operations: opening the validated
+// ward root, enumerating a directory's children without following
+// symlinks, and bounded reads. Linux walks fd-relative via
+// openat/O_NOFOLLOW; other platforms walk canonicalized paths with
+// symlink checks.
+// ---------------------------------------------------------------------------
+
+/// Shared bounds for ward markdown search.
+const SEARCH_ENTRY_CAP: usize = 10_000;
+const SEARCH_FILE_CAP: usize = 2_000;
+const SEARCH_BYTE_CAP: usize = 8 * 1024 * 1024;
+
+fn is_hidden_name(name: &std::ffi::OsStr) -> bool {
+    name.to_string_lossy().starts_with('.')
+}
+
+fn is_markdown_name(name: &std::ffi::OsStr) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        == Some("md")
+}
+
+/// A directory child worth visiting: a subdirectory to recurse into, or a
+/// markdown file handle to read.
+enum WardChildKind<Fs: WardSearchFs> {
+    Directory(Fs::Dir),
+    Markdown(Fs::File),
+}
+
+struct WardChild<Fs: WardSearchFs> {
+    name: std::ffi::OsString,
+    kind: WardChildKind<Fs>,
+}
+
+/// Result of enumerating one directory: the visible children, how many
+/// read entries were consumed (hidden entries included — they spend
+/// budget), and whether the entry budget was exhausted mid-directory.
+struct Children<Fs: WardSearchFs> {
+    entries: Vec<WardChild<Fs>>,
+    consumed: usize,
+    truncated: bool,
+}
+
+trait WardSearchFs: Sized {
+    type Dir;
+    type File;
+
+    /// Validate the ward root (a direct, non-symlink child of the wards
+    /// directory) and open it. `search_*` / `ward_unavailable` codes match
+    /// the tool's error envelope.
+    fn open_ward(&self, root: &std::path::Path) -> std::result::Result<Self::Dir, String>;
+
+    /// Enumerate one directory: sorted by name, hidden entries skipped
+    /// (but budget-spending), symlinks never followed.
+    fn children(
+        &self,
+        dir: &Self::Dir,
+        budget: usize,
+    ) -> std::result::Result<Children<Self>, String>;
+
+    /// Bounded read of one markdown handle. `Ok(None)` marks oversized.
+    fn read_bounded(
+        &self,
+        file: Self::File,
+        limit: usize,
+    ) -> std::result::Result<Option<String>, String>;
+}
+
 fn search_markdown(
     root: &std::path::Path,
     query: &str,
@@ -638,52 +712,24 @@ fn search_markdown(
     limit: usize,
 ) -> std::result::Result<Value, String> {
     #[cfg(target_os = "linux")]
-    {
-        search_markdown_linux(root, query, required_tags, limit)
-    }
+    let fs = LinuxWardFs;
     #[cfg(not(target_os = "linux"))]
-    {
-        search_markdown_portable(root, query, required_tags, limit)
-    }
+    let fs = PortableWardFs;
+    walk_ward_markdown(&fs, root, query, required_tags, limit)
 }
 
-#[cfg(target_os = "linux")]
-fn search_markdown_linux(
+/// The single traversal shared by every platform backend.
+fn walk_ward_markdown<Fs: WardSearchFs>(
+    fs: &Fs,
     root: &std::path::Path,
     query: &str,
     required_tags: &[String],
     limit: usize,
 ) -> std::result::Result<Value, String> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-
     if query.len() > 256 || !(1..=50).contains(&limit) {
         return Err("invalid_search".into());
     }
-    let wards_path = root
-        .parent()
-        .ok_or_else(|| "ward_unavailable".to_string())?;
-    let ward_name = root
-        .file_name()
-        .ok_or_else(|| "ward_unavailable".to_string())?;
-    let before =
-        std::fs::symlink_metadata(wards_path).map_err(|_| "ward_unavailable".to_string())?;
-    if before.file_type().is_symlink() || !before.is_dir() {
-        return Err("ward_unavailable".into());
-    }
-    let wards = open_directory_nofollow(wards_path).map_err(|_| "ward_unavailable".to_string())?;
-    let opened = wards
-        .metadata()
-        .map_err(|_| "ward_unavailable".to_string())?;
-    {
-        use std::os::unix::fs::MetadataExt;
-        if before.dev() != opened.dev() || before.ino() != opened.ino() {
-            return Err("search_race".into());
-        }
-    }
-    let ward_fd =
-        open_at_nofollow(&wards, ward_name, true).map_err(|_| "ward_unavailable".to_string())?;
-    // SAFETY: open_at_nofollow returns a fresh owned descriptor.
-    let ward = unsafe { std::fs::File::from_raw_fd(ward_fd) };
+    let ward = fs.open_ward(root)?;
     let mut pending = vec![(ward, std::path::PathBuf::new())];
     let mut results = Vec::new();
     let mut files_visited = 0usize;
@@ -693,80 +739,46 @@ fn search_markdown_linux(
     let query = query.to_lowercase();
 
     while let Some((directory, relative_dir)) = pending.pop() {
-        let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
-        let remaining_entries = 10_000usize.saturating_sub(entries_visited);
-        let mut source = std::fs::read_dir(fd_path).map_err(|_| "search_failed".to_string())?;
-        let mut entries: Vec<_> = source
-            .by_ref()
-            .filter_map(|entry| entry.ok())
-            .take(remaining_entries.saturating_add(1))
-            .collect();
-        if entries.len() > remaining_entries {
-            entries.pop();
-            truncated = true;
-        }
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries.into_iter().rev() {
-            entries_visited += 1;
-            if entries_visited > 10_000 {
-                truncated = true;
-                break;
+        let budget = SEARCH_ENTRY_CAP.saturating_sub(entries_visited);
+        let children = fs.children(&directory, budget)?;
+        entries_visited += children.consumed;
+        truncated |= children.truncated;
+        for child in children.entries.into_iter().rev() {
+            let name = child.name;
+            match child.kind {
+                WardChildKind::Directory(handle) => {
+                    pending.push((handle, relative_dir.join(&name)));
+                }
+                WardChildKind::Markdown(file) => {
+                    if files_visited >= SEARCH_FILE_CAP || bytes_read >= SEARCH_BYTE_CAP {
+                        truncated = true;
+                        break;
+                    }
+                    files_visited += 1;
+                    let remaining = SEARCH_BYTE_CAP - bytes_read;
+                    let Some(content) = fs.read_bounded(file, remaining)? else {
+                        truncated = true;
+                        break;
+                    };
+                    bytes_read += content.len();
+                    let relative = relative_dir.join(&name);
+                    let (title, tags) = markdown_metadata(&content, &relative);
+                    let haystack =
+                        format!("{}\n{}\n{}", relative.display(), title, content).to_lowercase();
+                    if !query.is_empty() && !haystack.contains(&query) {
+                        continue;
+                    }
+                    let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
+                    if !required_tags.iter().all(|tag| lowered.contains(tag)) {
+                        continue;
+                    }
+                    results.push(json!({
+                        "path": relative.to_string_lossy().replace('\\', "/"),
+                        "title": title,
+                        "tags": tags,
+                    }));
+                }
             }
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
-                continue;
-            }
-            if let Ok(fd) = open_at_nofollow(&directory, &name, true) {
-                // SAFETY: open_at_nofollow returns a fresh owned descriptor.
-                let child = unsafe { std::fs::File::from_raw_fd(fd) };
-                pending.push((child, relative_dir.join(&name)));
-                continue;
-            }
-            if std::path::Path::new(&name)
-                .extension()
-                .and_then(|value| value.to_str())
-                != Some("md")
-            {
-                continue;
-            }
-            if files_visited >= 2_000 || bytes_read >= 8 * 1024 * 1024 {
-                truncated = true;
-                break;
-            }
-            let fd = match open_at_nofollow(&directory, &name, false) {
-                Ok(fd) => fd,
-                Err(_) => continue,
-            };
-            // SAFETY: open_at_nofollow returns a fresh owned descriptor.
-            let file = unsafe { std::fs::File::from_raw_fd(fd) };
-            if !file
-                .metadata()
-                .map_err(|_| "search_failed".to_string())?
-                .is_file()
-            {
-                continue;
-            }
-            files_visited += 1;
-            let remaining = 8 * 1024 * 1024 - bytes_read;
-            let Some(content) = read_open_file_bounded(file, remaining)? else {
-                truncated = true;
-                break;
-            };
-            bytes_read += content.len();
-            let relative = relative_dir.join(&name);
-            let (title, tags) = markdown_metadata(&content, &relative);
-            let haystack = format!("{}\n{}\n{}", relative.display(), title, content).to_lowercase();
-            if !query.is_empty() && !haystack.contains(&query) {
-                continue;
-            }
-            let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
-            if !required_tags.iter().all(|tag| lowered.contains(tag)) {
-                continue;
-            }
-            results.push(json!({
-                "path": relative.to_string_lossy().replace('\\', "/"),
-                "title": title,
-                "tags": tags }));
         }
         if truncated {
             break;
@@ -819,90 +831,197 @@ fn open_at_nofollow(
 }
 
 #[cfg(target_os = "linux")]
-fn read_open_file_bounded(
-    file: std::fs::File,
-    limit: usize,
-) -> std::result::Result<Option<String>, String> {
-    use std::io::Read;
-    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
-    file.take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "search_failed".to_string())?;
-    if bytes.len() > limit {
-        return Ok(None);
-    }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| "search_failed".to_string())
-}
+struct LinuxWardFs;
 
-#[cfg(not(target_os = "linux"))]
-fn search_markdown_portable(
-    root: &std::path::Path,
-    query: &str,
-    required_tags: &[String],
-    limit: usize,
-) -> std::result::Result<Value, String> {
-    if query.len() > 256 || !(1..=50).contains(&limit) {
-        return Err("invalid_search".into());
-    }
-    let wards_root = root
-        .parent()
-        .ok_or_else(|| "ward_unavailable".to_string())?;
-    let wards_metadata =
-        std::fs::symlink_metadata(wards_root).map_err(|_| "ward_unavailable".to_string())?;
-    let root_metadata =
-        std::fs::symlink_metadata(root).map_err(|_| "ward_unavailable".to_string())?;
-    if wards_metadata.file_type().is_symlink()
-        || root_metadata.file_type().is_symlink()
-        || !root_metadata.is_dir()
-    {
-        return Err("ward_unavailable".into());
-    }
-    let wards_root = wards_root
-        .canonicalize()
-        .map_err(|_| "ward_unavailable".to_string())?;
-    let root = root
-        .canonicalize()
-        .map_err(|_| "ward_unavailable".to_string())?;
-    if root.parent() != Some(wards_root.as_path()) {
-        return Err("path_escape".into());
-    }
-    let mut pending = vec![root.clone()];
-    let mut results = Vec::new();
-    let mut files_visited = 0usize;
-    let mut bytes_read = 0usize;
-    let mut entries_visited = 0usize;
-    let mut truncated = false;
-    let query = query.to_lowercase();
+#[cfg(target_os = "linux")]
+impl WardSearchFs for LinuxWardFs {
+    type Dir = std::fs::File;
+    type File = std::fs::File;
 
-    while let Some(directory) = pending.pop() {
-        let canonical_directory = directory
-            .canonicalize()
-            .map_err(|_| "path_escape".to_string())?;
-        if !canonical_directory.starts_with(&root) {
-            return Err("path_escape".into());
+    fn open_ward(&self, root: &std::path::Path) -> std::result::Result<Self::Dir, String> {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let wards_path = root
+            .parent()
+            .ok_or_else(|| "ward_unavailable".to_string())?;
+        let ward_name = root
+            .file_name()
+            .ok_or_else(|| "ward_unavailable".to_string())?;
+        let before =
+            std::fs::symlink_metadata(wards_path).map_err(|_| "ward_unavailable".to_string())?;
+        if before.file_type().is_symlink() || !before.is_dir() {
+            return Err("ward_unavailable".into());
         }
-        let remaining_entries = 10_000usize.saturating_sub(entries_visited);
-        let mut source = std::fs::read_dir(&directory).map_err(|_| "search_failed".to_string())?;
+        let wards =
+            open_directory_nofollow(wards_path).map_err(|_| "ward_unavailable".to_string())?;
+        let opened = wards
+            .metadata()
+            .map_err(|_| "ward_unavailable".to_string())?;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err("search_race".into());
+        }
+        let ward_fd = open_at_nofollow(&wards, ward_name, true)
+            .map_err(|_| "ward_unavailable".to_string())?;
+        // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+        Ok(unsafe { std::fs::File::from_raw_fd(ward_fd) })
+    }
+
+    fn children(
+        &self,
+        dir: &Self::Dir,
+        budget: usize,
+    ) -> std::result::Result<Children<Self>, String> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+        let mut source = std::fs::read_dir(fd_path).map_err(|_| "search_failed".to_string())?;
         let mut entries: Vec<_> = source
             .by_ref()
             .filter_map(|entry| entry.ok())
-            .take(remaining_entries.saturating_add(1))
+            .take(budget.saturating_add(1))
             .collect();
-        if entries.len() > remaining_entries {
+        let mut truncated = false;
+        if entries.len() > budget {
             entries.pop();
             truncated = true;
         }
+        let consumed = entries.len();
         entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries.into_iter().rev() {
-            entries_visited += 1;
-            if entries_visited > 10_000 {
-                truncated = true;
-                break;
-            }
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
             let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
+            if is_hidden_name(&name) {
+                continue;
+            }
+            if let Ok(fd) = open_at_nofollow(dir, &name, true) {
+                // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+                let child = unsafe { std::fs::File::from_raw_fd(fd) };
+                out.push(WardChild {
+                    name,
+                    kind: WardChildKind::Directory(child),
+                });
+                continue;
+            }
+            if !is_markdown_name(&name) {
+                continue;
+            }
+            let Ok(fd) = open_at_nofollow(dir, &name, false) else {
+                continue;
+            };
+            // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+            let file = unsafe { std::fs::File::from_raw_fd(fd) };
+            if !file
+                .metadata()
+                .map_err(|_| "search_failed".to_string())?
+                .is_file()
+            {
+                continue;
+            }
+            out.push(WardChild {
+                name,
+                kind: WardChildKind::Markdown(file),
+            });
+        }
+        Ok(Children {
+            entries: out,
+            consumed,
+            truncated,
+        })
+    }
+
+    fn read_bounded(
+        &self,
+        file: Self::File,
+        limit: usize,
+    ) -> std::result::Result<Option<String>, String> {
+        use std::io::Read;
+        let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+        file.take((limit + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "search_failed".to_string())?;
+        if bytes.len() > limit {
+            return Ok(None);
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "search_failed".to_string())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct PortableWardFs;
+
+/// A portable directory handle: the absolute path plus the ward's
+/// canonical root so every enumeration re-verifies containment.
+#[cfg(not(target_os = "linux"))]
+struct PortableDir {
+    path: std::path::PathBuf,
+    root: std::path::PathBuf,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl WardSearchFs for PortableWardFs {
+    type Dir = PortableDir;
+    type File = std::path::PathBuf;
+
+    fn open_ward(&self, root: &std::path::Path) -> std::result::Result<Self::Dir, String> {
+        let wards_root = root
+            .parent()
+            .ok_or_else(|| "ward_unavailable".to_string())?;
+        let wards_metadata =
+            std::fs::symlink_metadata(wards_root).map_err(|_| "ward_unavailable".to_string())?;
+        let root_metadata =
+            std::fs::symlink_metadata(root).map_err(|_| "ward_unavailable".to_string())?;
+        if wards_metadata.file_type().is_symlink()
+            || root_metadata.file_type().is_symlink()
+            || !root_metadata.is_dir()
+        {
+            return Err("ward_unavailable".into());
+        }
+        let canonical_wards = wards_root
+            .canonicalize()
+            .map_err(|_| "ward_unavailable".to_string())?;
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|_| "ward_unavailable".to_string())?;
+        if canonical_root.parent() != Some(canonical_wards.as_path()) {
+            return Err("path_escape".into());
+        }
+        Ok(PortableDir {
+            path: canonical_root.clone(),
+            root: canonical_root,
+        })
+    }
+
+    fn children(
+        &self,
+        dir: &Self::Dir,
+        budget: usize,
+    ) -> std::result::Result<Children<Self>, String> {
+        let canonical_directory = dir
+            .path
+            .canonicalize()
+            .map_err(|_| "path_escape".to_string())?;
+        if !canonical_directory.starts_with(&dir.root) {
+            return Err("path_escape".into());
+        }
+        let mut source =
+            std::fs::read_dir(&canonical_directory).map_err(|_| "search_failed".to_string())?;
+        let mut entries: Vec<_> = source
+            .by_ref()
+            .filter_map(|entry| entry.ok())
+            .take(budget.saturating_add(1))
+            .collect();
+        let mut truncated = false;
+        if entries.len() > budget {
+            entries.pop();
+            truncated = true;
+        }
+        let consumed = entries.len();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let name = entry.file_name();
+            if is_hidden_name(&name) {
                 continue;
             }
             let file_type = entry.file_type().map_err(|_| "search_failed".to_string())?;
@@ -910,92 +1029,60 @@ fn search_markdown_portable(
                 continue;
             }
             if file_type.is_dir() {
-                pending.push(entry.path());
+                out.push(WardChild {
+                    name,
+                    kind: WardChildKind::Directory(PortableDir {
+                        path: entry.path(),
+                        root: dir.root.clone(),
+                    }),
+                });
                 continue;
             }
-            if entry.path().extension().and_then(|value| value.to_str()) != Some("md") {
+            if !is_markdown_name(&name) {
                 continue;
             }
-            if files_visited >= 2_000 || bytes_read >= 8 * 1024 * 1024 {
-                truncated = true;
-                break;
-            }
-            files_visited += 1;
-            let remaining = 8 * 1024 * 1024 - bytes_read;
-            let Some(content) = read_markdown_bounded(&entry.path(), remaining)? else {
-                truncated = true;
-                break;
-            };
-            bytes_read += content.len();
-            let (title, tags) = markdown_metadata(&content, &entry.path());
-            let entry_path = entry.path();
-            let path = entry_path
-                .strip_prefix(&root)
-                .map_err(|_| "path_escape".to_string())?;
-            let haystack = format!("{}\n{}\n{}", path.display(), title, content).to_lowercase();
-            if !query.is_empty() && !haystack.contains(&query) {
-                continue;
-            }
-            let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
-            if !required_tags.iter().all(|tag| lowered.contains(tag)) {
-                continue;
-            }
-            results.push(
-                json!({"path":path.to_string_lossy().replace('\\', "/"),"title":title,"tags":tags}),
-            );
+            out.push(WardChild {
+                name,
+                kind: WardChildKind::Markdown(entry.path()),
+            });
         }
-        if truncated {
-            break;
-        }
+        Ok(Children {
+            entries: out,
+            consumed,
+            truncated,
+        })
     }
-    results.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
-    if results.len() > limit {
-        results.truncate(limit);
-        truncated = true;
-    }
-    Ok(
-        json!({"results":results,"truncated":truncated,"files_visited":files_visited,"bytes_read":bytes_read}),
-    )
-}
 
-#[cfg(not(target_os = "linux"))]
-fn read_markdown_bounded(
-    path: &std::path::Path,
-    limit: usize,
-) -> std::result::Result<Option<String>, String> {
-    use std::io::Read;
-    let before = std::fs::symlink_metadata(path).map_err(|_| "search_failed".to_string())?;
-    if before.file_type().is_symlink() || !before.is_file() {
-        return Ok(None);
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(0x20000); // O_NOFOLLOW
-    }
-    let file = options
-        .open(path)
-        .map_err(|_| "search_failed".to_string())?;
-    let opened = file.metadata().map_err(|_| "search_failed".to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if before.dev() != opened.dev() || before.ino() != opened.ino() {
-            return Err("search_race".into());
+    fn read_bounded(
+        &self,
+        path: Self::File,
+        limit: usize,
+    ) -> std::result::Result<Option<String>, String> {
+        use std::io::Read;
+        let before = std::fs::symlink_metadata(&path).map_err(|_| "search_failed".to_string())?;
+        if before.file_type().is_symlink() || !before.is_file() {
+            return Ok(None);
         }
+        let file = std::fs::File::open(&path).map_err(|_| "search_failed".to_string())?;
+        let opened = file.metadata().map_err(|_| "search_failed".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if before.dev() != opened.dev() || before.ino() != opened.ino() {
+                return Err("search_race".into());
+            }
+        }
+        let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+        file.take((limit + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "search_failed".to_string())?;
+        if bytes.len() > limit {
+            return Ok(None);
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "search_failed".to_string())
     }
-    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
-    file.take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "search_failed".to_string())?;
-    if bytes.len() > limit {
-        return Ok(None);
-    }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| "search_failed".to_string())
 }
 
 fn markdown_metadata(content: &str, path: &std::path::Path) -> (String, Vec<String>) {

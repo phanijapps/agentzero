@@ -2622,6 +2622,10 @@ mod tests {
                 .expect("vault database parent"),
         )
         .expect("create vault database parent");
+        // Stays on the sqlite KG reference implementation: this test
+        // asserts normalized-name lookup ("EXISTING" finds "Existing"),
+        // which the engram adapter does not yet implement — a KG-lane
+        // parity gap (the deferred migration; see E1-b notes).
         let db = Arc::new(zbot_stores_sqlite::KnowledgeDatabase::new(paths).expect("database"));
         let storage = Arc::new(
             zbot_stores_sqlite::kg::storage::GraphStorage::new(db).expect("graph storage"),

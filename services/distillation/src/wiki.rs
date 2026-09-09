@@ -389,16 +389,12 @@ mod tests {
     // scripted LLM / embedding clients.
     // ------------------------------------------------------------------
 
-    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::llm::client::StreamCallback;
     use agent_runtime::llm::embedding::EmbeddingError;
     use agent_runtime::llm::LlmError;
     use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
-    use zbot_stores_sqlite::vector_index::VectorIndex;
-    use zbot_stores_sqlite::{
-        GatewayWikiStore, KnowledgeDatabase, SqliteVecIndex, WardWikiRepository,
-    };
+    use std::sync::Mutex;
+    use zbot_engram_adapter::{AdapterConfig, EngramProvider, EngramWikiStore};
 
     /// Scripted LLM returning a fixed textual response — whatever the caller
     /// passes in. We only use `chat`; `chat_stream` panics if invoked so a
@@ -463,15 +459,21 @@ mod tests {
         }
     }
 
-    fn make_wiki_store() -> (tempfile::TempDir, GatewayWikiStore) {
+    /// Production wiring: the engram wiki store (the wiki concept stays
+    /// zbot's; its production impl is the engram adapter).
+    fn make_wiki_store() -> (tempfile::TempDir, EngramWikiStore) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().expect("parent")).expect("mkdir");
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-        let vec: Arc<dyn VectorIndex> =
-            Arc::new(SqliteVecIndex::new(db.clone(), "wiki_articles_index", "article_id").unwrap());
-        let repo = Arc::new(WardWikiRepository::new(db, vec));
-        (tmp, GatewayWikiStore::new(repo))
+        let root = tmp.path().join("engram-wiki");
+        std::fs::create_dir_all(&root).expect("root");
+        let mut config = AdapterConfig::engram_for_data_root(&root, "engram.db");
+        config.embedding_provider.provider_type = ConstEmbedding.provider_type();
+        config.embedding_provider.model = ConstEmbedding.model_name();
+        config.embedding_provider.dimensions = 384;
+        let provider = EngramProvider::open(config.clone()).expect("provider");
+        (
+            tmp,
+            EngramWikiStore::from_provider(config, &provider).expect("wiki store"),
+        )
     }
 
     #[tokio::test]

@@ -1359,31 +1359,15 @@ impl AppState {
     /// that can be delegated to.
     pub async fn seed_defaults(&self) {
         // Get default provider ID
-        let default_provider_id = self
-            .provider_service
-            .list()
-            .ok()
-            .and_then(|providers| {
-                providers
-                    .iter()
-                    .find(|p| p.is_default)
-                    .or_else(|| providers.first())
-                    .and_then(|p| p.id.clone())
-            })
+        let providers = self.provider_service.list().unwrap_or_default();
+        let selected = gateway_services::select_provider(&providers, None);
+        let default_provider_id = selected
+            .and_then(|p| p.id.clone())
             .unwrap_or_else(|| "default".to_string());
 
         // Resolve default model from default provider (first model in list)
-        let default_model = self
-            .provider_service
-            .list()
-            .ok()
-            .and_then(|providers| {
-                providers
-                    .iter()
-                    .find(|p| p.is_default)
-                    .or_else(|| providers.first())
-                    .and_then(|p| p.default_model().to_string().into())
-            })
+        let default_model = selected
+            .map(|p| p.default_model().to_string())
             .unwrap_or_else(|| "gpt-4o".to_string());
 
         // Seed default agents from bundled templates (configs + AGENTS.md instructions)

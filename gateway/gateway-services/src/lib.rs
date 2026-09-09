@@ -15,6 +15,7 @@ pub mod agent_registry;
 pub mod agents;
 pub mod embedding_service;
 pub mod lang_config;
+pub mod llm_factory;
 pub mod logging;
 pub mod mcp;
 pub mod mcp_oauth;
@@ -41,6 +42,7 @@ pub use embedding_service::{
     LiveEmbeddingClient, OllamaConfig, CURATED_MODELS,
 };
 pub use lang_config::{load_all_lang_configs, load_lang_config, LangConfig};
+pub use llm_factory::{provider_client, select_provider};
 pub use logging::LogSettings;
 pub use mcp::McpService;
 pub use mcp_oauth::{McpOAuthService, McpOAuthStartResponse};

@@ -858,33 +858,12 @@ impl SessionDistiller {
         let (target_provider_id, target_model, max_tokens) = self.resolve_distillation_target();
 
         // Pick target provider, or default, or first
-        let provider = target_provider_id
-            .as_ref()
-            .and_then(|tid| {
-                providers
-                    .iter()
-                    .find(|p| p.id.as_deref() == Some(tid.as_str()))
-            })
-            .or_else(|| providers.iter().find(|p| p.is_default))
-            .or_else(|| providers.first())
+        let provider = gateway_services::select_provider(&providers, target_provider_id.as_deref())
             .ok_or_else(|| "No suitable provider found".to_string())?;
 
         let model = target_model.unwrap_or_else(|| provider.default_model().to_string());
-        let provider_id = provider.id.clone().unwrap_or_else(|| "default".to_string());
-
-        let config = LlmConfig::new(
-            provider.base_url.clone(),
-            provider.api_key.clone(),
-            model,
-            provider_id,
-        )
-        .with_temperature(0.3)
-        .with_max_tokens(max_tokens);
-
-        let client = OpenAiClient::new(config)
-            .map_err(|e| DistillationError::from(format!("Failed to create LLM client: {e}")))?;
-
-        Ok(Arc::new(client) as Arc<dyn LlmClient>)
+        gateway_services::provider_client(provider, &model, 0.3, max_tokens)
+            .map_err(DistillationError::from)
     }
 
     /// Call the LLM to extract facts, entities, and relationships.

@@ -130,31 +130,10 @@ impl LlmExtractor {
             .provider_service
             .list()
             .map_err(|e| ExecutionError::from(format!("list providers: {e}")))?;
-        if providers.is_empty() {
-            return Err(ExecutionError::from(
-                "No LLM providers configured".to_string(),
-            ));
-        }
-        let provider = providers
-            .iter()
-            .find(|p| p.is_default)
-            .or_else(|| providers.first())
-            .ok_or_else(|| "No suitable provider".to_string())?;
-
-        let model = provider.default_model().to_string();
-        let provider_id = provider.id.clone().unwrap_or_else(|| "default".to_string());
-        let config = agent_runtime::llm::LlmConfig::new(
-            provider.base_url.clone(),
-            provider.api_key.clone(),
-            model,
-            provider_id,
-        )
-        .with_temperature(0.2)
-        .with_max_tokens(4096);
-
-        let client = agent_runtime::llm::openai::OpenAiClient::new(config)
-            .map_err(|e| ExecutionError::from(format!("build client: {e}")))?;
-        Ok(Arc::new(client) as Arc<dyn LlmClient>)
+        let provider = gateway_services::select_provider(&providers, None)
+            .ok_or_else(|| "No LLM providers configured".to_string())?;
+        gateway_services::provider_client(provider, provider.default_model(), 0.2, 4096)
+            .map_err(ExecutionError::from)
     }
 
     async fn extract_entities(

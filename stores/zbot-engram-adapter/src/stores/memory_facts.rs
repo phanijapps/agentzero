@@ -2083,38 +2083,45 @@ fn rank_hybrid_entries(
         .collect::<Vec<_>>();
     let lexical_lane = sparse_ranked
         .into_iter()
-        .map(|(_id, sparse, fact)| super::retrieval_composition::LaneCandidate {
-            fact,
-            score: sparse.score,
-        })
+        .map(
+            |(_id, sparse, fact)| super::retrieval_composition::LaneCandidate {
+                fact,
+                score: sparse.score,
+            },
+        )
         .collect::<Vec<_>>();
 
-    super::retrieval_composition::fuse_fact_lanes(semantic_lane, lexical_lane, 50, chrono::Utc::now())
-        .into_iter()
-        .filter(|fused| {
-            // Same admission guard as the hand-rolled version: weak
-            // semantic matches only survive with a high-specificity
-            // lexical hit.
-            let semantic_score = semantic_specificity.get(&fused.fact.id).copied();
-            let high_specificity = lexical_specificity
-                .get(&fused.fact.id)
-                .copied()
-                .unwrap_or(false);
-            semantic_score.is_none_or(|score| score >= MIN_SEMANTIC_SCORE) || high_specificity
-        })
-        .map(|fused| SearchHit {
-            score: normalize_fused_score(fused.score),
-            match_source: match (fused.semantic, fused.sparse) {
-                (true, true) => "hybrid",
-                (true, false) => "vec",
-                (false, true) => "fts",
-                (false, false) => "fts",
-            }
-            .to_string(),
-            fact: fused.fact,
-            degraded_reason: None,
-        })
-        .collect::<Vec<_>>()
+    super::retrieval_composition::fuse_fact_lanes(
+        semantic_lane,
+        lexical_lane,
+        50,
+        chrono::Utc::now(),
+    )
+    .into_iter()
+    .filter(|fused| {
+        // Same admission guard as the hand-rolled version: weak
+        // semantic matches only survive with a high-specificity
+        // lexical hit.
+        let semantic_score = semantic_specificity.get(&fused.fact.id).copied();
+        let high_specificity = lexical_specificity
+            .get(&fused.fact.id)
+            .copied()
+            .unwrap_or(false);
+        semantic_score.is_none_or(|score| score >= MIN_SEMANTIC_SCORE) || high_specificity
+    })
+    .map(|fused| SearchHit {
+        score: normalize_fused_score(fused.score),
+        match_source: match (fused.semantic, fused.sparse) {
+            (true, true) => "hybrid",
+            (true, false) => "vec",
+            (false, true) => "fts",
+            (false, false) => "fts",
+        }
+        .to_string(),
+        fact: fused.fact,
+        degraded_reason: None,
+    })
+    .collect::<Vec<_>>()
 }
 
 /// Monotonic transform of the fused RRF score onto the adapter's [0, 1)

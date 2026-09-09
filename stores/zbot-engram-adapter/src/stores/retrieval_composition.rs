@@ -23,9 +23,9 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use engram_domain::{
-    Actor, ActorKind, FusionStrategy, Id, Policy, Provenance, Requester, RetrievalRequest,
-    RetrievalResult, RetrievalScore, RetrievalTargetType, RetrievalMode, Retention, Scope,
-    Sensitivity, Visibility, AllowedUse, DeleteMode,
+    Actor, ActorKind, AllowedUse, DeleteMode, FusionStrategy, Id, Policy, Provenance, Requester,
+    Retention, RetrievalMode, RetrievalRequest, RetrievalResult, RetrievalScore,
+    RetrievalTargetType, Scope, Sensitivity, Visibility,
 };
 use engram_retrieval::{ReciprocalFusionConfig, ReciprocalRankFusion, RetrievalFusion as _};
 use zbot_stores_domain::MemoryFact;
@@ -41,8 +41,11 @@ const TEMPORAL_LANE_WEIGHT: f32 = 0.5;
 /// Exponential recency decay half-lives by fact category (days). Defaults
 /// apply to any category not listed.
 const DEFAULT_HALF_LIFE_DAYS: f64 = 30.0;
-const CATEGORY_HALF_LIFE_DAYS: &[(&str, f64)] =
-    &[("user", 90.0), ("correction", 180.0), ("instruction", 180.0)];
+const CATEGORY_HALF_LIFE_DAYS: &[(&str, f64)] = &[
+    ("user", 90.0),
+    ("correction", 180.0),
+    ("instruction", 180.0),
+];
 
 /// Categories that never decay: re-indexed every session, so age is noise.
 const NO_DECAY_CATEGORIES: &[&str] = &["skill", "agent"];
@@ -163,9 +166,8 @@ pub(crate) fn fuse_fact_lanes(
     // Lane intake is tie-aware: when lane scores are equal, the fresher
     // fact takes the earlier lane rank, so weighted RRF's rank assignment
     // lets recency break exact relevance ties (instead of vec order).
-    let recency_of = |fact: &MemoryFact| {
-        recency_decay(&fact.updated_at, &fact.category, fact.pinned, now)
-    };
+    let recency_of =
+        |fact: &MemoryFact| recency_decay(&fact.updated_at, &fact.category, fact.pinned, now);
     let mut semantic = semantic;
     let mut lexical = lexical;
     semantic.sort_by(|left, right| {
@@ -202,11 +204,18 @@ pub(crate) fn fuse_fact_lanes(
             candidate.fact.pinned,
             now,
         );
-        let entry = matched
-            .entry(candidate.fact.id.clone())
-            .or_insert((candidate.fact.clone(), false, false, recency));
+        let entry = matched.entry(candidate.fact.id.clone()).or_insert((
+            candidate.fact.clone(),
+            false,
+            false,
+            recency,
+        ));
         entry.1 = true;
-        candidates.push(lane_result(&candidate.fact, "fact_semantic", candidate.score));
+        candidates.push(lane_result(
+            &candidate.fact,
+            "fact_semantic",
+            candidate.score,
+        ));
     }
     for candidate in lexical {
         let recency = recency_decay(
@@ -215,14 +224,21 @@ pub(crate) fn fuse_fact_lanes(
             candidate.fact.pinned,
             now,
         );
-        let entry = matched
-            .entry(candidate.fact.id.clone())
-            .or_insert((candidate.fact.clone(), false, false, recency));
+        let entry = matched.entry(candidate.fact.id.clone()).or_insert((
+            candidate.fact.clone(),
+            false,
+            false,
+            recency,
+        ));
         entry.2 = true;
         // Lexical candidates not already present via the semantic lane join
         // the pool here; those already present simply add a second lane hit
         // below via their own temporal/lexical candidate entries.
-        candidates.push(lane_result(&candidate.fact, "fact_lexical", candidate.score));
+        candidates.push(lane_result(
+            &candidate.fact,
+            "fact_lexical",
+            candidate.score,
+        ));
     }
 
     // Temporal lane over the matched set: recency-scored, newest-first.
@@ -349,7 +365,12 @@ mod tests {
     fn recency_decay_half_life_and_exemptions() {
         let now = now();
         // Default 30-day half-life: 30 days old → 0.5.
-        let d = recency_decay(&(now - chrono::Duration::days(30)).to_rfc3339(), "domain", false, now);
+        let d = recency_decay(
+            &(now - chrono::Duration::days(30)).to_rfc3339(),
+            "domain",
+            false,
+            now,
+        );
         assert!((d - 0.5).abs() < 0.01, "30d/30d ≈ 0.5, got {d}");
         // Corrections live 180 days: 30 days old → barely decayed.
         let c = recency_decay(
@@ -358,7 +379,10 @@ mod tests {
             false,
             now,
         );
-        assert!(c > 0.85, "correction 30d old ≈ 0.89 with 180d half-life, got {c}");
+        assert!(
+            c > 0.85,
+            "correction 30d old ≈ 0.89 with 180d half-life, got {c}"
+        );
         // Pinned and skill/agent never decay.
         // pinned lives in the legacy sqlite path; category exemptions carry it here
         assert_eq!(

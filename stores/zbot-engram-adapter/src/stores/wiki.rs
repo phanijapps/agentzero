@@ -141,15 +141,10 @@ impl WikiStore for EngramWikiStore {
 
     async fn upsert_article(
         &self,
-        article: Value,
+        mut article: WikiArticle,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut article: WikiArticle = serde_json::from_value(article)
-            .map_err(|error| format!("decode WikiArticle: {error}"))?;
-        if let Some(embedding) = embedding {
-            article.embedding = Some(embedding);
-        }
-        let embedding = article.embedding.clone();
+        article.embedding = embedding.clone();
         self.upsert_article_record(article, embedding).await
     }
 

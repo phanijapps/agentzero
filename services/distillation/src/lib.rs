@@ -1259,14 +1259,12 @@ impl SessionDistiller {
             }
         }
 
-        match self.memory_store.as_ref() {
-            Some(store) => {
-                let v = serde_json::to_value(&fact)
-                    .map_err(|e| DistillationError::from(format!("encode fact: {e}")))?;
-                store.upsert_typed_fact(v, fact.embedding.clone()).await?;
-            }
-            None => return Err(DistillationError::Resource("no memory store wired".into())),
-        }
+        let store = self
+            .memory_store
+            .as_ref()
+            .ok_or_else(|| DistillationError::Resource("no memory store wired".into()))?;
+        let fact_embedding = fact.embedding.clone();
+        store.upsert_typed_fact(fact, fact_embedding).await?;
 
         Ok(())
     }
@@ -1410,14 +1408,12 @@ impl SessionDistiller {
             }
         }
 
-        match self.memory_store.as_ref() {
-            Some(store) => {
-                let v = serde_json::to_value(&fact)
-                    .map_err(|e| DistillationError::from(format!("encode fact: {e}")))?;
-                store.upsert_typed_fact(v, fact.embedding.clone()).await?;
-            }
-            None => return Err(DistillationError::Resource("no memory store wired".into())),
-        }
+        let store = self
+            .memory_store
+            .as_ref()
+            .ok_or_else(|| DistillationError::Resource("no memory store wired".into()))?;
+        let fact_embedding = fact.embedding.clone();
+        store.upsert_typed_fact(fact, fact_embedding).await?;
 
         Ok(())
     }
@@ -1434,11 +1430,9 @@ impl SessionDistiller {
         episode: &SessionEpisode,
     ) -> Result<(), DistillationError> {
         if let Some(store) = &self.episode_store {
-            let v = serde_json::to_value(episode)
-                .map_err(|e| DistillationError::Resource(format!("encode episode: {e}")))?;
             let emb = episode.embedding.clone();
             store
-                .insert_episode(v, emb)
+                .insert_episode(episode.clone(), emb)
                 .await
                 .map(|_| ())
                 .map_err(DistillationError::Store)
@@ -1533,10 +1527,7 @@ impl SessionDistiller {
         let embed_input = format!("{}\n{}", procedure.name, procedure.description);
         let embedding = self.embed_text(&embed_input).await;
 
-        let upsert_res = match serde_json::to_value(&proc) {
-            Ok(v) => store.upsert_procedure(v, embedding).await,
-            Err(e) => Err(format!("encode procedure: {e}")),
-        };
+        let upsert_res = store.upsert_procedure(proc, embedding).await;
 
         match upsert_res {
             Ok(()) => tracing::info!(
@@ -1754,10 +1745,8 @@ async fn upsert_distilled_fact(
     fact: &MemoryFact,
 ) -> Result<(), DistillationError> {
     let store = store.ok_or_else(|| DistillationError::Resource("no memory store wired".into()))?;
-    let value = serde_json::to_value(fact)
-        .map_err(|error| DistillationError::Resource(format!("encode fact: {error}")))?;
     store
-        .upsert_typed_fact(value, fact.embedding.clone())
+        .upsert_typed_fact(fact.clone(), fact.embedding.clone())
         .await
         .map_err(DistillationError::Store)
 }
@@ -2710,7 +2699,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingMemoryStore {
-        typed_facts: std::sync::Mutex<Vec<serde_json::Value>>,
+        typed_facts: std::sync::Mutex<Vec<zbot_stores_traits::MemoryFact>>,
     }
 
     #[async_trait::async_trait]
@@ -2752,7 +2741,7 @@ mod tests {
 
         async fn upsert_typed_fact(
             &self,
-            fact: serde_json::Value,
+            fact: zbot_stores_traits::MemoryFact,
             _embedding: Option<Vec<f32>>,
         ) -> Result<(), String> {
             self.typed_facts
@@ -2800,8 +2789,8 @@ mod tests {
 
         let writes = store.typed_facts.lock().expect("typed facts lock");
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0]["id"], fact.id);
-        assert_eq!(writes[0]["content"], fact.content);
+        assert_eq!(writes[0].id, fact.id);
+        assert_eq!(writes[0].content, fact.content);
     }
 
     #[test]
@@ -2926,7 +2915,6 @@ mod tests {
         use agent_runtime::llm::embedding::{EmbeddingClient, EmbeddingError};
         use async_trait::async_trait;
         use gateway_services::{ProviderService, VaultPaths};
-        use serde_json::Value;
         use std::sync::Arc;
         use std::sync::Mutex;
         use tempfile::tempdir;
@@ -2936,14 +2924,14 @@ mod tests {
         /// the test can assert on the inserted shape + embedding.
         #[derive(Default)]
         struct CapturingProcedureStore {
-            upserts: Mutex<Vec<(Value, Option<Vec<f32>>)>>,
+            upserts: Mutex<Vec<(zbot_stores_traits::Procedure, Option<Vec<f32>>)>>,
         }
 
         #[async_trait]
         impl ProcedureStore for CapturingProcedureStore {
             async fn upsert_procedure(
                 &self,
-                procedure: Value,
+                procedure: zbot_stores_traits::Procedure,
                 embedding: Option<Vec<f32>>,
             ) -> Result<(), String> {
                 self.upserts.lock().unwrap().push((procedure, embedding));
@@ -3026,10 +3014,12 @@ mod tests {
             let upserts = store.upserts.lock().unwrap();
             assert_eq!(upserts.len(), 1, "exactly one upsert expected");
             let (value, embedding) = &upserts[0];
-            assert_eq!(value["name"].as_str(), Some("expected_name"));
-            let serialized_steps = value["steps"]
-                .as_str()
-                .expect("procedure steps should be persisted as JSON text");
+            assert_eq!(value.name.as_str(), "expected_name");
+            let serialized_steps = value.steps.as_str();
+            assert!(
+                !serialized_steps.is_empty(),
+                "procedure steps should be persisted as JSON text"
+            );
             let stored_steps: serde_json::Value = serde_json::from_str(serialized_steps).unwrap();
             assert!(stored_steps[0]["args"].is_object());
             assert!(

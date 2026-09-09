@@ -67,7 +67,7 @@ async fn procedure_sidecar_round_trips_searches_and_updates() {
 
     ProcedureStore::upsert_procedure(
         &store,
-        serde_json::to_value(procedure("proc-1", "build-agent")).expect("procedure json"),
+        procedure("proc-1", "build-agent"),
         Some(vec![1.0, 0.0]),
     )
     .await
@@ -153,14 +153,14 @@ async fn episode_sidecar_round_trips_searches_and_summarizes() {
 
     EpisodeStore::insert_episode(
         &store,
-        serde_json::to_value(episode("1", "success", "Used Engram sidecars")).expect("episode"),
+        episode("1", "success", "Used Engram sidecars"),
         Some(vec![1.0, 0.0]),
     )
     .await
     .expect("insert episode");
     EpisodeStore::insert_episode(
         &store,
-        serde_json::to_value(episode("2", "failed", "Ignored tests")).expect("episode"),
+        episode("2", "failed", "Ignored tests"),
         Some(vec![0.0, 1.0]),
     )
     .await

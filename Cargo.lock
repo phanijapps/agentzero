@@ -8025,6 +8025,7 @@ dependencies = [
  "knowledge-graph",
  "serde_json",
  "zbot-stores",
+ "zbot-stores-domain",
  "zbot-stores-traits",
 ]
 

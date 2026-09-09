@@ -735,15 +735,11 @@ impl MemoryFactStore for GatewayMemoryFactStore {
 
     async fn upsert_typed_fact(
         &self,
-        fact: Value,
+        mut typed: MemoryFact,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut typed: MemoryFact =
-            serde_json::from_value(fact).map_err(|e| format!("decode MemoryFact: {e}"))?;
         validate_fact_content(&typed.category, &typed.content)?;
-        if embedding.is_some() {
-            typed.embedding = embedding;
-        }
+        typed.embedding = embedding;
         self.memory_repo.upsert_memory_fact(&typed)
     }
 

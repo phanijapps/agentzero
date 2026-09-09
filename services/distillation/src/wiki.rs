@@ -160,17 +160,8 @@ pub async fn compile_ward_wiki(
             updated_at: now.clone(),
         };
 
-        let article_v = match serde_json::to_value(&article) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(title = %article_data.title, error = %e, "Failed to encode wiki article");
-                continue;
-            }
-        };
-        if let Err(e) = wiki_store
-            .upsert_article(article_v, article.embedding.clone())
-            .await
-        {
+        let article_embedding = article.embedding.clone();
+        if let Err(e) = wiki_store.upsert_article(article, article_embedding).await {
             tracing::warn!(title = %article_data.title, error = %e, "Failed to upsert wiki article");
         } else {
             upserted += 1;
@@ -193,9 +184,7 @@ pub async fn compile_ward_wiki(
             created_at: now.clone(),
             updated_at: now,
         };
-        if let Ok(v) = serde_json::to_value(&index_article) {
-            let _ = wiki_store.upsert_article(v, None).await;
-        }
+        let _ = wiki_store.upsert_article(index_article, None).await;
     }
 
     tracing::info!(ward = %ward_id, articles = upserted, "Ward wiki compilation complete");

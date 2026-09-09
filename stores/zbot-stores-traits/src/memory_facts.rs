@@ -398,19 +398,16 @@ pub trait MemoryFactStore: Send + Sync {
         Ok(false)
     }
 
-    /// Upsert a fully-shaped memory fact. The `fact` Value must contain the
-    /// `MemoryFact` JSON shape (id, agent_id, scope,
-    /// category, key, content, confidence, mention_count, source_summary,
-    /// ward_id, contradicted_by, created_at, updated_at, expires_at,
-    /// valid_from, valid_until, superseded_by, pinned, etc.). The optional
-    /// `embedding` is the L2-normalized name vector to persist alongside.
+    /// Upsert a fully-shaped memory fact. The optional `embedding` is the
+    /// L2-normalized name vector to persist alongside.
     /// Default returns an error so impls that don't support typed upsert
     /// fail loudly rather than silently dropping writes.
     async fn upsert_typed_fact(
         &self,
-        _fact: Value,
-        _embedding: Option<Vec<f32>>,
+        fact: MemoryFact,
+        embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
+        let _ = (fact, embedding);
         Err("upsert_typed_fact not implemented for this store".to_string())
     }
 

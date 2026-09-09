@@ -397,7 +397,7 @@ mod tests {
             ("schema.b", b_content, 0.8_f64),
         ] {
             let id = format!("fact-{}", uuid::Uuid::new_v4());
-            let fact = json!({
+            let fact: zbot_stores_domain::MemoryFact = serde_json::from_value(json!({
                 "id": id,
                 "session_id": null,
                 "agent_id": agent_id,
@@ -420,7 +420,8 @@ mod tests {
                 "epistemic_class": "current",
                 "source_episode_id": null,
                 "source_ref": null,
-            });
+            }))
+            .unwrap();
             store
                 .upsert_typed_fact(fact, Some(embedding.clone()))
                 .await

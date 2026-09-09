@@ -32,14 +32,14 @@ pub trait EpisodeStore: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Insert an episode. The `episode` Value carries the full
-    /// `SessionEpisode` shape; `embedding` is the optional L2-normalized
+    /// Insert an episode. `embedding` is the optional L2-normalized
     /// vector to persist alongside. Returns the persisted row id.
     async fn insert_episode(
         &self,
-        _episode: Value,
-        _embedding: Option<Vec<f32>>,
+        episode: SessionEpisode,
+        embedding: Option<Vec<f32>>,
     ) -> Result<String, String> {
+        let _ = (episode, embedding);
         Err("insert_episode not implemented for this store".to_string())
     }
 

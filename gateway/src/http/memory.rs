@@ -460,14 +460,6 @@ pub async fn create_memory_fact(
         source_ref: None,
     };
 
-    let fact_value = serde_json::to_value(&fact).map_err(|e| {
-        public_internal_error(
-            "Failed to encode fact",
-            "Failed to create fact",
-            e.to_string(),
-        )
-    })?;
-
     if request.pinned && request.category == "user" && request.key == "user.profile" {
         let existing_profiles = memory_store
             .list_memory_facts(Some(&agent_id), Some("user"), Some("agent"), 100, 0)
@@ -507,7 +499,7 @@ pub async fn create_memory_fact(
     }
 
     memory_store
-        .upsert_typed_fact(fact_value, None)
+        .upsert_typed_fact(fact.clone(), None)
         .await
         .map_err(|e| public_internal_error("Failed to create fact", "Failed to create fact", e))?;
 

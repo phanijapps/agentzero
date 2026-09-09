@@ -40,14 +40,10 @@ impl EpisodeStore for GatewayEpisodeStore {
 
     async fn insert_episode(
         &self,
-        episode: Value,
+        mut typed: SessionEpisode,
         embedding: Option<Vec<f32>>,
     ) -> Result<String, String> {
-        let mut typed: SessionEpisode =
-            serde_json::from_value(episode).map_err(|e| format!("decode SessionEpisode: {e}"))?;
-        if embedding.is_some() {
-            typed.embedding = embedding;
-        }
+        typed.embedding = embedding;
         self.repo.insert(&typed)
     }
 

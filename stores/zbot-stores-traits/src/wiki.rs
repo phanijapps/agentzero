@@ -31,13 +31,13 @@ pub trait WikiStore: Send + Sync {
         Ok(None)
     }
 
-    /// Upsert an article. The `article` Value carries the full
-    /// `WikiArticle` shape; `embedding` is optional.
+    /// Upsert an article; `embedding` is optional.
     async fn upsert_article(
         &self,
-        _article: Value,
-        _embedding: Option<Vec<f32>>,
+        article: WikiArticle,
+        embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
+        let _ = (article, embedding);
         Err("upsert_article not implemented for this store".to_string())
     }
 

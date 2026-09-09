@@ -11,6 +11,7 @@ use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType}
 use zbot_stores::extracted::ExtractedKnowledge;
 use zbot_stores::types::{Direction, EntityId, ResolveOutcome};
 use zbot_stores::KnowledgeGraphStore;
+use zbot_stores_domain::MemoryFact;
 
 // =============================================================================
 // Entity CRUD
@@ -671,29 +672,31 @@ pub async fn memory_supersede_fact_succeeds<S: MemoryFactStore>(store: &S) {
 
 pub async fn memory_upsert_typed_fact_round_trip<S: MemoryFactStore>(store: &S) {
     let fact_id = "conf-typed-001";
-    let fact = serde_json::json!({
-        "id": fact_id,
-        "session_id": null,
-        "agent_id": "conf-typed",
-        "scope": "session",
-        "category": "preference",
-        "fact_type": "preference",
-        "key": "k1",
-        "content": "Typed fact content",
-        "confidence": 0.95,
-        "mention_count": 0,
-        "source_summary": null,
-        "ward_id": "__global__",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z",
-        "expires_at": null,
-        "valid_from": null,
-        "valid_until": null,
-        "superseded_by": null,
-        "contradicted_by": null,
-        "pinned": false,
-        "epistemic_class": "current",
-    });
+    let fact = MemoryFact {
+        id: fact_id.to_string(),
+        session_id: None,
+        agent_id: "conf-typed".to_string(),
+        scope: "session".to_string(),
+        category: "preference".to_string(),
+        key: "k1".to_string(),
+        content: "Typed fact content".to_string(),
+        confidence: 0.95,
+        mention_count: 0,
+        source_summary: None,
+        embedding: None,
+        ward_id: "__global__".to_string(),
+        contradicted_by: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+        expires_at: None,
+        valid_from: None,
+        valid_until: None,
+        superseded_by: None,
+        pinned: false,
+        epistemic_class: Some("current".to_string()),
+        source_episode_id: None,
+        source_ref: None,
+    };
 
     store
         .upsert_typed_fact(fact, None)

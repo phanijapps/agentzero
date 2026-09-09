@@ -199,19 +199,16 @@ async fn rekey_one_ward(
         .list_by_ward(from, 1000)
         .await
         .map_err(|e| format!("list_by_ward({from}): {e}"))?;
-    for mut value in procs {
-        if let Some(obj) = value.as_object_mut() {
-            obj.insert(
-                "ward_id".to_string(),
-                serde_json::Value::String(into.to_string()),
-            );
-        } else {
-            return Err(ExecutionError::from(format!(
-                "procedure row for ward '{from}' was not a JSON object; skipping rekey"
-            )));
-        }
+    for row in procs {
+        let mut procedure: zbot_stores_domain::Procedure =
+            serde_json::from_value(row).map_err(|e| {
+                ExecutionError::from(format!(
+                    "procedure row for ward '{from}' failed to decode; skipping rekey: {e}"
+                ))
+            })?;
+        procedure.ward_id = Some(into.to_string());
         store
-            .upsert_procedure(value, None)
+            .upsert_procedure(procedure, None)
             .await
             .map_err(|e| format!("upsert_procedure (rekey {from} -> {into}): {e}"))?;
     }

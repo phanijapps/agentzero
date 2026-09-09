@@ -781,30 +781,32 @@ mod tests {
         // ward_id + key regardless of scope, which matches the design
         // doc's notion that the subject is the canonical aggregation
         // key.
-        let typed_fact = serde_json::json!({
-            "id": format!("fact-{}", uuid::Uuid::new_v4()),
-            "session_id": null,
-            "agent_id": "ag",
-            "scope": "agent",
-            "category": "user",
-            "key": "user.name",
-            "content": "Phani",
-            "confidence": 0.9,
-            "mention_count": 1,
-            "source_summary": null,
-            "ward_id": "__global__",
-            "contradicted_by": null,
-            "created_at": newer.to_rfc3339(),
-            "updated_at": newer.to_rfc3339(),
-            "expires_at": null,
-            "valid_from": newer.to_rfc3339(),
-            "valid_until": null,
-            "superseded_by": null,
-            "pinned": false,
-            "epistemic_class": "current",
-            "source_episode_id": null,
-            "source_ref": null,
-        });
+        let typed_fact: zbot_stores_domain::MemoryFact =
+            serde_json::from_value(serde_json::json!({
+                "id": format!("fact-{}", uuid::Uuid::new_v4()),
+                "session_id": null,
+                "agent_id": "ag",
+                "scope": "agent",
+                "category": "user",
+                "key": "user.name",
+                "content": "Phani",
+                "confidence": 0.9,
+                "mention_count": 1,
+                "source_summary": null,
+                "ward_id": "__global__",
+                "contradicted_by": null,
+                "created_at": newer.to_rfc3339(),
+                "updated_at": newer.to_rfc3339(),
+                "expires_at": null,
+                "valid_from": newer.to_rfc3339(),
+                "valid_until": null,
+                "superseded_by": null,
+                "pinned": false,
+                "epistemic_class": "current",
+                "source_episode_id": null,
+                "source_ref": null,
+            }))
+            .unwrap();
         fact_store
             .upsert_typed_fact(typed_fact, None)
             .await
@@ -846,30 +848,32 @@ mod tests {
         )
         .await;
         let newer = Utc::now();
-        let typed_fact = serde_json::json!({
-            "id": format!("fact-{}", uuid::Uuid::new_v4()),
-            "session_id": null,
-            "agent_id": "ag",
-            "scope": "agent",
-            "category": "user",
-            "key": "user.name",
-            "content": "Most Recent Name",
-            "confidence": 0.9,
-            "mention_count": 1,
-            "source_summary": null,
-            "ward_id": "__global__",
-            "contradicted_by": null,
-            "created_at": newer.to_rfc3339(),
-            "updated_at": newer.to_rfc3339(),
-            "expires_at": null,
-            "valid_from": newer.to_rfc3339(),
-            "valid_until": null,
-            "superseded_by": null,
-            "pinned": false,
-            "epistemic_class": "current",
-            "source_episode_id": null,
-            "source_ref": null,
-        });
+        let typed_fact: zbot_stores_domain::MemoryFact =
+            serde_json::from_value(serde_json::json!({
+                "id": format!("fact-{}", uuid::Uuid::new_v4()),
+                "session_id": null,
+                "agent_id": "ag",
+                "scope": "agent",
+                "category": "user",
+                "key": "user.name",
+                "content": "Most Recent Name",
+                "confidence": 0.9,
+                "mention_count": 1,
+                "source_summary": null,
+                "ward_id": "__global__",
+                "contradicted_by": null,
+                "created_at": newer.to_rfc3339(),
+                "updated_at": newer.to_rfc3339(),
+                "expires_at": null,
+                "valid_from": newer.to_rfc3339(),
+                "valid_until": null,
+                "superseded_by": null,
+                "pinned": false,
+                "epistemic_class": "current",
+                "source_episode_id": null,
+                "source_ref": null,
+            }))
+            .unwrap();
         fact_store
             .upsert_typed_fact(typed_fact, None)
             .await
@@ -1186,30 +1190,32 @@ mod tests {
         )
         .await;
         let newer = Utc::now();
-        let typed_fact = serde_json::json!({
-            "id": format!("fact-{}", uuid::Uuid::new_v4()),
-            "session_id": null,
-            "agent_id": "ag",
-            "scope": "agent",
-            "category": "user",
-            "key": "user.name",
-            "content": "Phani",
-            "confidence": 0.9,
-            "mention_count": 1,
-            "source_summary": null,
-            "ward_id": "__global__",
-            "contradicted_by": null,
-            "created_at": newer.to_rfc3339(),
-            "updated_at": newer.to_rfc3339(),
-            "expires_at": null,
-            "valid_from": newer.to_rfc3339(),
-            "valid_until": null,
-            "superseded_by": null,
-            "pinned": false,
-            "epistemic_class": "current",
-            "source_episode_id": null,
-            "source_ref": null,
-        });
+        let typed_fact: zbot_stores_domain::MemoryFact =
+            serde_json::from_value(serde_json::json!({
+                "id": format!("fact-{}", uuid::Uuid::new_v4()),
+                "session_id": null,
+                "agent_id": "ag",
+                "scope": "agent",
+                "category": "user",
+                "key": "user.name",
+                "content": "Phani",
+                "confidence": 0.9,
+                "mention_count": 1,
+                "source_summary": null,
+                "ward_id": "__global__",
+                "contradicted_by": null,
+                "created_at": newer.to_rfc3339(),
+                "updated_at": newer.to_rfc3339(),
+                "expires_at": null,
+                "valid_from": newer.to_rfc3339(),
+                "valid_until": null,
+                "superseded_by": null,
+                "pinned": false,
+                "epistemic_class": "current",
+                "source_episode_id": null,
+                "source_ref": null,
+            }))
+            .unwrap();
         fact_store
             .upsert_typed_fact(typed_fact, None)
             .await

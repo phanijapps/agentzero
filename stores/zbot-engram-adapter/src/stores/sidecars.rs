@@ -564,11 +564,9 @@ impl ProcedureStore for EngramSidecarStores {
 
     async fn upsert_procedure(
         &self,
-        procedure: Value,
+        mut procedure: Procedure,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut procedure: Procedure = serde_json::from_value(procedure)
-            .map_err(|error| format!("decode Procedure: {error}"))?;
         procedure.embedding = None;
         self.mirror_procedure(&procedure).await?;
         self.upsert_procedure_record(&procedure, embedding.as_deref())
@@ -813,11 +811,9 @@ impl EpisodeStore for EngramSidecarStores {
 
     async fn insert_episode(
         &self,
-        episode: Value,
+        mut episode: SessionEpisode,
         embedding: Option<Vec<f32>>,
     ) -> Result<String, String> {
-        let mut episode: SessionEpisode = serde_json::from_value(episode)
-            .map_err(|error| format!("decode SessionEpisode: {error}"))?;
         if episode.id.is_empty() {
             episode.id = format!("ep-{}", Uuid::new_v4());
         }
@@ -1953,13 +1949,9 @@ mod tests {
         let store = EngramSidecarStores::open(governed_config(&root)).expect("store");
         let procedure = procedure();
 
-        ProcedureStore::upsert_procedure(
-            &store,
-            serde_json::to_value(&procedure).expect("procedure json"),
-            None,
-        )
-        .await
-        .expect("procedure write");
+        ProcedureStore::upsert_procedure(&store, procedure, None)
+            .await
+            .expect("procedure write");
 
         let scope = store
             .mapper
@@ -2005,13 +1997,9 @@ mod tests {
             embedding: None,
             created_at: "2026-07-13T00:00:00Z".to_string(),
         };
-        EpisodeStore::insert_episode(
-            &store,
-            serde_json::to_value(&episode).expect("episode json"),
-            None,
-        )
-        .await
-        .expect("episode write");
+        EpisodeStore::insert_episode(&store, episode, None)
+            .await
+            .expect("episode write");
         let episode_scope = store
             .mapper
             .memory_fact_scope("ward-a", Some("sess-a"))

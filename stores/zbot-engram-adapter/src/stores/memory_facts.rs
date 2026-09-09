@@ -739,15 +739,13 @@ impl MemoryFactStore for EngramMemoryFactStore {
 
     async fn upsert_typed_fact(
         &self,
-        fact: Value,
+        mut fact: MemoryFact,
         embedding: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let mut fact: MemoryFact =
-            serde_json::from_value(fact).map_err(|error| format!("decode MemoryFact: {error}"))?;
-        if let Some(embedding) = embedding {
-            fact.embedding = Some(embedding);
-        }
-        let embedding = fact.embedding.clone();
+        // The `embedding` parameter is the sole vector channel — the struct
+        // field is `#[serde(skip)]` and was always dropped by the old Value
+        // round-trip, so keep honoring only the explicit argument here.
+        fact.embedding = embedding.clone();
         self.upsert_fact_record(fact, embedding).await
     }
 

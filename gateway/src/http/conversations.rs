@@ -85,7 +85,7 @@ pub async fn list_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<MessageResponse>>, StatusCode> {
-    match state.messages.replay(&id, None, 500) {
+    match state.messages().replay(&id, None, 500) {
         Ok(messages) => {
             let responses: Vec<MessageResponse> = messages
                 .into_iter()

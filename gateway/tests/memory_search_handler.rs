@@ -50,7 +50,7 @@ fn setup_with_seeded_fact(agent_id: &str) -> (TestServer, TempDir) {
     };
     futures::executor::block_on(
         state
-            .memory_store
+            .memory_store()
             .as_ref()
             .expect("memory_store")
             .upsert_typed_fact(fact.clone(), None),
@@ -58,8 +58,8 @@ fn setup_with_seeded_fact(agent_id: &str) -> (TestServer, TempDir) {
     .expect("upsert fact");
 
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let router = create_http_router(GatewayConfig::default(), state, ws_handler);
     let server = TestServer::new(router).expect("test server");

@@ -120,7 +120,7 @@ pub async fn handle_webhook(
 
     // Invoke the agent (creates new session for each webhook call)
     match state
-        .runtime
+        .runtime()
         .invoke(agent_id, &conversation_id, &payload.message)
         .await
     {
@@ -196,13 +196,19 @@ pub async fn handle_whatsapp_webhook(
                     "Processing WhatsApp message"
                 );
 
-                // Store hook context for later response routing
-                if let Some(hook_registry) = state.hook_registry.as_ref() {
+                // Store hook context for later response routing.
+                // Reads through the execution group: hooks + runtime.
+                let execution = state.execution();
+                if let Some(hook_registry) = execution.hook_registry.as_ref() {
                     // Hook context is stored in state for the respond tool
                     let _ = hook_registry; // Used via event bus
                 }
 
-                if let Err(e) = state.runtime.invoke("root", &conversation_id, text).await {
+                if let Err(e) = execution
+                    .runtime
+                    .invoke("root", &conversation_id, text)
+                    .await
+                {
                     tracing::error!(error = %e, "Failed to invoke agent for WhatsApp message");
                 }
             }
@@ -253,7 +259,7 @@ pub async fn handle_telegram_webhook(
                 "Processing Telegram message"
             );
 
-            if let Err(e) = state.runtime.invoke("root", &conversation_id, text).await {
+            if let Err(e) = state.runtime().invoke("root", &conversation_id, text).await {
                 tracing::error!(error = %e, "Failed to invoke agent for Telegram message");
             }
         }

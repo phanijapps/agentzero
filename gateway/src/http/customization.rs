@@ -153,7 +153,7 @@ fn is_canonical_prompt_filename(filename: &str) -> bool {
 
 /// `GET /api/customization/files` — list editable markdowns.
 pub async fn list_files(State(state): State<AppState>) -> (StatusCode, Json<ListResponse>) {
-    let config_dir = state.paths.config_dir();
+    let config_dir = state.paths().config_dir();
     match enumerate_customization_files(&config_dir) {
         Ok(files) => (
             StatusCode::OK,
@@ -272,7 +272,7 @@ pub async fn get_file(
     State(state): State<AppState>,
     Query(q): Query<PathQuery>,
 ) -> (StatusCode, Json<FileResponse>) {
-    let config_dir = state.paths.config_dir();
+    let config_dir = state.paths().config_dir();
     let resolved = match resolve_path(&config_dir, &q.path) {
         Ok(p) => p,
         Err(e) => {
@@ -343,7 +343,7 @@ pub async fn put_file(
             }),
         );
     }
-    let config_dir = state.paths.config_dir();
+    let config_dir = state.paths().config_dir();
     match save_file_with_check(&config_dir, &req.path, &req.content, &req.expected_version) {
         SaveOutcome::Ok(version) => (
             StatusCode::OK,
@@ -700,7 +700,7 @@ mod handler_tests {
     #[tokio::test]
     async fn list_files_returns_ok_with_existing_files() {
         let (_dir, state) = make_state();
-        let cfg = state.paths.config_dir();
+        let cfg = state.paths().config_dir();
         std::fs::create_dir_all(cfg.join("agent")).unwrap();
         fs::write(cfg.join("agent").join("SOUL.md"), "soul body").unwrap();
 
@@ -736,7 +736,7 @@ mod handler_tests {
     #[tokio::test]
     async fn get_file_returns_content_with_version_for_existing_file() {
         let (_dir, state) = make_state();
-        let cfg = state.paths.config_dir();
+        let cfg = state.paths().config_dir();
         std::fs::create_dir_all(cfg.join("agent")).unwrap();
         fs::write(cfg.join("agent").join("SOUL.md"), "soul body").unwrap();
 
@@ -754,7 +754,7 @@ mod handler_tests {
     #[tokio::test]
     async fn get_file_marks_os_md_as_auto_generated() {
         let (_dir, state) = make_state();
-        let cfg = state.paths.config_dir();
+        let cfg = state.paths().config_dir();
         std::fs::create_dir_all(cfg.join("agent")).unwrap();
         fs::write(cfg.join("agent").join("OS.md"), "os body").unwrap();
 
@@ -807,7 +807,7 @@ mod handler_tests {
     #[tokio::test]
     async fn put_file_succeeds_when_version_matches() {
         let (_dir, state) = make_state();
-        let cfg = state.paths.config_dir();
+        let cfg = state.paths().config_dir();
         std::fs::create_dir_all(cfg.join("agent")).unwrap();
         let file_path = cfg.join("agent").join("SOUL.md");
         fs::write(&file_path, "v1").unwrap();
@@ -828,7 +828,7 @@ mod handler_tests {
     #[tokio::test]
     async fn put_file_returns_409_on_version_conflict() {
         let (_dir, state) = make_state();
-        let cfg = state.paths.config_dir();
+        let cfg = state.paths().config_dir();
         std::fs::create_dir_all(cfg.join("agent")).unwrap();
         let file_path = cfg.join("agent").join("SOUL.md");
         fs::write(&file_path, "v1").unwrap();

@@ -24,7 +24,7 @@ pub struct WebSocketHandler {
     runtime: Arc<RuntimeService>,
     subscriptions: Arc<SubscriptionManager>,
     agent_surfaces_enabled: bool,
-    agent_tasks: Option<Arc<crate::durable_agent_tasks::DurableAgentTaskService>>,
+    agent_tasks: Option<Arc<crate::tasks::durable_agent::DurableAgentTaskService>>,
 }
 
 impl WebSocketHandler {
@@ -50,13 +50,13 @@ impl WebSocketHandler {
 
     pub fn with_agent_tasks(
         mut self,
-        agent_tasks: Arc<crate::durable_agent_tasks::DurableAgentTaskService>,
+        agent_tasks: Arc<crate::tasks::durable_agent::DurableAgentTaskService>,
     ) -> Self {
         self.agent_tasks = Some(agent_tasks);
         self
     }
 
-    pub fn agent_tasks(&self) -> Option<Arc<crate::durable_agent_tasks::DurableAgentTaskService>> {
+    pub fn agent_tasks(&self) -> Option<Arc<crate::tasks::durable_agent::DurableAgentTaskService>> {
         self.agent_tasks.clone()
     }
 
@@ -259,7 +259,7 @@ pub(super) async fn handle_client_message(
     sessions: &SessionRegistry,
     runtime: &RuntimeService,
     subscriptions: Arc<SubscriptionManager>,
-    agent_tasks: Option<Arc<crate::durable_agent_tasks::DurableAgentTaskService>>,
+    agent_tasks: Option<Arc<crate::tasks::durable_agent::DurableAgentTaskService>>,
 ) -> Result<()> {
     match msg {
         ClientMessage::Invoke {
@@ -323,9 +323,9 @@ pub(super) async fn handle_client_message(
                     return Ok(());
                 };
                 let message_id =
-                    crate::durable_agent_tasks::canonical_message_id(client_message_id.as_deref());
+                    crate::tasks::durable_agent::canonical_message_id(client_message_id.as_deref());
                 let reserved_session_id = exec_session_id.clone().unwrap_or_else(|| {
-                    crate::durable_agent_tasks::reserved_session_id(&message_id)
+                    crate::tasks::durable_agent::reserved_session_id(&message_id)
                 });
                 let already_subscribed = subscriptions
                     .is_subscribed(&session_id.to_string(), &reserved_session_id)
@@ -598,11 +598,11 @@ pub(super) async fn handle_client_message(
                     }
                     return Ok(());
                 }
-                None => crate::durable_agent_tasks::AgentTaskCancelOutcome::NotFound,
+                None => crate::tasks::durable_agent::AgentTaskCancelOutcome::NotFound,
             };
             let cancel_result = match queued {
-                crate::durable_agent_tasks::AgentTaskCancelOutcome::Canceled
-                | crate::durable_agent_tasks::AgentTaskCancelOutcome::AlreadyCanceled => {
+                crate::tasks::durable_agent::AgentTaskCancelOutcome::Canceled
+                | crate::tasks::durable_agent::AgentTaskCancelOutcome::AlreadyCanceled => {
                     // A leased item may already have created its durable
                     // session. Cancel its live execution too; for a pending
                     // item there is no session yet and the queue transition is
@@ -612,8 +612,8 @@ pub(super) async fn handle_client_message(
                         .await;
                     Ok(())
                 }
-                crate::durable_agent_tasks::AgentTaskCancelOutcome::NotFound
-                | crate::durable_agent_tasks::AgentTaskCancelOutcome::NotCancelable => {
+                crate::tasks::durable_agent::AgentTaskCancelOutcome::NotFound
+                | crate::tasks::durable_agent::AgentTaskCancelOutcome::NotCancelable => {
                     runtime
                         .cancel_exact(&exec_session_id, &conversation_id)
                         .await
@@ -1377,7 +1377,7 @@ mod tests {
         sessions.register(ws_session).await;
         subscriptions.connect(client_id.clone(), tx).await;
         let message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
-        let session_id = crate::durable_agent_tasks::reserved_session_id(message_id);
+        let session_id = crate::tasks::durable_agent::reserved_session_id(message_id);
         let prompt = "Investigate durable handoff";
         let service = server.ws_handler().agent_tasks().unwrap();
 
@@ -1416,7 +1416,7 @@ mod tests {
         // before a worker bootstraps session/execution/message rows.
         assert!(server
             .state()
-            .state_service
+            .state_service()
             .get_session(&session_id)
             .unwrap()
             .is_none());

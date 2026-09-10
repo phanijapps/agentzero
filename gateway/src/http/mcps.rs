@@ -217,7 +217,7 @@ fn validate_mcp_config(config: &McpServerConfig) -> Result<(), String> {
 
 /// GET /api/mcps - List all MCP servers.
 pub async fn list_mcps(State(state): State<AppState>) -> Json<McpListResponse> {
-    match state.mcp_service.list_summaries() {
+    match state.mcp_service().list_summaries() {
         Ok(servers) => Json(McpListResponse { servers }),
         Err(e) => {
             tracing::error!("Failed to list MCP servers: {}", e);
@@ -231,7 +231,7 @@ pub async fn get_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<McpServerConfig>, StatusCode> {
-    match state.mcp_service.get(&id) {
+    match state.mcp_service().get(&id) {
         Ok(config) => Ok(Json(config)),
         Err(e) => {
             tracing::warn!("MCP server not found: {} - {}", id, e);
@@ -257,7 +257,7 @@ pub async fn create_mcp(
         return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))));
     }
 
-    match state.mcp_service.add(config.clone()) {
+    match state.mcp_service().add(config.clone()) {
         Ok(()) => Ok(Json(config)),
         Err(e) => {
             tracing::error!("Failed to create MCP server: {}", e);
@@ -274,7 +274,7 @@ pub async fn update_mcp(
     Json(request): Json<CreateMcpRequest>,
 ) -> Result<Json<McpServerConfig>, (StatusCode, Json<ErrorResponse>)> {
     // Verify the server exists
-    if state.mcp_service.get(&id).is_err() {
+    if state.mcp_service().get(&id).is_err() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse::new(format!("MCP server not found: {}", id))),
@@ -292,7 +292,7 @@ pub async fn update_mcp(
         return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))));
     }
 
-    match state.mcp_service.update(&id, config.clone()) {
+    match state.mcp_service().update(&id, config.clone()) {
         Ok(()) => Ok(Json(config)),
         Err(e) => {
             match &e {
@@ -343,7 +343,7 @@ pub async fn delete_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    match state.mcp_service.delete(&id) {
+    match state.mcp_service().delete(&id) {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(e) => {
             tracing::warn!("Failed to delete MCP server: {} - {}", id, e);
@@ -357,13 +357,13 @@ pub async fn mcp_oauth_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<McpOAuthStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if state.mcp_service.get(&id).is_err() {
+    if state.mcp_service().get(&id).is_err() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse::new(format!("MCP server not found: {}", id))),
         ));
     }
-    let oauth = McpOAuthService::new(state.mcp_service.clone());
+    let oauth = McpOAuthService::new(state.mcp_service().clone());
     Ok(Json(McpOAuthStatusResponse {
         status: oauth.status(&id).as_str().to_string(),
     }))
@@ -378,7 +378,7 @@ pub async fn start_mcp_oauth(
 ) -> Result<Json<McpOAuthStartResponse>, (StatusCode, Json<ErrorResponse>)> {
     require_local_origin(&headers)?;
     let redirect_uri = oauth_redirect_uri(&headers, request.redirect_uri.as_deref())?;
-    let oauth = McpOAuthService::new(state.mcp_service.clone());
+    let oauth = McpOAuthService::new(state.mcp_service().clone());
     oauth
         .begin_authorization(&id, &redirect_uri)
         .await
@@ -393,7 +393,7 @@ pub async fn disconnect_mcp_oauth(
     headers: HeaderMap,
 ) -> Result<Json<McpOAuthStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
     require_local_origin(&headers)?;
-    let oauth = McpOAuthService::new(state.mcp_service.clone());
+    let oauth = McpOAuthService::new(state.mcp_service().clone());
     oauth
         .disconnect(&id)
         .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))))?;
@@ -429,7 +429,7 @@ pub async fn mcp_oauth_callback(
         );
     };
 
-    let oauth = McpOAuthService::new(state.mcp_service.clone());
+    let oauth = McpOAuthService::new(state.mcp_service().clone());
     match oauth.complete_callback(&state_value, &code).await {
         Ok(mcp_id) => (StatusCode::OK, Html(oauth_success_html(&mcp_id))),
         Err(e) => (
@@ -685,7 +685,7 @@ pub async fn test_mcp(
     Path(id): Path<String>,
 ) -> Result<Json<McpTestResult>, (StatusCode, Json<ErrorResponse>)> {
     // Get the MCP config
-    let config = match state.mcp_service.get_for_runtime(&id) {
+    let config = match state.mcp_service().get_for_runtime(&id) {
         Ok(c) => c,
         Err(e) => {
             let status = if e.contains("not found") {

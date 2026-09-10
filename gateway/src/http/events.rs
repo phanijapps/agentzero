@@ -37,7 +37,7 @@ pub async fn event_stream(
     State(state): State<AppState>,
     Path(conversation_id): Path<String>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let event_bus = state.event_bus.clone();
+    let event_bus = state.event_bus().clone();
     let receiver = event_bus.subscribe_all();
     let target_conversation = conversation_id.clone();
 
@@ -84,7 +84,7 @@ pub async fn event_stream(
 pub async fn all_events_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let event_bus = state.event_bus.clone();
+    let event_bus = state.event_bus().clone();
     let receiver = event_bus.subscribe_all();
 
     let stream = stream::unfold(

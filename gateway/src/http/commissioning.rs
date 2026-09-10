@@ -244,11 +244,11 @@ fn memory_profile_targets(
 }
 
 fn full_embedding_is_compatible(state: &AppState) -> bool {
-    let config = state.embedding_service.config_snapshot();
+    let config = state.embedding_service().config_snapshot();
     config.backend == gateway_services::EmbeddingBackend::Internal
         && config.dimensions == 384
-        && state.embedding_service.dimensions() == 384
-        && state.embedding_service.client().model_name() == "bge-small-en-v1.5"
+        && state.embedding_service().dimensions() == 384
+        && state.embedding_service().client().model_name() == "bge-small-en-v1.5"
 }
 
 fn provision_memory_profile(
@@ -544,8 +544,10 @@ const CLOUD_PRESETS: &[KnownPreset] = &[
 pub async fn get_commissioning_status(
     State(state): State<AppState>,
 ) -> Result<Json<CommissioningStatusResponse>, (StatusCode, Json<CommissioningError>)> {
-    let settings = state.settings.load().map_err(|_| internal_error())?;
-    let providers = state
+    // Reads through the services group: settings + providers.
+    let services = state.services();
+    let settings = services.settings.load().map_err(|_| internal_error())?;
+    let providers = services
         .provider_service
         .list()
         .map_err(|_| internal_error())?;
@@ -554,11 +556,11 @@ pub async fn get_commissioning_status(
     // Only successful persistence may remove this marker. An older Complete
     // setting must never hide an interrupted recommissioning attempt.
     let ollama_pending =
-        gateway_services::providers::ollama_cloud_commissioning_pending(state.paths.as_ref());
+        gateway_services::providers::ollama_cloud_commissioning_pending(state.paths().as_ref());
     let (status, recovery_code) =
         apply_ollama_cloud_recovery_status(status, recovery_code, ollama_pending);
     let (recovery_code, restart_required) =
-        pending_memory_profile_recovery(state.paths.as_ref(), &settings, status, recovery_code);
+        pending_memory_profile_recovery(state.paths().as_ref(), &settings, status, recovery_code);
 
     Ok(Json(CommissioningStatusResponse {
         state: status,
@@ -614,7 +616,7 @@ pub async fn diagnose_local_runtime(State(state): State<AppState>) -> Json<Local
     }
 
     let candidate = local_provider("diagnostic-model");
-    let result = state.provider_service.test(&candidate).await;
+    let result = state.provider_service().test(&candidate).await;
     if !result.success {
         return Json(LocalDiagnosisResponse {
             state: LocalRuntimeState::Unreachable,
@@ -654,8 +656,8 @@ pub async fn complete_commissioning(
     validate_request(&request)?;
     let candidate = provider_from_selection(&request.provider)?;
     let ollama_cloud = candidate.id.as_deref() == Some("provider-ollama-cloud");
-    let pending_path = ollama_cloud_pending_path(state.paths.as_ref());
-    if gateway_services::providers::ollama_cloud_commissioning_pending(state.paths.as_ref())
+    let pending_path = ollama_cloud_pending_path(state.paths().as_ref());
+    if gateway_services::providers::ollama_cloud_commissioning_pending(state.paths().as_ref())
         && !ollama_cloud
     {
         return Err(validation_error(
@@ -664,7 +666,7 @@ pub async fn complete_commissioning(
         ));
     }
     let pending_created = if ollama_cloud {
-        claim_ollama_cloud_pending(state.paths.as_ref()).map_err(|_| {
+        claim_ollama_cloud_pending(state.paths().as_ref()).map_err(|_| {
             validation_error(
                 "ollama_cloud_commissioning_conflict",
                 "The pending Ollama Cloud setup marker is invalid.",
@@ -675,7 +677,9 @@ pub async fn complete_commissioning(
     };
 
     // Nothing is persisted until the selected provider has proved usable.
-    let test_result = state.provider_service.test(&candidate).await;
+    // Reads through the services group: providers + settings (persist step).
+    let services = state.services();
+    let test_result = services.provider_service.test(&candidate).await;
     if !test_result.success {
         if pending_created {
             let _ = std::fs::remove_file(&pending_path);
@@ -702,35 +706,37 @@ async fn persist_verified_commissioning(
     request: &CommissioningRequest,
     candidate: Provider,
 ) -> Result<Json<CommissioningStatusResponse>, (StatusCode, Json<CommissioningError>)> {
-    let mut settings = state.settings.load().map_err(|_| internal_error())?;
+    // Reads through the services group: settings.
+    let services = state.services();
+    let mut settings = services.settings.load().map_err(|_| internal_error())?;
     let ollama_cloud = candidate.id.as_deref() == Some("provider-ollama-cloud");
     if request.memory_profile == CommissioningMemoryProfile::ZbotRecommendedV1 {
         preflight_full_memory_profile(
-            state.paths.as_ref(),
+            state.paths().as_ref(),
             &settings.execution.memory,
             full_embedding_is_compatible(state),
         )
         .map_err(memory_profile_error)?;
-        provision_memory_profile(state.paths.as_ref()).map_err(memory_profile_error)?;
+        provision_memory_profile(state.paths().as_ref()).map_err(memory_profile_error)?;
     }
-    let pending_path = ollama_cloud_pending_path(state.paths.as_ref());
+    let pending_path = ollama_cloud_pending_path(state.paths().as_ref());
 
     let provider_id = candidate
         .id
         .clone()
         .expect("commissioning provider has an id");
-    match state.provider_service.get(&provider_id) {
+    match state.provider_service().get(&provider_id) {
         Ok(_) => state
-            .provider_service
+            .provider_service()
             .update(&provider_id, candidate)
             .map_err(|_| internal_error())?,
         Err(_) => state
-            .provider_service
+            .provider_service()
             .create(candidate)
             .map_err(|_| internal_error())?,
     };
     state
-        .provider_service
+        .provider_service()
         .set_default(&provider_id)
         .map_err(|_| internal_error())?;
 
@@ -746,13 +752,13 @@ async fn persist_verified_commissioning(
         settings.execution.multimodal.provider_id = Some(provider_id.clone());
         settings.execution.multimodal.model = Some("gemma4:31b-cloud".to_string());
 
-        let agents = state.agents.list().await.map_err(|_| internal_error())?;
+        let agents = state.agents().list().await.map_err(|_| internal_error())?;
         for mut agent in agents {
             agent.provider_id.clone_from(&provider_id);
             agent.model = "glm-5.2:cloud".to_string();
             let agent_id = agent.id.clone();
             state
-                .agents
+                .agents()
                 .update(&agent_id, agent)
                 .await
                 .map_err(|_| internal_error())?;
@@ -795,7 +801,7 @@ async fn persist_verified_commissioning(
     // Safe baseline completes immediately. Full memory remains explicitly
     // restart-pending until the next boot validates and activates the profile.
     state
-        .settings
+        .settings()
         .save(&settings)
         .map_err(|_| internal_error())?;
     if ollama_cloud {
@@ -1128,7 +1134,7 @@ fn write_commissioning_soul(
     primary_focus: &str,
     domains: &[String],
 ) -> Result<(), (StatusCode, Json<CommissioningError>)> {
-    let path = state.paths.soul();
+    let path = state.paths().soul();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| internal_error())?;
     }
@@ -1301,10 +1307,10 @@ mod tests {
                 .0;
         assert_eq!(safe_response.state, CommissioningState::Complete);
         assert!(!safe_response.restart_required);
-        assert!(memory_profile_targets(safe_state.paths.as_ref())
+        assert!(memory_profile_targets(safe_state.paths().as_ref())
             .into_iter()
             .all(|(path, _)| !path.exists()));
-        let safe_settings = safe_state.settings.load().unwrap();
+        let safe_settings = safe_state.settings().load().unwrap();
         assert_eq!(
             serde_json::to_value(safe_settings.execution.memory).unwrap(),
             serde_json::to_value(gateway_memory::MemorySettings::default()).unwrap()
@@ -1319,20 +1325,20 @@ mod tests {
         };
         let embedding_service = std::sync::Arc::new(
             gateway_services::EmbeddingService::with_config(
-                full_state.paths.clone(),
+                full_state.paths().clone(),
                 embedding.clone(),
             )
             .unwrap(),
         );
         embedding_service.persist_settings(&embedding).unwrap();
-        full_state.embedding_service = embedding_service;
+        full_state.services.embedding_service = embedding_service;
         let mut full_request = valid_commissioning_request();
         full_request.memory_profile = CommissioningMemoryProfile::ZbotRecommendedV1;
 
         // Force the first attempt to fail after fixed profile artifacts and
         // provider persistence, leaving an orphan marker that status must not
         // advertise as restartable.
-        std::fs::create_dir_all(full_state.paths.soul()).unwrap();
+        std::fs::create_dir_all(full_state.paths().soul()).unwrap();
         assert!(persist_verified_commissioning(
             &full_state,
             &full_request,
@@ -1340,8 +1346,8 @@ mod tests {
         )
         .await
         .is_err());
-        let orphan_settings = full_state.settings.load().unwrap();
-        let providers = full_state.provider_service.list().unwrap();
+        let orphan_settings = full_state.settings().load().unwrap();
+        let providers = full_state.provider_service().list().unwrap();
         let (orphan_status, fallback) = effective_status(
             &orphan_settings.commissioning,
             &orphan_settings.execution,
@@ -1349,7 +1355,7 @@ mod tests {
         );
         assert_eq!(
             pending_memory_profile_recovery(
-                full_state.paths.as_ref(),
+                full_state.paths().as_ref(),
                 &orphan_settings,
                 orphan_status,
                 fallback,
@@ -1357,7 +1363,7 @@ mod tests {
             (Some("memory_profile_conflict"), false)
         );
 
-        std::fs::remove_dir_all(full_state.paths.soul()).unwrap();
+        std::fs::remove_dir_all(full_state.paths().soul()).unwrap();
         let full_response =
             persist_verified_commissioning(&full_state, &full_request, local_provider("llama3.3"))
                 .await
@@ -1369,13 +1375,13 @@ mod tests {
             Some("memory_profile_restart_required")
         );
         assert!(full_response.restart_required);
-        let full_settings = full_state.settings.load().unwrap();
+        let full_settings = full_state.settings().load().unwrap();
         assert!(!full_settings.execution.setup_complete);
         assert_eq!(
             serde_json::to_value(full_settings.execution.memory).unwrap(),
             serde_json::to_value(gateway_memory::MemorySettings::zbot_recommended_v1()).unwrap()
         );
-        assert!(memory_profile_targets(full_state.paths.as_ref())
+        assert!(memory_profile_targets(full_state.paths().as_ref())
             .into_iter()
             .all(|(path, expected)| std::fs::read(path).unwrap() == expected));
     }
@@ -2028,7 +2034,7 @@ mod tests {
         let vault = tempfile::tempdir().unwrap();
         let state = AppState::minimal(vault.path().to_path_buf());
         state
-            .agents
+            .agents()
             .create(crate::services::agents::Agent {
                 id: "research-agent".to_string(),
                 name: "research-agent".to_string(),
@@ -2065,7 +2071,7 @@ mod tests {
             .await
             .unwrap();
 
-        let settings = state.settings.load().unwrap();
+        let settings = state.settings().load().unwrap();
         assert_eq!(
             settings.execution.orchestrator.provider_id.as_deref(),
             Some("provider-ollama-cloud")
@@ -2082,7 +2088,7 @@ mod tests {
             settings.execution.multimodal.model.as_deref(),
             Some("gemma4:31b-cloud")
         );
-        let agent = state.agents.get("research-agent").await.unwrap();
+        let agent = state.agents().get("research-agent").await.unwrap();
         assert_eq!(agent.provider_id, "provider-ollama-cloud");
         assert_eq!(agent.model, "glm-5.2:cloud");
         assert_eq!(agent.temperature, 0.2);
@@ -2090,7 +2096,7 @@ mod tests {
         assert_eq!(agent.mcps, ["example"]);
         assert_eq!(agent.skills, ["research"]);
         assert!(!state
-            .paths
+            .paths()
             .config_dir()
             .join(".ollama-cloud-commissioning-pending")
             .exists());

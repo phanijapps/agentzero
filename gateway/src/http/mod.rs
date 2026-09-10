@@ -525,11 +525,11 @@ pub fn create_http_router(
             post(graph::trigger_distillation),
         )
         // Logs endpoints (from api-logs crate)
-        .nest_service("/api/logs", api_logs::routes(state.log_service.clone()))
+        .nest_service("/api/logs", api_logs::routes(state.log_service().clone()))
         // Execution state endpoints (from execution-state crate)
         .nest_service(
             "/api/executions",
-            execution_state::routes(state.state_service.clone()),
+            execution_state::routes(state.state_service().clone()),
         )
         // Gateway Bus endpoints (for external connectors and API integrations)
         .nest("/api/gateway", gateway_bus::routes())
@@ -566,11 +566,11 @@ pub fn create_http_router(
     if config.a2a_enabled {
         match a2a::A2aHttpState::new(
             &config,
-            &state.vault_dir,
-            state.durable_work_store.clone(),
-            state.durable_work_transport.clone(),
-            state.messages.clone(),
-            state.runtime.clone(),
+            &state.vault_dir(),
+            state.durable_work_store().clone(),
+            state.durable_work_transport().clone(),
+            state.messages().clone(),
+            state.runtime().clone(),
         ) {
             Ok(a2a_state) => {
                 router = router.merge(a2a::routes(a2a_state));

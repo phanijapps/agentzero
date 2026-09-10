@@ -23,7 +23,7 @@ use crate::state::AppState;
 
 /// `GET /api/curator/usage` — full sidecar (empty map when missing).
 pub async fn list_usage(State(state): State<AppState>) -> Json<WardUsageMap> {
-    Json(WardUsage::new(state.paths.wards_dir()).load())
+    Json(WardUsage::new(state.paths().wards_dir()).load())
 }
 
 /// `GET /api/curator/usage/:ward` — single ward record. `404` if missing.
@@ -31,7 +31,7 @@ pub async fn get_usage(
     State(state): State<AppState>,
     Path(ward): Path<String>,
 ) -> Result<Json<WardRecord>, StatusCode> {
-    match WardUsage::new(state.paths.wards_dir()).get(&ward) {
+    match WardUsage::new(state.paths().wards_dir()).get(&ward) {
         Some(rec) => Ok(Json(rec)),
         None => Err(StatusCode::NOT_FOUND),
     }
@@ -51,7 +51,7 @@ pub async fn set_pinned(
     Path(ward): Path<String>,
     Json(payload): Json<PinPayload>,
 ) -> Result<StatusCode, StatusCode> {
-    let usage = WardUsage::new(state.paths.wards_dir());
+    let usage = WardUsage::new(state.paths().wards_dir());
     if usage.get(&ward).is_none() {
         return Err(StatusCode::NOT_FOUND);
     }

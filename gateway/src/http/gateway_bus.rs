@@ -114,7 +114,8 @@ pub async fn submit_session(
     Json(request): Json<SessionRequest>,
 ) -> Result<Json<SessionHandle>, ApiError> {
     // Get the runner from runtime service
-    let runner = state.runtime.runner().ok_or_else(|| {
+    let runtime = state.runtime();
+    let runner = runtime.runner().ok_or_else(|| {
         bus_error_to_response(BusError::Internal(
             "Execution runner not initialized".to_string(),
         ))
@@ -123,8 +124,8 @@ pub async fn submit_session(
     // Create the gateway bus
     let bus = HttpGatewayBus::new(
         runner.clone(),
-        state.state_service.clone(),
-        state.vault_dir.clone(),
+        state.state_service().clone(),
+        state.vault_dir().clone(),
     );
 
     // Submit the session
@@ -147,7 +148,8 @@ pub async fn get_status(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<StatusResponse>, ApiError> {
-    let runner = state.runtime.runner().ok_or_else(|| {
+    let runtime = state.runtime();
+    let runner = runtime.runner().ok_or_else(|| {
         bus_error_to_response(BusError::Internal(
             "Execution runner not initialized".to_string(),
         ))
@@ -155,8 +157,8 @@ pub async fn get_status(
 
     let bus = HttpGatewayBus::new(
         runner.clone(),
-        state.state_service.clone(),
-        state.vault_dir.clone(),
+        state.state_service().clone(),
+        state.vault_dir().clone(),
     );
 
     let status = bus
@@ -175,7 +177,8 @@ pub async fn cancel_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let runner = state.runtime.runner().ok_or_else(|| {
+    let runtime = state.runtime();
+    let runner = runtime.runner().ok_or_else(|| {
         bus_error_to_response(BusError::Internal(
             "Execution runner not initialized".to_string(),
         ))
@@ -183,8 +186,8 @@ pub async fn cancel_session(
 
     let bus = HttpGatewayBus::new(
         runner.clone(),
-        state.state_service.clone(),
-        state.vault_dir.clone(),
+        state.state_service().clone(),
+        state.vault_dir().clone(),
     );
 
     bus.cancel(&session_id)
@@ -199,7 +202,8 @@ pub async fn pause_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let runner = state.runtime.runner().ok_or_else(|| {
+    let runtime = state.runtime();
+    let runner = runtime.runner().ok_or_else(|| {
         bus_error_to_response(BusError::Internal(
             "Execution runner not initialized".to_string(),
         ))
@@ -207,8 +211,8 @@ pub async fn pause_session(
 
     let bus = HttpGatewayBus::new(
         runner.clone(),
-        state.state_service.clone(),
-        state.vault_dir.clone(),
+        state.state_service().clone(),
+        state.vault_dir().clone(),
     );
 
     bus.pause(&session_id)
@@ -223,7 +227,8 @@ pub async fn resume_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let runner = state.runtime.runner().ok_or_else(|| {
+    let runtime = state.runtime();
+    let runner = runtime.runner().ok_or_else(|| {
         bus_error_to_response(BusError::Internal(
             "Execution runner not initialized".to_string(),
         ))
@@ -231,8 +236,8 @@ pub async fn resume_session(
 
     let bus = HttpGatewayBus::new(
         runner.clone(),
-        state.state_service.clone(),
-        state.vault_dir.clone(),
+        state.state_service().clone(),
+        state.vault_dir().clone(),
     );
 
     bus.resume(&session_id)

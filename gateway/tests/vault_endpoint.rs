@@ -14,8 +14,8 @@ fn write(path: impl AsRef<std::path::Path>, content: &str) {
 fn setup_with_config(config: GatewayConfig) -> (TestServer, TempDir) {
     let (dir, state) = make_state();
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let router = create_http_router(config, state, ws_handler);
     let server = TestServer::new(router).expect("test server");

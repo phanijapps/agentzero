@@ -63,7 +63,7 @@ pub struct UpdateSkillRequest {
 
 /// GET /api/skills - List all skills.
 pub async fn list_skills(State(state): State<AppState>) -> Json<Vec<SkillResponse>> {
-    match state.skills.list().await {
+    match state.skills().list().await {
         Ok(skills) => Json(skills.into_iter().map(SkillResponse::from).collect()),
         Err(e) => {
             tracing::error!("Failed to list skills: {}", e);
@@ -93,7 +93,7 @@ pub async fn create_skill(
         source: gateway_services::SkillSource::Vault,
     };
 
-    match state.skills.create(skill).await {
+    match state.skills().create(skill).await {
         Ok(created) => Ok(Json(SkillResponse::from(created))),
         Err(e) => {
             tracing::error!("Failed to create skill: {}", e);
@@ -107,7 +107,7 @@ pub async fn get_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<SkillResponse>, StatusCode> {
-    match state.skills.get(&id).await {
+    match state.skills().get(&id).await {
         Ok(skill) => Ok(Json(SkillResponse::from(skill))),
         Err(e) => {
             tracing::warn!("Skill not found: {} - {}", id, e);
@@ -122,7 +122,7 @@ pub async fn update_skill(
     Path(id): Path<String>,
     Json(request): Json<UpdateSkillRequest>,
 ) -> Result<Json<SkillResponse>, StatusCode> {
-    let existing = match state.skills.get(&id).await {
+    let existing = match state.skills().get(&id).await {
         Ok(s) => s,
         Err(_) => return Err(StatusCode::NOT_FOUND),
     };
@@ -138,7 +138,7 @@ pub async fn update_skill(
         source: existing.source,
     };
 
-    match state.skills.update(&id, updated).await {
+    match state.skills().update(&id, updated).await {
         Ok(skill) => Ok(Json(SkillResponse::from(skill))),
         Err(e) => {
             tracing::error!("Failed to update skill: {}", e);
@@ -149,7 +149,7 @@ pub async fn update_skill(
 
 /// DELETE /api/skills/:id - Delete a skill.
 pub async fn delete_skill(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
-    match state.skills.delete(&id).await {
+    match state.skills().delete(&id).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::warn!("Failed to delete skill: {} - {}", id, e);

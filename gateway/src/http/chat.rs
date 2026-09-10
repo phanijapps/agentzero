@@ -69,10 +69,11 @@ pub async fn init_chat_session(
     let _guard = chat_session_lock().lock().await;
 
     let settings = state
-        .settings
+        .settings()
         .get_execution_settings()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let runner = state.runtime.runner().ok_or_else(|| {
+    let runtime = state.runtime();
+    let runner = runtime.runner().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             "Runtime not available".to_string(),
@@ -125,7 +126,7 @@ pub async fn init_chat_session(
         conversation_id: Some(conversation_id.clone()),
     };
     state
-        .settings
+        .settings()
         .update_execution_settings(updated_settings)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
@@ -150,7 +151,7 @@ pub async fn clear_chat_session(
     let _guard = chat_session_lock().lock().await;
 
     let settings = state
-        .settings
+        .settings()
         .get_execution_settings()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
@@ -163,7 +164,8 @@ pub async fn clear_chat_session(
     // fails, leave the slot intact so the next clear can retry — partial
     // success (slot cleared but rows still in DB) would be worse.
     if let Some(session_id) = settings.chat.session_id.clone() {
-        let runner = state.runtime.runner().ok_or_else(|| {
+        let runtime = state.runtime();
+        let runner = runtime.runner().ok_or_else(|| {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Runtime not available".to_string(),
@@ -184,7 +186,7 @@ pub async fn clear_chat_session(
     let mut updated = settings.clone();
     updated.chat = gateway_services::ChatConfig::default();
     state
-        .settings
+        .settings()
         .update_execution_settings(updated)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
@@ -203,7 +205,7 @@ pub async fn get_session_messages(
     let limit = query.limit.unwrap_or(100);
 
     let messages = state
-        .messages
+        .messages()
         .replay(&session_id, None, limit as usize)
         .map_err(|e| {
             (

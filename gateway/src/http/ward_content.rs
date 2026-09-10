@@ -241,20 +241,16 @@ pub async fn get_ward_content(
     Path(ward_id): Path<String>,
 ) -> Result<Json<WardContentResponse>, HandlerError> {
     let memory_store = state
-        .memory_store
-        .as_ref()
+        .memory_store()
         .ok_or_else(|| store_unavailable("memory"))?;
     let episode_store = state
-        .episode_store
-        .as_ref()
+        .episode_store()
         .ok_or_else(|| store_unavailable("episode"))?;
     let wiki_store = state
-        .wiki_store
-        .as_ref()
+        .wiki_store()
         .ok_or_else(|| store_unavailable("wiki"))?;
     let procedure_store = state
-        .procedure_store
-        .as_ref()
+        .procedure_store()
         .ok_or_else(|| store_unavailable("procedure"))?;
 
     // Memory facts: trait surface lacks a `list_by_ward` projection so we
@@ -352,8 +348,7 @@ pub async fn list_wards(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<WardListItem>>, HandlerError> {
     let memory_store = state
-        .memory_store
-        .as_ref()
+        .memory_store()
         .ok_or_else(|| store_unavailable("memory"))?;
 
     const WARD_AGG_LIMIT: usize = 5000;

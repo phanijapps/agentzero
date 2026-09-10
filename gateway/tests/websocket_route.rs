@@ -12,8 +12,8 @@ use gateway_ws_protocol::{ClientMessage, ServerMessage};
 async fn ws_route_upgrades_and_routes_ping() {
     let (_dir, state) = common::make_state();
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let router = create_http_router(GatewayConfig::default(), state, ws_handler);
     let server = TestServer::builder()

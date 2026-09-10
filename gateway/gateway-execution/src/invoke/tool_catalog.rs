@@ -39,13 +39,13 @@ pub(crate) const TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec { name: "run_procedure",      caps: &[C::ProcedureRun],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-runtime",     audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
     ToolSpec { name: "delegate_to_zbot",   caps: &[C::PeerDelegate],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
     ToolSpec { name: "list_zbots",         caps: &[C::PeerDelegate],   side_effects: Some(ContextSideEffects::ReadExternal), risk: Some(ContextRiskLevel::Low), cost: ContextCostHint::Cheap, latency: None, token_hint: 200, owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible", split_target: None },
-    ToolSpec { name: "handoff_to_agent",   caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
-    ToolSpec { name: "kill_agent",         caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
-    ToolSpec { name: "list_session_agents",caps: &[C::AgentControl],   side_effects: Some(ContextSideEffects::ReadExternal), risk: Some(ContextRiskLevel::Low), cost: ContextCostHint::Cheap, latency: None, token_hint: 200, owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible", split_target: None },
-    ToolSpec { name: "message_agent",      caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
-    ToolSpec { name: "steer_agent",        caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
+    ToolSpec { name: "handoff_to_agent",   caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: true, visibility_policy: "default_visible",  split_target: None },
+    ToolSpec { name: "kill_agent",         caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: true, visibility_policy: "default_visible",  split_target: None },
+    ToolSpec { name: "list_session_agents",caps: &[C::AgentControl],   side_effects: Some(ContextSideEffects::ReadExternal), risk: Some(ContextRiskLevel::Low), cost: ContextCostHint::Cheap, latency: None, token_hint: 200, owner: "gateway-execution", audit: None, hidden: true, visibility_policy: "default_visible", split_target: None },
+    ToolSpec { name: "message_agent",      caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: true, visibility_policy: "default_visible",  split_target: None },
+    ToolSpec { name: "steer_agent",        caps: &[C::AgentControl],   side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: true, visibility_policy: "default_visible",  split_target: None },
     ToolSpec { name: "wait_agent",         caps: &[C::AgentControl],   side_effects: Some(ContextSideEffects::ReadExternal), risk: Some(ContextRiskLevel::Low), cost: ContextCostHint::Cheap, latency: Some(ContextLatencyHint::Background), token_hint: 120, owner: "gateway-execution", audit: Some("join_audit"), hidden: true, visibility_policy: "visible_when_parallel_children_active", split_target: Some("action:parallel_join") },
-    ToolSpec { name: "reply_to_agent",     caps: &[C::AgentReply],     side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
+    ToolSpec { name: "reply_to_agent",     caps: &[C::AgentReply],     side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "gateway-execution", audit: None, hidden: true, visibility_policy: "default_visible",  split_target: None },
     ToolSpec { name: "present_surface",    caps: &[C::SurfacePresent], side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 300,  owner: "gateway-execution", audit: Some("presentation_audit"), hidden: false, visibility_policy: "default_visible_automatic_presentation", split_target: None },
     ToolSpec { name: "shell",              caps: &[C::Shell],          side_effects: Some(ContextSideEffects::Execute), risk: Some(ContextRiskLevel::High), cost: ContextCostHint::Cheap, latency: None, token_hint: 400, owner: "agent-tools", audit: Some("execution_audit"), hidden: false, visibility_policy: "default_visible_action_tool", split_target: Some("actions:shell_execute; resources:command_result_handles") },
     ToolSpec { name: "read",               caps: &[C::FileRead],       side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 400,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
@@ -54,13 +54,11 @@ pub(crate) const TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec { name: "write",              caps: &[C::FileWrite],      side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-tools",        audit: None, hidden: true,  visibility_policy: "legacy_alias_hidden", split_target: None },
     ToolSpec { name: "write_file",         caps: &[C::FileWrite],      side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
     ToolSpec { name: "goal",               caps: &[C::GoalWrite],      side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
-    ToolSpec { name: "graph_query",        caps: &[C::GraphRead],      side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 800,  owner: "agent-tools",        audit: None, hidden: true,  visibility_policy: "hidden_from_model_use_context_resources", split_target: Some("resources:context_graph_retrieval") },
     ToolSpec { name: "ingest",             caps: &[C::IngestWrite],    side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
     ToolSpec { name: "load_skill",         caps: &[C::SkillLoad],      side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 1200, owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible_bounded_packet", split_target: Some("resources:skill_packet/skill_section_handles") },
     ToolSpec { name: "recall",             caps: &[C::MemoryRead],     side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 800,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible_unified_recall_exception", split_target: Some("resources:memory_recall/context_atoms") },
     ToolSpec { name: "memory_write",       caps: &[C::MemoryWrite],    side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible_memory_write_action", split_target: Some("action:memory_write") },
     ToolSpec { name: "multimodal_analyze", caps: &[C::MultimodalAnalyze], side_effects: None, risk: None, cost: ContextCostHint::Moderate, latency: Some(ContextLatencyHint::Slow), token_hint: 200, owner: "agent-tools", audit: None, hidden: false, visibility_policy: "default_visible", split_target: None },
-    ToolSpec { name: "query_resource",     caps: &[C::ConnectorQuery], side_effects: None, risk: None, cost: ContextCostHint::Moderate, latency: Some(ContextLatencyHint::Slow), token_hint: 800, owner: "agent-tools", audit: None, hidden: true, visibility_policy: "hidden_from_model_use_connector_split", split_target: Some("action:connector_invoke; resources:connector_resource") },
     ToolSpec { name: "connector_invoke",   caps: &[C::ConnectorInvoke], side_effects: None, risk: None, cost: ContextCostHint::Moderate, latency: Some(ContextLatencyHint::Slow), token_hint: 300, owner: "agent-tools", audit: None, hidden: false, visibility_policy: "default_visible_connector_invoke_action", split_target: Some("action:connector_invoke") },
     ToolSpec { name: "connector_resource", caps: &[C::ConnectorResourceRead], side_effects: None, risk: None, cost: ContextCostHint::Moderate, latency: Some(ContextLatencyHint::Slow), token_hint: 800, owner: "agent-tools", audit: None, hidden: false, visibility_policy: "default_visible_connector_resource_read", split_target: Some("resources:connector_resource") },
     ToolSpec { name: "ward",               caps: &[C::WardRead, C::WardWrite], side_effects: None, risk: None, cost: ContextCostHint::Cheap, latency: None, token_hint: 200, owner: "agent-tools", audit: None, hidden: false, visibility_policy: "default_visible_action_tool", split_target: Some("actions:ward_lifecycle; resources:ward_context") },
@@ -256,7 +254,7 @@ pub(crate) fn display_name(tool_name: &str) -> String {
 }
 
 /// Tools hidden from the model's tool schema regardless of actor.
-pub(crate) const MODEL_HIDDEN_TOOLS: &[&str] = &["graph_query", "query_resource"];
+pub(crate) const MODEL_HIDDEN_TOOLS: &[&str] = &[];
 
 #[cfg(test)]
 mod tests {
@@ -295,8 +293,6 @@ mod tests {
     fn token_hints_match_the_retired_match_arms() {
         assert_eq!(token_hint("load_skill"), Some(1200));
         assert_eq!(token_hint("recall"), Some(800));
-        assert_eq!(token_hint("graph_query"), Some(800));
-        assert_eq!(token_hint("query_resource"), Some(800));
         assert_eq!(token_hint("connector_resource"), Some(800));
         assert_eq!(token_hint("connector_invoke"), Some(300));
         assert_eq!(token_hint("shell"), Some(400));
@@ -320,13 +316,7 @@ mod tests {
     #[test]
     fn hidden_aliases_and_context_splits() {
         // Hidden from the model: legacy aliases + context-resource split tools.
-        for name in [
-            "edit",
-            "write",
-            "wait_agent",
-            "graph_query",
-            "query_resource",
-        ] {
+        for name in ["edit", "write", "wait_agent"] {
             assert!(!default_visible(name), "{name} must be hidden");
         }
         // Everything in MODEL_HIDDEN_TOOLS is also default_visible=false.

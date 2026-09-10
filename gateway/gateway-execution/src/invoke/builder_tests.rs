@@ -7,7 +7,6 @@ use crate::agent_pool::AgentResultBus;
 use crate::config::GatewayFileSystem;
 use crate::invoke::executor::build_execution_engine;
 use crate::invoke::policy::RuntimeActorKind;
-use crate::invoke::tool_catalog::{default_visible, split_target, visibility_policy};
 use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
 use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_primitives::FileSystemContext;
@@ -1131,11 +1130,8 @@ async fn builder_hides_broad_context_pull_tools_from_model_schema() {
     assert!(executor.tool_registry().contains("memory_write"));
     assert!(executor.tool_registry().contains("memory_write"));
 
-    assert!(executor.config().model_hidden_tools.contains("graph_query"));
-    assert!(executor
-        .config()
-        .model_hidden_tools
-        .contains("query_resource"));
+    // graph_query and query_resource are deleted (0 usage, hidden, dead surface).
+
     let visible_names = executor
         .model_visible_tools()
         .into_iter()
@@ -1193,6 +1189,7 @@ async fn builder_exposes_narrow_recall_when_memory_recall_is_configured() {
 
     assert!(!visible_names.contains("graph_query"));
     assert!(!visible_names.contains("query_resource"));
+    // agent-control cluster hidden per wait_agent precedent (0 usage)
 }
 
 #[tokio::test]
@@ -1224,7 +1221,7 @@ async fn builder_exposes_connector_split_and_hides_query_resource_from_model_sch
         .await
         .expect("executor build");
 
-    assert!(executor.tool_registry().contains("query_resource"));
+    assert!(!executor.tool_registry().contains("query_resource"));
     assert!(executor.tool_registry().contains("connector_resource"));
     assert!(executor.tool_registry().contains("connector_invoke"));
 
@@ -1876,21 +1873,6 @@ fn catalog_for_actor(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
     )
 }
 
-fn catalog_for_actor_with_connector(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
-    let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
-        .with_actor_kind(actor_kind)
-        .with_connector_provider(Arc::new(MockConnectorProvider))
-        .build_tool_registry(fs_context);
-
-    build_context_capability_catalog(
-        actor_kind,
-        registry.as_ref(),
-        Some("session-1".to_string()),
-        Some("agent-1".to_string()),
-    )
-}
 
 fn catalog_for_actor_with_join_deps(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
     let dir = tempfile::tempdir().expect("tempdir");

@@ -15,9 +15,9 @@ use agent_runtime::{
     SummarizationConfig, SummarizationMiddleware, ToolRegistry, TriggerCondition,
 };
 use agent_tools::{
-    ConnectorInvokeTool, ConnectorResourceTool, EditFileTool, GraphQueryTool, LoadSkillTool,
-    MultimodalAnalyzeTool, QueryResourceTool, ReadTool, RecallAuthorizationContext, ShellTool,
-    ToolSettings, UpdatePlanTool, WardTool, WriteFileTool,
+    ConnectorInvokeTool, ConnectorResourceTool, EditFileTool, LoadSkillTool, MultimodalAnalyzeTool,
+    ReadTool, RecallAuthorizationContext, ShellTool, ToolSettings, UpdatePlanTool, WardTool,
+    WriteFileTool,
 };
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
@@ -1088,13 +1088,6 @@ impl ExecutorBuilder {
             }
         }
 
-        if actor_allows(actor, ToolCapability::GraphRead) {
-            if let Some(ref ks) = self.kg_store {
-                let adapter = Arc::new(super::kg_store_adapter::KgStoreAdapter::new(ks.clone()));
-                tool_registry.register(Arc::new(GraphQueryTool::new(adapter)));
-            }
-        }
-
         if actor_allows(actor, ToolCapability::IngestWrite) {
             if let Some(ref a) = self.ingestion_adapter {
                 tool_registry.register(Arc::new(agent_tools::IngestTool::new(a.clone())));
@@ -1108,15 +1101,6 @@ impl ExecutorBuilder {
         }
 
         if let Some(provider) = &self.connector_provider {
-            register_if_allowed(
-                &mut tool_registry,
-                actor,
-                &[ToolCapability::ConnectorQuery],
-                Arc::new(
-                    QueryResourceTool::new(provider.clone())
-                        .with_optional_evidence_intake(self.ingestion_adapter.clone()),
-                ),
-            );
             register_if_allowed(
                 &mut tool_registry,
                 actor,

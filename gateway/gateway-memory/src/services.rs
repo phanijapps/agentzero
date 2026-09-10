@@ -327,7 +327,6 @@ fn default_pattern_tool_whitelist() -> Vec<String> {
         "edit_file",
         "grep",
         "web_fetch",
-        "memory",
         "graph_query",
         "execution_graph",
         "update_plan",

@@ -35,7 +35,6 @@ pub use tools::{
     IngestionAccess,
     LoadSkillTool,
     MemorySearchTool,
-    MemoryTool,
     MemoryWriteTool,
     // Multimodal vision fallback
     MultimodalAnalyzeTool,

@@ -16,17 +16,18 @@ use super::ingest::{EvidenceRecord, IngestionAccess};
 // MEMORY TOOL
 // ============================================================================
 
-/// Durable structured memory facts.
+/// Narrow model-facing durable memory writer.
 ///
-/// Two actions: `save_fact` (write) and `get_fact` (exact-key ctx lookup).
-/// Retrieval lives in the separate `recall` tool.
-pub struct MemoryTool {
+/// The broad `memory` tool remains available for internal compatibility and
+/// exact legacy calls, but model-visible prompts should use this write-only
+/// surface for durable facts.
+pub struct MemoryWriteTool {
     fact_store: Option<Arc<dyn MemoryFactStore>>,
-    evidence_intake: Option<Arc<dyn IngestionAccess>>,
+    evidence_intake: Option<Arc<dyn crate::tools::ingest::IngestionAccess>>,
 }
 
-impl MemoryTool {
-    /// Create a new MemoryTool with an optional fact store.
+impl MemoryWriteTool {
+    /// Create a memory write tool over the durable fact store.
     #[must_use]
     pub fn new(fact_store: Option<Arc<dyn MemoryFactStore>>) -> Self {
         Self {
@@ -35,148 +36,22 @@ impl MemoryTool {
         }
     }
 
-    /// Wire the shared evidence-intake boundary used by durable
-    /// memory/knowledge write paths.
+    /// Wire evidence intake when a runtime adapter is available.
     #[must_use]
-    pub fn with_evidence_intake(mut self, evidence_intake: Arc<dyn IngestionAccess>) -> Self {
+    pub fn with_evidence_intake(
+        mut self,
+        evidence_intake: Arc<dyn crate::tools::ingest::IngestionAccess>,
+    ) -> Self {
         self.evidence_intake = Some(evidence_intake);
         self
     }
 
-    /// Wire evidence intake when a runtime adapter is available.
     #[must_use]
     pub fn with_optional_evidence_intake(
         mut self,
         evidence_intake: Option<Arc<dyn IngestionAccess>>,
     ) -> Self {
         self.evidence_intake = evidence_intake;
-        self
-    }
-}
-
-#[async_trait]
-impl Tool for MemoryTool {
-    fn name(&self) -> &str {
-        "memory"
-    }
-
-    fn description(&self) -> &str {
-        "Durable memory facts. Actions: save_fact (category/user|pattern|domain, key, content, confidence — embedded for semantic recall), \
-        get_fact (exact-key lookup for ctx-namespaced session state: intent/prompt/plan/state.<exec_id>). For retrieval use the recall tool."
-    }
-
-    fn parameters_schema(&self) -> Option<Value> {
-        Some(json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["save_fact", "get_fact"],
-                    "description": "The memory operation to perform"
-                },
-                "category": {
-                    "type": "string",
-                    "enum": ["user", "pattern", "domain", "ctx"],
-                    "description": "Fact category (for save_fact). 'ctx' is reserved for session state — root writes canonicals (intent/prompt/plan); subagents can only write state.<exec_id> under their own session."
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Memory key (required for save_fact, get_fact). For save_fact use dot-notation like 'user.preferred_format'"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Fact content — 1-2 sentence description (for save_fact)"
-                },
-                "confidence": {
-                    "type": "number",
-                    "description": "Confidence 0.0-1.0 (for save_fact, default 0.8)"
-                },
-                "retention_policy": {
-                    "type": "string",
-                    "description": "Durable evidence retention policy selected by the host for save_fact. Defaults to 'durable'.",
-                    "default": "durable"
-                },
-                "ontology_labels": {
-                    "type": "array",
-                    "description": "Optional zbot-selected dynamic ontology labels attached to save_fact evidence intake.",
-                    "items": {"type": "string"}
-                },
-                "taxonomy_labels": {
-                    "type": "array",
-                    "description": "Optional zbot-selected SKOS/taxonomy labels attached to save_fact evidence intake.",
-                    "items": {"type": "string"}
-                }
-            },
-            "required": ["action"]
-        }))
-    }
-
-    fn permissions(&self) -> ToolPermissions {
-        ToolPermissions::safe()
-    }
-
-    async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
-        // Check for error markers from truncated/malformed tool calls
-        if let Some(error_type) = args.get("__error__").and_then(|v| v.as_str()) {
-            let message = args
-                .get("__message__")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error");
-            return Err(AgentError::Tool(format!("{}: {}", error_type, message)));
-        }
-
-        let agent_id = ctx
-            .get_state("app:agent_id")
-            .and_then(|v| v.as_str().map(String::from))
-            .or_else(|| {
-                ctx.get_state("app:root_agent_id")
-                    .and_then(|v| v.as_str().map(String::from))
-            })
-            .ok_or_else(|| AgentError::Tool("No agent ID in context".to_string()))?;
-
-        let action = args
-            .get("action")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AgentError::Tool(
-                    "Missing 'action' parameter. Expected shape: {\"action\":\"save_fact\", \"category\":\"user\", \"key\":\"user.x\", \"content\":\"...\"} or {\"action\":\"get_fact\", \"key\":\"ctx.session.intent\"}".to_string(),
-                )
-            })?;
-
-        match action {
-            "save_fact" => self.action_save_fact(ctx.as_ref(), &agent_id, &args).await,
-            "get_fact" => self.action_get_fact(ctx.as_ref(), &args).await,
-            _ => Err(AgentError::Tool(format!("Unknown action: {}", action))),
-        }
-    }
-}
-
-/// Narrow model-facing durable memory writer.
-///
-/// The broad `memory` tool remains available for internal compatibility and
-/// exact legacy calls, but model-visible prompts should use this write-only
-/// surface for durable facts.
-pub struct MemoryWriteTool {
-    inner: MemoryTool,
-}
-
-impl MemoryWriteTool {
-    /// Create a memory write tool with the same durable fact backend as
-    /// [`MemoryTool`].
-    #[must_use]
-    pub fn new(fact_store: Option<Arc<dyn MemoryFactStore>>) -> Self {
-        Self {
-            inner: MemoryTool::new(fact_store),
-        }
-    }
-
-    /// Wire evidence intake when a runtime adapter is available.
-    #[must_use]
-    pub fn with_optional_evidence_intake(
-        mut self,
-        evidence_intake: Option<Arc<dyn IngestionAccess>>,
-    ) -> Self {
-        self.inner = self.inner.with_optional_evidence_intake(evidence_intake);
         self
     }
 }
@@ -241,11 +116,16 @@ impl Tool for MemoryWriteTool {
             .as_object_mut()
             .ok_or_else(|| AgentError::Tool("memory_write expects an object".to_string()))?;
         obj.insert("action".to_string(), Value::String("save_fact".to_string()));
-        self.inner.execute(ctx, args).await
+        let agent_id = obj
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .unwrap_or("root")
+            .to_string();
+        self.action_save_fact(ctx.as_ref(), &agent_id, &args).await
     }
 }
 
-impl MemoryTool {
+impl MemoryWriteTool {
     /// Save a structured memory fact via the DB-backed fact store.
     async fn action_save_fact(
         &self,
@@ -403,58 +283,6 @@ impl MemoryTool {
             )),
         }
     }
-
-    /// Exact-key lookup for ctx-namespaced session state.
-    ///
-    /// Unlike `recall` (fuzzy), this returns the exact row matching the
-    /// key, or `{found: false}` on miss — never a nearest-neighbor.
-    /// Used by subagents to fetch session canonicals (intent, prompt,
-    /// plan) and prior step handoffs (state.<exec_id>) by precise key.
-    async fn action_get_fact(&self, ctx: &dyn ToolContext, args: &Value) -> Result<Value> {
-        let key = args
-            .get("key")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("Missing 'key' for get_fact".to_string()))?;
-
-        if !key.starts_with("ctx.") {
-            return Err(AgentError::Tool(format!(
-                "get_fact only retrieves ctx-namespaced keys. Got '{}' — use 'recall' for fuzzy search on non-ctx facts.",
-                key
-            )));
-        }
-
-        let requested_sid =
-            parse_ctx_key_session_id(key).map_err(|e| AgentError::Tool(e.to_string()))?;
-        if requested_sid != ctx.session_id() {
-            return Err(AgentError::Tool(format!(
-                "get_fact can only read ctx facts for the current session '{}'. Got key for session '{}'.",
-                ctx.session_id(),
-                requested_sid
-            )));
-        }
-
-        let ward_id = ctx
-            .get_state("ward_id")
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| "__global__".to_string());
-
-        match &self.fact_store {
-            Some(store) => {
-                let result = store
-                    .get_ctx_fact(&ward_id, key)
-                    .await
-                    .map_err(|e| AgentError::Tool(e.to_string()))?;
-                match result {
-                    Some(value) => Ok(value),
-                    None => Ok(json!({ "found": false, "key": key })),
-                }
-            }
-            None => Err(AgentError::Tool(
-                "Ctx facts require a DB-backed fact store (not available in this runtime)"
-                    .to_string(),
-            )),
-        }
-    }
 }
 
 /// Classify a ctx key and enforce the writer's permission.
@@ -502,10 +330,6 @@ fn check_ctx_write_permission(is_delegated: bool, key: &str) -> StoreResult<Stri
     }
 
     Ok(sid.to_string())
-}
-
-fn parse_ctx_key_session_id(key: &str) -> StoreResult<&str> {
-    parse_ctx_key(key).map(|(sid, _)| sid)
 }
 
 fn parse_ctx_key(key: &str) -> StoreResult<(&str, &str)> {
@@ -801,7 +625,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_fact_rejects_agent_written_policy_categories() {
-        let tool = MemoryTool::new(None);
+        let tool = MemoryWriteTool::new(None);
         let ctx = TestToolCtx::new("sess-current");
 
         for category in ["instruction", "correction"] {
@@ -869,7 +693,7 @@ mod tests {
         }
 
         let store = Arc::new(CapturingStore::default());
-        let tool = MemoryTool::new(Some(store.clone()));
+        let tool = MemoryWriteTool::new(Some(store.clone()));
         let ctx = TestToolCtx {
             session_id: "sess-current".to_string(),
             state: HashMap::from([("ward_id".to_string(), json!("ward-alpha"))]),
@@ -994,7 +818,8 @@ mod tests {
             records: Mutex::new(Vec::new()),
             events: events.clone(),
         });
-        let tool = MemoryTool::new(Some(fact_store.clone())).with_evidence_intake(intake.clone());
+        let tool =
+            MemoryWriteTool::new(Some(fact_store.clone())).with_evidence_intake(intake.clone());
         let ctx = TestToolCtx::new("sess-current");
 
         tool.action_save_fact(
@@ -1030,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_fact_rejects_cross_session_ctx_key() {
-        let tool = MemoryTool::new(None);
+        let tool = MemoryWriteTool::new(None);
         let ctx = TestToolCtx::new("sess-current");
 
         let err = tool
@@ -1048,22 +873,6 @@ mod tests {
         assert!(
             err.to_string().contains("session mismatch"),
             "error should explain session mismatch: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_fact_rejects_cross_session_ctx_key() {
-        let tool = MemoryTool::new(None);
-        let ctx = TestToolCtx::new("sess-current");
-
-        let err = tool
-            .action_get_fact(&ctx, &json!({"key": "ctx.sess-other.intent"}))
-            .await
-            .expect_err("cross-session ctx reads must be denied before store access");
-
-        assert!(
-            err.to_string().contains("current session 'sess-current'"),
-            "error should name the current-session boundary: {err}"
         );
     }
 }

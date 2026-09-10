@@ -16,8 +16,8 @@ use agent_runtime::{
 };
 use agent_tools::{
     ConnectorInvokeTool, ConnectorResourceTool, EditFileTool, GraphQueryTool, LoadSkillTool,
-    MemoryTool, MultimodalAnalyzeTool, QueryResourceTool, ReadTool, RecallAuthorizationContext,
-    ShellTool, ToolSettings, UpdatePlanTool, WardTool, WriteFileTool,
+    MultimodalAnalyzeTool, QueryResourceTool, ReadTool, RecallAuthorizationContext, ShellTool,
+    ToolSettings, UpdatePlanTool, WardTool, WriteFileTool,
 };
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
@@ -948,15 +948,6 @@ impl ExecutorBuilder {
                     ),
                 }
             }),
-        );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
-            Arc::new(
-                MemoryTool::new(self.fact_store.clone())
-                    .with_optional_evidence_intake(self.ingestion_adapter.clone()),
-            ),
         );
         if let Some((recall, authorization)) = unified_recall_binding {
             let mut tool = crate::invoke::unified_recall_adapter::unified_recall_tool_with_goals(

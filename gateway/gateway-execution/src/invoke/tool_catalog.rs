@@ -57,7 +57,6 @@ pub(crate) const TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec { name: "graph_query",        caps: &[C::GraphRead],      side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 800,  owner: "agent-tools",        audit: None, hidden: true,  visibility_policy: "hidden_from_model_use_context_resources", split_target: Some("resources:context_graph_retrieval") },
     ToolSpec { name: "ingest",             caps: &[C::IngestWrite],    side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible",  split_target: None },
     ToolSpec { name: "load_skill",         caps: &[C::SkillLoad],      side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 1200, owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible_bounded_packet", split_target: Some("resources:skill_packet/skill_section_handles") },
-    ToolSpec { name: "memory",             caps: &[C::MemoryRead, C::MemoryWrite], side_effects: None, risk: None, cost: ContextCostHint::Cheap, latency: None, token_hint: 800, owner: "agent-tools", audit: None, hidden: true, visibility_policy: "hidden_from_model_use_context_resources", split_target: Some("action:memory_write; resources:memory_recall/context_atoms") },
     ToolSpec { name: "recall",             caps: &[C::MemoryRead],     side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 800,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible_unified_recall_exception", split_target: Some("resources:memory_recall/context_atoms") },
     ToolSpec { name: "memory_write",       caps: &[C::MemoryWrite],    side_effects: None, risk: None, cost: ContextCostHint::Cheap,     latency: None,                              token_hint: 200,  owner: "agent-tools",        audit: None, hidden: false, visibility_policy: "default_visible_memory_write_action", split_target: Some("action:memory_write") },
     ToolSpec { name: "multimodal_analyze", caps: &[C::MultimodalAnalyze], side_effects: None, risk: None, cost: ContextCostHint::Moderate, latency: Some(ContextLatencyHint::Slow), token_hint: 200, owner: "agent-tools", audit: None, hidden: false, visibility_policy: "default_visible", split_target: None },
@@ -257,7 +256,7 @@ pub(crate) fn display_name(tool_name: &str) -> String {
 }
 
 /// Tools hidden from the model's tool schema regardless of actor.
-pub(crate) const MODEL_HIDDEN_TOOLS: &[&str] = &["memory", "graph_query", "query_resource"];
+pub(crate) const MODEL_HIDDEN_TOOLS: &[&str] = &["graph_query", "query_resource"];
 
 #[cfg(test)]
 mod tests {
@@ -295,7 +294,6 @@ mod tests {
     #[test]
     fn token_hints_match_the_retired_match_arms() {
         assert_eq!(token_hint("load_skill"), Some(1200));
-        assert_eq!(token_hint("memory"), Some(800));
         assert_eq!(token_hint("recall"), Some(800));
         assert_eq!(token_hint("graph_query"), Some(800));
         assert_eq!(token_hint("query_resource"), Some(800));
@@ -326,7 +324,6 @@ mod tests {
             "edit",
             "write",
             "wait_agent",
-            "memory",
             "graph_query",
             "query_resource",
         ] {

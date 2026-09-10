@@ -15,9 +15,9 @@ use agent_runtime::{
     SummarizationConfig, SummarizationMiddleware, ToolRegistry, TriggerCondition,
 };
 use agent_tools::{
-    ConnectorInvokeTool, ConnectorResourceTool, EditFileTool, GlobTool, GraphQueryTool,
-    LoadSkillTool, MemoryTool, MultimodalAnalyzeTool, QueryResourceTool, ReadTool,
-    RecallAuthorizationContext, ShellTool, ToolSettings, UpdatePlanTool, WardTool, WriteFileTool,
+    ConnectorInvokeTool, ConnectorResourceTool, EditFileTool, GraphQueryTool, LoadSkillTool,
+    MemoryTool, MultimodalAnalyzeTool, QueryResourceTool, ReadTool, RecallAuthorizationContext,
+    ShellTool, ToolSettings, UpdatePlanTool, WardTool, WriteFileTool,
 };
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
@@ -1114,20 +1114,6 @@ impl ExecutorBuilder {
             if let Some(ref a) = self.goal_adapter {
                 tool_registry.register(Arc::new(agent_tools::GoalTool::new(a.clone())));
             }
-        }
-
-        if self.tool_settings.file_tools
-            || matches!(
-                actor,
-                RuntimeActorKind::DelegatedReviewer | RuntimeActorKind::WardAgent
-            )
-        {
-            register_if_allowed(
-                &mut tool_registry,
-                actor,
-                &[ToolCapability::FileRead],
-                Arc::new(GlobTool),
-            );
         }
 
         if let Some(provider) = &self.connector_provider {

@@ -1369,7 +1369,6 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
                 ],
                 (RuntimeActorKind::Root, true) => &[
                     "delegate_to_agent",
-                    "glob",
                     "memory",
                     "memory_write",
                     "multimodal_analyze",
@@ -1394,7 +1393,6 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
                 ],
                 (RuntimeActorKind::DelegatedExecutor, true) => &[
                     "edit_file",
-                    "glob",
                     "load_skill",
                     "memory",
                     "memory_write",
@@ -1405,17 +1403,12 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
                     "ward",
                     "write_file",
                 ],
-                (RuntimeActorKind::DelegatedReviewer, _) => &[
-                    "glob",
-                    "load_skill",
-                    "multimodal_analyze",
-                    "read",
-                    "respond",
-                ],
+                (RuntimeActorKind::DelegatedReviewer, _) => {
+                    &["load_skill", "multimodal_analyze", "read", "respond"]
+                }
                 (RuntimeActorKind::WardAgent, _) => &[
                     "delegate_to_agent",
                     "edit_file",
-                    "glob",
                     "load_skill",
                     "memory",
                     "memory_write",
@@ -2018,7 +2011,7 @@ fn delegated_reviewer_catalog_is_read_only_and_review_safe() {
     let ids = catalog_ids(&catalog);
 
     assert_eq!(catalog.actor_kind, ContextActorKind::DelegatedReviewer);
-    assert_has(&ids, &["read", "glob", "respond", "load_skill"]);
+    assert_has(&ids, &["read", "respond", "load_skill"]);
     assert_missing(
         &ids,
         &[
@@ -2125,7 +2118,7 @@ fn delegated_executor_keeps_implementation_tools_without_orchestration() {
 fn delegated_reviewer_is_read_only_and_non_orchestrating() {
     let names = registry_names(RuntimeActorKind::DelegatedReviewer);
 
-    assert_has(&names, &["read", "glob", "respond", "load_skill"]);
+    assert_has(&names, &["read", "respond", "load_skill"]);
     assert_missing(
         &names,
         &[
@@ -2190,7 +2183,6 @@ fn ward_agent_gets_root_and_executor_first_party_tools() {
             "write_file",
             "edit_file",
             "read",
-            "glob",
             "ward",
             "memory",
             "memory_write",

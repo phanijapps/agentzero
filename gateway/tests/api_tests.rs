@@ -974,7 +974,6 @@ async fn tools_list_filters_delegated_reviewer_catalog() {
         .collect();
 
     assert!(ids.contains("read"));
-    assert!(ids.contains("glob"));
     assert!(ids.contains("respond"));
     assert!(!ids.contains("shell"));
     assert!(!ids.contains("grep"));

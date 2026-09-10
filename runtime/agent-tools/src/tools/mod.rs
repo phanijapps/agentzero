@@ -13,7 +13,6 @@ mod ingest;
 mod memory;
 mod multimodal;
 mod recall;
-mod search;
 mod ward;
 
 use serde::{Deserialize, Serialize};
@@ -48,7 +47,6 @@ pub use recall::{
     TaxonomyRelation, UnifiedRecallAccess, UnifiedRecallBinding, UnifiedRecallItem,
     UnifiedRecallRequest, UnifiedRecallResponse, recall_parameters_schema,
 };
-pub use search::GlobTool;
 pub use ward::{
     WardAudience, WardLayoutAccess, WardLayoutState, WardTool, WardUsageAccess, ensure_ward_catalog,
 };

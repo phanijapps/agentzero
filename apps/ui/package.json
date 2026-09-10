@@ -1,7 +1,7 @@
 {
   "name": "z-bot",
   "private": true,
-  "version": "2026.8.4",
+  "version": "2026.9.10",
   "type": "module",
   "scripts": {
     "dev": "vite",

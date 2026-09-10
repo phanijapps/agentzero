@@ -254,11 +254,13 @@ pub async fn get_activity(
 
     let mut events = Vec::new();
     let pull = limit.saturating_mul(ACTIVITY_PULL_MULTIPLIER);
+    // Reads through the stores group: belief + contradiction members.
+    let stores = state.stores();
 
-    if let Some(store) = state.belief_store().as_ref() {
+    if let Some(store) = stores.belief_store.as_ref() {
         push_belief_events(store, pull, &mut events).await;
     }
-    if let Some(store) = state.belief_contradiction_store().as_ref() {
+    if let Some(store) = stores.belief_contradiction_store.as_ref() {
         push_contradiction_events(store, pull, &mut events).await;
     }
 
@@ -350,8 +352,10 @@ fn build_propagator_stats(
 
 async fn compute_totals(state: &AppState) -> BeliefNetworkTotals {
     let mut totals = BeliefNetworkTotals::default();
+    // Reads through the stores group: belief + contradiction members.
+    let stores = state.stores();
 
-    if let Some(store) = state.belief_store().as_ref() {
+    if let Some(store) = stores.belief_store.as_ref() {
         // The belief population is bounded by design — a generous cap
         // mirrors the historical pattern in `graph::graph_stats`.
         if let Ok(beliefs) = store.list_beliefs(DEFAULT_PARTITION, 100_000).await {
@@ -359,7 +363,7 @@ async fn compute_totals(state: &AppState) -> BeliefNetworkTotals {
         }
     }
 
-    if let Some(store) = state.belief_contradiction_store().as_ref() {
+    if let Some(store) = stores.belief_contradiction_store.as_ref() {
         if let Ok(rows) = store.list_recent(DEFAULT_PARTITION, 100_000).await {
             totals.total_contradictions = rows.len();
             totals.total_unresolved_contradictions =

@@ -701,8 +701,10 @@ pub struct MemoryStats {
 /// that's a filesystem operation, not a store concern.
 pub async fn stats(State(state): State<AppState>) -> Json<MemoryStats> {
     let mut stats = MemoryStats::default();
+    // Reads through the stores group: kg + memory members.
+    let stores = state.stores();
 
-    if let Some(kg_store) = state.kg_store().as_ref() {
+    if let Some(kg_store) = stores.kg_store.as_ref() {
         // The historical handler used `get_entities`/`get_relationships`
         // (which return all rows for the agent and `len()` them);
         // `list_entities`/`list_relationships` with a high cap mirrors
@@ -715,7 +717,7 @@ pub async fn stats(State(state): State<AppState>) -> Json<MemoryStats> {
         }
     }
 
-    if let Some(memory_store) = state.memory_store().as_ref() {
+    if let Some(memory_store) = stores.memory_store.as_ref() {
         if let Ok(agg) = memory_store.aggregate_stats().await {
             stats.facts = agg.facts;
             stats.episodes = agg.episodes;
@@ -789,8 +791,10 @@ pub struct MemoryHealth {
 /// instead of reaching into a concrete semantic database handle.
 pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
     let mut health = MemoryHealth::default();
+    // Reads through the stores group: memory + compaction + governance.
+    let stores = state.stores();
 
-    if let Some(memory_store) = state.memory_store().as_ref() {
+    if let Some(memory_store) = stores.memory_store.as_ref() {
         if let Ok(m) = memory_store.health_metrics().await {
             health.ingestion_queue_pending = m.queue_pending;
             health.ingestion_queue_running = m.queue_running;
@@ -798,7 +802,7 @@ pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
         }
     }
 
-    if let Some(compaction_store) = state.compaction_store().as_ref() {
+    if let Some(compaction_store) = stores.compaction_store.as_ref() {
         if let Ok(Some(summary)) = compaction_store.latest_run_summary().await {
             health.last_compaction_run_id = Some(summary.run_id);
             health.last_compaction_merges = summary.merges;
@@ -807,7 +811,7 @@ pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
         }
     }
 
-    health.governance = state.governance_health().clone();
+    health.governance = stores.governance_health.clone();
 
     Json(health)
 }

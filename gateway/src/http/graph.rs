@@ -598,8 +598,11 @@ pub async fn trigger_distillation(
 pub async fn graph_stats(
     State(state): State<AppState>,
 ) -> Result<Json<AggregateGraphStats>, (StatusCode, Json<ErrorResponse>)> {
+    // Reads through the stores group: this handler needs 5 of its members.
+    let stores = state.stores();
+
     // Entity + relationship counts from kg_store.
-    let (entities, relationships) = match &state.kg_store() {
+    let (entities, relationships) = match &stores.kg_store {
         Some(store) => {
             let e = store.count_all_entities().await.unwrap_or(0);
             let r = store.count_all_relationships().await.unwrap_or(0);
@@ -609,7 +612,7 @@ pub async fn graph_stats(
     };
 
     // Fact count from memory_store.
-    let facts = match &state.memory_store() {
+    let facts = match &stores.memory_store {
         Some(store) => store
             .count_all_facts(None)
             .await
@@ -619,13 +622,13 @@ pub async fn graph_stats(
         None => 0,
     };
 
-    let episodes = match &state.episode_store() {
+    let episodes = match &stores.episode_store {
         Some(store) => store.episode_stats().await.map(|s| s.total).unwrap_or(0),
         None => 0,
     };
 
     // Distillation stats
-    let distillation = match state.distillation_repo().as_deref() {
+    let distillation = match stores.distillation_repo.as_deref() {
         Some(repo) => repo.get_stats().ok(),
         None => None,
     };
@@ -636,7 +639,7 @@ pub async fn graph_stats(
         facts,
         episodes,
         distillation,
-        governance: state.governance_health().clone(),
+        governance: stores.governance_health.clone(),
     }))
 }
 

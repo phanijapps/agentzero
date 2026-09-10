@@ -544,9 +544,11 @@ const CLOUD_PRESETS: &[KnownPreset] = &[
 pub async fn get_commissioning_status(
     State(state): State<AppState>,
 ) -> Result<Json<CommissioningStatusResponse>, (StatusCode, Json<CommissioningError>)> {
-    let settings = state.settings().load().map_err(|_| internal_error())?;
-    let providers = state
-        .provider_service()
+    // Reads through the services group: settings + providers.
+    let services = state.services();
+    let settings = services.settings.load().map_err(|_| internal_error())?;
+    let providers = services
+        .provider_service
         .list()
         .map_err(|_| internal_error())?;
     let (status, recovery_code) =
@@ -675,7 +677,9 @@ pub async fn complete_commissioning(
     };
 
     // Nothing is persisted until the selected provider has proved usable.
-    let test_result = state.provider_service().test(&candidate).await;
+    // Reads through the services group: providers + settings (persist step).
+    let services = state.services();
+    let test_result = services.provider_service.test(&candidate).await;
     if !test_result.success {
         if pending_created {
             let _ = std::fs::remove_file(&pending_path);
@@ -702,7 +706,9 @@ async fn persist_verified_commissioning(
     request: &CommissioningRequest,
     candidate: Provider,
 ) -> Result<Json<CommissioningStatusResponse>, (StatusCode, Json<CommissioningError>)> {
-    let mut settings = state.settings().load().map_err(|_| internal_error())?;
+    // Reads through the services group: settings.
+    let services = state.services();
+    let mut settings = services.settings.load().map_err(|_| internal_error())?;
     let ollama_cloud = candidate.id.as_deref() == Some("provider-ollama-cloud");
     if request.memory_profile == CommissioningMemoryProfile::ZbotRecommendedV1 {
         preflight_full_memory_profile(

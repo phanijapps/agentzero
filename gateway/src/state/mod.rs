@@ -363,6 +363,38 @@ impl AppState {
 // New code should depend on the group it needs (`state.stores`, ...).
 // ===========================================================================
 impl AppState {
+    // --- group accessors (W4) ----------------------------------------------
+    /// The stores group — declare this instead of the whole AppState when a
+    /// consumer needs 2+ store handles.
+    pub fn stores(&self) -> &groups::StoresState {
+        &self.stores
+    }
+
+    /// The services group — capability/config services.
+    pub fn services(&self) -> &groups::ServicesState {
+        &self.services
+    }
+
+    /// The execution group — engine handles (runtime, hooks, events, ingestion).
+    pub fn execution(&self) -> &groups::ExecutionState {
+        &self.execution
+    }
+
+    /// The transport group — gateway in/out edges (bridges, connectors, mDNS).
+    pub fn transport(&self) -> &groups::TransportState {
+        &self.transport
+    }
+
+    /// The workers group — background loops (sleep, archiver, cron, distiller).
+    pub fn workers(&self) -> &groups::WorkersState {
+        &self.workers
+    }
+
+    /// The vault group — environment (paths).
+    pub fn vault(&self) -> &groups::VaultState {
+        &self.vault
+    }
+
     // --- stores -------------------------------------------------------------
     /// Memory-fact store — the single read/write surface for memory facts.
     pub fn memory_store(&self) -> Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> {

@@ -43,7 +43,10 @@ pub async fn ingest(
     State(state): State<AppState>,
     Json(req): Json<IngestRequest>,
 ) -> Result<(StatusCode, Json<IngestResponse>), (StatusCode, String)> {
-    let queue = state.ingestion_queue().clone().ok_or((
+    // Reads through the execution group: ingestion queue + backpressure
+    // (kg episode store stays a single stores read).
+    let execution = state.execution();
+    let queue = execution.ingestion_queue.clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "ingestion queue not initialized".into(),
     ))?;
@@ -54,7 +57,7 @@ pub async fn ingest(
         StatusCode::SERVICE_UNAVAILABLE,
         "kg episode store missing".into(),
     ))?;
-    let backpressure = state.ingestion_backpressure().clone().ok_or((
+    let backpressure = execution.ingestion_backpressure.clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "backpressure not initialized".into(),
     ))?;

@@ -97,10 +97,12 @@ fn public_provider(provider: Provider) -> serde_json::Value {
 
 /// List all providers
 async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
-    match state.provider_service().list() {
+    // Reads through the services group: providers + model registry.
+    let services = state.services();
+    match services.provider_service.list() {
         Ok(mut providers) => {
             for p in &mut providers {
-                enrich_provider(p, &state.model_registry());
+                enrich_provider(p, &services.model_registry);
             }
             Json(
                 providers
@@ -116,9 +118,11 @@ async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Get a single provider
 async fn get_provider(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match state.provider_service().get(&id) {
+    // Reads through the services group: providers + model registry.
+    let services = state.services();
+    match services.provider_service.get(&id) {
         Ok(mut provider) => {
-            enrich_provider(&mut provider, &state.model_registry());
+            enrich_provider(&mut provider, &services.model_registry);
             Json(public_provider(provider)).into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),

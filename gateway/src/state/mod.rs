@@ -3,6 +3,7 @@
 //! Shared state for the gateway application.
 
 mod capability_catalog;
+pub mod groups;
 pub(crate) mod persistence_factory;
 mod seeded_defaults;
 
@@ -187,6 +188,183 @@ pub struct AppState {
     /// Active mDNS advertise handle. None until `start()` runs and only
     /// populated when `network.exposeToLan = true`.
     pub advertise_handle: std::sync::Arc<std::sync::Mutex<Option<discovery::AdvertiseHandle>>>,
+
+    // --- W2 state groups (see state/groups.rs) ---------------------------
+    // Same Arcs as the flat fields; populated by `from_flat` at every
+    // construction site. Consumers migrate to these accessors in W4; the
+    // flat surface is deleted in W5.
+    pub stores: groups::StoresState,
+    pub services: groups::ServicesState,
+    pub execution: groups::ExecutionState,
+    pub transport: groups::TransportState,
+    pub workers: groups::WorkersState,
+    pub vault: groups::VaultState,
+}
+/// The flat construction shape of [`AppState`] (W2): the 49 fields
+/// every builder already produces; `from_flat` clones the group Arcs
+/// and moves the rest. Private — the group fields are the public future.
+#[derive(Clone)]
+struct FlatAppState {
+    /// Agent service for managing agent configurations.
+    agents: Arc<AgentService>,
+
+    /// Skill service for managing skill configurations.
+    skills: Arc<SkillService>,
+
+    /// Provider service for managing LLM providers.
+    provider_service: Arc<ProviderService>,
+
+    /// MCP service for managing MCP server configurations.
+    mcp_service: Arc<McpService>,
+
+    /// Runtime service for agent execution.
+    runtime: Arc<RuntimeService>,
+
+    /// Event bus for broadcasting events.
+    event_bus: Arc<EventBus>,
+
+    /// Hook registry for managing inbound triggers.
+    hook_registry: Option<Arc<HookRegistry>>,
+
+    /// Delegation registry for tracking agent delegations.
+    delegation_registry: Arc<DelegationRegistry>,
+
+    /// Message store (append-only conversation log).
+    messages: Arc<dyn zbot_conversation::MessageStore>,
+    /// Narrow session metadata reads used while retiring the old repository.
+    session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
+    /// Versioned agent-state checkpoints — `session_state` reads here (T12).
+    checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
+    /// Durable operational decision threads. Semantic memory remains in Engram.
+    autonomy: Arc<dyn zbot_conversation::AutonomyStore>,
+    /// Slim (payload-free) `execution_logs` — the live `/api/logs` UI source.
+    slim_logs: Arc<dyn zbot_trace::SlimLogStore>,
+    /// Cross-session trace analytics over `traces/*.jsonl.gz` (DuckDB).
+    trace_analytics: Arc<zbot_trace::TraceAnalytics>,
+
+    /// Settings service for application configuration.
+    settings: Arc<SettingsService>,
+
+    /// Log service for execution tracing.
+    log_service: Arc<LogService<DatabaseManager>>,
+
+    /// State service for execution state management.
+    state_service: Arc<StateService<DatabaseManager>>,
+
+    /// Durable executable-work store backed by the conversation database.
+    durable_work_store: Arc<dyn WorkStore>,
+
+    /// Shared in-process wake path for durable executable work.
+    durable_work_transport: Arc<gateway_bus::LocalWorkTransport>,
+
+    /// Connector registry for external bridge management.
+    connector_registry: Arc<ConnectorRegistry>,
+
+    /// Bridge registry for WebSocket worker connections.
+    bridge_registry: Arc<gateway_bridge::BridgeRegistry>,
+
+    /// Bridge outbox for reliable message delivery to workers.
+    bridge_outbox: Arc<gateway_bridge::OutboxRepository>,
+
+    /// Gateway bus for bridge inbound message routing (set during server start).
+    bridge_bus: Option<Arc<dyn gateway_bus::GatewayBus>>,
+
+    /// Trait-routed memory-fact store. The single read/write surface for
+    /// memory facts.
+    memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
+
+    /// Backend-neutral active goals used for intent boost and the goal tool.
+    goal_store: Option<Arc<dyn zbot_stores_traits::GoalStore>>,
+
+    /// Distillation repository for tracking distillation run outcomes.
+    distillation_repo: Option<Arc<DistillationRepository>>,
+
+    /// Session distiller for triggering on-demand distillation (e.g., backfill).
+    distiller: Option<Arc<distillation::SessionDistiller>>,
+
+    /// Backend-neutral session episode store.
+    episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>>,
+
+    /// Trait-routed wiki store (Phase D3). The handler-side migrations
+    /// route through this; legacy callers still build a
+    /// `WardWikiRepository` directly. `None` in minimal AppStates.
+    wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>>,
+
+    /// Trait-routed procedure store (Phase D4).
+    procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
+
+    /// Backend-neutral kg-ingestion-episode store.
+    kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
+
+    /// Trait-based knowledge-graph store.
+    kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
+
+    /// Additive path-free governance health for Observatory/read-model routes.
+    governance_health: Option<GovernanceCapabilityHealth>,
+
+    /// Streaming ingestion queue (Phase 2) — None when graph is unavailable.
+    ingestion_queue: Option<Arc<gateway_execution::ingest::IngestionQueue>>,
+
+    /// Per-source + global backpressure gate for `/api/graph/ingest`.
+    ingestion_backpressure: Option<Arc<gateway_execution::ingest::Backpressure>>,
+
+    /// Cron scheduler for scheduled agent triggers.
+    /// Optional because it requires async initialization with GatewayBus.
+    cron_scheduler: Option<Arc<CronScheduler>>,
+
+    /// Plugin manager for STDIO plugin lifecycle.
+    plugin_manager: Arc<gateway_bridge::PluginManager>,
+
+    /// Session archiver for offloading old transcripts to compressed files.
+    session_archiver: Option<Arc<SessionArchiver>>,
+
+    /// Sleep-time worker — triggers graph compaction/consolidation cycles.
+    /// Set by server.start() in Phase 4 Task 10; `None` until then.
+    sleep_time_worker: Option<Arc<gateway_memory::sleep::SleepTimeWorker>>,
+
+    /// Trait-routed compaction audit store. Wired in both
+    /// SQLite and SurrealDB modes — the maintenance worker writes
+    /// merge/prune/synthesis events here for Observatory display.
+    /// Backend-agnostic: the trait has default no-op impls so any
+    /// backend that doesn't care can inherit them.
+    compaction_store: Option<Arc<dyn zbot_stores_traits::CompactionStore>>,
+
+    /// Trait-routed belief store (Belief Network Phase B-5 HTTP surface).
+    /// `Some(...)` only when `execution.memory.beliefNetwork.enabled = true`
+    /// AND the knowledge DB is wired. The HTTP handlers in
+    /// `http::beliefs` and `http::belief_network` use this for 503-vs-200
+    /// disambiguation: a `None` here means the Belief Network is disabled,
+    /// not that the data is missing.
+    belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+
+    /// Trait-routed belief-contradiction store (Belief Network Phase B-5
+    /// HTTP surface). Same opt-in gating as `belief_store`.
+    belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
+
+    /// In-memory recorder of recent Belief Network worker stats (Phase
+    /// B-6). Always wired when the sleep-time worker is wired so the
+    /// HTTP layer can render the Observatory belief panel even when the
+    /// network itself is disabled (empty history + `enabled: false`).
+    belief_network_activity: Option<Arc<gateway_memory::RecentBeliefNetworkActivity>>,
+
+    /// Fallback-only model metadata registry.
+    model_registry: Arc<ModelRegistry>,
+
+    /// Embedding service — owns live EmbeddingClient, supports backend swap.
+    embedding_service: Arc<EmbeddingService>,
+
+    /// Vault paths for accessing configuration and data directories.
+    paths: SharedVaultPaths,
+
+    /// Vault root path. Prefer `paths` for child locations.
+    vault_dir: PathBuf,
+
+    /// LAN service advertiser. NoopAdvertiser when discovery is disabled.
+    advertiser: std::sync::Arc<dyn discovery::Advertiser>,
+
+    /// Active mDNS advertise handle. None until `start()` runs and only
+    /// populated when `network.exposeToLan = true`.
+    advertise_handle: std::sync::Arc<std::sync::Mutex<Option<discovery::AdvertiseHandle>>>,
 }
 
 type ConversationStoreBundle = (
@@ -217,6 +395,182 @@ fn build_conversation_stores(paths: &SharedVaultPaths) -> anyhow::Result<Convers
         Arc::new(zbot_trace::SqliteSlimLogStore::new(pool)),
         Arc::new(zbot_trace::TraceAnalytics::open(&paths.traces_dir())?),
     ))
+}
+
+impl AppState {
+    /// The single construction path (W2): take the flat fields, clone the
+    /// Arcs the groups need, then move the rest into `AppState`.
+    fn from_flat(flat: FlatAppState) -> Self {
+        let FlatAppState {
+            agents,
+            skills,
+            provider_service,
+            mcp_service,
+            runtime,
+            event_bus,
+            hook_registry,
+            delegation_registry,
+            messages,
+            session_meta,
+            checkpoints,
+            autonomy,
+            slim_logs,
+            trace_analytics,
+            settings,
+            log_service,
+            state_service,
+            durable_work_store,
+            durable_work_transport,
+            connector_registry,
+            bridge_registry,
+            bridge_outbox,
+            bridge_bus,
+            memory_store,
+            goal_store,
+            distillation_repo,
+            distiller,
+            episode_store,
+            wiki_store,
+            procedure_store,
+            kg_episode_store,
+            kg_store,
+            governance_health,
+            ingestion_queue,
+            ingestion_backpressure,
+            cron_scheduler,
+            plugin_manager,
+            session_archiver,
+            sleep_time_worker,
+            compaction_store,
+            belief_store,
+            belief_contradiction_store,
+            belief_network_activity,
+            model_registry,
+            embedding_service,
+            paths,
+            vault_dir,
+            advertiser,
+            advertise_handle,
+        } = flat;
+        let stores = groups::StoresState {
+            memory_store: memory_store.clone(),
+            goal_store: goal_store.clone(),
+            distillation_repo: distillation_repo.clone(),
+            episode_store: episode_store.clone(),
+            wiki_store: wiki_store.clone(),
+            procedure_store: procedure_store.clone(),
+            kg_episode_store: kg_episode_store.clone(),
+            kg_store: kg_store.clone(),
+            governance_health: governance_health.clone(),
+            compaction_store: compaction_store.clone(),
+            belief_store: belief_store.clone(),
+            belief_contradiction_store: belief_contradiction_store.clone(),
+            belief_network_activity: belief_network_activity.clone(),
+            messages: messages.clone(),
+            session_meta: session_meta.clone(),
+            checkpoints: checkpoints.clone(),
+            slim_logs: slim_logs.clone(),
+        };
+        let services = groups::ServicesState {
+            agents: agents.clone(),
+            skills: skills.clone(),
+            provider_service: provider_service.clone(),
+            mcp_service: mcp_service.clone(),
+            settings: settings.clone(),
+            log_service: log_service.clone(),
+            state_service: state_service.clone(),
+            model_registry: model_registry.clone(),
+            embedding_service: embedding_service.clone(),
+        };
+        let execution = groups::ExecutionState {
+            runtime: runtime.clone(),
+            event_bus: event_bus.clone(),
+            hook_registry: hook_registry.clone(),
+            delegation_registry: delegation_registry.clone(),
+            autonomy: autonomy.clone(),
+            trace_analytics: trace_analytics.clone(),
+            ingestion_queue: ingestion_queue.clone(),
+            ingestion_backpressure: ingestion_backpressure.clone(),
+        };
+        let transport = groups::TransportState {
+            durable_work_transport: durable_work_transport.clone(),
+            connector_registry: connector_registry.clone(),
+            bridge_registry: bridge_registry.clone(),
+            bridge_outbox: bridge_outbox.clone(),
+            bridge_bus: bridge_bus.clone(),
+            plugin_manager: plugin_manager.clone(),
+            advertiser: advertiser.clone(),
+            advertise_handle: advertise_handle.clone(),
+        };
+        let workers = groups::WorkersState {
+            durable_work_store: durable_work_store.clone(),
+            distiller: distiller.clone(),
+            cron_scheduler: cron_scheduler.clone(),
+            session_archiver: session_archiver.clone(),
+            sleep_time_worker: sleep_time_worker.clone(),
+        };
+        let vault = groups::VaultState {
+            paths: paths.clone(),
+            vault_dir: vault_dir.clone(),
+        };
+        Self {
+            agents,
+            skills,
+            provider_service,
+            mcp_service,
+            runtime,
+            event_bus,
+            hook_registry,
+            delegation_registry,
+            messages,
+            session_meta,
+            checkpoints,
+            autonomy,
+            slim_logs,
+            trace_analytics,
+            settings,
+            log_service,
+            state_service,
+            durable_work_store,
+            durable_work_transport,
+            connector_registry,
+            bridge_registry,
+            bridge_outbox,
+            bridge_bus,
+            memory_store,
+            goal_store,
+            distillation_repo,
+            distiller,
+            episode_store,
+            wiki_store,
+            procedure_store,
+            kg_episode_store,
+            kg_store,
+            governance_health,
+            ingestion_queue,
+            ingestion_backpressure,
+            cron_scheduler,
+            plugin_manager,
+            session_archiver,
+            sleep_time_worker,
+            compaction_store,
+            belief_store,
+            belief_contradiction_store,
+            belief_network_activity,
+            model_registry,
+            embedding_service,
+            paths,
+            vault_dir,
+            advertiser,
+            advertise_handle,
+            stores,
+            services,
+            execution,
+            transport,
+            workers,
+            vault,
+        }
+    }
 }
 
 impl AppState {
@@ -904,7 +1258,7 @@ impl AppState {
             None, // bus is set later by server.start()
         ));
 
-        Self {
+        let flat = FlatAppState {
             agents,
             skills,
             provider_service,
@@ -958,7 +1312,8 @@ impl AppState {
             belief_store: belief_store_for_http,
             belief_contradiction_store: belief_contradiction_store_for_http,
             belief_network_activity,
-        }
+        };
+        Self::from_flat(flat)
     }
 
     /// Create a minimal state without execution runner (for testing).
@@ -1033,7 +1388,7 @@ impl AppState {
             build_conversation_stores(&paths)
                 .expect("Failed to initialize conversation/trace stores");
 
-        Self {
+        let flat = FlatAppState {
             messages,
             session_meta,
             checkpoints,
@@ -1086,7 +1441,8 @@ impl AppState {
             belief_store: None,
             belief_contradiction_store: None,
             belief_network_activity: None,
-        }
+        };
+        Self::from_flat(flat)
     }
 
     /// Build an actor-filtered context capability catalog for HTTP/API
@@ -1233,7 +1589,7 @@ impl AppState {
             build_conversation_stores(&paths)
                 .expect("Failed to initialize conversation/trace stores");
 
-        Self {
+        let flat = FlatAppState {
             agents,
             skills,
             provider_service,
@@ -1286,7 +1642,8 @@ impl AppState {
             belief_store: None,
             belief_contradiction_store: None,
             belief_network_activity: None,
-        }
+        };
+        Self::from_flat(flat)
     }
 
     /// Create with hook registry.

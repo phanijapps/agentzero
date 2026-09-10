@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>zbot — Gateway Decompose · The Last God Object</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", system-ui, -apple-system, sans-serif; background: #0d1117; color: #e6edf3; }
+  .slide { width: 1280px; height: 720px; padding: 48px 64px; margin: 24px auto; background: #0d1117; border: 1px solid #21262d; border-radius: 12px; position: relative; overflow: hidden; }
+  .slide::after { content: attr(data-n); position: absolute; bottom: 20px; right: 32px; color: #484f58; font-size: 13px; }
+  h1 { font-size: 44px; color: #58a6ff; margin-bottom: 8px; }
+  h2 { font-size: 30px; color: #58a6ff; margin-bottom: 20px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
+  h3 { font-size: 18px; color: #f0883e; margin: 14px 0 8px; }
+  p, li { font-size: 16px; line-height: 1.55; color: #c9d1d9; }
+  .sub { color: #8b949e; font-size: 18px; }
+  ul { margin: 8px 0 8px 22px; }
+  .grid { display: grid; gap: 16px; }
+  .c2 { grid-template-columns: 1fr 1fr; }
+  .c3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px 18px; }
+  .card h3 { margin-top: 0; }
+  .num { font-size: 42px; font-weight: 700; color: #3fb950; }
+  .num.red { color: #f85149; }
+  .num.blue { color: #58a6ff; }
+  .lbl { font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: .08em; }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 13.5px; color: #79c0ff; background: #1c2129; padding: 1px 6px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th { text-align: left; color: #f0883e; border-bottom: 1px solid #30363d; padding: 6px 10px; }
+  td { border-bottom: 1px solid #21262d; padding: 6px 10px; color: #c9d1d9; }
+  .tag { display: inline-block; font-size: 11.5px; padding: 2px 10px; border-radius: 20px; margin: 2px 3px; font-family: ui-monospace, monospace; }
+  .g1 { background: #1f3a2e; color: #3fb950; border: 1px solid #238636; }
+  .g2 { background: #2d1f3a; color: #bc8cff; border: 1px solid #8957e5; }
+  .g3 { background: #3a2f1f; color: #f0883e; border: 1px solid #da3633; }
+  .g4 { background: #1f2d3a; color: #58a6ff; border: 1px solid #1f6feb; }
+  .g5 { background: #3a1f28; color: #ff7b72; border: 1px solid #da3633; }
+  .g6 { background: #1f3a38; color: #39d2c0; border: 1px solid #2da18a; }
+  svg text { font-family: "Segoe UI", system-ui, sans-serif; }
+  .arrow { color: #484f58; text-align: center; font-size: 22px; margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<!-- ================= SLIDE 1: TITLE ================= -->
+<div class="slide" data-n="1">
+  <div style="margin-top:110px">
+    <h1>The Last God Object</h1>
+    <p class="sub" style="font-size:26px; margin-top:6px">Gateway Decompose — AppState & the shell that isn't a shell</p>
+  </div>
+  <div class="grid c3" style="margin-top:56px">
+    <div class="card"><div class="num red">49</div><div class="lbl">public fields on AppState</div></div>
+    <div class="card"><div class="num">1,888</div><div class="lbl">lines in state/mod.rs</div></div>
+    <div class="card"><div class="num blue">45</div><div class="lbl">HTTP handler files taking &State&lt;AppState&gt;</div></div>
+  </div>
+  <p style="margin-top:48px; max-width:900px">Every store, service, registry, worker, and handle in the system hangs off one struct. Every feature PR widens it. This is the same disease we cured in the executor (ExecCtx), distillation (own crate), and memory (engram) — <b style="color:#3fb950">it's the last one</b>.</p>
+  <p style="position:absolute; bottom:48px; color:#484f58">zbot · gateway decompose plan · post develop-merge 2026-09-10</p>
+</div>
+
+<!-- ================= SLIDE 2: CURRENT STATE DIAGRAM ================= -->
+<div class="slide" data-n="2">
+  <h2>Today: everything depends on everything</h2>
+  <svg width="1150" height="520" viewBox="0 0 1150 520">
+    <!-- AppState monolith -->
+    <rect x="420" y="20" width="310" height="110" rx="10" fill="#3a1f28" stroke="#da3633" stroke-width="2"/>
+    <text x="575" y="52" text-anchor="middle" fill="#ff7b72" font-size="20" font-weight="700">AppState</text>
+    <text x="575" y="78" text-anchor="middle" fill="#c9d1d9" font-size="13">49 fields · 1,888 lines · seeding + wiring + catalog</text>
+    <text x="575" y="98" text-anchor="middle" fill="#8b949e" font-size="12">state/mod.rs also builds the EngramStoreBundle</text>
+
+    <!-- field cloud inside -->
+    <g font-size="10.5" font-family="ui-monospace, monospace">
+      <text x="440" y="135" fill="#8b949e">memory_store · kg_store · belief_store · wiki_store · episode_store · procedure_store · goal_store · compaction_store …</text>
+      <text x="440" y="152" fill="#8b949e">provider_service · mcp_service · embedding_service · model_registry · cron_scheduler · plugin_manager …</text>
+      <text x="440" y="169" fill="#8b949e">durable_work_store · bridge_registry · connector_registry · ingestion_queue · sleep_time_worker · distiller …</text>
+    </g>
+
+    <!-- dependents -->
+    <g font-size="13">
+      <rect x="60" y="230" width="240" height="44" rx="8" fill="#1f2d3a" stroke="#1f6feb"/><text x="180" y="257" text-anchor="middle" fill="#58a6ff">45 HTTP handlers</text>
+      <rect x="60" y="300" width="240" height="44" rx="8" fill="#1f2d3a" stroke="#1f6feb"/><text x="180" y="327" text-anchor="middle" fill="#58a6ff">WebSocket handler</text>
+      <rect x="60" y="370" width="240" height="44" rx="8" fill="#1f2d3a" stroke="#1f6feb"/><text x="180" y="397" text-anchor="middle" fill="#58a6ff">GatewayBus / workers</text>
+      <rect x="60" y="440" width="240" height="44" rx="8" fill="#1f2d3a" stroke="#1f6feb"/><text x="180" y="467" text-anchor="middle" fill="#58a6ff">startup seeding + cron</text>
+
+      <rect x="850" y="230" width="250" height="44" rx="8" fill="#3a2f1f" stroke="#f0883e"/><text x="975" y="257" text-anchor="middle" fill="#f0883e">a2a_tasks.rs — 1,483</text>
+      <rect x="850" y="300" width="250" height="44" rx="8" fill="#3a2f1f" stroke="#f0883e"/><text x="975" y="327" text-anchor="middle" fill="#f0883e">durable_agent_tasks.rs — 1,325</text>
+      <rect x="850" y="370" width="250" height="44" rx="8" fill="#3a2f1f" stroke="#f0883e"/><text x="975" y="397" text-anchor="middle" fill="#f0883e">session_archiver · sleep worker</text>
+      <rect x="850" y="440" width="250" height="44" rx="8" fill="#3a2f1f" stroke="#f0883e"/><text x="975" y="467" text-anchor="middle" fill="#f0883e">capability catalog · parity</text>
+    </g>
+
+    <!-- edges -->
+    <g stroke="#484f58" stroke-width="1.5" fill="none">
+      <path d="M 300 252 C 380 252 390 130 420 90"/>
+      <path d="M 300 322 C 390 322 400 140 420 95"/>
+      <path d="M 300 392 C 390 392 400 150 420 100"/>
+      <path d="M 300 462 C 380 462 390 160 420 105"/>
+      <path d="M 730 90 C 790 130 800 252 850 252"/>
+      <path d="M 730 95 C 800 140 810 322 850 322"/>
+      <path d="M 730 100 C 810 150 820 392 850 392"/>
+      <path d="M 730 105 C 820 160 830 462 850 462"/>
+    </g>
+    <text x="575" y="505" text-anchor="middle" fill="#8b949e" font-size="13">one struct = the entire system's dependency surface · no consumer asks for less than everything</text>
+  </svg>
+</div>
+
+<!-- ================= SLIDE 3: THE FIELD GROUPING ================= -->
+<div class="slide" data-n="3">
+  <h2>Step 1 — the 49 fields already cluster into 6 groups</h2>
+  <p class="sub" style="margin-bottom:14px">The decomposition is latent in the data. Grouping by what handlers actually touch:</p>
+  <div class="grid c3" style="gap:12px">
+    <div class="card" style="border-color:#238636"><span class="tag g1">StoresState · 17 fields</span>
+      <p style="font-size:13px; margin-top:6px" class="mono">memory kg belief belief_contra wiki episode procedure kg_episode goal compaction distillation messages checkpoints session_meta slim_logs</p>
+      <p style="font-size:12.5px; color:#8b949e">≈ mirrors EngramStoreBundle — the engram piggyback already grouped them</p></div>
+    <div class="card" style="border-color:#8957e5"><span class="tag g2">ServicesState · 9</span>
+      <p style="font-size:13px; margin-top:6px" class="mono">provider mcp embedding model_registry agents skills settings log_service state_service</p>
+      <p style="font-size:12.5px; color:#8b949e">pure capability/config services — no session affinity</p></div>
+    <div class="card" style="border-color:#da3633"><span class="tag g3">ExecutionState · 8</span>
+      <p style="font-size:13px; margin-top:6px" class="mono">runtime hook_registry delegation_registry event_bus ingestion_queue backpressure autonomy trace_analytics</p>
+      <p style="font-size:12.5px; color:#8b949e">the execution engine's handle set</p></div>
+    <div class="card" style="border-color:#1f6feb"><span class="tag g4">TransportState · 7</span>
+      <p style="font-size:13px; margin-top:6px" class="mono">bridge_registry bridge_outbox bridge_bus connector_registry durable_work_transport event_bus(ws) advertiser</p>
+      <p style="font-size:12.5px; color:#8b949e">in/out edges of the gateway</p></div>
+    <div class="card" style="border-color:#2da18a"><span class="tag g6">WorkersState · 5</span>
+      <p style="font-size:13px; margin-top:6px" class="mono">sleep_time_worker session_archiver cron_scheduler distiller durable_work_store</p>
+      <p style="font-size:12.5px; color:#8b949e">background loops, own lifecycles</p></div>
+    <div class="card" style="border-color:#f0883e"><span class="tag g5">VaultState · 3</span>
+      <p style="font-size:13px; margin-top:6px" class="mono">paths vault_dir advertise_handle</p>
+      <p style="font-size:12.5px; color:#8b949e">environment, not behavior</p></div>
+  </div>
+  <p style="margin-top:14px; font-size:14.5px">→ Target: <code>AppState { stores: StoresState, services: ServicesState, execution: ExecutionState, transport: TransportState, workers: WorkersState, vault: VaultState }</code> — 6 fields, each a real type with its own module.</p>
+</div>
+
+<!-- ================= SLIDE 4: TARGET ARCHITECTURE ================= -->
+<div class="slide" data-n="4">
+  <h2>Target: handlers ask for the group they need</h2>
+  <svg width="1150" height="500" viewBox="0 0 1150 500">
+    <!-- groups -->
+    <g font-size="14">
+      <rect x="80" y="40" width="300" height="64" rx="8" fill="#1f3a2e" stroke="#238636" stroke-width="1.5"/>
+      <text x="230" y="66" text-anchor="middle" fill="#3fb950" font-weight="700">StoresState</text>
+      <text x="230" y="88" text-anchor="middle" fill="#8b949e" font-size="12">EngramStoreBundle + conversation stores</text>
+
+      <rect x="80" y="140" width="300" height="64" rx="8" fill="#2d1f3a" stroke="#8957e5" stroke-width="1.5"/>
+      <text x="230" y="166" text-anchor="middle" fill="#bc8cff" font-weight="700">ServicesState</text>
+      <text x="230" y="188" text-anchor="middle" fill="#8b949e" font-size="12">providers · mcp · embeddings · agents · skills</text>
+
+      <rect x="80" y="240" width="300" height="64" rx="8" fill="#3a1f28" stroke="#da3633" stroke-width="1.5"/>
+      <text x="230" y="266" text-anchor="middle" fill="#ff7b72" font-weight="700">ExecutionState</text>
+      <text x="230" y="288" text-anchor="middle" fill="#8b949e" font-size="12">runtime · hooks · delegation · events · ingestion</text>
+
+      <rect x="80" y="340" width="300" height="64" rx="8" fill="#1f3a38" stroke="#2da18a" stroke-width="1.5"/>
+      <text x="230" y="366" text-anchor="middle" fill="#39d2c0" font-weight="700">WorkersState</text>
+      <text x="230" y="388" text-anchor="middle" fill="#8b949e" font-size="12">sleep · archiver · cron · distiller</text>
+    </g>
+
+    <!-- AppState composer -->
+    <rect x="480" y="180" width="200" height="120" rx="12" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+    <text x="580" y="228" text-anchor="middle" fill="#e6edf3" font-size="19" font-weight="700">AppState</text>
+    <text x="580" y="252" text-anchor="middle" fill="#8b949e" font-size="12">6 composed fields</text>
+    <text x="580" y="272" text-anchor="middle" fill="#8b949e" font-size="12">thin Deref accessors</text>
+    <g stroke="#484f58" stroke-width="1.5" fill="none">
+      <path d="M 380 72 C 440 72 450 200 480 215"/>
+      <path d="M 380 172 C 440 172 450 215 480 230"/>
+      <path d="M 380 272 C 440 272 450 245 480 245"/>
+      <path d="M 380 372 C 440 372 450 265 480 260"/>
+    </g>
+
+    <!-- consumers -->
+    <g font-size="13">
+      <rect x="800" y="40" width="280" height="52" rx="8" fill="#1f2d3a" stroke="#1f6feb"/>
+      <text x="940" y="62" text-anchor="middle" fill="#58a6ff">memory.rs → StoresState</text>
+      <text x="940" y="80" text-anchor="middle" fill="#8b949e" font-size="11.5">sees ONLY stores — cannot touch services</text>
+      <rect x="800" y="130" width="280" height="52" rx="8" fill="#1f2d3a" stroke="#1f6feb"/>
+      <text x="940" y="152" text-anchor="middle" fill="#58a6ff">providers.rs → ServicesState</text>
+      <text x="940" y="170" text-anchor="middle" fill="#8b949e" font-size="11.5">provider config, nothing else</text>
+      <rect x="800" y="220" width="280" height="52" rx="8" fill="#1f2d3a" stroke="#1f6feb"/>
+      <text x="940" y="242" text-anchor="middle" fill="#58a6ff">chat.rs → Execution + Stores</text>
+      <text x="940" y="260" text-anchor="middle" fill="#8b949e" font-size="11.5">declares its two deps explicitly</text>
+      <rect x="800" y="310" width="280" height="52" rx="8" fill="#1f2d3a" stroke="#1f6feb"/>
+      <text x="940" y="332" text-anchor="middle" fill="#58a6ff">graph.rs → StoresState</text>
+      <text x="940" y="350" text-anchor="middle" fill="#8b949e" font-size="11.5">KG surface, no worker handles</text>
+      <rect x="800" y="400" width="280" height="52" rx="8" fill="#1f2d3a" stroke="#1f6feb"/>
+      <text x="940" y="422" text-anchor="middle" fill="#58a6ff">cleanup.rs → Workers + Vault</text>
+      <text x="940" y="440" text-anchor="middle" fill="#8b949e" font-size="11.5">archival + paths only</text>
+    </g>
+    <g stroke="#484f58" stroke-width="1.2" fill="none" stroke-dasharray="4 3">
+      <path d="M 680 230 C 740 210 760 66 800 66"/>
+      <path d="M 680 235 C 740 220 760 156 800 156"/>
+      <path d="M 680 245 C 740 245 760 246 800 246"/>
+      <path d="M 680 250 C 740 260 760 336 800 336"/>
+      <path d="M 680 260 C 740 300 760 426 800 426"/>
+    </g>
+    <text x="575" y="478" text-anchor="middle" fill="#8b949e" font-size="13">Deref accessors keep the migration mechanical: <tspan font-family="ui-monospace" fill="#79c0ff">state.memory_store</tspan> keeps compiling (<tspan font-family="ui-monospace" fill="#79c0ff">→ state.stores.memory</tspan>) while new code declares narrow deps</text>
+  </svg>
+</div>
+
+<!-- ================= SLIDE 5: SUBSYSTEM EXTRACTION ================= -->
+<div class="slide" data-n="5">
+  <h2>Step 2 — subsystems leave the shell</h2>
+  <p class="sub" style="margin-bottom:16px">The arch review called it in the first audit: the shell runs two features that aren't wiring.</p>
+  <div class="grid c2">
+    <div class="card">
+      <h3>a2a_tasks.rs (1,483) → services/a2a-tasks</h3>
+      <ul style="font-size:14.5px">
+        <li>A2A task lifecycle: create/claim/complete across agents — a domain, not wiring</li>
+        <li>Already has its own HTTP surface (<code>http/a2a.rs</code>) and store access needs</li>
+        <li>Post-extraction: gateway/src shrinks by a subsystem; service owns its types</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>durable_agent_tasks.rs (1,325) → services/durable-tasks</h3>
+      <ul style="font-size:14.5px">
+        <li>Durable task queue surface — sibling of <code>durable_work_store</code> which already lives in stores</li>
+        <li>Extract with its tests; the durable work queue spec lineage moves with it</li>
+      </ul>
+    </div>
+  </div>
+  <h3 style="margin-top:18px">What stays in the shell (the actual job of a shell)</h3>
+  <div class="grid c3" style="gap:12px">
+    <div class="card"><p style="font-size:14px"><b style="color:#3fb950">Composition</b> — build groups, wire services, own lifecycles (startup order, graceful shutdown)</p></div>
+    <div class="card"><p style="font-size:14px"><b style="color:#3fb950">Routing</b> — mount HTTP/WS routers, static UI serving</p></div>
+    <div class="card"><p style="font-size:14px"><b style="color:#3fb950">Nothing else</b> — state/mod.rs splits: groups/ (6 files), bootstrap.rs, seeding.rs</p></div>
+  </div>
+  <p style="margin-top:16px; font-size:14.5px">state/mod.rs (1,888) decomposes into: <code>state/mod.rs</code> (~120, the composer) · <code>state/groups/*.rs</code> (6 × ~80) · <code>state/bootstrap.rs</code> (wiring + EngramStoreBundle) · <code>state/seeding.rs</code> (defaults) · <code>capability_catalog.rs</code> (already separate-ish).</p>
+</div>
+
+<!-- ================= SLIDE 6: MIGRATION WAVES ================= -->
+<div class="slide" data-n="6">
+  <h2>Execution — 5 waves, each independently shippable</h2>
+  <table>
+    <tr><th>Wave</th><th>What</th><th>Move</th><th>Gate</th><th>Risk</th></tr>
+    <tr><td><b>W1</b></td><td>Extract subsystems</td><td>a2a_tasks, durable_agent_tasks → services/ (mechanical, own tests)</td><td>workspace tests + clippy</td><td style="color:#3fb950">low — pure moves</td></tr>
+    <tr><td><b>W2</b></td><td>Introduce the 6 groups</td><td>AppState gains 6 composed fields alongside the 49 flat ones; Deref accessors alias old paths</td><td>golden compile: zero call-site edits needed</td><td style="color:#3fb950">low — additive</td></tr>
+    <tr><td><b>W3</b></td><td>Flip construction</td><td>bootstrap builds groups; flat fields become deprecated aliases reading through groups</td><td>308 gateway tests + daemon boots</td><td style="color:#f0883e">medium — one construction path</td></tr>
+    <tr><td><b>W4</b></td><td>Migrate handlers</td><td>45 HTTP files take <code>StoresState</code>/<code>ServicesState</code>/… extractors instead of AppState where possible (axum State per group)</td><td>per-directory: api tests, e2e stop-and-continue</td><td style="color:#f0883e">medium — many files, each tiny</td></tr>
+    <tr><td><b>W5</b></td><td>Delete the flat fields</td><td>remove 49 aliases + Deref; AppState = 6 fields; state/mod.rs split into groups/bootstrap/seeding</td><td>full gates + golden recall floors (daemon-level)</td><td style="color:#3fb950">low once W4 lands</td></tr>
+  </table>
+  <div class="grid c2" style="margin-top:16px">
+    <div class="card"><h3>Proof of behavior</h3><p style="font-size:14px">The 308 gateway lib tests + 45 api test files are the parity harness — they hit handlers through the real routers. Plus: golden recall floors at daemon level (session → recall → distillation) as in the memory arc.</p></div>
+    <div class="card"><h3>Effort</h3><p style="font-size:14px">W1+W2 ≈ 1 day · W3 ≈ 1 day · W4 ≈ 2 days (45 files × mechanical) · W5 ≈ half day. <b>~5 days total</b>, shippable per wave.</p></div>
+  </div>
+</div>
+
+<!-- ================= SLIDE 7: WHY NOW + WHAT IT UNLOCKS ================= -->
+<div class="slide" data-n="7">
+  <h2>Why this is next — and what it unlocks</h2>
+  <div class="grid c2">
+    <div>
+      <h3>The argument</h3>
+      <ul>
+        <li><b>Every queued feature touches AppState</b> — session fork, parallel children, web search, Topcoat all need narrow access; today each widens the god object instead</li>
+        <li><b>It's the proven pattern</b> — same shape as ExecCtx (35→2 fields), distillation extraction, memory engram-ification; golden-traceable, mechanical, shippable in waves</li>
+        <li><b>Review cost collapses</b> — an AppState diff today forces reading the whole system; a StoresState diff reads itself</li>
+        <li>Session conventions apply: workers per wave, floors as gates, no-junk (nothing unused deleted without audit)</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Unlocked after</h3>
+      <table>
+        <tr><th>Feature</th><th>Before decompose</th><th>After</th></tr>
+        <tr><td>Session fork endpoint</td><td>another AppState consumer</td><td>takes StoresState only</td></tr>
+        <tr><td>Parallel children</td><td>touches runtime + registry + events flat fields</td><td>ExecutionState, one group</td></tr>
+        <tr><td>Web search tool</td><td>new service wired into the blob</td><td>joins ServicesState</td></tr>
+        <tr><td>Execution-status backfill</td><td>hack from anywhere</td><td>WorkersState method</td></tr>
+      </table>
+      <p style="margin-top:14px; font-size:14px; color:#8b949e">Deferred by design: UI/Topcoat (unrelated), recall/mod.rs file split (fusion already fixed; cosmetic), P4/sidecar migrations (work today).</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:20px; border-color:#238636">
+    <p style="font-size:16px"><b style="color:#3fb950">The one-line pitch:</b> 49 fields → 6 groups, 2 subsystems → 2 services, a 1,888-line state file → 5 focused modules — in 5 shippable waves, with the test suite proving each step. The last god object falls the same way the others did.</p>
+  </div>
+</div>
+
+</body>
+</html>

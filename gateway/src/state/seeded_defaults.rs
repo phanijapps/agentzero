@@ -10,8 +10,8 @@
 //! remove entries). It is keyed by category so the same mechanism can later
 //! cover agents, MCPs, or anything else seeded from a bundled template.
 
+use agent_primitives::vault_paths::SharedVaultPaths;
 use gateway_cron::{CreateCronJobRequest, CronService};
-use gateway_services::SharedVaultPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -165,7 +165,7 @@ async fn process_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
 

@@ -2,10 +2,10 @@
 //!
 //! Configuration types for agent execution.
 
+use agent_primitives::vault_paths::VaultPaths;
 use agent_primitives::FileSystemContext;
 use execution_state::TriggerSource;
 use gateway_events::HookContext;
-use gateway_services::VaultPaths;
 use serde_json::Value;
 use std::path::PathBuf;
 use zbot_conversation::LedgerResumePacket;
@@ -45,7 +45,7 @@ impl FileSystemContext for GatewayFileSystem {
 
     /// Skills load from the vault first (writable, user-owned) and then
     /// from `$HOME/.agents/skills/` (read-only, externally installed).
-    /// Mirrors `gateway_services::VaultPaths::skills_dirs()` so the runtime
+    /// Mirrors `agent_primitives::vault_paths::VaultPaths::skills_dirs()` so the runtime
     /// loader sees the same roots the indexer does.
     fn skills_dirs(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.vault_dir.join("skills")];
@@ -141,6 +141,10 @@ pub struct ExecutionConfig {
     /// Server-built context for exactly one explicitly resumed ledger item.
     /// Private so generic callers cannot set it through a struct literal.
     ledger_resume_packet: Option<LedgerResumePacket>,
+    /// Suppress raw dependency diagnostics at durable/untrusted boundaries.
+    redact_diagnostics: bool,
+    /// Isolated public-only prompt for an authenticated remote A2A actor.
+    remote_peer_prompt: Option<crate::a2a::RemotePeerPrompt>,
 }
 
 /// Session execution mode — split from "fast_mode" to decouple memory injection
@@ -188,6 +192,8 @@ impl ExecutionConfig {
             client_message_id: None,
             mode: None,
             ledger_resume_packet: None,
+            redact_diagnostics: false,
+            remote_peer_prompt: None,
         }
     }
 
@@ -245,6 +251,32 @@ impl ExecutionConfig {
     pub fn with_client_message_id(mut self, client_message_id: String) -> Self {
         self.client_message_id = Some(client_message_id);
         self
+    }
+
+    /// Mark this execution as remote A2A work with an isolated prompt.
+    #[must_use]
+    pub fn with_remote_peer_prompt(mut self, prompt: crate::a2a::RemotePeerPrompt) -> Self {
+        self.remote_peer_prompt = Some(prompt);
+        self
+    }
+
+    pub fn remote_peer_prompt(&self) -> Option<&crate::a2a::RemotePeerPrompt> {
+        self.remote_peer_prompt.as_ref()
+    }
+
+    pub fn is_remote_peer(&self) -> bool {
+        self.remote_peer_prompt.is_some()
+    }
+
+    /// Normalize dependency diagnostics for durable/untrusted invocation paths.
+    #[must_use]
+    pub fn with_redacted_diagnostics(mut self) -> Self {
+        self.redact_diagnostics = true;
+        self
+    }
+
+    pub(crate) fn redact_diagnostics(&self) -> bool {
+        self.redact_diagnostics
     }
 
     /// Set the execution mode ("fast" or "deep").
@@ -315,8 +347,7 @@ mod tests {
     fn execution_config_with_metadata() {
         let metadata = serde_json::json!({
             "thread_id": "C123:1234567890.123456",
-            "sender": "U12345",
-        });
+            "sender": "U12345" });
 
         let config = ExecutionConfig::new(
             "root".to_string(),

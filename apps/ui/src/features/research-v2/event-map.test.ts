@@ -67,6 +67,14 @@ describe("mapGatewayEventToResearchAction", () => {
     } as any)).toEqual({ type: "TOKEN", turnId: "exec-1", text: "abc" });
   });
 
+  it("Heartbeat maps to a HEARTBEAT action keyed by execution id", () => {
+    const a = mapGatewayEventToResearchAction({
+      type: "heartbeat", execution_id: "exec-1",
+    } as any);
+    expect(a).toMatchObject({ type: "HEARTBEAT", turnId: "exec-1" });
+    expect(typeof (a as any).at).toBe("number");
+  });
+
   it("Token with no delta and no content returns null", () => {
     expect(mapGatewayEventToResearchAction({ type: "token", execution_id: "exec-1" } as any)).toBeNull();
   });
@@ -249,13 +257,18 @@ describe("mapGatewayEventToPillEvent", () => {
     ).toEqual({ kind: "error", message: "file not found", source: "tool", tool: "read_file" });
   });
 
-  it("tool_result without error returns null (no pill event)", () => {
+  it("successful tool_result maps to the pill recovery signal", () => {
     expect(mapGatewayEventToPillEvent({ type: "tool_result", tool_name: "read_file", result: "ok" } as any))
-      .toBeNull();
+      .toEqual({ kind: "tool_ok", tool: "read_file" });
   });
 
-  it("tool_result with empty-string error returns null", () => {
+  it("tool_result with empty-string error maps to the recovery signal", () => {
     expect(mapGatewayEventToPillEvent({ type: "tool_result", tool_name: "read_file", error: "" } as any))
+      .toEqual({ kind: "tool_ok", tool: "read_file" });
+  });
+
+  it("successful tool_result without a tool name returns null", () => {
+    expect(mapGatewayEventToPillEvent({ type: "tool_result", result: "ok" } as any))
       .toBeNull();
   });
 });

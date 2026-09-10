@@ -8,7 +8,7 @@
 //! 3. `config/agent/OS.md` — platform-specific commands (auto-generated for current OS if missing)
 //! 4. Prompts — `config/agent-prompts/{name}.md` overrides embedded defaults; extra files included too
 
-use gateway_services::VaultPaths;
+use agent_primitives::vault_paths::VaultPaths;
 use rust_embed::RustEmbed;
 use std::path::Path;
 use std::sync::Arc;
@@ -450,5 +450,17 @@ mod tests {
         assert!(prompts.contains("TOOLING & SKILLS"));
         assert!(prompts.contains("MEMORY & LEARNING"));
         assert!(prompts.contains("delegation_rules")); // from planning-autonomy prompt
+    }
+
+    #[test]
+    fn plan_composer_requires_exact_capability_briefing_fields() {
+        let template =
+            Templates::get("skills/plan-composer/SKILL.md").expect("embedded plan-composer skill");
+        let content = String::from_utf8_lossy(&template.data);
+
+        assert!(content.contains("## Skills"));
+        assert!(content.contains("## MCPs"));
+        assert!(content.contains("canonical IDs"));
+        assert!(content.contains("explicit `none`"));
     }
 }

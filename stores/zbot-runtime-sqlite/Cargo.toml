@@ -7,6 +7,7 @@ description = "Runtime conversation and execution SQLite persistence for zbot"
 
 [dependencies]
 api-logs = { path = "../../services/api-logs" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 execution-state = { path = "../../services/execution-state" }
 gateway-services = { path = "../../gateway/gateway-services" }
 rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
@@ -23,6 +24,7 @@ zbot-stores-traits = { path = "../zbot-stores-traits" }
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

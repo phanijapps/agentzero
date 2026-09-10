@@ -22,7 +22,7 @@ use gateway_services::{
 use crate::state::AppState;
 
 fn make_curator(state: &AppState) -> WardCurator {
-    WardCurator::new(state.paths.wards_dir(), state.paths.data_dir())
+    WardCurator::new(state.paths().wards_dir(), state.paths().data_dir())
 }
 
 /// `POST /api/curator/cleanup` — body is an optional `CleanupRequest`. An
@@ -40,7 +40,7 @@ pub async fn cleanup(
     make_curator(&state)
         .cleanup(&req)
         .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// `POST /api/curator/restore` — body `{ "backup": "<utc-iso>" }`.
@@ -68,12 +68,15 @@ pub async fn restore(
 /// Temperature inherits the orchestrator; max output uses the curator override
 /// when configured and otherwise inherits the orchestrator.
 fn make_curator_llm(state: &AppState) -> Result<Arc<dyn LlmClient>, String> {
-    let exec = state.settings.get_execution_settings().unwrap_or_default();
+    let exec = state
+        .settings()
+        .get_execution_settings()
+        .unwrap_or_default();
     let curator = &exec.curator;
     let orch = &exec.orchestrator;
 
     let providers = state
-        .provider_service
+        .provider_service()
         .list()
         .map_err(|e| format!("list providers: {e}"))?;
 
@@ -85,13 +88,10 @@ fn make_curator_llm(state: &AppState) -> Result<Arc<dyn LlmClient>, String> {
 
     let provider = match provider_id_override {
         Some(id) => state
-            .provider_service
+            .provider_service()
             .get(id)
             .map_err(|e| format!("provider {id}: {e}"))?,
-        None => providers
-            .iter()
-            .find(|p| p.is_default)
-            .or_else(|| providers.first())
+        None => gateway_services::select_provider(&providers, None)
             .cloned()
             .ok_or_else(|| "no providers configured".to_string())?,
     };
@@ -132,10 +132,16 @@ pub async fn consolidate(
     };
 
     let curator = make_curator(&state);
-    let llm = make_curator_llm(&state).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let llm =
+        make_curator_llm(&state).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    consolidate_wards(&curator, llm.as_ref(), state.procedure_store.as_ref(), &req)
-        .await
-        .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+    consolidate_wards(
+        &curator,
+        llm.as_ref(),
+        state.procedure_store().as_ref(),
+        &req,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

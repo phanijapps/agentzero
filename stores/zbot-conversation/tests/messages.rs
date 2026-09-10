@@ -57,6 +57,20 @@ fn append_then_replay_roundtrip() {
 }
 
 #[test]
+fn get_returns_one_exact_message_or_none() {
+    let store = store();
+    let expected = msg("msg-exact", "s1", "user", "durable prompt", None);
+    store.append(&expected).unwrap();
+
+    let found = store.get("msg-exact").unwrap().unwrap();
+    assert_eq!(found.id, expected.id);
+    assert_eq!(found.session_id, expected.session_id);
+    assert_eq!(found.role, expected.role);
+    assert_eq!(found.content, expected.content);
+    assert!(store.get("msg-missing").unwrap().is_none());
+}
+
+#[test]
 fn replay_respects_after_seq_cursor() {
     let store = store();
     let session = "s1";

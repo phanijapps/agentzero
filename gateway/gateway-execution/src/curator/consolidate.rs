@@ -10,6 +10,7 @@
 //! 4. Hand the plan to `WardCurator::apply_consolidation` for the
 //!    deterministic file + sidecar mutation.
 
+use crate::errors::ExecutionError;
 use std::sync::Arc;
 
 use agent_runtime::{ChatMessage, LlmClient};
@@ -66,7 +67,7 @@ pub async fn consolidate_wards(
     llm: &dyn LlmClient,
     procedure_store: Option<&Arc<dyn ProcedureStore>>,
     req: &ConsolidateRequest,
-) -> Result<ConsolidationReport, String> {
+) -> Result<ConsolidationReport, ExecutionError> {
     let plan = match &req.plan {
         Some(p) => p.clone(),
         None => {
@@ -89,14 +90,16 @@ pub async fn consolidate_wards(
         }
     }
 
-    curator.apply_consolidation(&plan, req.dry_run)
+    curator
+        .apply_consolidation(&plan, req.dry_run)
+        .map_err(ExecutionError::from)
 }
 
 async fn ask_llm_for_plan(
     llm: &dyn LlmClient,
     candidates: &[WardCandidate],
     max: usize,
-) -> Result<ConsolidationPlan, String> {
+) -> Result<ConsolidationPlan, ExecutionError> {
     let table = render_table(candidates);
     let user_msg = format!(
         "Cap total consolidations at {max}. The candidate table below is your full universe — never reference a ward not listed here.\n\n{table}\n\nEmit the YAML plan now."
@@ -113,7 +116,7 @@ async fn ask_llm_for_plan(
 }
 
 /// Public so tests can exercise prompt-parsing without an LLM.
-pub fn parse_plan_response(content: &str) -> Result<ConsolidationPlan, String> {
+pub fn parse_plan_response(content: &str) -> Result<ConsolidationPlan, ExecutionError> {
     let yaml =
         extract_yaml_block(content).ok_or_else(|| "no YAML block in LLM response".to_string())?;
     let plan: ConsolidationPlan =
@@ -167,7 +170,7 @@ fn cap_plan(mut plan: ConsolidationPlan, max: usize) -> ConsolidationPlan {
 async fn rekey_procedures_for_plan(
     store: &dyn ProcedureStore,
     plan: &ConsolidationPlan,
-) -> Result<(), String> {
+) -> Result<(), ExecutionError> {
     for action in &plan.consolidations {
         let (from_wards, into) = match action {
             ConsolidationAction::Merge { from, into, .. }
@@ -184,7 +187,11 @@ async fn rekey_procedures_for_plan(
 /// Move every procedure currently keyed by `from` to point at `into`.
 /// Re-upserts each row with its `ward_id` field rewritten. Errors are
 /// returned to the caller so a partial re-key can be detected.
-async fn rekey_one_ward(store: &dyn ProcedureStore, from: &str, into: &str) -> Result<(), String> {
+async fn rekey_one_ward(
+    store: &dyn ProcedureStore,
+    from: &str,
+    into: &str,
+) -> Result<(), ExecutionError> {
     // 1000 is a soft cap that's higher than any realistic ward's procedure
     // count today; if a ward ever exceeds it, the spec's v2 KG re-keying
     // notes already commit to revisiting this.
@@ -192,19 +199,16 @@ async fn rekey_one_ward(store: &dyn ProcedureStore, from: &str, into: &str) -> R
         .list_by_ward(from, 1000)
         .await
         .map_err(|e| format!("list_by_ward({from}): {e}"))?;
-    for mut value in procs {
-        if let Some(obj) = value.as_object_mut() {
-            obj.insert(
-                "ward_id".to_string(),
-                serde_json::Value::String(into.to_string()),
-            );
-        } else {
-            return Err(format!(
-                "procedure row for ward '{from}' was not a JSON object; skipping rekey"
-            ));
-        }
+    for row in procs {
+        let mut procedure: zbot_stores_domain::Procedure =
+            serde_json::from_value(row).map_err(|e| {
+                ExecutionError::from(format!(
+                    "procedure row for ward '{from}' failed to decode; skipping rekey: {e}"
+                ))
+            })?;
+        procedure.ward_id = Some(into.to_string());
         store
-            .upsert_procedure(value, None)
+            .upsert_procedure(procedure, None)
             .await
             .map_err(|e| format!("upsert_procedure (rekey {from} -> {into}): {e}"))?;
     }
@@ -268,7 +272,10 @@ mod tests {
         let err =
             parse_plan_response("```yaml\nconsolidations:\n  - action: merge\n    from: [\n```")
                 .unwrap_err();
-        assert!(err.contains("parse plan YAML"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("parse plan YAML"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! CRUD operations and persistence for cron jobs.
 
 use crate::config::{CreateCronJobRequest, CronJobConfig, CronJobsStore, UpdateCronJobRequest};
-use gateway_services::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use std::path::PathBuf;
 use thiserror::Error;
 use tokio::fs;
@@ -308,7 +308,7 @@ impl CronService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
 

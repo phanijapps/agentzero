@@ -16,6 +16,10 @@ ALLOWED_RIG_PACKAGE = "agent-runtime"
 SOURCE_DIRS = ["apps", "discovery", "framework", "gateway", "runtime", "services", "stores"]
 ALLOWED_RIG_SOURCE_FILE = Path("runtime/agent-runtime/src/rig_adapter.rs")
 ALLOWED_RIG_SOURCE_DIR = Path("runtime/agent-runtime/src/rig_adapter")
+ALLOWED_MCP_HTTP_SOURCES = {
+    Path("runtime/agent-runtime/src/mcp/native.rs"),
+    Path("runtime/agent-runtime/src/mcp/native_http.rs"),
+}
 RIG_IMPORT_RE = re.compile(
     r"\b(?:use|extern\s+crate)\s+(?:::)?(?:rig|rig_core)\b"
     r"|\b(?:rig|rig_core)\s*::"
@@ -59,7 +63,10 @@ def check_direct_dependencies(metadata: dict) -> None:
             if dep_name in RIG_DEP_NAMES and package_name != ALLOWED_RIG_PACKAGE:
                 violations.append(f"{package_name} -> {dep_name}")
             if dep_name == "reqwest" and dep.get("req", "").startswith("^0.13"):
-                violations.append(f"{package_name} directly requests reqwest {dep['req']}")
+                # The MCP SDK's cancellation-aware transport requires its own
+                # reqwest version. Provider HTTP remains on the existing stack.
+                if package_name != ALLOWED_RIG_PACKAGE or dep.get("rename") != "reqwest-mcp":
+                    violations.append(f"{package_name} directly requests reqwest {dep['req']}")
 
     if violations:
         fail("dependency boundary violations: " + ", ".join(sorted(violations)))
@@ -95,6 +102,9 @@ def check_source_imports() -> None:
         for path in root.rglob("*.rs"):
             relative = path.relative_to(REPO_ROOT)
             text = path.read_text(encoding="utf-8")
+
+            if re.search(r"\breqwest_mcp\b", text) and relative not in ALLOWED_MCP_HTTP_SOURCES:
+                violations.append(f"{relative}: MCP HTTP client outside transport boundary")
 
             if uses_rig_provider(text):
                 violations.append(f"{relative}: Rig-native provider import is forbidden")

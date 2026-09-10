@@ -3,10 +3,10 @@
 //! Callers construct source-specific results via existing repository search
 //! methods and pass them through these pure functions together with a
 //! per-source relevance score. The resulting `Vec<ScoredItem>` lists are
-//! consumed by `rrf_merge`.
+//! consumed by the weighted-RRF fuser (`fuse_source_lists`).
 
 use crate::recall::scored_item::{ItemKind, Provenance, ScoredItem};
-use zbot_stores::types::EntityId;
+use knowledge_graph::kg_trait::kg_types::EntityId;
 use zbot_stores_domain::{Belief, MemoryFact, Procedure, RouteHint, RouteSourceKind, WikiArticle};
 
 /// Project a [`MemoryFact`] into a [`ScoredItem`].
@@ -165,11 +165,11 @@ use std::sync::Arc;
 /// `query_embedding`, and project each hit as a [`ScoredItem::GraphNode`].
 ///
 /// The returned `ScoredItem::score` is rank-discounted by cosine similarity
-/// so higher-ranked, higher-similarity entities lead — `rrf_merge` re-scores
+/// so higher-ranked, higher-similarity entities lead — the fuser re-scores
 /// via rank during fusion, so this per-source score only matters for the
 /// adapter-local order, which we preserve by sorting by `(rank, cosine)`.
 pub async fn graph_ann_to_items(
-    kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
+    kg_store: &Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
     query_embedding: &[f32],
     top_k: usize,
     agent_id: &str,
@@ -237,6 +237,7 @@ mod tests {
             epistemic_class: None,
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         }
     }
 

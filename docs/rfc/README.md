@@ -17,3 +17,4 @@
 | [RFC-0017: Ward Layout Archetypes](0017-ward-layout-archetypes.md) | Accepted | Defines complete create-time archetypes with closed intent selection, generic fallback, immutable snapshots, and seven local data-only bundles. |
 | [RFC-0018: Filesystem-Authoritative LLM Wiki Wards](0018-filesystem-authoritative-llm-wiki-wards.md) | Accepted | Replaces strict recursive OKF knowledge with canonical Ward Markdown, immutable sources, derived links and indexes, and filesystem-authoritative LLM Wiki workflows. |
 | [RFC-0019: Retire the Legacy WebSocket Port](0019-retire-legacy-websocket-port.md) | Accepted | Removes the deprecated opt-in `18790` listener and makes `18791/ws` the sole client event-stream WebSocket endpoint. |
+| [RFC-0020: A2A zBot Federation](0020-a2a-zbot-federation.md) | Accepted | Adds explicit-trust LAN/VPN federation so independent zBots discover candidates and exchange durable work through the A2A 1.0 HTTP+JSON protocol. |

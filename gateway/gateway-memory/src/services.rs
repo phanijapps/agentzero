@@ -10,19 +10,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_runtime::llm::embedding::EmbeddingClient;
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::{
     BeliefContradictionStore, BeliefStore, CompactionStore, EpisodeStore, MemoryFactStore,
     ProcedureStore,
 };
 
 use crate::sleep::{
-    BeliefContradictionConfig, BeliefContradictionDetector, BeliefPropagator, BeliefSynthesizer,
-    Compactor, ConflictResolver, ContradictionPropagationConfig, CorrectionsAbstractor,
-    DecayConfig, DecayEngine, LlmBeliefSynthesizer, LlmConflictJudge, LlmContradictionJudge,
-    LlmCorrectionsAbstractor, LlmPairwiseVerifier, LlmPatternExtractor, LlmSynthesizer,
-    OrphanArchiver, PairwiseVerifier, PatternExtractor, Pruner, RecentBeliefNetworkActivity,
-    SleepOps, SleepTimeWorker, Synthesizer,
+    BeliefConsolidation, BeliefConsolidationParts, BeliefContradictionConfig, BeliefPropagator,
+    Compactor, ConflictResolver, ContradictionPropagationConfig, DecayConfig, DecayEngine,
+    LlmBeliefSynthesizer, LlmConflictJudge, LlmContradictionJudge, LlmPairwiseVerifier,
+    LlmPatternExtractor, LlmSynthesizer, OrphanArchiver, PairwiseVerifier, PatternExtractor,
+    Pruner, RecentBeliefNetworkActivity, SleepOps, SleepTimeWorker, Synthesizer,
 };
 use crate::{KgDecayConfig, MemoryLlmFactory};
 
@@ -45,7 +44,6 @@ pub struct MemoryServicesConfig {
     pub message_store: Arc<dyn zbot_conversation::MessageStore>,
     pub embedding_client: Option<Arc<dyn EmbeddingClient>>,
     pub kg_decay_config: KgDecayConfig,
-    pub corrections_abstractor_interval: Duration,
     pub conflict_resolver_interval: Duration,
     pub decay_config: DecayConfig,
     /// MEM-001 Part A — configuration for contradiction propagation
@@ -61,7 +59,7 @@ pub struct MemoryServicesConfig {
     pub belief_network_interval: Duration,
     /// Phase B-2: optional contradiction store. When `Some` AND
     /// `belief_network_enabled = true` AND a `belief_store` is wired,
-    /// the `BeliefContradictionDetector` joins the sleep cycle right
+    /// the belief consolidation cycle joins the sleep cycle right
     /// after the synthesizer. Detector reuses the same enable flag and
     /// interval as B-1 so operators flip one switch.
     pub belief_contradiction_store: Option<Arc<dyn BeliefContradictionStore>>,
@@ -126,18 +124,17 @@ impl MemoryServices {
             message_store,
             embedding_client,
             kg_decay_config,
-            corrections_abstractor_interval,
             conflict_resolver_interval,
             decay_config,
             belief_store,
             belief_network_enabled,
-            belief_network_interval,
+            belief_network_interval: _,
             belief_contradiction_store,
             belief_contradiction_neighborhood_prefix_depth,
             belief_contradiction_budget_per_cycle,
             belief_fact_confidence_drop_threshold,
             hierarchy_enabled,
-            hierarchy_interval,
+            hierarchy_interval: _,
             hierarchy_max_layers,
             hierarchy_cluster_target_size,
             hierarchy_inter_cluster_relation_threshold,
@@ -203,14 +200,6 @@ impl MemoryServices {
             compaction_store.clone(),
         ));
 
-        let corrections_llm = Arc::new(LlmCorrectionsAbstractor::new(llm_factory.clone()));
-        let corrections_abstractor = Arc::new(CorrectionsAbstractor::new(
-            memory_store.clone(),
-            compaction_store.clone(),
-            corrections_llm,
-            corrections_abstractor_interval,
-        ));
-
         let conflict_llm = Arc::new(LlmConflictJudge::new(llm_factory.clone()));
         let conflict_resolver = Arc::new(
             ConflictResolver::new(
@@ -225,44 +214,38 @@ impl MemoryServices {
         // Belief Network — opt-in, requires a wired BeliefStore. Even
         // when the flag is on, missing the store falls back to None so
         // mis-configuration degrades gracefully rather than panicking.
-        let (belief_synthesizer, belief_contradiction_detector) =
-            match (belief_network_enabled, belief_store) {
-                (true, Some(bs)) => {
-                    let belief_llm = Arc::new(LlmBeliefSynthesizer::new(llm_factory.clone()));
-                    // B-4: thread the embedding client so synthesized
-                    // beliefs carry a semantic vector for recall.
-                    let synth = Some(Arc::new(
-                        BeliefSynthesizer::new(
-                            memory_store.clone(),
-                            bs.clone(),
-                            belief_llm,
-                            belief_network_interval,
-                            true,
-                        )
-                        .with_embedding_client(embedding_client.clone()),
-                    ));
-                    // Detector requires both stores. If the contradiction
-                    // store is missing we degrade to "synthesis only" rather
-                    // than panicking.
-                    let detector = belief_contradiction_store.map(|cs| {
-                        let judge = Arc::new(LlmContradictionJudge::new(llm_factory.clone()));
-                        Arc::new(BeliefContradictionDetector::new(
-                            bs,
-                            cs,
-                            judge,
-                            BeliefContradictionConfig {
-                                enabled: true,
-                                neighborhood_prefix_depth:
-                                    belief_contradiction_neighborhood_prefix_depth,
-                                budget_per_cycle: belief_contradiction_budget_per_cycle,
-                            },
-                            belief_network_interval,
-                        ))
-                    });
-                    (synth, detector)
-                }
-                _ => (None, None),
-            };
+        // Synthesis + contradiction detection run as one engram
+        // consolidation cycle (BeliefConsolidation) — the interval gate
+        // lives in the sleep worker's cadence shell.
+        let belief_consolidation: Option<Arc<BeliefConsolidation>> = match (
+            belief_network_enabled,
+            belief_store,
+            belief_contradiction_store,
+        ) {
+            (true, Some(bs), Some(cs)) => {
+                let belief_llm = Arc::new(LlmBeliefSynthesizer::new(llm_factory.clone()));
+                let judge = Arc::new(LlmContradictionJudge::new(llm_factory.clone()));
+                Some(Arc::new(BeliefConsolidation::new(
+                    BeliefConsolidationParts {
+                        fact_store: memory_store.clone(),
+                        belief_store: bs,
+                        contradiction_store: cs,
+                        llm: belief_llm,
+                        judge,
+                        config: BeliefContradictionConfig {
+                            neighborhood_prefix_depth:
+                                belief_contradiction_neighborhood_prefix_depth,
+                            budget_per_cycle: belief_contradiction_budget_per_cycle,
+                        },
+                        embedding_client: embedding_client.clone(),
+                        // Placeholder partition — execute() passes the
+                        // real agent partition per cycle.
+                        default_partition: "__root__".to_string(),
+                    },
+                )))
+            }
+            _ => None,
+        };
 
         let belief_network_activity = Arc::new(RecentBeliefNetworkActivity::new());
 
@@ -274,31 +257,38 @@ impl MemoryServices {
             let agg_llm = Arc::new(crate::sleep::llm_aggregate_entity::LlmAggregateEntity::new(
                 llm_factory.clone(),
             ));
-            let hierarchy_cfg = crate::sleep::hierarchy_builder::HierarchyConfig {
+            let hierarchy_cfg = crate::sleep::hierarchy_engram::HierarchyConfig {
                 cluster_target_size: hierarchy_cluster_target_size,
                 max_layers: hierarchy_max_layers,
                 inter_cluster_relation_threshold: hierarchy_inter_cluster_relation_threshold,
                 llm_budget_per_cycle: hierarchy_llm_budget_per_cycle,
-                ..crate::sleep::hierarchy_builder::HierarchyConfig::default()
+                ..crate::sleep::hierarchy_engram::HierarchyConfig::default()
             };
             Some(Arc::new(
-                crate::sleep::hierarchy_builder::HierarchyBuilder::new(kg_store.clone(), agg_llm)
-                    .with_embedding_client(embedding_client.clone())
-                    .with_config(hierarchy_cfg)
-                    .with_interval(hierarchy_interval),
+                crate::sleep::hierarchy_engram::HierarchyConsolidation::new(
+                    kg_store.clone(),
+                    agg_llm,
+                    embedding_client.clone(),
+                    hierarchy_cfg,
+                    "__default__".to_string(),
+                ),
             ))
         } else {
             None
         };
 
         let ops = SleepOps {
-            synthesizer: Some(synthesizer),
-            pattern_extractor: Some(pattern_extractor),
+            synthesizer: Some(Arc::new(
+                crate::sleep::extraction_engram::MemorySynthesisConsolidation::new(synthesizer),
+            )),
+            pattern_extractor: Some(Arc::new(
+                crate::sleep::extraction_engram::ProcedureExtractionConsolidation::new(
+                    pattern_extractor,
+                ),
+            )),
             orphan_archiver: Some(orphan_archiver),
-            corrections_abstractor: Some(corrections_abstractor),
             conflict_resolver: Some(conflict_resolver),
-            belief_synthesizer,
-            belief_contradiction_detector,
+            belief_consolidation,
             belief_network_activity: Some(belief_network_activity.clone()),
             hierarchy_builder,
         };

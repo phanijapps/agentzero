@@ -27,6 +27,7 @@ const transportMock = {
   subscribeConversation: vi.fn(),
   executeAgent: vi.fn(),
   stopAgent: vi.fn(),
+  cancelSession: vi.fn(),
   deleteChatSession: vi.fn(),
 };
 
@@ -49,6 +50,7 @@ beforeEach(() => {
   transportMock.subscribeConversation.mockReturnValue(() => {});
   transportMock.listSessionArtifacts.mockResolvedValue({ success: true, data: [] });
   transportMock.listSavedSessionSurfaces.mockResolvedValue({ success: true, data: [] });
+  transportMock.cancelSession.mockResolvedValue({ success: true });
 });
 
 afterEach(() => {
@@ -242,7 +244,7 @@ describe("useQuickChat — WS subscription lifecycle", () => {
     });
 
     expect(result.current.surfaces).toEqual([
-      expect.objectContaining({ surface_id: "surface-1", data: { value: 2 } }),
+      expect.objectContaining({ surface: expect.objectContaining({ surface_id: "surface-1", data: { value: 2 } }) }),
     ]);
   });
 });
@@ -313,12 +315,11 @@ describe("useQuickChat — sendMessage", () => {
 });
 
 describe("useQuickChat — stopAgent", () => {
-  it("invokes transport.stopAgent only when status is running", async () => {
+  it("cancels the exact running session", async () => {
     transportMock.initChatSession.mockResolvedValue({
       success: true,
       data: { sessionId: "s1", conversationId: "c1", created: true },
     });
-    transportMock.stopAgent.mockResolvedValue({ success: true });
     transportMock.executeAgent.mockResolvedValue({ success: true });
 
     const { result } = renderHook(() => useQuickChat());
@@ -328,7 +329,7 @@ describe("useQuickChat — stopAgent", () => {
     await act(async () => {
       await result.current.stopAgent();
     });
-    expect(transportMock.stopAgent).not.toHaveBeenCalled();
+    expect(transportMock.cancelSession).not.toHaveBeenCalled();
 
     // Drive into running by simulating an agent_started event through the
     // captured WS handler.
@@ -346,7 +347,7 @@ describe("useQuickChat — stopAgent", () => {
     await act(async () => {
       await result.current.stopAgent();
     });
-    expect(transportMock.stopAgent).toHaveBeenCalledWith("c1");
+    expect(transportMock.cancelSession).toHaveBeenCalledWith("s1", "c1");
   });
 });
 

@@ -2,6 +2,7 @@
 //!
 //! REST API for managing cron jobs.
 
+use super::ErrorResponse;
 use crate::cron::{CreateCronJobRequest, UpdateCronJobRequest};
 use crate::state::AppState;
 use axum::{
@@ -10,68 +11,41 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::Serialize;
 use tracing::{error, info};
 
-/// Error response for cron operations.
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    error: String,
-    code: String,
+fn err_not_found(id: &str) -> ErrorResponse {
+    ErrorResponse::with_code(format!("Cron job not found: {}", id), "JOB_NOT_FOUND")
 }
 
-impl ErrorResponse {
-    fn not_found(id: &str) -> Self {
-        Self {
-            error: format!("Cron job not found: {}", id),
-            code: "JOB_NOT_FOUND".to_string(),
-        }
-    }
+fn err_already_exists(id: &str) -> ErrorResponse {
+    ErrorResponse::with_code(format!("Cron job already exists: {}", id), "JOB_EXISTS")
+}
 
-    fn already_exists(id: &str) -> Self {
-        Self {
-            error: format!("Cron job already exists: {}", id),
-            code: "JOB_EXISTS".to_string(),
-        }
-    }
+fn err_invalid_id(msg: &str) -> ErrorResponse {
+    ErrorResponse::with_code(msg.to_string(), "INVALID_ID")
+}
 
-    fn invalid_id(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            code: "INVALID_ID".to_string(),
-        }
-    }
+fn err_invalid_schedule(msg: &str) -> ErrorResponse {
+    ErrorResponse::with_code(msg.to_string(), "INVALID_SCHEDULE")
+}
 
-    fn invalid_schedule(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            code: "INVALID_SCHEDULE".to_string(),
-        }
-    }
+fn err_scheduler_not_available() -> ErrorResponse {
+    ErrorResponse::with_code("Cron scheduler not available", "SCHEDULER_UNAVAILABLE")
+}
 
-    fn scheduler_not_available() -> Self {
-        Self {
-            error: "Cron scheduler not available".to_string(),
-            code: "SCHEDULER_UNAVAILABLE".to_string(),
-        }
-    }
-
-    fn internal(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            code: "INTERNAL_ERROR".to_string(),
-        }
-    }
+fn err_internal(msg: &str) -> ErrorResponse {
+    ErrorResponse::with_code(msg.to_string(), "INTERNAL_ERROR")
 }
 
 /// GET /api/cron - List all cron jobs.
 pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -83,7 +57,7 @@ pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse 
             error!(error = %e, "Failed to list cron jobs");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::internal(&e.to_string())),
+                Json(err_internal(&e.to_string())),
             )
                 .into_response()
         }
@@ -95,12 +69,13 @@ pub async fn create_cron_job(
     State(state): State<AppState>,
     Json(request): Json<CreateCronJobRequest>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -113,26 +88,20 @@ pub async fn create_cron_job(
         Err(e) => {
             use crate::cron::CronServiceError;
             match &e {
-                CronServiceError::AlreadyExists(id) => (
-                    StatusCode::CONFLICT,
-                    Json(ErrorResponse::already_exists(id)),
-                )
-                    .into_response(),
-                CronServiceError::InvalidId(msg) => (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse::invalid_id(msg)),
-                )
-                    .into_response(),
-                CronServiceError::InvalidSchedule(msg) => (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse::invalid_schedule(msg)),
-                )
-                    .into_response(),
+                CronServiceError::AlreadyExists(id) => {
+                    (StatusCode::CONFLICT, Json(err_already_exists(id))).into_response()
+                }
+                CronServiceError::InvalidId(msg) => {
+                    (StatusCode::BAD_REQUEST, Json(err_invalid_id(msg))).into_response()
+                }
+                CronServiceError::InvalidSchedule(msg) => {
+                    (StatusCode::BAD_REQUEST, Json(err_invalid_schedule(msg))).into_response()
+                }
                 _ => {
                     error!(error = %e, "Failed to create cron job");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -146,12 +115,13 @@ pub async fn get_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -163,13 +133,13 @@ pub async fn get_cron_job(
             use crate::cron::CronServiceError;
             match &e {
                 CronServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to get cron job");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -184,12 +154,13 @@ pub async fn update_cron_job(
     Path(id): Path<String>,
     Json(request): Json<UpdateCronJobRequest>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -203,18 +174,16 @@ pub async fn update_cron_job(
             use crate::cron::CronServiceError;
             match &e {
                 CronServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
-                CronServiceError::InvalidSchedule(msg) => (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse::invalid_schedule(msg)),
-                )
-                    .into_response(),
+                CronServiceError::InvalidSchedule(msg) => {
+                    (StatusCode::BAD_REQUEST, Json(err_invalid_schedule(msg))).into_response()
+                }
                 _ => {
                     error!(error = %e, "Failed to update cron job");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -228,12 +197,13 @@ pub async fn delete_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -247,13 +217,13 @@ pub async fn delete_cron_job(
             use crate::cron::CronServiceError;
             match &e {
                 CronServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to delete cron job");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -267,12 +237,13 @@ pub async fn trigger_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -293,13 +264,13 @@ pub async fn trigger_cron_job(
             use crate::cron::CronSchedulerError;
             match &e {
                 CronSchedulerError::Service(crate::cron::CronServiceError::NotFound(id)) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to trigger cron job");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -313,12 +284,13 @@ pub async fn enable_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -332,13 +304,13 @@ pub async fn enable_cron_job(
             use crate::cron::CronServiceError;
             match &e {
                 CronServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to enable cron job");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -352,12 +324,13 @@ pub async fn disable_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::scheduler_not_available()),
+                Json(err_scheduler_not_available()),
             )
                 .into_response();
         }
@@ -371,13 +344,13 @@ pub async fn disable_cron_job(
             use crate::cron::CronServiceError;
             match &e {
                 CronServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to disable cron job");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }

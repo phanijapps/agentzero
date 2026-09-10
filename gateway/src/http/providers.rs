@@ -38,7 +38,7 @@ pub fn routes() -> Router<AppState> {
 // ============================================================================
 
 fn commissioning_mutation_pending(state: &AppState) -> bool {
-    gateway_services::providers::ollama_cloud_commissioning_pending(state.paths.as_ref())
+    gateway_services::providers::ollama_cloud_commissioning_pending(state.paths().as_ref())
 }
 
 fn provider_mutation_guard() -> Result<tokio::sync::MutexGuard<'static, ()>, StatusCode> {
@@ -97,10 +97,12 @@ fn public_provider(provider: Provider) -> serde_json::Value {
 
 /// List all providers
 async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
-    match state.provider_service.list() {
+    // Reads through the services group: providers + model registry.
+    let services = state.services();
+    match services.provider_service.list() {
         Ok(mut providers) => {
             for p in &mut providers {
-                enrich_provider(p, &state.model_registry);
+                enrich_provider(p, &services.model_registry);
             }
             Json(
                 providers
@@ -116,9 +118,11 @@ async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Get a single provider
 async fn get_provider(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match state.provider_service.get(&id) {
+    // Reads through the services group: providers + model registry.
+    let services = state.services();
+    match services.provider_service.get(&id) {
         Ok(mut provider) => {
-            enrich_provider(&mut provider, &state.model_registry);
+            enrich_provider(&mut provider, &services.model_registry);
             Json(public_provider(provider)).into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
@@ -137,7 +141,7 @@ async fn create_provider(
     if commissioning_mutation_pending(&state) {
         return (StatusCode::CONFLICT, "Commissioning recovery is pending").into_response();
     }
-    match state.provider_service.create(provider) {
+    match state.provider_service().create(provider) {
         Ok(created) => (StatusCode::CREATED, Json(public_provider(created))).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
     }
@@ -157,11 +161,11 @@ async fn update_provider(
         return (StatusCode::CONFLICT, "Commissioning recovery is pending").into_response();
     }
     if provider.api_key.trim().is_empty() {
-        if let Ok(existing) = state.provider_service.get(&id) {
+        if let Ok(existing) = state.provider_service().get(&id) {
             provider.api_key = existing.api_key;
         }
     }
-    match state.provider_service.update(&id, provider) {
+    match state.provider_service().update(&id, provider) {
         Ok(updated) => Json(public_provider(updated)).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
@@ -179,7 +183,7 @@ async fn delete_provider(
     if commissioning_mutation_pending(&state) {
         return (StatusCode::CONFLICT, "Commissioning recovery is pending").into_response();
     }
-    match state.provider_service.delete(&id) {
+    match state.provider_service().delete(&id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
@@ -197,7 +201,7 @@ async fn set_default_provider(
     if commissioning_mutation_pending(&state) {
         return (StatusCode::CONFLICT, "Commissioning recovery is pending").into_response();
     }
-    match state.provider_service.set_default(&id) {
+    match state.provider_service().set_default(&id) {
         Ok(provider) => Json(public_provider(provider)).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
@@ -212,9 +216,9 @@ async fn test_provider(State(state): State<AppState>, Path(id): Path<String>) ->
     if commissioning_mutation_pending(&state) {
         return (StatusCode::CONFLICT, "Commissioning recovery is pending").into_response();
     }
-    match state.provider_service.get(&id) {
+    match state.provider_service().get(&id) {
         Ok(mut provider) => {
-            let result = state.provider_service.test(&provider).await;
+            let result = state.provider_service().test(&provider).await;
 
             // Persist verified status + merge discovered models back to providers.json
             if result.success {
@@ -228,8 +232,8 @@ async fn test_provider(State(state): State<AppState>, Path(id): Path<String>) ->
                     }
                 }
                 // Enrich with registry capabilities
-                enrich_provider(&mut provider, &state.model_registry);
-                let _ = state.provider_service.update(&id, provider);
+                enrich_provider(&mut provider, &state.model_registry());
+                let _ = state.provider_service().update(&id, provider);
             }
 
             Json(result).into_response()
@@ -243,7 +247,7 @@ async fn test_provider_inline(
     State(state): State<AppState>,
     Json(provider): Json<Provider>,
 ) -> impl IntoResponse {
-    let result = state.provider_service.test(&provider).await;
+    let result = state.provider_service().test(&provider).await;
     Json(result).into_response()
 }
 

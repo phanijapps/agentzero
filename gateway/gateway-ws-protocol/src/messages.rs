@@ -86,8 +86,13 @@ pub enum ClientMessage {
     /// Resume a paused or crashed session.
     Resume { session_id: String },
 
-    /// Cancel a session.
-    Cancel { session_id: String },
+    /// Cancel a session. The conversation id scopes the live execution handle
+    /// when a session has more than one historical turn.
+    Cancel {
+        session_id: String,
+        #[serde(default)]
+        conversation_id: Option<String>,
+    },
 
     /// End a session (mark as completed).
     /// Used when user types /end, /new, or clicks +new button.

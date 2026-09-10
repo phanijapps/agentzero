@@ -12,6 +12,7 @@
 //! (POD `Message` → `agent_runtime::ChatMessage`) lives here as
 //! `messages_to_chat_format`.
 
+use crate::errors::ExecutionError;
 use std::sync::Arc;
 
 use agent_runtime::ChatMessage;
@@ -56,7 +57,7 @@ pub struct HandoffInput {
 /// Mockable LLM interface for generating 3-5 sentence handoff summaries.
 #[async_trait]
 pub trait HandoffLlm: Send + Sync {
-    async fn summarize(&self, input: &HandoffInput) -> Result<String, String>;
+    async fn summarize(&self, input: &HandoffInput) -> Result<String, ExecutionError>;
 }
 
 /// Returns false if the entry is older than `HANDOFF_MAX_AGE_DAYS` or unparseable.
@@ -71,7 +72,7 @@ pub fn should_inject(entry: &HandoffEntry) -> bool {
 /// Returns `None` if absent, unparseable, older than `HANDOFF_MAX_AGE_DAYS`,
 /// or if `current_ward` is `Some` and doesn't match the entry's ward.
 pub async fn read_handoff_block(
-    fact_store: &Arc<dyn zbot_stores::MemoryFactStore>,
+    fact_store: &Arc<dyn zbot_stores_traits::MemoryFactStore>,
     current_ward: Option<&str>,
 ) -> Option<String> {
     let mut ctx_wards = Vec::new();
@@ -190,7 +191,7 @@ pub fn format_conversation_for_summary(messages: &[ChatMessage]) -> String {
 
 #[async_trait]
 impl HandoffLlm for LlmHandoffWriter {
-    async fn summarize(&self, input: &HandoffInput) -> Result<String, String> {
+    async fn summarize(&self, input: &HandoffInput) -> Result<String, ExecutionError> {
         let client = self
             .factory
             .build_client(LlmClientConfig::new(0.2, 256))
@@ -235,14 +236,14 @@ impl HandoffLlm for LlmHandoffWriter {
 ///
 pub struct HandoffWriter {
     llm: Arc<dyn HandoffLlm>,
-    fact_store: Arc<dyn zbot_stores::MemoryFactStore>,
+    fact_store: Arc<dyn zbot_stores_traits::MemoryFactStore>,
     messages: Arc<dyn zbot_conversation::MessageStore>,
 }
 
 impl HandoffWriter {
     pub fn new(
         llm: Arc<dyn HandoffLlm>,
-        fact_store: Arc<dyn zbot_stores::MemoryFactStore>,
+        fact_store: Arc<dyn zbot_stores_traits::MemoryFactStore>,
         messages: Arc<dyn zbot_conversation::MessageStore>,
     ) -> Self {
         Self {
@@ -278,7 +279,7 @@ impl HandoffWriter {
         agent_id: &str,
         ward_id: &str,
         messages: Vec<ChatMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ExecutionError> {
         let turns = messages.iter().filter(|m| m.role == "user").count() as u32;
         let correction_count = self
             .fact_store
@@ -307,7 +308,7 @@ impl HandoffWriter {
         self.persist(session_id, &entry).await
     }
 
-    async fn persist(&self, session_id: &str, entry: &HandoffEntry) -> Result<(), String> {
+    async fn persist(&self, session_id: &str, entry: &HandoffEntry) -> Result<(), ExecutionError> {
         let json = serde_json::to_string(entry).map_err(|e| format!("serialize entry: {e}"))?;
         let ctx_ward = if entry.ward_id.trim().is_empty() {
             HANDOFF_WARD
@@ -625,6 +626,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use zbot_stores_domain::MemoryFact;
+    use zbot_stores_traits::StoreResult;
 
     // ---- Mock MemoryFactStore ----
 
@@ -658,7 +660,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl zbot_stores::MemoryFactStore for MockFactStore {
+    impl zbot_stores_traits::MemoryFactStore for MockFactStore {
         async fn save_fact(
             &self,
             _agent_id: &str,
@@ -668,7 +670,7 @@ mod tests {
             _confidence: f64,
             _session_id: Option<&str>,
             _valid_from: Option<chrono::DateTime<chrono::Utc>>,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             *self.save_fact_calls.lock().unwrap() += 1;
             self.facts
                 .lock()
@@ -682,7 +684,7 @@ mod tests {
             _agent_id: &str,
             _query: &str,
             _limit: usize,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             Ok(serde_json::json!([]))
         }
 
@@ -692,7 +694,7 @@ mod tests {
             _scope: &str,
             _ward_id: &str,
             key: &str,
-        ) -> Result<Option<MemoryFact>, String> {
+        ) -> StoreResult<Option<MemoryFact>> {
             let content = self.facts.lock().unwrap().get(key).cloned();
             Ok(content.map(|c| MemoryFact {
                 id: "mock".to_string(),
@@ -718,6 +720,7 @@ mod tests {
                 epistemic_class: None,
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             }))
         }
 
@@ -725,7 +728,7 @@ mod tests {
             &self,
             _ward_id: &str,
             key: &str,
-        ) -> Result<Option<serde_json::Value>, String> {
+        ) -> StoreResult<Option<serde_json::Value>> {
             Ok(self.ctx_facts.lock().unwrap().get(key).map(|content| {
                 serde_json::json!({
                     "found": true,
@@ -733,8 +736,7 @@ mod tests {
                     "content": content,
                     "owner": HANDOFF_CTX_OWNER,
                     "session_id": "mock-session",
-                    "pinned": true,
-                })
+                    "pinned": true })
             }))
         }
 
@@ -746,7 +748,7 @@ mod tests {
             content: &str,
             _owner: &str,
             _pinned: bool,
-        ) -> Result<serde_json::Value, String> {
+        ) -> StoreResult<serde_json::Value> {
             self.ctx_facts
                 .lock()
                 .unwrap()
@@ -759,7 +761,7 @@ mod tests {
             _agent_id: &str,
             category: &str,
             _limit: usize,
-        ) -> Result<Vec<MemoryFact>, String> {
+        ) -> StoreResult<Vec<MemoryFact>> {
             if category != "correction" {
                 return Ok(Vec::new());
             }
@@ -791,6 +793,7 @@ mod tests {
                     epistemic_class: None,
                     source_episode_id: None,
                     source_ref: None,
+                    last_accessed: None,
                 })
                 .collect())
         }
@@ -799,7 +802,7 @@ mod tests {
     // ---- Mock LLM ----
 
     struct MockLlm {
-        response: Mutex<Result<String, String>>,
+        response: Mutex<Result<String, ExecutionError>>,
         calls: Mutex<u32>,
     }
 
@@ -812,7 +815,7 @@ mod tests {
         }
         fn err() -> Arc<Self> {
             Arc::new(Self {
-                response: Mutex::new(Err("mock LLM error".to_string())),
+                response: Mutex::new(Err(ExecutionError::from("mock LLM error".to_string()))),
                 calls: Mutex::new(0),
             })
         }
@@ -823,7 +826,7 @@ mod tests {
 
     #[async_trait]
     impl HandoffLlm for MockLlm {
-        async fn summarize(&self, _input: &HandoffInput) -> Result<String, String> {
+        async fn summarize(&self, _input: &HandoffInput) -> Result<String, ExecutionError> {
             *self.calls.lock().unwrap() += 1;
             self.response.lock().unwrap().clone()
         }
@@ -858,7 +861,7 @@ mod tests {
 
     fn make_writer(
         llm: Arc<dyn HandoffLlm>,
-        store: Arc<dyn zbot_stores::MemoryFactStore>,
+        store: Arc<dyn zbot_stores_traits::MemoryFactStore>,
     ) -> HandoffWriter {
         HandoffWriter::new(llm, store, Arc::new(MockConvStore))
     }
@@ -930,7 +933,7 @@ mod tests {
             serde_json::to_string(&entry).unwrap(),
         );
 
-        let store: Arc<dyn zbot_stores::MemoryFactStore> = store;
+        let store: Arc<dyn zbot_stores_traits::MemoryFactStore> = store;
         let block = read_handoff_block(&store, None)
             .await
             .expect("should return a block");
@@ -966,7 +969,7 @@ mod tests {
             serde_json::to_string(&entry).unwrap(),
         );
 
-        let store: Arc<dyn zbot_stores::MemoryFactStore> = store;
+        let store: Arc<dyn zbot_stores_traits::MemoryFactStore> = store;
         assert!(read_handoff_block(&store, None).await.is_none());
     }
 
@@ -974,7 +977,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_handoff_block_returns_none_when_absent() {
-        let store: Arc<dyn zbot_stores::MemoryFactStore> = MockFactStore::new();
+        let store: Arc<dyn zbot_stores_traits::MemoryFactStore> = MockFactStore::new();
         assert!(read_handoff_block(&store, None).await.is_none());
     }
 
@@ -999,7 +1002,7 @@ mod tests {
             "handoff.latest".to_string(),
             serde_json::to_string(&entry).unwrap(),
         );
-        let store: Arc<dyn zbot_stores::MemoryFactStore> = store;
+        let store: Arc<dyn zbot_stores_traits::MemoryFactStore> = store;
         assert!(read_handoff_block(&store, Some("research-ward"))
             .await
             .is_none());
@@ -1247,8 +1250,7 @@ mod tests {
         let stored_tc = serde_json::json!([{
             "tool_id": "tc-1",
             "tool_name": "memory",
-            "args": {"action": "get_fact"},
-        }])
+            "args": {"action": "get_fact"} }])
         .to_string();
         let msgs = vec![
             zbot_conversation::Message {

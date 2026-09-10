@@ -3,10 +3,131 @@
 // SQLite schema for sessions, agent executions, and messages
 // ============================================================================
 
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, OptionalExtension, Result};
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 25;
+const SCHEMA_VERSION: i32 = 27;
+
+fn create_durable_work_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS durable_work_items (
+            id TEXT PRIMARY KEY,
+            envelope_version INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            provenance_node_id TEXT NOT NULL,
+            provenance_actor_id TEXT NOT NULL,
+            provenance_session_id TEXT NOT NULL,
+            provenance_execution_id TEXT NOT NULL,
+            correlation_id TEXT,
+            dedupe_key TEXT,
+            priority INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL,
+            available_at TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_token TEXT,
+            lease_expires_at TEXT,
+            last_failure_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            CHECK (envelope_version = 1),
+            CHECK (length(CAST(payload_json AS BLOB)) <= 65536),
+            CHECK (status IN ('pending', 'leased', 'completed', 'dead_letter', 'canceled')),
+            CHECK (attempts >= 0),
+            CHECK (max_attempts BETWEEN 1 AND 20)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_durable_work_source_dedupe
+            ON durable_work_items(source, dedupe_key)
+            WHERE dedupe_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_durable_work_claim
+            ON durable_work_items(
+                target,
+                status,
+                priority DESC,
+                available_at ASC,
+                created_at ASC,
+                id ASC
+            );
+        CREATE INDEX IF NOT EXISTS idx_durable_work_expired_lease
+            ON durable_work_items(status, lease_expires_at);
+        CREATE INDEX IF NOT EXISTS idx_durable_work_scope_page
+            ON durable_work_items(
+                source,
+                kind,
+                provenance_actor_id,
+                updated_at DESC,
+                id DESC
+            );
+        CREATE INDEX IF NOT EXISTS idx_durable_work_scope_correlation
+            ON durable_work_items(
+                source,
+                kind,
+                provenance_actor_id,
+                correlation_id
+            );",
+    )
+}
+
+fn migrate_durable_work_to_v27(conn: &Connection) -> Result<()> {
+    let table_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'durable_work_items'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(table_sql) = table_sql else {
+        return create_durable_work_schema(conn);
+    };
+    if table_sql.contains("'canceled'") {
+        return create_durable_work_schema(conn);
+    }
+
+    conn.execute_batch(
+        "BEGIN IMMEDIATE;
+         DROP INDEX IF EXISTS uq_durable_work_source_dedupe;
+         DROP INDEX IF EXISTS idx_durable_work_claim;
+         DROP INDEX IF EXISTS idx_durable_work_expired_lease;
+         DROP INDEX IF EXISTS idx_durable_work_scope_page;
+         DROP INDEX IF EXISTS idx_durable_work_scope_correlation;
+         ALTER TABLE durable_work_items RENAME TO durable_work_items_v26;",
+    )?;
+    let migrated = (|| {
+        create_durable_work_schema(conn)?;
+        conn.execute_batch(
+            "INSERT INTO durable_work_items (
+                id, envelope_version, kind, source, target, payload_json,
+                provenance_node_id, provenance_actor_id,
+                provenance_session_id, provenance_execution_id,
+                correlation_id, dedupe_key, priority, status, attempts,
+                max_attempts, available_at, lease_owner, lease_token,
+                lease_expires_at, last_failure_code, created_at, updated_at,
+                completed_at
+             )
+             SELECT
+                id, envelope_version, kind, source, target, payload_json,
+                provenance_node_id, provenance_actor_id,
+                provenance_session_id, provenance_execution_id,
+                correlation_id, dedupe_key, priority, status, attempts,
+                max_attempts, available_at, lease_owner, lease_token,
+                lease_expires_at, last_failure_code, created_at, updated_at,
+                completed_at
+             FROM durable_work_items_v26;
+             DROP TABLE durable_work_items_v26;
+             COMMIT;",
+        )
+    })();
+    if migrated.is_err() {
+        let _ = conn.execute_batch("ROLLBACK;");
+    }
+    migrated
+}
 
 /// Run migrations for existing databases.
 ///
@@ -416,6 +537,18 @@ fn migrate_database(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // v25 → v26: add durable executable-work storage. No current execution
+    // path consumes this table; the migration is additive and idempotent.
+    if version < 26 {
+        create_durable_work_schema(conn)?;
+    }
+
+    // v26 → v27: add an explicit canceled terminal state and peer-safe scoped
+    // query indexes. Rebuild is required because SQLite cannot alter CHECK.
+    if version < 27 {
+        migrate_durable_work_to_v27(conn)?;
+    }
+
     Ok(())
 }
 
@@ -456,6 +589,8 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+
+    create_durable_work_schema(conn)?;
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
@@ -784,8 +919,11 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // `version` is the primary key, so INSERT OR REPLACE would retain the old
+    // version as a second row. Keep this single-row marker canonical.
+    conn.execute("DELETE FROM schema_version", [])?;
     conn.execute(
-        "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
+        "INSERT INTO schema_version (version) VALUES (?1)",
         [SCHEMA_VERSION],
     )?;
 
@@ -825,8 +963,142 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        // STUB: AC1 — schema version advances with persistent surfaces.
-        assert_eq!(version, 25, "schema version should be 25");
+        assert_eq!(version, 27, "schema version should be 27");
+    }
+
+    // STUB: AC-schema — v25 data survives the additive durable-work migration.
+    #[test]
+    fn v26_durable_work_migration_preserves_v25_data() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO sessions (id, root_agent_id, created_at) VALUES ('sess-v25', 'root', '2026-08-04T00:00:00Z')",
+            [],
+        )
+        .expect("seed v25 session");
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS durable_work_items;
+             DELETE FROM schema_version;
+             INSERT INTO schema_version (version) VALUES (25);",
+        )
+        .expect("seed v25 schema");
+
+        initialize_database(&conn).expect("migrate v25 database");
+        initialize_database(&conn).expect("rerun v26 initialization");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .expect("schema version");
+        let session_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'sess-v25'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preserved session");
+        let work_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'durable_work_items'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("durable work table");
+        let work_index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name IN (
+                    'uq_durable_work_source_dedupe',
+                    'idx_durable_work_claim',
+                    'idx_durable_work_expired_lease',
+                    'idx_durable_work_scope_page',
+                    'idx_durable_work_scope_correlation'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("durable work indexes");
+
+        assert_eq!(version, 27);
+        assert_eq!(session_count, 1);
+        assert_eq!(work_table_count, 1);
+        assert_eq!(work_index_count, 5);
+    }
+
+    // STUB: AC11 — v26 work survives the CHECK-table rebuild and gains canceled.
+    #[test]
+    fn v27_durable_work_migration_preserves_rows_and_adds_canceled() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO durable_work_items (
+                id, envelope_version, kind, source, target, payload_json,
+                provenance_node_id, provenance_actor_id,
+                provenance_session_id, provenance_execution_id,
+                correlation_id, priority, status, attempts, max_attempts,
+                available_at, created_at, updated_at
+             ) VALUES (
+                'work-v26', 1, 'test.scoped', 'a2a', 'worker.local', '{}',
+                'node-local', 'a2a:peer-a', 'sess-v26', 'exec-v26',
+                'task-v26', 0, 'pending', 0, 5,
+                '2026-08-04T00:00:00.000000000Z',
+                '2026-08-04T00:00:00.000000000Z',
+                '2026-08-04T00:00:00.000000000Z'
+             )",
+            [],
+        )
+        .expect("seed current work row");
+        let current_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type = 'table' AND name = 'durable_work_items'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("current durable work SQL");
+        let v26_sql = current_sql.replace(", 'canceled'", "");
+        conn.execute_batch(
+            "DROP INDEX uq_durable_work_source_dedupe;
+             DROP INDEX idx_durable_work_claim;
+             DROP INDEX idx_durable_work_expired_lease;
+             DROP INDEX idx_durable_work_scope_page;
+             DROP INDEX idx_durable_work_scope_correlation;
+             ALTER TABLE durable_work_items RENAME TO durable_work_items_v27;",
+        )
+        .expect("move current work table");
+        conn.execute_batch(&v26_sql).expect("create v26 work table");
+        conn.execute_batch(
+            "INSERT INTO durable_work_items SELECT * FROM durable_work_items_v27;
+             DROP TABLE durable_work_items_v27;
+             DELETE FROM schema_version;
+             INSERT INTO schema_version (version) VALUES (26);",
+        )
+        .expect("finish v26 fixture");
+
+        initialize_database(&conn).expect("migrate v26 database");
+
+        let preserved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM durable_work_items WHERE id = 'work-v26'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preserved work");
+        conn.execute(
+            "UPDATE durable_work_items SET status = 'canceled' WHERE id = 'work-v26'",
+            [],
+        )
+        .expect("canceled state accepted");
+        let scope_indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name IN (
+                    'idx_durable_work_scope_page',
+                    'idx_durable_work_scope_correlation'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("scope indexes");
+        assert_eq!(preserved, 1);
+        assert_eq!(scope_indexes, 2);
     }
 
     #[test]

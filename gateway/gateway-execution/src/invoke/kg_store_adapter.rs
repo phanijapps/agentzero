@@ -1,6 +1,6 @@
 //! # KG Store Adapter (trait-routed)
 //!
-//! Bridges `Arc<dyn zbot_stores::KnowledgeGraphStore>` to
+//! Bridges `Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>` to
 //! `agent_tools::GraphStorageAccess` so the `GraphQueryTool` can query
 //! the knowledge graph regardless of backend (the configured backend).
 //!
@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use agent_tools::{EntityInfo, GraphStorageAccess, NeighborInfo};
 use async_trait::async_trait;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::{Direction, Entity, Relationship};
-use zbot_stores::{EntityId, KnowledgeGraphStore};
 
 /// Map `knowledge_graph::Entity` to the tool-facing [`EntityInfo`]
 /// without dropping fields. Mirror of the helper in
@@ -130,9 +130,9 @@ impl GraphStorageAccess for KgStoreAdapter {
 
         // Trait-side `Direction` mirrors `knowledge_graph::Direction`.
         let trait_dir = match dir {
-            Direction::Outgoing => zbot_stores::types::Direction::Outgoing,
-            Direction::Incoming => zbot_stores::types::Direction::Incoming,
-            Direction::Both => zbot_stores::types::Direction::Both,
+            Direction::Outgoing => knowledge_graph::types::Direction::Outgoing,
+            Direction::Incoming => knowledge_graph::types::Direction::Incoming,
+            Direction::Both => knowledge_graph::types::Direction::Both,
         };
 
         let neighbors = self
@@ -160,8 +160,3 @@ impl GraphStorageAccess for KgStoreAdapter {
             .map(entity_to_info))
     }
 }
-
-// Suppress dead_code on `EntityId` import — kept for symmetry with the
-// SQLite adapter's API surface; future callers may need it.
-#[allow(dead_code)]
-const _: fn(EntityId) = |_| {};

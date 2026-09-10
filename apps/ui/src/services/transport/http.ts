@@ -44,7 +44,7 @@ import type {
   PresentationSettings,
   PresentationSettingsResponse,
   ClearSavedSurfacesResponse,
-  WorkSurface,
+  SavedSurface,
   LogSession,
   SessionDetail,
   LogFilter,
@@ -133,6 +133,11 @@ interface SubscriptionState {
   rootExecutionIds?: string[];
 }
 
+interface PendingCancellation {
+  resolve: (result: TransportResult<void>) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 export class HttpTransport implements Transport {
   readonly mode = "web" as const;
 
@@ -149,6 +154,7 @@ export class HttpTransport implements Transport {
   // ─────────────────────────────────────────────────────────────────────────
   private conversationSubscriptions: Map<string, SubscriptionState> = new Map();
   private pendingSubscriptions: Set<string> = new Set(); // Queued when WS not ready
+  private pendingCancellations: Map<string, PendingCancellation> = new Map();
   private globalEventCallbacks: Set<GlobalCallback> = new Set();
   private connectionStateCallbacks: Set<ConnectionStateCallback> = new Set();
   private connectionState: ConnectionState = { status: "disconnected" };
@@ -461,8 +467,8 @@ export class HttpTransport implements Transport {
     return { success: false, error: result.error || result.data?.error || "Failed to update presentation settings" };
   }
 
-  async listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<WorkSurface[]>> {
-    return this.get<WorkSurface[]>(`/api/sessions/${encodeURIComponent(sessionId)}/surfaces`);
+  async listSavedSessionSurfaces(sessionId: string): Promise<TransportResult<SavedSurface[]>> {
+    return this.get<SavedSurface[]>(`/api/sessions/${encodeURIComponent(sessionId)}/surfaces`);
   }
 
   async clearSavedSurfaces(): Promise<TransportResult<ClearSavedSurfacesResponse>> {
@@ -698,7 +704,7 @@ export class HttpTransport implements Transport {
     }
   }
 
-  async cancelSession(sessionId: string): Promise<TransportResult<void>> {
+  async cancelSession(sessionId: string, conversationId?: string): Promise<TransportResult<void>> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return { success: false, error: "WebSocket not connected" };
     }
@@ -706,11 +712,24 @@ export class HttpTransport implements Transport {
     const command = {
       type: "cancel",
       session_id: sessionId,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
     };
 
     try {
-      this.ws.send(JSON.stringify(command));
-      return { success: true };
+      return await new Promise<TransportResult<void>>((resolve) => {
+        const timeout = setTimeout(() => {
+          this.pendingCancellations.delete(sessionId);
+          resolve({ success: false, error: "Cancellation was not acknowledged by the server" });
+        }, 10_000);
+        this.pendingCancellations.set(sessionId, { resolve, timeout });
+        try {
+          this.ws!.send(JSON.stringify(command));
+        } catch (error) {
+          clearTimeout(timeout);
+          this.pendingCancellations.delete(sessionId);
+          resolve({ success: false, error: String(error) });
+        }
+      });
     } catch (error) {
       return { success: false, error: String(error) };
     }
@@ -1223,6 +1242,21 @@ export class HttpTransport implements Transport {
    */
   private handleWebSocketMessage(data: StreamEvent): void {
     console.debug('[WS] message:', data.type, data.session_id ?? '', data.conversation_id ?? '');
+    if (data.type === "session_cancelled") {
+      const sessionId = data.session_id as string | undefined;
+      const pending = sessionId ? this.pendingCancellations.get(sessionId) : undefined;
+      if (pending) {
+        clearTimeout(pending.timeout);
+        this.pendingCancellations.delete(sessionId!);
+        pending.resolve({ success: true });
+      }
+    } else if (data.type === "error" && data.code === "cancel_failed") {
+      for (const [sessionId, pending] of this.pendingCancellations) {
+        clearTimeout(pending.timeout);
+        this.pendingCancellations.delete(sessionId);
+        pending.resolve({ success: false, error: String(data.message ?? "Cancellation failed") });
+      }
+    }
     // Try new subscription system first
     if (this.handleSubscriptionMessage(data)) return;
     if (this.handleGlobalMessage(data)) return;

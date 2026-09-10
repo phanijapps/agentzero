@@ -273,6 +273,78 @@ pub fn broadcast_event(event_bus: Arc<EventBus>, event: GatewayEvent) {
     event_bus.publish_sync(event);
 }
 
+/// Record a `write_file` whose target sits in the ward's `outputs/`
+/// directory — the deliverable convention. Keyed by tool-call id; the
+/// ToolResult arm declares it as a goal artifact when the write succeeds.
+fn record_output_write(
+    ctx: &StreamContext,
+    tool_id: &str,
+    tool_name: &str,
+    args: &serde_json::Value,
+) {
+    if tool_name != "write_file" {
+        return;
+    }
+    let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
+        return;
+    };
+    // Normalize to ward-relative: the file tool resolves relative paths
+    // against the ward, so a bare "outputs/…" is already correct. An
+    // absolute path is accepted only when it sits under the vault's wards
+    // tree; strip everything through the ward segment.
+    let rel = if let Some(idx) = path.find("outputs/") {
+        path[idx..].to_string()
+    } else {
+        return;
+    };
+    if rel.len() > 1024 {
+        return;
+    }
+    if let Ok(mut map) = ctx.output_write_calls.lock() {
+        map.insert(tool_id.to_string(), rel);
+    }
+}
+
+/// On a successful `write_file` into `outputs/`, declare the file as a goal
+/// artifact. Declarations from respond still take precedence (upsert by
+/// path), so explicit model declarations are unchanged; this only fills the
+/// gap when respond forgets the deliverable.
+fn declare_succeeded_output_write(ctx: &StreamContext, tool_id: &str) {
+    let rel = match ctx.output_write_calls.lock() {
+        Ok(mut map) => match map.remove(tool_id) {
+            Some(rel) => rel,
+            None => return,
+        },
+        Err(_) => return,
+    };
+    let ward_id = ctx
+        .state_service
+        .get_session(&ctx.session_id)
+        .ok()
+        .flatten()
+        .and_then(|s| s.ward_id);
+    let declaration = agent_primitives::event::ArtifactDeclaration {
+        path: rel,
+        label: None,
+        is_goal_artifact: true,
+    };
+    let persisted: Vec<_> = crate::artifacts::process_artifact_declarations(
+        std::slice::from_ref(&declaration),
+        &ctx.session_id,
+        &ctx.execution_id,
+        &ctx.agent_id,
+        ward_id.as_deref(),
+        &ctx.vault_dir,
+        &ctx.state_service,
+    );
+    if !persisted.is_empty() {
+        tracing::info!(
+            artifact = %persisted[0].file_name,
+            "auto-declared outputs/ deliverable as goal artifact"
+        );
+    }
+}
+
 fn handle_artifact_declarations(ctx: &StreamContext, event: &StreamEvent) {
     if let StreamEvent::ActionRespond { ref artifacts, .. } = event {
         if !artifacts.is_empty() {
@@ -349,6 +421,7 @@ fn handle_side_effects(ctx: &StreamContext, event: &StreamEvent) {
         } => {
             log_tool_call(ctx, tool_id, tool_name, args);
             trace_tool_call(ctx, tool_id, tool_name, args);
+            record_output_write(ctx, tool_id, tool_name, args);
         }
         StreamEvent::ToolResult {
             tool_id,
@@ -359,6 +432,7 @@ fn handle_side_effects(ctx: &StreamContext, event: &StreamEvent) {
         } => {
             log_tool_result(ctx, tool_id, result, error, *duration_ms);
             trace_tool_result(ctx, tool_id, result, error, *duration_ms);
+            declare_succeeded_output_write(ctx, tool_id);
         }
         StreamEvent::Error { error, .. } => {
             log_error(ctx, error);
@@ -502,12 +576,12 @@ fn extract_response_delta(gateway_event: &Option<GatewayEvent>) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use api_logs::LogService;
     use execution_state::{
         AgentExecution, DelegationType, SessionPlanStep, SessionPlanStepStatus, StateService,
     };
     use gateway_events::EventBus;
-    use gateway_services::VaultPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -540,6 +614,50 @@ mod tests {
             session_id: session.id,
             root_execution,
         }
+    }
+
+    #[test]
+    fn record_output_write_accepts_only_outputs_paths() {
+        let harness = setup();
+        let ctx = context(&harness, &harness.root_execution);
+
+        record_output_write(
+            &ctx,
+            "t1",
+            "write_file",
+            &serde_json::json!({"path": "outputs/report.html", "content": "x"}),
+        );
+        record_output_write(
+            &ctx,
+            "t2",
+            "write_file",
+            &serde_json::json!({"path": "/abs/vault/wards/w/outputs/deep/page.html"}),
+        );
+        record_output_write(
+            &ctx,
+            "t3",
+            "write_file",
+            &serde_json::json!({"path": "sources/data.json"}),
+        );
+        record_output_write(&ctx, "t4", "shell", &serde_json::json!({"command": "ls"}));
+
+        let map = ctx.output_write_calls.lock().unwrap();
+        assert_eq!(
+            map.get("t1").map(String::as_str),
+            Some("outputs/report.html")
+        );
+        assert_eq!(
+            map.get("t2").map(String::as_str),
+            Some("outputs/deep/page.html")
+        );
+        assert!(
+            !map.contains_key("t3"),
+            "non-outputs writes are not tracked"
+        );
+        assert!(
+            !map.contains_key("t4"),
+            "non-write_file tools are not tracked"
+        );
     }
 
     fn context(harness: &Harness, execution: &AgentExecution) -> StreamContext {
@@ -742,8 +860,7 @@ mod tests {
                 .map(|index| {
                     serde_json::json!({
                         "step": format!("Step {index}"),
-                        "status": "pending",
-                    })
+                        "status": "pending" })
                 })
                 .collect(),
         );

@@ -22,6 +22,8 @@ pub enum ContextActorKind {
     DelegatedReviewer,
     /// Ward-scoped agent.
     WardAgent,
+    /// Authenticated remote A2A peer with an isolated public-only context.
+    RemotePeer,
 }
 
 /// Actor-filtered catalog of actions, resources, and context providers.

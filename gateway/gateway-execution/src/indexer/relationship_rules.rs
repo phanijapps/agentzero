@@ -4,9 +4,6 @@
 //! emits candidate `(source_name, RelationshipType, target_name, target_type)`
 //! tuples. The caller resolves names to entity IDs via `EntityResolver`.
 
-// Rule stubs and public API are used by later tasks in the activation pack.
-#![allow(dead_code)]
-
 use knowledge_graph::{EntityType, RelationshipType};
 use serde_json::{Map, Value};
 
@@ -177,7 +174,9 @@ fn rule_participants_reversed(
             source_type: EntityType::Person,
             target_name: source_name.to_string(),
             target_type: source_type.clone(),
-            relationship_type: RelationshipType::Custom("participant".to_string()),
+            // The base ontology has no dedicated participation predicate.
+            // Preserve the governed link using its generic built-in edge.
+            relationship_type: RelationshipType::RelatedTo,
         });
     }
 }
@@ -362,13 +361,14 @@ mod tests {
         let out = extract("Cambridge Symposium 1843", EntityType::Event, &o);
         let count = out
             .iter()
-            .filter(|r| matches!(&r.relationship_type, RelationshipType::Custom(s) if s == "participant"))
+            .filter(|r| r.relationship_type == RelationshipType::RelatedTo)
             .count();
         assert_eq!(count, 2);
         let alice = out
             .iter()
-            .find(|r| r.source_name == "Alice"
-                && matches!(&r.relationship_type, RelationshipType::Custom(s) if s == "participant"))
+            .find(|r| {
+                r.source_name == "Alice" && r.relationship_type == RelationshipType::RelatedTo
+            })
             .expect("alice edge");
         assert_eq!(alice.target_name, "Cambridge Symposium 1843");
         assert_eq!(alice.source_type, EntityType::Person);

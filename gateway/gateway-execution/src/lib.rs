@@ -20,6 +20,7 @@
 //! - `lifecycle` - Session and execution state management
 //! - `runner` - Main execution runner
 
+pub mod a2a;
 pub mod agent_pool;
 pub mod archiver;
 pub mod artifacts;
@@ -29,7 +30,7 @@ pub mod continuation;
 pub mod conversation_history;
 pub mod curator;
 pub mod delegation;
-pub mod distillation;
+pub mod errors;
 pub mod events;
 pub mod handle;
 pub mod indexer;
@@ -37,6 +38,7 @@ pub mod ingest;
 pub mod invoke;
 pub mod lifecycle;
 pub mod middleware;
+pub mod peer_messaging;
 pub mod recall;
 pub mod resource_provider;
 pub mod runner;
@@ -44,10 +46,11 @@ pub mod session_ctx;
 pub mod session_state;
 pub mod session_title;
 pub mod sleep;
+#[cfg(test)]
+pub(crate) mod test_stores;
 pub mod tool_result_extractor;
 pub mod tools;
 pub mod ward_artifact_indexer;
-pub mod ward_wiki;
 
 // Re-export public types
 pub use archiver::SessionArchiver;

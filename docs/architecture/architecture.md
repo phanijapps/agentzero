@@ -140,6 +140,31 @@ explicit cleanup release.
 | Serialization | serde + serde_json | JSON handling |
 | Logging | tracing + tracing-subscriber + tracing-appender | Structured logging with file rotation |
 
+## A2A Federation (optional)
+
+The daemon can expose a default-off A2A 1.0 `HTTP+JSON` surface on the existing
+HTTP listener. `/.well-known/agent-card.json` is public; send, get, list, and
+cancel operations live under `/a2a` and require a per-peer Bearer credential.
+The local CLI owns explicit trust in `config/a2a-peers.json`; mDNS only produces
+untrusted `_zbot._tcp.local.` candidates and never changes a trusted route.
+
+Inbound requests are authenticated before parsing or enqueue and become
+peer-scoped durable work. They run as a remote actor whose model-visible tool
+inventory is exactly `respond`. Root and ward actors can use `list_zbots` and
+`delegate_to_zbot`; dispatch and polling are separate durable work items, so a
+transport wake can be replaced later without changing queue authority. Remote
+results first steer a live originating execution. If that turn has ended, the
+result is persisted once and a respond-only continuation is scheduled. Remote
+content never becomes system authority or gains connector, memory-write,
+filesystem, shell, or onward-delegation capabilities.
+
+Enable the surface with `zbotd --a2a`. Pairing remains an explicit two-sided
+operator action through `zbot peers issue`, `zbot peers add`, and related
+commands. HTTPS is the default; loopback HTTP is accepted and private-network
+HTTP requires a per-peer opt-in. MQTT, Kafka, NATS, registries, streaming, push
+notifications, and ACP are outside this layer; the durable `WorkTransport` and
+A2A transport traits remain the extension seams.
+
 ## Model Configuration
 
 Models are configured directly on providers, agents, and Advanced settings.
@@ -667,9 +692,15 @@ Shared primitives, Rig adapter, execution engine, and built-in tools:
 ```
 runtime/
 ├── agent-primitives/    # Tool/context/event/content/filesystem primitives
-├── agent-runtime/       # Rig adapter, executor facade, LLM client, middleware
+├── agent-runtime/       # Rig adapter (sole engine), neutral engine facade, LLM client, hooks, middleware
 └── agent-tools/         # Built-in tool implementations
 ```
+
+The `agent-runtime` crate contains the sole execution engine (`RigAgentEngine`),
+the neutral `AgentEngine` trait, the `EngineHook`/`HookSet` hook framework, and
+the `TurnSignal`-based turn loop. There is no engine-selection flag and no
+fallback. `gateway-execution` constructs the engine unconditionally via
+`build_execution_engine`.
 
 ### Stores (`stores/`)
 
@@ -701,7 +732,8 @@ services/
 ├── execution-state/     # Session/execution state machine (SQLite)
 ├── api-logs/            # Execution logging (SQLite)
 ├── knowledge-graph/     # Entity/relationship storage, GraphTraversal trait (SQLite CTE → Neo4j swappable)
-└── daily-sessions/      # Session management
+├── daily-sessions/      # Session management
+└── distillation/        # Post-session fact extraction, graph projection, wiki compilation
 ```
 
 ### Gateway (`gateway/`)
@@ -1006,6 +1038,16 @@ Sessions track their origin for analytics and UI filtering:
 | Connector inbound (WebSocket) | Worker `inbound` message | Server sets `connector` |
 | Gateway submit | `POST /api/gateway/submit` | Caller specifies in payload |
 | Cron trigger | Internal scheduler | Server sets `cron` |
+
+Research uses the same public WebSocket `invoke` message and event stream, but
+its handoff is durable. The gateway first subscribes the client to a reserved
+session, persists a strict local `agent.task.v1` item in `conversations.db`,
+and lets the existing durable-work worker bootstrap, resume, or monitor the
+ordinary Research runtime. `invoke_accepted` is emitted only after the exact
+session, root execution, and root user message are queryable. Other WebSocket
+modes remain on the direct invocation path. SQLite remains authoritative;
+in-process transport notifications are only wake hints, so eligible work is
+polled again after daemon restart without requiring a broker.
 
 #### POST /api/gateway/submit
 

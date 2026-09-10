@@ -213,6 +213,7 @@ pub fn memory_record_to_fact(record: &MemoryRecord) -> AdapterResult<MemoryFact>
         epistemic_class: metadata_string(metadata, "epistemicClass"),
         source_episode_id: metadata_string(metadata, "sourceEpisodeId"),
         source_ref: metadata_string(metadata, "sourceRef"),
+        last_accessed: metadata_string(metadata, "lastAccessed"),
     })
 }
 

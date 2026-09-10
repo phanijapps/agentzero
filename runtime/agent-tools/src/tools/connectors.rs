@@ -198,8 +198,7 @@ impl Tool for QueryResourceTool {
             _ => Err(AgentError::Tool(format!(
                 "Unknown action '{}'. Valid: list_resources, query, invoke",
                 action
-            ))),
-        }
+            ))) }
     }
 }
 
@@ -294,8 +293,7 @@ impl Tool for ConnectorResourceTool {
             _ => Err(AgentError::Tool(format!(
                 "Unknown action '{}'. Valid: list, query",
                 action
-            ))),
-        }
+            ))) }
     }
 }
 
@@ -364,8 +362,7 @@ async fn list_connector_resources(
                         "name": r.name,
                         "type": "resource",
                         "method": r.method,
-                        "description": r.description,
-                    })
+                        "description": r.description })
                 })
                 .collect();
 
@@ -378,8 +375,7 @@ async fn list_connector_resources(
                         "type": "capability",
                         "method": "POST",
                         "description": cap.description,
-                        "schema": cap.schema,
-                    })
+                        "schema": cap.schema })
                 })
                 .collect();
 
@@ -387,8 +383,7 @@ async fn list_connector_resources(
                 "connector_id": c.id,
                 "name": c.name,
                 "resources": resources,
-                "capabilities": capabilities,
-            })
+                "capabilities": capabilities })
         })
         .collect();
 
@@ -609,6 +604,7 @@ mod tests {
         async fn ingest_structured(
             &self,
             _agent_id: &str,
+            _ward_id: Option<String>,
             _entities: Vec<super::super::ingest::StructuredEntity>,
             _relationships: Vec<super::super::ingest::StructuredRelationship>,
         ) -> std::result::Result<super::super::ingest::StructuredCounts, String> {

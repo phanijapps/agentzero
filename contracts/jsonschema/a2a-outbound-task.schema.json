@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zbot.local/contracts/a2a-outbound-task.schema.json",
+  "title": "z-Bot durable outbound A2A task payloads",
+  "description": "Strict payloads for the immutable dispatch-to-poll durable handoff. Credentials and URLs are resolved from the trusted peer store and are never present here.",
+  "x-spec": "docs/specs/a2a-federation-discovery/spec.md",
+  "oneOf": [
+    { "$ref": "#/$defs/dispatch" },
+    { "$ref": "#/$defs/poll" }
+  ],
+  "$defs": {
+    "canonicalUuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "maxLength": 36
+    },
+    "peerId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,120}$",
+      "maxLength": 120
+    },
+    "executionId": {
+      "type": "string",
+      "pattern": "^exec-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "maxLength": 41
+    },
+    "sessionId": {
+      "type": "string",
+      "pattern": "^sess-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "maxLength": 41
+    },
+    "messageId": {
+      "type": "string",
+      "pattern": "^msg-[0-9a-f]{64}$",
+      "maxLength": 68
+    },
+    "workId": {
+      "type": "string",
+      "pattern": "^work-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "maxLength": 41
+    },
+    "common": {
+      "type": "object",
+      "required": [
+        "version",
+        "peer_id",
+        "content",
+        "source_agent_id",
+        "source_session_id",
+        "source_execution_id",
+        "source_conversation_id",
+        "client_message_id",
+        "deadline_at"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "peer_id": { "$ref": "#/$defs/peerId" },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "x-maxUtf8Bytes": 4000
+        },
+        "source_agent_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source_session_id": { "$ref": "#/$defs/sessionId" },
+        "source_execution_id": { "$ref": "#/$defs/executionId" },
+        "source_conversation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "client_message_id": { "$ref": "#/$defs/messageId" },
+        "deadline_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "dispatch": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "version",
+            "peer_id",
+            "content",
+            "source_agent_id",
+            "source_session_id",
+            "source_execution_id",
+            "source_conversation_id",
+            "client_message_id",
+            "deadline_at"
+          ],
+          "properties": {
+            "kind": { "const": "dispatch" },
+            "version": { "const": 1 },
+            "peer_id": { "$ref": "#/$defs/peerId" },
+            "content": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000,
+              "x-maxUtf8Bytes": 4000
+            },
+            "source_agent_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "source_session_id": { "$ref": "#/$defs/sessionId" },
+            "source_execution_id": { "$ref": "#/$defs/executionId" },
+            "source_conversation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "client_message_id": { "$ref": "#/$defs/messageId" },
+            "deadline_at": { "type": "string", "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "poll": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "version",
+            "peer_id",
+            "content",
+            "source_agent_id",
+            "source_session_id",
+            "source_execution_id",
+            "source_conversation_id",
+            "client_message_id",
+            "deadline_at",
+            "dispatch_work_id",
+            "remote_task_id"
+          ],
+          "properties": {
+            "kind": { "const": "poll" },
+            "version": { "const": 1 },
+            "peer_id": { "$ref": "#/$defs/peerId" },
+            "content": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000,
+              "x-maxUtf8Bytes": 4000
+            },
+            "source_agent_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "source_session_id": { "$ref": "#/$defs/sessionId" },
+            "source_execution_id": { "$ref": "#/$defs/executionId" },
+            "source_conversation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "client_message_id": { "$ref": "#/$defs/messageId" },
+            "deadline_at": { "type": "string", "format": "date-time" },
+            "dispatch_work_id": { "$ref": "#/$defs/workId" },
+            "remote_task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        }
+      ]
+    }
+  },
+  "x-maxSerializedUtf8Bytes": 65536
+}

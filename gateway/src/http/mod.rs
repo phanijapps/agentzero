@@ -2,6 +2,7 @@
 //!
 //! RESTful HTTP API for the gateway.
 
+mod a2a;
 mod agents;
 mod artifacts;
 mod autonomy;
@@ -65,6 +66,55 @@ use tracing::info;
 #[derive(Debug, Serialize)]
 pub(super) struct HttpErrorResponse {
     pub error: String,
+}
+
+/// Unified error body for HTTP handlers. One struct instead of nine
+/// per-file copies with drifting shapes.
+#[derive(Debug, Serialize)]
+pub(super) struct ErrorResponse {
+    pub error: String,
+    /// Optional machine-readable code (cron/connectors style).
+    /// Omitted from the wire entirely when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+impl ErrorResponse {
+    pub fn new(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            code: None,
+        }
+    }
+
+    pub fn with_code(error: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            code: Some(code.into()),
+        }
+    }
+
+    /// 503 body for a disabled/unwired store slot.
+    pub fn service_disabled(msg: &str) -> (StatusCode, Json<Self>) {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(Self::new(msg.to_string())),
+        )
+    }
+}
+
+/// Resolve an optional store slot or fail with the standard 503 body.
+/// Replaces the ~20 hand-rolled `ok_or_else(SERVICE_UNAVAILABLE)` guards.
+pub(super) fn require<'a, T>(
+    slot: &'a Option<T>,
+    msg: &str,
+) -> Result<&'a T, (StatusCode, Json<ErrorResponse>)> {
+    slot.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(msg.to_string())),
+        )
+    })
 }
 
 /// Browser-origin guard for settings and saved-surface persistence endpoints.
@@ -475,11 +525,11 @@ pub fn create_http_router(
             post(graph::trigger_distillation),
         )
         // Logs endpoints (from api-logs crate)
-        .nest_service("/api/logs", api_logs::routes(state.log_service.clone()))
+        .nest_service("/api/logs", api_logs::routes(state.log_service().clone()))
         // Execution state endpoints (from execution-state crate)
         .nest_service(
             "/api/executions",
-            execution_state::routes(state.state_service.clone()),
+            execution_state::routes(state.state_service().clone()),
         )
         // Gateway Bus endpoints (for external connectors and API integrations)
         .nest("/api/gateway", gateway_bus::routes())
@@ -511,7 +561,25 @@ pub fn create_http_router(
         )
         .route("/api/plugins/discover", post(plugins::discover_plugins))
         // State
-        .with_state(state);
+        .with_state(state.clone());
+
+    if config.a2a_enabled {
+        match a2a::A2aHttpState::new(
+            &config,
+            &state.vault_dir(),
+            state.durable_work_store().clone(),
+            state.durable_work_transport().clone(),
+            state.messages().clone(),
+            state.runtime().clone(),
+        ) {
+            Ok(a2a_state) => {
+                router = router.merge(a2a::routes(a2a_state));
+            }
+            Err(error) => {
+                tracing::error!(reason = %error, "A2A routes disabled because configuration is invalid");
+            }
+        }
+    }
 
     // Add static file serving for web dashboard
     if config.serve_dashboard {

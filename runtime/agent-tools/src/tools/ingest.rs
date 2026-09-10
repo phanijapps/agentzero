@@ -3,10 +3,6 @@
 // Bulk-structured graph writes + text ingest in a single polymorphic tool.
 // ============================================================================
 
-// Public API types — consumed by downstream (gateway) that wires a concrete
-// IngestionAccess into the tool. No in-crate caller yet.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,9 +15,9 @@ use agent_primitives::{AgentError, Result, Tool, ToolContext};
 // Public shapes
 // ---------------------------------------------------------------------------
 
-/// Generic entity shape accepted by the structured path. `type` and the free-
-/// form `properties` blob let wards encode their own vocabulary without
-/// needing to register schemas centrally.
+/// Entity shape accepted by the structured path. `type` uses the governed
+/// built-in vocabulary; `properties` may carry free-form application metadata,
+/// while scope and governance controls remain host-managed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructuredEntity {
     /// Stable slug — the dedup key. Reusing the same id across sources MERGES
@@ -103,6 +99,7 @@ pub trait IngestionAccess: Send + Sync + 'static {
     async fn ingest_structured(
         &self,
         agent_id: &str,
+        ward_id: Option<String>,
         entities: Vec<StructuredEntity>,
         relationships: Vec<StructuredRelationship>,
     ) -> std::result::Result<StructuredCounts, String>;
@@ -144,21 +141,23 @@ impl Tool for IngestTool {
          '<type>:<kebab-name>' e.g. 'person:steve-jobs', 'organization:apple-inc', \
          'stock:aapl'. Same id across sources MERGES properties into one node \
          (keys union; arrays inside properties concatenate without duplicates — \
-         so `evidence` accumulates across ingests). Types are free-form: person, \
-         character, company, hypothesis, concept — pick whatever fits the domain.\n\
+         so `evidence` accumulates across ingests). Entity types must use the \
+         built-in vocabulary: person, organization, location, concept, tool, project, \
+         file, event, time_period, document, role, artifact, or ward.\n\
          \n\
          Relationship = {type, from, to, properties?}. `from`/`to` reference \
-         entity ids from this payload or already in the graph. Types are free-form: \
-         founded, ceo_of, cites, spouse_of, has_ticker. Same (from,to,type) triple \
+         entity ids from this payload or already in the graph. Relationship types \
+         must use the built-in vocabulary documented in the parameter schema. \
+         Same (from,to,type) triple \
          across ingests merges properties the same way entities do.\n\
          \n\
          Example:\n\
          {\"entities\":[{\"id\":\"person:steve-jobs\",\"name\":\"Steve Jobs\",\"type\":\"person\"},\
          {\"id\":\"organization:apple\",\"name\":\"Apple Inc.\",\"type\":\"organization\",\
          \"properties\":{\"founded\":\"1976\"}}],\
-         \"relationships\":[{\"type\":\"founded\",\"from\":\"person:steve-jobs\",\
+         \"relationships\":[{\"type\":\"founder_of\",\"from\":\"person:steve-jobs\",\
          \"to\":\"organization:apple\",\"properties\":{\"evidence\":[{\"chunk\":\"bio/ch-05.md\",\"line\":123}],\
-         \"confidence\":0.98}}]}\n\
+         \"notes\":\"source-confirmed\"}}]}\n\
          \n\
          Returns counts of entities/relationships upserted and text chunks enqueued."
     }
@@ -196,11 +195,11 @@ impl Tool for IngestTool {
                             },
                             "type": {
                                 "type": "string",
-                                "description": "Free-form category: person, character, organization, company, place, event, concept, hypothesis, theme, stock, anything that fits. No registry — pick what describes the entity best in the current domain."
+                                "description": "Built-in category: person, organization, location, concept, tool, project, file, event, time_period, document, role, artifact, or ward. Other values are rejected."
                             },
                             "properties": {
                                 "type": "object",
-                                "description": "Any JSON. Common keys: aliases (array), description (string), evidence (array of {chunk,line,text}). Domain-specific fields live here — chapter, founded, ticker, doi, first_appearance — and are preserved across merges."
+                                "description": "Application metadata such as aliases, description, evidence, chapter, founded, ticker, or doi. Scope and governance controls (including ward_id, ontology/taxonomy selectors, epistemic/hierarchy fields, and confidence) are host-managed and ignored when supplied here."
                             }
                         },
                         "required": ["id", "name", "type"]
@@ -214,7 +213,7 @@ impl Tool for IngestTool {
                         "properties": {
                             "type": {
                                 "type": "string",
-                                "description": "Free-form verb slug: founded, ceo_of, cites, spouse_of, has_ticker, mentions, contradicts, part_of. Use the directed form even for conceptually undirected relations — record direction in `properties` if it matters."
+                                "description": "Built-in predicate: works_for, located_in, related_to, created, uses, part_of, mentions, before, after, during, concurrent_with, succeeded_by, preceded_by, president_of, founder_of, member_of, author_of, held_role, employed_by, held_at, born_in, died_in, caused, enabled, prevented, triggered_by, contains, instance_of, or subtype_of. Other values are rejected."
                             },
                             "from": {
                                 "type": "string",
@@ -226,7 +225,7 @@ impl Tool for IngestTool {
                             },
                             "properties": {
                                 "type": "object",
-                                "description": "Any JSON. Common keys: evidence (array of {chunk,line,text} citations), confidence (0..1), direction ('directed'|'undirected'), date_range, notes. Evidence arrays accumulate across ingests."
+                                "description": "Application metadata such as evidence, direction, date_range, or notes. Scope and governance controls (including ward_id, ontology/taxonomy selectors, epistemic/hierarchy fields, and confidence) are host-managed and ignored when supplied here."
                             }
                         },
                         "required": ["type", "from", "to"]
@@ -320,7 +319,7 @@ impl Tool for IngestTool {
         // whose `from`/`to` reference entities in the same call see them.
         let counts = if !entities.is_empty() || !relationships.is_empty() {
             self.access
-                .ingest_structured(&agent_id, entities, relationships)
+                .ingest_structured(&agent_id, evidence.ward_id.clone(), entities, relationships)
                 .await
                 .map_err(AgentError::Tool)?
         } else {
@@ -346,8 +345,7 @@ impl Tool for IngestTool {
             "text_chunks_enqueued": chunk_count,
             "source_id": resolved_source,
             "evidence": evidence,
-            "status": "ok",
-        }))
+            "status": "ok" }))
     }
 }
 
@@ -377,6 +375,7 @@ mod tests {
     #[derive(Default)]
     struct MockIngestion {
         records: Mutex<Vec<EvidenceRecord>>,
+        structured_wards: Mutex<Vec<Option<String>>>,
     }
 
     #[async_trait]
@@ -400,9 +399,11 @@ mod tests {
         async fn ingest_structured(
             &self,
             _agent_id: &str,
+            ward_id: Option<String>,
             entities: Vec<StructuredEntity>,
             relationships: Vec<StructuredRelationship>,
         ) -> std::result::Result<StructuredCounts, String> {
+            self.structured_wards.lock().unwrap().push(ward_id);
             Ok(StructuredCounts {
                 entities_upserted: entities.len(),
                 relationships_upserted: relationships.len(),
@@ -442,8 +443,8 @@ mod tests {
     }
 
     impl CallbackContext for MockContext {
-        fn get_state(&self, _key: &str) -> Option<Value> {
-            None
+        fn get_state(&self, key: &str) -> Option<Value> {
+            (key == "ward_id").then(|| json!("trusted-ward"))
         }
 
         fn set_state(&self, _key: String, _value: Value) {}
@@ -505,5 +506,32 @@ mod tests {
 
         assert!(format!("{err}").contains("requires at least one"));
         assert!(access.records.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn structured_ingest_forwards_ward_from_trusted_tool_context() {
+        let access = Arc::new(MockIngestion::default());
+        let tool = IngestTool::new(access.clone());
+
+        let result = tool
+            .execute(
+                Arc::new(MockContext),
+                json!({
+                    "entities": [{
+                        "id": "concept:trusted",
+                        "name": "Trusted",
+                        "type": "concept",
+                        "properties": {"ward_id": "attacker-ward"}
+                    }]
+                }),
+            )
+            .await
+            .expect("structured ingest ok");
+
+        assert_eq!(result["evidence"]["ward_id"], json!("trusted-ward"));
+        assert_eq!(
+            access.structured_wards.lock().unwrap().as_slice(),
+            &[Some("trusted-ward".to_string())]
+        );
     }
 }

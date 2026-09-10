@@ -5,6 +5,7 @@
 //! entity/relationship part of `stats`) so the underlying backend is
 //! abstracted from the HTTP surface.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use agent_runtime::llm::embedding::EmbeddingClient;
 use axum::{
@@ -71,9 +72,9 @@ fn validate_public_fact_input(
     if matches!(category, "ctx" | "instruction" | "correction") {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("category '{category}' is internal-only"),
-            }),
+            Json(ErrorResponse::new(format!(
+                "category '{category}' is internal-only"
+            ))),
         ));
     }
     if key.is_empty()
@@ -84,10 +85,9 @@ fn validate_public_fact_input(
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "key must contain only ASCII letters, numbers, '.', '_', '-', ':', or '/'"
-                    .to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "key must contain only ASCII letters, numbers, '.', '_', '-', ':', or '/'",
+            )),
         ));
     }
     Ok(())
@@ -96,14 +96,12 @@ fn validate_public_fact_input(
 fn public_internal_error(
     log_context: &str,
     public_message: &str,
-    e: String,
+    e: impl std::fmt::Display,
 ) -> (StatusCode, Json<ErrorResponse>) {
     tracing::error!("{}: {}", log_context, e);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: public_message.to_string(),
-        }),
+        Json(ErrorResponse::new(public_message.to_string())),
     )
 }
 
@@ -159,12 +157,6 @@ pub struct MemoryListResponse {
     pub total: usize,
 }
 
-/// Error response.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 // ============================================================================
 // HANDLERS
 // ============================================================================
@@ -176,17 +168,8 @@ pub async fn list_memory_facts(
     Query(query): Query<MemoryListQuery>,
 ) -> Result<Json<MemoryListResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Routed through the trait surface.
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store_slot = state.memory_store();
+    let memory_store = super::require(&memory_store_slot, "Memory service not available")?;
 
     let raw_facts = memory_store
         .list_memory_facts(
@@ -227,22 +210,13 @@ pub async fn search_memory_facts(
     Path(agent_id): Path<String>,
     Query(query): Query<MemorySearchQuery>,
 ) -> Result<Json<MemoryListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store_slot = state.memory_store();
+    let memory_store = super::require(&memory_store_slot, "Memory service not available")?;
 
     let mode = query.mode.as_deref().unwrap_or("hybrid");
     let ward_id = query.ward_id.as_deref();
     let scope_agent: Option<&str> = Some(agent_id.as_str());
-    let embedding_client = state.embedding_service.client();
+    let embedding_client = state.embedding_service().client();
 
     // For semantic + hybrid we need an embedding of the query text. Fall
     // through to FTS-only on hybrid if the embedding backend is down;
@@ -257,9 +231,9 @@ pub async fn search_memory_facts(
                     tracing::debug!("semantic memory search embedding unavailable: {e}");
                     (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Embedding backend unavailable".to_string(),
-                        }),
+                        Json(ErrorResponse::new(
+                            "Embedding backend unavailable".to_string(),
+                        )),
                     )
                 })?;
             emb.into_iter().next()
@@ -317,7 +291,7 @@ fn normalize_public_match_source(mut fact: MemoryFactResponse) -> MemoryFactResp
     fact
 }
 
-fn search_err(context: &str, e: String) -> (StatusCode, Json<ErrorResponse>) {
+fn search_err(context: &str, e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>) {
     public_internal_error(context, context, e)
 }
 
@@ -336,17 +310,8 @@ pub async fn get_memory_fact(
     State(state): State<AppState>,
     Path((agent_id, fact_id)): Path<(String, String)>,
 ) -> Result<Json<MemoryFactResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store_slot = state.memory_store();
+    let memory_store = super::require(&memory_store_slot, "Memory service not available")?;
 
     let raw = memory_store
         .get_memory_fact_by_id(&fact_id)
@@ -361,22 +326,20 @@ pub async fn get_memory_fact(
     match fact {
         Some(f) if f.agent_id == agent_id && !is_public_memory_fact(&f) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact is not available through public memory endpoints".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact is not available through public memory endpoints".to_string(),
+            )),
         )),
         Some(f) if f.agent_id == agent_id => Ok(Json(f)),
         Some(_) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact does not belong to this agent".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact does not belong to this agent".to_string(),
+            )),
         )),
         None => Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Memory fact not found".to_string(),
-            }),
+            Json(ErrorResponse::new("Memory fact not found".to_string())),
         )),
     }
 }
@@ -386,17 +349,8 @@ pub async fn delete_memory_fact(
     State(state): State<AppState>,
     Path((agent_id, fact_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store_slot = state.memory_store();
+    let memory_store = super::require(&memory_store_slot, "Memory service not available")?;
 
     // First verify the fact belongs to this agent
     let raw = memory_store
@@ -415,9 +369,9 @@ pub async fn delete_memory_fact(
     match fact {
         Some(f) if f.agent_id == agent_id && !is_public_memory_fact(&f) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact is not available through public memory endpoints".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact is not available through public memory endpoints".to_string(),
+            )),
         )),
         Some(f) if f.agent_id == agent_id => {
             let deleted = memory_store
@@ -436,23 +390,19 @@ pub async fn delete_memory_fact(
             } else {
                 Err((
                     StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: "Memory fact not found".to_string(),
-                    }),
+                    Json(ErrorResponse::new("Memory fact not found".to_string())),
                 ))
             }
         }
         Some(_) => Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Fact does not belong to this agent".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Fact does not belong to this agent".to_string(),
+            )),
         )),
         None => Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Memory fact not found".to_string(),
-            }),
+            Json(ErrorResponse::new("Memory fact not found".to_string())),
         )),
     }
 }
@@ -483,17 +433,8 @@ pub async fn create_memory_fact(
     Path(agent_id): Path<String>,
     Json(request): Json<CreateMemoryFactRequest>,
 ) -> Result<(StatusCode, Json<MemoryFactResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store_slot = state.memory_store();
+    let memory_store = super::require(&memory_store_slot, "Memory service not available")?;
 
     validate_public_fact_input(&request.category, &request.key)?;
 
@@ -522,15 +463,8 @@ pub async fn create_memory_fact(
         epistemic_class: Some("current".to_string()),
         source_episode_id: None,
         source_ref: None,
+        last_accessed: None,
     };
-
-    let fact_value = serde_json::to_value(&fact).map_err(|e| {
-        public_internal_error(
-            "Failed to encode fact",
-            "Failed to create fact",
-            e.to_string(),
-        )
-    })?;
 
     if request.pinned && request.category == "user" && request.key == "user.profile" {
         let existing_profiles = memory_store
@@ -571,7 +505,7 @@ pub async fn create_memory_fact(
     }
 
     memory_store
-        .upsert_typed_fact(fact_value, None)
+        .upsert_typed_fact(fact.clone(), None)
         .await
         .map_err(|e| public_internal_error("Failed to create fact", "Failed to create fact", e))?;
 
@@ -601,17 +535,8 @@ pub async fn search_all_memory_facts(
     // The trait method does not accept a category filter; for now we
     // post-filter on the deserialized Value rows. Migrating the
     // category filter into the trait surface is a follow-up.
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store_slot = state.memory_store();
+    let memory_store = super::require(&memory_store_slot, "Memory service not available")?;
 
     let raw = memory_store
         .search_memory_facts_hybrid(None, &query.q, "fts", query.limit, None, None, None)
@@ -646,17 +571,8 @@ pub async fn list_all_memory_facts(
     // Route through the trait surface so the underlying backend is abstracted
     // when the user has opted in via Settings → Persistence. The legacy
     // concrete `state.memory_repo` is no longer the source of truth here.
-    let memory_store = match &state.memory_store {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Memory service not available".to_string(),
-                }),
-            ));
-        }
-    };
+    let memory_store_slot = state.memory_store();
+    let memory_store = super::require(&memory_store_slot, "Memory service not available")?;
 
     let raw_facts = memory_store
         .list_memory_facts(
@@ -711,7 +627,7 @@ pub struct ConsolidateResponse {
 pub async fn consolidate(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<ConsolidateResponse>), (StatusCode, String)> {
-    let worker = state.sleep_time_worker.as_ref().ok_or((
+    let worker = state.sleep_time_worker().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "sleep-time worker not initialized".to_string(),
     ))?;
@@ -742,14 +658,14 @@ pub struct DedupeProceduresResponse {
 pub async fn dedupe_procedures(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<DedupeProceduresResponse>), (StatusCode, String)> {
-    let store = state.procedure_store.as_ref().ok_or((
+    let store = state.procedure_store().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "procedure store not initialized".to_string(),
     ))?;
     let deleted = store
         .dedupe_procedures_by_name()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok((
         StatusCode::OK,
         Json(DedupeProceduresResponse {
@@ -785,8 +701,10 @@ pub struct MemoryStats {
 /// that's a filesystem operation, not a store concern.
 pub async fn stats(State(state): State<AppState>) -> Json<MemoryStats> {
     let mut stats = MemoryStats::default();
+    // Reads through the stores group: kg + memory members.
+    let stores = state.stores();
 
-    if let Some(kg_store) = state.kg_store.as_ref() {
+    if let Some(kg_store) = stores.kg_store.as_ref() {
         // The historical handler used `get_entities`/`get_relationships`
         // (which return all rows for the agent and `len()` them);
         // `list_entities`/`list_relationships` with a high cap mirrors
@@ -799,7 +717,7 @@ pub async fn stats(State(state): State<AppState>) -> Json<MemoryStats> {
         }
     }
 
-    if let Some(memory_store) = state.memory_store.as_ref() {
+    if let Some(memory_store) = stores.memory_store.as_ref() {
         if let Ok(agg) = memory_store.aggregate_stats().await {
             stats.facts = agg.facts;
             stats.episodes = agg.episodes;
@@ -810,13 +728,13 @@ pub async fn stats(State(state): State<AppState>) -> Json<MemoryStats> {
     }
 
     let provider = state
-        .settings
+        .settings()
         .get_execution_settings()
         .map(|settings| settings.memory.provider)
         .unwrap_or_default();
     let storage_path =
         crate::state::persistence_factory::adapter_config_from_memory_provider_settings(
-            state.paths.as_ref(),
+            state.paths().as_ref(),
             &provider,
         )
         .and_then(|config| {
@@ -873,8 +791,10 @@ pub struct MemoryHealth {
 /// instead of reaching into a concrete semantic database handle.
 pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
     let mut health = MemoryHealth::default();
+    // Reads through the stores group: memory + compaction + governance.
+    let stores = state.stores();
 
-    if let Some(memory_store) = state.memory_store.as_ref() {
+    if let Some(memory_store) = stores.memory_store.as_ref() {
         if let Ok(m) = memory_store.health_metrics().await {
             health.ingestion_queue_pending = m.queue_pending;
             health.ingestion_queue_running = m.queue_running;
@@ -882,7 +802,7 @@ pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
         }
     }
 
-    if let Some(compaction_store) = state.compaction_store.as_ref() {
+    if let Some(compaction_store) = stores.compaction_store.as_ref() {
         if let Ok(Some(summary)) = compaction_store.latest_run_summary().await {
             health.last_compaction_run_id = Some(summary.run_id);
             health.last_compaction_merges = summary.merges;
@@ -891,7 +811,7 @@ pub async fn health(State(state): State<AppState>) -> Json<MemoryHealth> {
         }
     }
 
-    health.governance = state.governance_health.clone();
+    health.governance = stores.governance_health.clone();
 
     Json(health)
 }

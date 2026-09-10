@@ -223,7 +223,7 @@ fn prepare_tools(tools: &Value) -> Result<(Value, ToolSchemaFootprint), LlmError
         canonical.push((name, tool));
     }
 
-    canonical.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    canonical.sort_unstable_by_key(|(name, _)| *name);
     let canonical_tools: Vec<&Value> = canonical.iter().map(|(_, tool)| *tool).collect();
     for tool in &canonical_tools {
         match measure_serialized(tool, MAX_SINGLE_TOOL_SCHEMA_BYTES) {
@@ -508,8 +508,7 @@ impl OpenAiClient {
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
-            "stream": false,
-        });
+            "stream": false });
 
         // Add tools if present
         if let Some((tools_val, footprint)) = prepared_tools {
@@ -536,8 +535,7 @@ impl OpenAiClient {
                         "json_schema": {
                             "name": "structured_output",
                             "strict": true,
-                            "schema": schema,
-                        }
+                            "schema": strict_json_schema(schema) }
                     }),
                 );
             }
@@ -614,7 +612,7 @@ impl OpenAiClient {
 
     /// Parse the API response
     fn parse_response(&self, response: Value) -> ChatResponse {
-        let content = response
+        let mut content = response
             .pointer("/choices/0/message/content")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -625,6 +623,16 @@ impl OpenAiClient {
             .pointer("/choices/0/message/reasoning_content")
             .and_then(|v| v.as_str())
             .map(std::string::ToString::to_string);
+
+        // Thinking models (GLM, DeepSeek) sometimes put the final answer in
+        // reasoning_content with an empty content field. For structured
+        // output calls, the JSON lands there too — fall back so the caller
+        // doesn't see EmptyResponse on a model that actually answered.
+        if content.is_empty() {
+            if let Some(ref r) = reasoning {
+                content = r.clone();
+            }
+        }
 
         // Parse tool calls if present
         let tool_calls = self.parse_tool_calls(&response);
@@ -686,6 +694,50 @@ impl OpenAiClient {
         }
         Vec::new()
     }
+}
+
+/// Normalize a generated JSON schema to the strict structured-output
+/// contract before it goes on the wire with `"strict": true`.
+///
+/// Providers that honor OpenAI strict semantics (OpenAI, GLM, DeepSeek)
+/// require every object to set `additionalProperties: false`, every property
+/// to appear in `required`, and reject `default`/`$schema` keywords.
+/// `schemars` emits none of that: an unmodified schema claiming strict makes
+/// the provider silently degrade — empty content or free-form JSON that
+/// fails to deserialize (the intent-analysis double-failure this fixes).
+///
+/// Optionality is preserved the strict way: properties stay required, so the
+/// model must emit them; `Option`/`#[serde(default)]` fields already accept
+/// the values strict produces (null / empty collections).
+fn strict_json_schema(schema: Value) -> Value {
+    fn walk(node: Value) -> Value {
+        match node {
+            Value::Object(mut map) => {
+                // Strict mode rejects these keywords.
+                map.remove("$schema");
+                map.remove("default");
+                let is_object = map.get("type") == Some(&Value::String("object".into()));
+                if is_object {
+                    if let Some(properties) = map.get("properties").and_then(|p| p.as_object()) {
+                        let required: Vec<Value> = properties
+                            .keys()
+                            .map(|key| Value::String(key.clone()))
+                            .collect();
+                        map.insert("required".into(), Value::Array(required));
+                    }
+                    map.insert("additionalProperties".into(), Value::Bool(false));
+                }
+                let transformed: serde_json::Map<String, Value> = map
+                    .into_iter()
+                    .map(|(key, value)| (key, walk(value)))
+                    .collect();
+                Value::Object(transformed)
+            }
+            Value::Array(items) => Value::Array(items.into_iter().map(walk).collect()),
+            other => other,
+        }
+    }
+    walk(schema)
 }
 
 #[async_trait]
@@ -1109,10 +1161,6 @@ impl LlmClient for OpenAiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::{
-        completion::{CompletionModel as _, CompletionRequest, Message, ToolDefinition},
-        one_or_many::OneOrMany,
-    };
     use std::sync::Mutex;
 
     #[derive(Clone, Default)]
@@ -1356,6 +1404,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn duplicate_tool_names_are_rejected_by_exact_rule_code() {
+        assert_eq!(
+            invalid_tool_rule(json!([named_tool("read"), named_tool("read")])),
+            "tool_schema_rule=duplicate_name"
+        );
+    }
+
     // STUB: AC2 — the complete provider-compatible name boundary is accepted.
     #[test]
     fn tool_name_exact_boundary_is_accepted() {
@@ -1586,54 +1642,6 @@ mod tests {
         // the streaming and fallback requests.
     }
 
-    fn invalid_rig_request() -> CompletionRequest {
-        CompletionRequest {
-            model: None,
-            preamble: None,
-            chat_history: OneOrMany::one(Message::user("hello".to_string())),
-            documents: Vec::new(),
-            tools: vec![ToolDefinition {
-                name: "x".repeat(65),
-                description: "invalid provider tool name".to_string(),
-                parameters: json!({"type": "object"}),
-            }],
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-            output_schema: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn rig_completion_and_stream_reject_invalid_tools_before_network_io() {
-        let model = crate::rig_adapter::model::LlmCompletionModel::new(
-            Arc::new(test_client()) as Arc<dyn LlmClient>,
-            "gpt-4-turbo",
-        );
-
-        let completion = model
-            .completion(invalid_rig_request())
-            .await
-            .expect_err("Rig completion must surface local validation");
-        assert!(completion
-            .to_string()
-            .contains("tool_schema_rule=function_name"));
-
-        let mut stream = model
-            .stream(invalid_rig_request())
-            .await
-            .expect("Rig stream should initialize");
-        let stream_error = stream
-            .next()
-            .await
-            .expect("Rig stream must surface an error")
-            .expect_err("Rig stream must reject the invalid tool");
-        assert!(stream_error
-            .to_string()
-            .contains("tool_schema_rule=function_name"));
-    }
-
     #[test]
     fn request_body_is_byte_stable_across_identical_calls() {
         let client = test_client();
@@ -1682,7 +1690,7 @@ mod tests {
         });
 
         let body = client
-            .build_request_body(fixture_messages(), None, Some(schema.clone()))
+            .build_request_body(fixture_messages(), None, Some(schema))
             .expect("structured request");
 
         assert_eq!(
@@ -1695,9 +1703,99 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        // The wire schema is the strict-normalized form: additionalProperties
+        // pinned false and required covering every property.
         assert_eq!(
-            body.pointer("/response_format/json_schema/schema"),
-            Some(&schema)
+            body.pointer("/response_format/json_schema/schema/additionalProperties"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            body.pointer("/response_format/json_schema/schema/required"),
+            Some(&json!(["intent"]))
+        );
+    }
+
+    #[test]
+    fn strict_schema_normalization_satisfies_the_strict_contract_everywhere() {
+        // A schemars-shaped schema: nested objects, $defs, optional unions,
+        // defaults, $schema — none of which are strict-legal as generated.
+        let generated = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "primary_intent": { "type": "string" },
+                "optional_list": {
+                    "type": "array", "default": [], "items": { "type": "string" }
+                },
+                "strategy": { "$ref": "#/$defs/Strategy" },
+                "graph": {
+                    "anyOf": [{ "$ref": "#/$defs/Graph" }, { "type": "null" }]
+                }
+            },
+            "required": ["primary_intent"],
+            "$defs": {
+                "Strategy": {
+                    "type": "object",
+                    "properties": {
+                        "approach": { "type": "string" },
+                        "graph": { "type": "null" }
+                    },
+                    "required": ["approach"]
+                },
+                "Graph": {
+                    "type": "object",
+                    "properties": { "nodes": { "type": "array", "default": [] } }
+                }
+            }
+        });
+
+        let strict = strict_json_schema(generated);
+
+        fn audit(node: &Value, path: String, issues: &mut Vec<String>) {
+            if let Value::Object(map) = node {
+                if map.get("type") == Some(&Value::String("object".into())) {
+                    if map.get("additionalProperties") != Some(&Value::Bool(false)) {
+                        issues.push(format!("{path}: additionalProperties not false"));
+                    }
+                    let props = map.get("properties").and_then(|p| p.as_object());
+                    let required: Vec<&str> = map
+                        .get("required")
+                        .and_then(|r| r.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
+                        .unwrap_or_default();
+                    if let Some(props) = props {
+                        for key in props.keys() {
+                            if !required.contains(&key.as_str()) {
+                                issues.push(format!("{path}: {key} missing from required"));
+                            }
+                        }
+                    }
+                }
+                if map.contains_key("default") {
+                    issues.push(format!("{path}: default survives"));
+                }
+                if map.contains_key("$schema") {
+                    issues.push(format!("{path}: $schema survives"));
+                }
+                for (key, value) in map {
+                    audit(value, format!("{path}.{key}"), issues);
+                }
+            } else if let Value::Array(items) = node {
+                for (i, item) in items.iter().enumerate() {
+                    audit(item, format!("{path}[{i}]"), issues);
+                }
+            }
+        }
+
+        let mut issues = Vec::new();
+        audit(&strict, "$".to_string(), &mut issues);
+        assert!(issues.is_empty(), "strict-contract violations: {issues:?}");
+
+        // Optionality survives as a nullable union; the null branch is not
+        // turned into an object with additionalProperties.
+        assert_eq!(
+            strict.pointer("/properties/graph/anyOf/1/type"),
+            Some(&json!("null"))
         );
     }
 

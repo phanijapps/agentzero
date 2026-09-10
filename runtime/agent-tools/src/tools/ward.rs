@@ -10,9 +10,12 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use agent_primitives::{
-    AgentError, FileSystemContext, Result, Tool, ToolContext, ToolPermissions, WardArchetypeId,
+    AgentError, DelegateAction, FileSystemContext, Result, Tool, ToolContext, ToolPermissions,
+    WardArchetypeId,
 };
 use zbot_stores_traits::MemoryFactStore;
+
+use crate::tools::guards::{planning_gate_awaits_ward, start_planning_after_ward};
 
 /// AGENTS.md file name - living readme for agent executions
 const WARD_AGENTS_MD: &str = "AGENTS.md";
@@ -62,16 +65,39 @@ pub struct WardLayoutState {
     pub packet: Value,
 }
 
+/// Which actions the model-facing surface (description + schema) advertises,
+/// mirroring what `validate_template_context` actually permits per actor:
+/// `lint` is the delegated planner's post-write check; `dry_run`/
+/// `create_concept` are root-only (plan-composer drives them from root-owned
+/// setup steps); ward agents and other subagents hold no template actions.
+/// Declaration-only: `execute()` handles every action on every instance —
+/// enforcement stays with `validate_template_context`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WardAudience {
+    /// Every action (back-compat `new()`; direct tests).
+    Full,
+    /// Root: lifecycle + search + `dry_run`/`create_concept`, no `lint`
+    /// (the planner owns conformance checking).
+    Root,
+    /// Delegated planner: lifecycle + search + `lint`.
+    Planner,
+    /// Ward agents and other subagents: lifecycle + search only.
+    Subagent,
+}
+
+impl WardAudience {
+    fn show_lint(self) -> bool {
+        matches!(self, Self::Full | Self::Planner)
+    }
+    fn show_concept_actions(self) -> bool {
+        matches!(self, Self::Full | Self::Root)
+    }
+}
+
 /// Tool for managing wards (named project directories).
 ///
 /// Wards are persistent, agent-named project directories under `vault/wards/`.
 /// The agent autonomously creates and switches between wards.
-///
-/// Actions:
-/// - `use`: Switch to a ward (creates if needed), returns file listing
-/// - `create`: Alias for `use` (semantically clearer for new wards)
-/// - `list`: List all wards with descriptions
-/// - `info`: Detailed info about a specific ward
 pub struct WardTool {
     fs: Arc<dyn FileSystemContext>,
     fact_store: Option<Arc<dyn MemoryFactStore>>,
@@ -80,6 +106,7 @@ pub struct WardTool {
     /// valid no-op (tests, minimal configurations).
     ward_usage: Option<Arc<dyn WardUsageAccess>>,
     ward_layout: Arc<dyn WardLayoutAccess>,
+    audience: WardAudience,
 }
 
 impl WardTool {
@@ -99,7 +126,8 @@ impl WardTool {
     }
 
     /// Create a new WardTool with file system context, optional fact store,
-    /// and optional ward-usage observer.
+    /// and optional ward-usage observer. Full action surface (back-compat;
+    /// production registrations pick an audience explicitly).
     #[must_use]
     pub fn new(
         fs: Arc<dyn FileSystemContext>,
@@ -107,11 +135,72 @@ impl WardTool {
         ward_usage: Option<Arc<dyn WardUsageAccess>>,
         ward_layout: Arc<dyn WardLayoutAccess>,
     ) -> Self {
+        Self::with_audience(fs, fact_store, ward_usage, ward_layout, WardAudience::Full)
+    }
+
+    /// Root audience: lifecycle + search + `dry_run`/`create_concept`
+    /// (root is their only legal executor — plan-composer drives them from
+    /// root-owned setup steps). `lint` stays hidden: the planner owns
+    /// conformance checking.
+    #[must_use]
+    pub fn for_root(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+    ) -> Self {
+        Self::with_audience(fs, fact_store, ward_usage, ward_layout, WardAudience::Root)
+    }
+
+    /// Delegated-planner audience: lifecycle + search + `lint`.
+    #[must_use]
+    pub fn for_planner(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+    ) -> Self {
+        Self::with_audience(
+            fs,
+            fact_store,
+            ward_usage,
+            ward_layout,
+            WardAudience::Planner,
+        )
+    }
+
+    /// Ward-agent / ordinary-subagent audience: lifecycle + search only —
+    /// `validate_template_context` rejects every template action for them.
+    #[must_use]
+    pub fn for_subagent(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+    ) -> Self {
+        Self::with_audience(
+            fs,
+            fact_store,
+            ward_usage,
+            ward_layout,
+            WardAudience::Subagent,
+        )
+    }
+
+    #[must_use]
+    fn with_audience(
+        fs: Arc<dyn FileSystemContext>,
+        fact_store: Option<Arc<dyn MemoryFactStore>>,
+        ward_usage: Option<Arc<dyn WardUsageAccess>>,
+        ward_layout: Arc<dyn WardLayoutAccess>,
+        audience: WardAudience,
+    ) -> Self {
         Self {
             fs,
             fact_store,
             ward_usage,
             ward_layout,
+            audience,
         }
     }
 
@@ -136,10 +225,29 @@ impl WardTool {
         files
     }
 
-    /// Read AGENTS.md content from a ward directory, if it exists.
+    /// Read the ward's AGENTS.md doctrine, bounded to `AGENTS_MD_CAP` bytes.
+    /// Oversized doctrine truncates with a visible marker instead of loading
+    /// unbounded bytes into the model context. Doctrine that is not valid
+    /// UTF-8 within the cap is dropped (None), matching the previous
+    /// `read_to_string` failure semantics — never a misleading marker.
     fn read_agents_md(&self, ward_dir: &std::path::Path) -> Option<String> {
-        let agents_md_path = ward_dir.join(WARD_AGENTS_MD);
-        std::fs::read_to_string(&agents_md_path).ok()
+        const AGENTS_MD_CAP: usize = 32 * 1024;
+        use std::io::Read;
+        let file = std::fs::File::open(ward_dir.join(WARD_AGENTS_MD)).ok()?;
+        let mut bytes = Vec::with_capacity(AGENTS_MD_CAP.min(8 * 1024));
+        file.take(AGENTS_MD_CAP as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() > AGENTS_MD_CAP {
+            bytes.truncate(AGENTS_MD_CAP);
+            let mut doctrine = String::from_utf8(bytes).ok()?;
+            doctrine.push_str(&format!(
+                "\n\n[AGENTS.md truncated at {} KiB]",
+                AGENTS_MD_CAP / 1024
+            ));
+            return Some(doctrine);
+        }
+        String::from_utf8(bytes).ok()
     }
 
     fn register_ward(wards_root: &std::path::Path, ward_name: &str) -> std::io::Result<()> {
@@ -190,7 +298,7 @@ impl WardTool {
 
         let query = format!("ward {} context patterns corrections", ward_name);
         match store
-            .recall_facts_prioritized(&agent_id, &query, 5, None)
+            .recall_facts_prioritized(&agent_id, &query, 3, None)
             .await
         {
             Ok(result) => {
@@ -414,15 +522,29 @@ fn reject_unknown_fields(action: &str, args: &Value) -> Result<()> {
     Ok(())
 }
 
+fn is_delegated_planner(ctx: &dyn ToolContext) -> bool {
+    ctx.get_state("app:actor_kind")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .as_deref()
+        == Some("delegated_executor")
+        && ctx
+            .get_state("app:agent_id")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .as_deref()
+            == Some("planner-agent")
+}
+
 fn validate_template_context(
     ctx: &dyn ToolContext,
     ward: &str,
+    allow_planner_lint: bool,
 ) -> std::result::Result<String, &'static str> {
-    if ctx
+    let actor_kind = ctx
         .get_state("app:actor_kind")
-        .and_then(|v| v.as_str().map(str::to_owned))
-        != Some("root".to_string())
-    {
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let is_root = actor_kind.as_deref() == Some("root");
+    let is_bundled_planner = allow_planner_lint && is_delegated_planner(ctx);
+    if !is_root && !is_bundled_planner {
         return Err("root_required");
     }
     let packet = ctx
@@ -431,8 +553,12 @@ fn validate_template_context(
     if packet.get("status").and_then(Value::as_str) != Some("available") {
         return Err("template_unavailable");
     }
+    let host_session_id = ctx
+        .get_state("session_id")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or("template_stale")?;
     if packet.get("ward_id").and_then(Value::as_str) != Some(ward)
-        || packet.get("session_id").and_then(Value::as_str) != Some(ctx.session_id())
+        || packet.get("session_id").and_then(Value::as_str) != Some(host_session_id.as_str())
         || packet.get("root_context_id").and_then(Value::as_str)
             != ctx
                 .get_state("ward_template_context_id")
@@ -505,6 +631,80 @@ fn error_envelope(action: &str, ward: &str, digest: &str, code: &str) -> Value {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Ward markdown search — one traversal, two openers.
+//
+// The walk (caps, filtering, matching, envelope) lives once in
+// `walk_ward_markdown`. A `WardSearchFs` backend supplies only the
+// platform-specific, security-relevant operations: opening the validated
+// ward root, enumerating a directory's children without following
+// symlinks, and bounded reads. Linux walks fd-relative via
+// openat/O_NOFOLLOW; other platforms walk canonicalized paths with
+// symlink checks.
+// ---------------------------------------------------------------------------
+
+/// Shared bounds for ward markdown search.
+const SEARCH_ENTRY_CAP: usize = 10_000;
+const SEARCH_FILE_CAP: usize = 2_000;
+const SEARCH_BYTE_CAP: usize = 8 * 1024 * 1024;
+
+fn is_hidden_name(name: &std::ffi::OsStr) -> bool {
+    name.to_string_lossy().starts_with('.')
+}
+
+fn is_markdown_name(name: &std::ffi::OsStr) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        == Some("md")
+}
+
+/// A directory child worth visiting: a subdirectory to recurse into, or a
+/// markdown file handle to read.
+enum WardChildKind<Fs: WardSearchFs> {
+    Directory(Fs::Dir),
+    Markdown(Fs::File),
+}
+
+struct WardChild<Fs: WardSearchFs> {
+    name: std::ffi::OsString,
+    kind: WardChildKind<Fs>,
+}
+
+/// Result of enumerating one directory: the visible children, how many
+/// read entries were consumed (hidden entries included — they spend
+/// budget), and whether the entry budget was exhausted mid-directory.
+struct Children<Fs: WardSearchFs> {
+    entries: Vec<WardChild<Fs>>,
+    consumed: usize,
+    truncated: bool,
+}
+
+trait WardSearchFs: Sized {
+    type Dir;
+    type File;
+
+    /// Validate the ward root (a direct, non-symlink child of the wards
+    /// directory) and open it. `search_*` / `ward_unavailable` codes match
+    /// the tool's error envelope.
+    fn open_ward(&self, root: &std::path::Path) -> std::result::Result<Self::Dir, String>;
+
+    /// Enumerate one directory: sorted by name, hidden entries skipped
+    /// (but budget-spending), symlinks never followed.
+    fn children(
+        &self,
+        dir: &Self::Dir,
+        budget: usize,
+    ) -> std::result::Result<Children<Self>, String>;
+
+    /// Bounded read of one markdown handle. `Ok(None)` marks oversized.
+    fn read_bounded(
+        &self,
+        file: Self::File,
+        limit: usize,
+    ) -> std::result::Result<Option<String>, String>;
+}
+
 fn search_markdown(
     root: &std::path::Path,
     query: &str,
@@ -512,52 +712,24 @@ fn search_markdown(
     limit: usize,
 ) -> std::result::Result<Value, String> {
     #[cfg(target_os = "linux")]
-    {
-        search_markdown_linux(root, query, required_tags, limit)
-    }
+    let fs = LinuxWardFs;
     #[cfg(not(target_os = "linux"))]
-    {
-        search_markdown_portable(root, query, required_tags, limit)
-    }
+    let fs = PortableWardFs;
+    walk_ward_markdown(&fs, root, query, required_tags, limit)
 }
 
-#[cfg(target_os = "linux")]
-fn search_markdown_linux(
+/// The single traversal shared by every platform backend.
+fn walk_ward_markdown<Fs: WardSearchFs>(
+    fs: &Fs,
     root: &std::path::Path,
     query: &str,
     required_tags: &[String],
     limit: usize,
 ) -> std::result::Result<Value, String> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-
     if query.len() > 256 || !(1..=50).contains(&limit) {
         return Err("invalid_search".into());
     }
-    let wards_path = root
-        .parent()
-        .ok_or_else(|| "ward_unavailable".to_string())?;
-    let ward_name = root
-        .file_name()
-        .ok_or_else(|| "ward_unavailable".to_string())?;
-    let before =
-        std::fs::symlink_metadata(wards_path).map_err(|_| "ward_unavailable".to_string())?;
-    if before.file_type().is_symlink() || !before.is_dir() {
-        return Err("ward_unavailable".into());
-    }
-    let wards = open_directory_nofollow(wards_path).map_err(|_| "ward_unavailable".to_string())?;
-    let opened = wards
-        .metadata()
-        .map_err(|_| "ward_unavailable".to_string())?;
-    {
-        use std::os::unix::fs::MetadataExt;
-        if before.dev() != opened.dev() || before.ino() != opened.ino() {
-            return Err("search_race".into());
-        }
-    }
-    let ward_fd =
-        open_at_nofollow(&wards, ward_name, true).map_err(|_| "ward_unavailable".to_string())?;
-    // SAFETY: open_at_nofollow returns a fresh owned descriptor.
-    let ward = unsafe { std::fs::File::from_raw_fd(ward_fd) };
+    let ward = fs.open_ward(root)?;
     let mut pending = vec![(ward, std::path::PathBuf::new())];
     let mut results = Vec::new();
     let mut files_visited = 0usize;
@@ -567,81 +739,46 @@ fn search_markdown_linux(
     let query = query.to_lowercase();
 
     while let Some((directory, relative_dir)) = pending.pop() {
-        let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
-        let remaining_entries = 10_000usize.saturating_sub(entries_visited);
-        let mut source = std::fs::read_dir(fd_path).map_err(|_| "search_failed".to_string())?;
-        let mut entries: Vec<_> = source
-            .by_ref()
-            .filter_map(|entry| entry.ok())
-            .take(remaining_entries.saturating_add(1))
-            .collect();
-        if entries.len() > remaining_entries {
-            entries.pop();
-            truncated = true;
-        }
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries.into_iter().rev() {
-            entries_visited += 1;
-            if entries_visited > 10_000 {
-                truncated = true;
-                break;
+        let budget = SEARCH_ENTRY_CAP.saturating_sub(entries_visited);
+        let children = fs.children(&directory, budget)?;
+        entries_visited += children.consumed;
+        truncated |= children.truncated;
+        for child in children.entries.into_iter().rev() {
+            let name = child.name;
+            match child.kind {
+                WardChildKind::Directory(handle) => {
+                    pending.push((handle, relative_dir.join(&name)));
+                }
+                WardChildKind::Markdown(file) => {
+                    if files_visited >= SEARCH_FILE_CAP || bytes_read >= SEARCH_BYTE_CAP {
+                        truncated = true;
+                        break;
+                    }
+                    files_visited += 1;
+                    let remaining = SEARCH_BYTE_CAP - bytes_read;
+                    let Some(content) = fs.read_bounded(file, remaining)? else {
+                        truncated = true;
+                        break;
+                    };
+                    bytes_read += content.len();
+                    let relative = relative_dir.join(&name);
+                    let (title, tags) = markdown_metadata(&content, &relative);
+                    let haystack =
+                        format!("{}\n{}\n{}", relative.display(), title, content).to_lowercase();
+                    if !query.is_empty() && !haystack.contains(&query) {
+                        continue;
+                    }
+                    let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
+                    if !required_tags.iter().all(|tag| lowered.contains(tag)) {
+                        continue;
+                    }
+                    results.push(json!({
+                        "path": relative.to_string_lossy().replace('\\', "/"),
+                        "title": title,
+                        "tags": tags,
+                    }));
+                }
             }
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
-                continue;
-            }
-            if let Ok(fd) = open_at_nofollow(&directory, &name, true) {
-                // SAFETY: open_at_nofollow returns a fresh owned descriptor.
-                let child = unsafe { std::fs::File::from_raw_fd(fd) };
-                pending.push((child, relative_dir.join(&name)));
-                continue;
-            }
-            if std::path::Path::new(&name)
-                .extension()
-                .and_then(|value| value.to_str())
-                != Some("md")
-            {
-                continue;
-            }
-            if files_visited >= 2_000 || bytes_read >= 8 * 1024 * 1024 {
-                truncated = true;
-                break;
-            }
-            let fd = match open_at_nofollow(&directory, &name, false) {
-                Ok(fd) => fd,
-                Err(_) => continue,
-            };
-            // SAFETY: open_at_nofollow returns a fresh owned descriptor.
-            let file = unsafe { std::fs::File::from_raw_fd(fd) };
-            if !file
-                .metadata()
-                .map_err(|_| "search_failed".to_string())?
-                .is_file()
-            {
-                continue;
-            }
-            files_visited += 1;
-            let remaining = 8 * 1024 * 1024 - bytes_read;
-            let Some(content) = read_open_file_bounded(file, remaining)? else {
-                truncated = true;
-                break;
-            };
-            bytes_read += content.len();
-            let relative = relative_dir.join(&name);
-            let (title, tags) = markdown_metadata(&content, &relative);
-            let haystack = format!("{}\n{}\n{}", relative.display(), title, content).to_lowercase();
-            if !query.is_empty() && !haystack.contains(&query) {
-                continue;
-            }
-            let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
-            if !required_tags.iter().all(|tag| lowered.contains(tag)) {
-                continue;
-            }
-            results.push(json!({
-                "path": relative.to_string_lossy().replace('\\', "/"),
-                "title": title,
-                "tags": tags,
-            }));
         }
         if truncated {
             break;
@@ -694,90 +831,197 @@ fn open_at_nofollow(
 }
 
 #[cfg(target_os = "linux")]
-fn read_open_file_bounded(
-    file: std::fs::File,
-    limit: usize,
-) -> std::result::Result<Option<String>, String> {
-    use std::io::Read;
-    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
-    file.take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "search_failed".to_string())?;
-    if bytes.len() > limit {
-        return Ok(None);
-    }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| "search_failed".to_string())
-}
+struct LinuxWardFs;
 
-#[cfg(not(target_os = "linux"))]
-fn search_markdown_portable(
-    root: &std::path::Path,
-    query: &str,
-    required_tags: &[String],
-    limit: usize,
-) -> std::result::Result<Value, String> {
-    if query.len() > 256 || !(1..=50).contains(&limit) {
-        return Err("invalid_search".into());
-    }
-    let wards_root = root
-        .parent()
-        .ok_or_else(|| "ward_unavailable".to_string())?;
-    let wards_metadata =
-        std::fs::symlink_metadata(wards_root).map_err(|_| "ward_unavailable".to_string())?;
-    let root_metadata =
-        std::fs::symlink_metadata(root).map_err(|_| "ward_unavailable".to_string())?;
-    if wards_metadata.file_type().is_symlink()
-        || root_metadata.file_type().is_symlink()
-        || !root_metadata.is_dir()
-    {
-        return Err("ward_unavailable".into());
-    }
-    let wards_root = wards_root
-        .canonicalize()
-        .map_err(|_| "ward_unavailable".to_string())?;
-    let root = root
-        .canonicalize()
-        .map_err(|_| "ward_unavailable".to_string())?;
-    if root.parent() != Some(wards_root.as_path()) {
-        return Err("path_escape".into());
-    }
-    let mut pending = vec![root.clone()];
-    let mut results = Vec::new();
-    let mut files_visited = 0usize;
-    let mut bytes_read = 0usize;
-    let mut entries_visited = 0usize;
-    let mut truncated = false;
-    let query = query.to_lowercase();
+#[cfg(target_os = "linux")]
+impl WardSearchFs for LinuxWardFs {
+    type Dir = std::fs::File;
+    type File = std::fs::File;
 
-    while let Some(directory) = pending.pop() {
-        let canonical_directory = directory
-            .canonicalize()
-            .map_err(|_| "path_escape".to_string())?;
-        if !canonical_directory.starts_with(&root) {
-            return Err("path_escape".into());
+    fn open_ward(&self, root: &std::path::Path) -> std::result::Result<Self::Dir, String> {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let wards_path = root
+            .parent()
+            .ok_or_else(|| "ward_unavailable".to_string())?;
+        let ward_name = root
+            .file_name()
+            .ok_or_else(|| "ward_unavailable".to_string())?;
+        let before =
+            std::fs::symlink_metadata(wards_path).map_err(|_| "ward_unavailable".to_string())?;
+        if before.file_type().is_symlink() || !before.is_dir() {
+            return Err("ward_unavailable".into());
         }
-        let remaining_entries = 10_000usize.saturating_sub(entries_visited);
-        let mut source = std::fs::read_dir(&directory).map_err(|_| "search_failed".to_string())?;
+        let wards =
+            open_directory_nofollow(wards_path).map_err(|_| "ward_unavailable".to_string())?;
+        let opened = wards
+            .metadata()
+            .map_err(|_| "ward_unavailable".to_string())?;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err("search_race".into());
+        }
+        let ward_fd = open_at_nofollow(&wards, ward_name, true)
+            .map_err(|_| "ward_unavailable".to_string())?;
+        // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+        Ok(unsafe { std::fs::File::from_raw_fd(ward_fd) })
+    }
+
+    fn children(
+        &self,
+        dir: &Self::Dir,
+        budget: usize,
+    ) -> std::result::Result<Children<Self>, String> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+        let mut source = std::fs::read_dir(fd_path).map_err(|_| "search_failed".to_string())?;
         let mut entries: Vec<_> = source
             .by_ref()
             .filter_map(|entry| entry.ok())
-            .take(remaining_entries.saturating_add(1))
+            .take(budget.saturating_add(1))
             .collect();
-        if entries.len() > remaining_entries {
+        let mut truncated = false;
+        if entries.len() > budget {
             entries.pop();
             truncated = true;
         }
+        let consumed = entries.len();
         entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries.into_iter().rev() {
-            entries_visited += 1;
-            if entries_visited > 10_000 {
-                truncated = true;
-                break;
-            }
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
             let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
+            if is_hidden_name(&name) {
+                continue;
+            }
+            if let Ok(fd) = open_at_nofollow(dir, &name, true) {
+                // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+                let child = unsafe { std::fs::File::from_raw_fd(fd) };
+                out.push(WardChild {
+                    name,
+                    kind: WardChildKind::Directory(child),
+                });
+                continue;
+            }
+            if !is_markdown_name(&name) {
+                continue;
+            }
+            let Ok(fd) = open_at_nofollow(dir, &name, false) else {
+                continue;
+            };
+            // SAFETY: open_at_nofollow returns a fresh owned descriptor.
+            let file = unsafe { std::fs::File::from_raw_fd(fd) };
+            if !file
+                .metadata()
+                .map_err(|_| "search_failed".to_string())?
+                .is_file()
+            {
+                continue;
+            }
+            out.push(WardChild {
+                name,
+                kind: WardChildKind::Markdown(file),
+            });
+        }
+        Ok(Children {
+            entries: out,
+            consumed,
+            truncated,
+        })
+    }
+
+    fn read_bounded(
+        &self,
+        file: Self::File,
+        limit: usize,
+    ) -> std::result::Result<Option<String>, String> {
+        use std::io::Read;
+        let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+        file.take((limit + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "search_failed".to_string())?;
+        if bytes.len() > limit {
+            return Ok(None);
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "search_failed".to_string())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct PortableWardFs;
+
+/// A portable directory handle: the absolute path plus the ward's
+/// canonical root so every enumeration re-verifies containment.
+#[cfg(not(target_os = "linux"))]
+struct PortableDir {
+    path: std::path::PathBuf,
+    root: std::path::PathBuf,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl WardSearchFs for PortableWardFs {
+    type Dir = PortableDir;
+    type File = std::path::PathBuf;
+
+    fn open_ward(&self, root: &std::path::Path) -> std::result::Result<Self::Dir, String> {
+        let wards_root = root
+            .parent()
+            .ok_or_else(|| "ward_unavailable".to_string())?;
+        let wards_metadata =
+            std::fs::symlink_metadata(wards_root).map_err(|_| "ward_unavailable".to_string())?;
+        let root_metadata =
+            std::fs::symlink_metadata(root).map_err(|_| "ward_unavailable".to_string())?;
+        if wards_metadata.file_type().is_symlink()
+            || root_metadata.file_type().is_symlink()
+            || !root_metadata.is_dir()
+        {
+            return Err("ward_unavailable".into());
+        }
+        let canonical_wards = wards_root
+            .canonicalize()
+            .map_err(|_| "ward_unavailable".to_string())?;
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|_| "ward_unavailable".to_string())?;
+        if canonical_root.parent() != Some(canonical_wards.as_path()) {
+            return Err("path_escape".into());
+        }
+        Ok(PortableDir {
+            path: canonical_root.clone(),
+            root: canonical_root,
+        })
+    }
+
+    fn children(
+        &self,
+        dir: &Self::Dir,
+        budget: usize,
+    ) -> std::result::Result<Children<Self>, String> {
+        let canonical_directory = dir
+            .path
+            .canonicalize()
+            .map_err(|_| "path_escape".to_string())?;
+        if !canonical_directory.starts_with(&dir.root) {
+            return Err("path_escape".into());
+        }
+        let mut source =
+            std::fs::read_dir(&canonical_directory).map_err(|_| "search_failed".to_string())?;
+        let mut entries: Vec<_> = source
+            .by_ref()
+            .filter_map(|entry| entry.ok())
+            .take(budget.saturating_add(1))
+            .collect();
+        let mut truncated = false;
+        if entries.len() > budget {
+            entries.pop();
+            truncated = true;
+        }
+        let consumed = entries.len();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let name = entry.file_name();
+            if is_hidden_name(&name) {
                 continue;
             }
             let file_type = entry.file_type().map_err(|_| "search_failed".to_string())?;
@@ -785,92 +1029,60 @@ fn search_markdown_portable(
                 continue;
             }
             if file_type.is_dir() {
-                pending.push(entry.path());
+                out.push(WardChild {
+                    name,
+                    kind: WardChildKind::Directory(PortableDir {
+                        path: entry.path(),
+                        root: dir.root.clone(),
+                    }),
+                });
                 continue;
             }
-            if entry.path().extension().and_then(|value| value.to_str()) != Some("md") {
+            if !is_markdown_name(&name) {
                 continue;
             }
-            if files_visited >= 2_000 || bytes_read >= 8 * 1024 * 1024 {
-                truncated = true;
-                break;
-            }
-            files_visited += 1;
-            let remaining = 8 * 1024 * 1024 - bytes_read;
-            let Some(content) = read_markdown_bounded(&entry.path(), remaining)? else {
-                truncated = true;
-                break;
-            };
-            bytes_read += content.len();
-            let (title, tags) = markdown_metadata(&content, &entry.path());
-            let entry_path = entry.path();
-            let path = entry_path
-                .strip_prefix(&root)
-                .map_err(|_| "path_escape".to_string())?;
-            let haystack = format!("{}\n{}\n{}", path.display(), title, content).to_lowercase();
-            if !query.is_empty() && !haystack.contains(&query) {
-                continue;
-            }
-            let lowered: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
-            if !required_tags.iter().all(|tag| lowered.contains(tag)) {
-                continue;
-            }
-            results.push(
-                json!({"path":path.to_string_lossy().replace('\\', "/"),"title":title,"tags":tags}),
-            );
+            out.push(WardChild {
+                name,
+                kind: WardChildKind::Markdown(entry.path()),
+            });
         }
-        if truncated {
-            break;
-        }
+        Ok(Children {
+            entries: out,
+            consumed,
+            truncated,
+        })
     }
-    results.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
-    if results.len() > limit {
-        results.truncate(limit);
-        truncated = true;
-    }
-    Ok(
-        json!({"results":results,"truncated":truncated,"files_visited":files_visited,"bytes_read":bytes_read}),
-    )
-}
 
-#[cfg(not(target_os = "linux"))]
-fn read_markdown_bounded(
-    path: &std::path::Path,
-    limit: usize,
-) -> std::result::Result<Option<String>, String> {
-    use std::io::Read;
-    let before = std::fs::symlink_metadata(path).map_err(|_| "search_failed".to_string())?;
-    if before.file_type().is_symlink() || !before.is_file() {
-        return Ok(None);
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(0x20000); // O_NOFOLLOW
-    }
-    let file = options
-        .open(path)
-        .map_err(|_| "search_failed".to_string())?;
-    let opened = file.metadata().map_err(|_| "search_failed".to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if before.dev() != opened.dev() || before.ino() != opened.ino() {
-            return Err("search_race".into());
+    fn read_bounded(
+        &self,
+        path: Self::File,
+        limit: usize,
+    ) -> std::result::Result<Option<String>, String> {
+        use std::io::Read;
+        let before = std::fs::symlink_metadata(&path).map_err(|_| "search_failed".to_string())?;
+        if before.file_type().is_symlink() || !before.is_file() {
+            return Ok(None);
         }
+        let file = std::fs::File::open(&path).map_err(|_| "search_failed".to_string())?;
+        let opened = file.metadata().map_err(|_| "search_failed".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if before.dev() != opened.dev() || before.ino() != opened.ino() {
+                return Err("search_race".into());
+            }
+        }
+        let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+        file.take((limit + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "search_failed".to_string())?;
+        if bytes.len() > limit {
+            return Ok(None);
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "search_failed".to_string())
     }
-    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
-    file.take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "search_failed".to_string())?;
-    if bytes.len() > limit {
-        return Ok(None);
-    }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| "search_failed".to_string())
 }
 
 fn markdown_metadata(content: &str, path: &std::path::Path) -> (String, Vec<String>) {
@@ -909,6 +1121,57 @@ fn markdown_metadata(content: &str, path: &std::path::Path) -> (String, Vec<Stri
     (title, tags)
 }
 
+/// Tool descriptions per audience — plain literals so `description()` keeps
+/// its `&'str` signature. Bodies differ only in the action-list tail.
+const WARD_DESC_FULL: &str = concat!(
+    "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.",
+    "\n\
+             - lint: Check the active ward against its ward-conf.yaml snapshot.",
+    "\n\
+             - dry_run: Preview a template-directed create_concept operation.\n\
+             - create_concept: Create the concept node annotated by the active template."
+);
+const WARD_DESC_ROOT: &str = concat!(
+    "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.",
+    "\n\
+             - dry_run: Preview a template-directed create_concept operation.\n\
+             - create_concept: Create the concept node annotated by the active template."
+);
+const WARD_DESC_PLANNER: &str = concat!(
+    "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.",
+    "\n\
+             - lint: Check the active ward against its ward-conf.yaml snapshot."
+);
+const WARD_DESC_SUBAGENT: &str = "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Arguments are action-specific; unknown fields are rejected.\n\
+             Actions:\n\
+             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+             - create: Alias for use. Creates and switches to a new ward.\n\
+             - list: List all wards with descriptions.\n\
+             - info: Detailed info about a specific ward.\n\
+             - search: Search Markdown in the active ward by text and exact tags.";
+
 #[async_trait]
 impl Tool for WardTool {
     fn name(&self) -> &str {
@@ -916,17 +1179,12 @@ impl Tool for WardTool {
     }
 
     fn description(&self) -> &str {
-        "Manage code wards (named project directories). Wards persist across sessions.\n\
-         Arguments are action-specific; unknown fields are rejected.\n\
-         Actions:\n\
-         - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
-         - create: Alias for use. Creates and switches to a new ward.\n\
-         - list: List all wards with descriptions.\n\
-         - info: Detailed info about a specific ward.\n\
-         - search: Search Markdown in the active ward by text and exact tags.\n\
-         - lint: Check the active ward against its ward-conf.yaml snapshot.\n\
-         - dry_run: Preview a template-directed create_concept operation.\n\
-         - create_concept: Create the concept node annotated by the active template."
+        match self.audience {
+            WardAudience::Full => WARD_DESC_FULL,
+            WardAudience::Root => WARD_DESC_ROOT,
+            WardAudience::Planner => WARD_DESC_PLANNER,
+            WardAudience::Subagent => WARD_DESC_SUBAGENT,
+        }
     }
 
     fn parameters_schema(&self) -> Option<Value> {
@@ -938,30 +1196,37 @@ impl Tool for WardTool {
                 "additionalProperties": false
             })
         };
-        Some(json!({"oneOf": [
-            named(json!({"enum": ["use", "info", "lint"]})),
-            {"type":"object","properties":{
+        let mut branches = vec![
+            named(json!({"enum": if self.audience.show_lint() {
+                vec!["use", "info", "lint"]
+            } else {
+                vec!["use", "info"]
+            }})),
+            json!({"type":"object","properties":{
                 "action":{"const":"create"},
                 "name":{"type":"string"},
                 "archetype":{"enum":["generic","coding","documentation","journal","ebook","research","news"]}
-            },"required":["action","name"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"const":"list"}},"required":["action"],"additionalProperties":false},
-            {"type":"object","properties":{
+            },"required":["action","name"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"action":{"const":"list"}},"required":["action"],"additionalProperties":false}),
+            json!({"type":"object","properties":{
                 "action":{"const":"search"}, "name":{"type":"string"},
                 "query":{"type":"string","maxLength":256},
                 "tags":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":64}},
                 "limit":{"type":"integer","minimum":1,"maximum":50}
-            },"required":["action","name"],"additionalProperties":false},
-            {"type":"object","properties":{
+            },"required":["action","name"],"additionalProperties":false}),
+        ];
+        if self.audience.show_concept_actions() {
+            branches.push(json!({"type":"object","properties":{
                 "action":{"const":"dry_run"}, "name":{"type":"string"},
                 "operation":{"const":"create_concept"},
                 "components":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","maxLength":64}}
-            },"required":["action","name","operation","components"],"additionalProperties":false},
-            {"type":"object","properties":{
+            },"required":["action","name","operation","components"],"additionalProperties":false}));
+            branches.push(json!({"type":"object","properties":{
                 "action":{"const":"create_concept"}, "name":{"type":"string"},
                 "components":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","maxLength":64}}
-            },"required":["action","name","components"],"additionalProperties":false}
-        ]}))
+            },"required":["action","name","components"],"additionalProperties":false}));
+        }
+        Some(json!({"oneOf": branches}))
     }
 
     fn permissions(&self) -> ToolPermissions {
@@ -1015,6 +1280,15 @@ impl Tool for WardTool {
                 })?;
 
                 Self::validate_ward_name(name)?;
+
+                // The delegated planner is host-bound to the selected ward.
+                // It may re-enter that ward, but cannot mutate its file-tool
+                // working directory by switching to a sibling ward.
+                if is_delegated_planner(ctx.as_ref())
+                    && validate_template_context(ctx.as_ref(), name, true).is_err()
+                {
+                    return Err(AgentError::Tool("planner_ward_locked".to_string()));
+                }
 
                 let ward_dir = wards_root.join(name);
                 let created = !ward_dir.exists();
@@ -1073,6 +1347,34 @@ impl Tool for WardTool {
                 layout_state.packet["session_id"] = json!(ctx.session_id());
                 layout_state.packet["ward_id"] = json!(name);
                 ctx.set_state("ward_id".to_string(), json!(name));
+
+                let planner_gate_pending = planning_gate_awaits_ward(ctx.as_ref());
+                let planner_template_ready = layout_state.context.is_some()
+                    && layout_state.packet.get("status").and_then(Value::as_str)
+                        == Some("available");
+                let planner_task = planner_template_ready
+                    .then(|| start_planning_after_ward(ctx.as_ref(), name))
+                    .flatten();
+                if let Some(task) = planner_task.as_ref() {
+                    let mut actions = ctx.actions();
+                    actions.delegate = Some(DelegateAction {
+                        agent_id: "planner-agent".to_string(),
+                        task: task.clone(),
+                        context: None,
+                        wait_for_result: true,
+                        max_iterations: None,
+                        output_schema: None,
+                        skills: Vec::new(),
+                        capability_assignment: None,
+                        planning_capability_catalog: ctx
+                            .get_state("app:planning_capability_catalog"),
+                        complexity: None,
+                        mode: None,
+                        parallel: false,
+                        child_execution_id: None,
+                    });
+                    ctx.set_actions(actions);
+                }
                 // The bootstrap packet is immutable for this executor because
                 // it is also embedded in the system instruction. A ward
                 // switch takes effect for ordinary file tools immediately,
@@ -1089,26 +1391,36 @@ impl Tool for WardTool {
                 // Best-effort recall of ward-scoped knowledge
                 let ward_knowledge = self.recall_ward_facts(name, &ctx).await;
 
-                // Return result with __ward_changed__ marker for the executor
+                // Return result with __ward_changed__ marker for the executor.
+                // Slim by contract (spec ward-slim AC1): only model-actionable
+                // fields. The full template packet reaches the model through
+                // executor state → next-turn system instruction; digests and
+                // the layout projection are lint machinery, not model input.
                 let mut result = json!({
                     "__ward_changed__": true,
                     "ward_id": name,
                     "action": if created { "created" } else { "switched" },
+                    "ward_status": {
+                        "status": layout_state.packet.get("status").cloned().unwrap_or(json!("unknown")),
+                        // null when the packet declares no archetype
+                        // (user-created/legacy wards, unavailable template) —
+                        // never a fabricated concrete archetype.
+                        "archetype": layout_state.packet.get("archetype").cloned().unwrap_or(Value::Null) },
                     "files": files,
                     "file_count": files.len(),
-                    "agents_md": agents_md,
-                    "ward_template": layout_state.packet,
-                });
+                    "agents_md": agents_md });
 
                 if let Some(knowledge) = ward_knowledge {
                     result["ward_knowledge"] = knowledge;
                 }
 
-                // Nudge the agent to recall ward-specific knowledge
-                result["recall_nudge"] = json!(format!(
-                    "[Recall] You entered ward '{}'. Use the memory tool to recall ward-specific knowledge before proceeding.",
-                    name
-                ));
+                if planner_task.is_some() {
+                    result["planner"] = json!("started");
+                } else if planner_gate_pending && !planner_template_ready {
+                    // Template-unavailable stays fail-closed (#249): the gate
+                    // keeps awaiting the ward and the next ward(use) retries.
+                    result["planner"] = json!("pending-template");
+                }
 
                 Ok(result)
             }
@@ -1131,8 +1443,7 @@ impl Tool for WardTool {
                             wards.push(json!({
                                 "name": name,
                                 "files": files.len(),
-                                "description": description,
-                            }));
+                                "description": description }));
                         }
                     }
                 }
@@ -1146,8 +1457,7 @@ impl Tool for WardTool {
 
                 Ok(json!({
                     "wards": wards,
-                    "total": wards.len(),
-                }))
+                    "total": wards.len() }))
             }
 
             "info" => {
@@ -1161,8 +1471,7 @@ impl Tool for WardTool {
                     return Ok(json!({
                         "found": false,
                         "name": name,
-                        "message": "Ward not found",
-                    }));
+                        "message": "Ward not found" }));
                 }
 
                 let files = self.list_ward_files(&ward_dir);
@@ -1173,8 +1482,7 @@ impl Tool for WardTool {
                     "name": name,
                     "files": files,
                     "file_count": files.len(),
-                    "agents_md": agents_md,
-                }))
+                    "agents_md": agents_md }))
             }
 
             "lint" => {
@@ -1182,7 +1490,7 @@ impl Tool for WardTool {
                     AgentError::Tool("Missing 'name' parameter for lint".to_string())
                 })?;
                 Self::validate_ward_name(name)?;
-                let digest = match validate_template_context(ctx.as_ref(), name) {
+                let digest = match validate_template_context(ctx.as_ref(), name, true) {
                     Ok(digest) => digest,
                     Err(code) => return Ok(error_envelope(action, name, "", code)),
                 };
@@ -1195,7 +1503,7 @@ impl Tool for WardTool {
             "search" => {
                 let name = required_name(&args, action)?;
                 Self::validate_ward_name(name)?;
-                let digest = match validate_template_context(ctx.as_ref(), name) {
+                let digest = match validate_template_context(ctx.as_ref(), name, false) {
                     Ok(digest) => digest,
                     Err(code) => return Ok(error_envelope(action, name, "", code)),
                 };
@@ -1214,7 +1522,7 @@ impl Tool for WardTool {
             "dry_run" | "create_concept" => {
                 let name = required_name(&args, action)?;
                 Self::validate_ward_name(name)?;
-                let digest = match validate_template_context(ctx.as_ref(), name) {
+                let digest = match validate_template_context(ctx.as_ref(), name, false) {
                     Ok(digest) => digest,
                     Err(code) => return Ok(error_envelope(action, name, "", code)),
                 };
@@ -1434,8 +1742,26 @@ mod tests {
             }
         }
 
-        fn delegated_cold_graph() -> Self {
+        fn gated_cold_graph() -> Self {
             let context = Self::cold_graph();
+            let mut state = context.state.lock().unwrap();
+            state.insert(
+                crate::tools::guards::PLANNING_GATE_STATE.to_string(),
+                serde_json::to_value(crate::tools::guards::PlanningGate::awaiting_ward(
+                    "Plan this request",
+                ))
+                .unwrap(),
+            );
+            state.insert(
+                "app:planning_capability_catalog".to_string(),
+                json!({"skills": [], "mcps": []}),
+            );
+            drop(state);
+            context
+        }
+
+        fn delegated_cold_graph() -> Self {
+            let context = Self::gated_cold_graph();
             context
                 .state
                 .lock()
@@ -1444,10 +1770,30 @@ mod tests {
             context
         }
 
+        fn delegated_planner(ward: &str) -> Self {
+            let context = Self::delegated_cold_graph();
+            let mut state = context.state.lock().unwrap();
+            state.insert("app:actor_kind".into(), json!("delegated_executor"));
+            state.insert("app:agent_id".into(), json!("planner-agent"));
+            state.insert("session_id".into(), json!("host-session"));
+            state.insert("ward_id".into(), json!(ward));
+            state.insert(
+                "ward_template".into(),
+                json!({
+                    "status":"available", "session_id":"host-session", "ward_id":ward,
+                    "root_context_id":"planner-test", "digest":"test", "projection":{}
+                }),
+            );
+            state.insert("ward_template_context_id".into(), json!("planner-test"));
+            drop(state);
+            context
+        }
+
         fn active_root(ward: &str) -> Self {
             let context = Self::cold_graph();
             let mut state = context.state.lock().unwrap();
             state.insert("app:actor_kind".into(), json!("root"));
+            state.insert("session_id".into(), json!("test"));
             state.insert("ward_id".into(), json!(ward));
             state.insert(
                 "ward_template".into(),
@@ -1692,6 +2038,157 @@ mod tests {
     }
 
     #[test]
+    fn root_surface_keeps_concept_actions_drops_lint() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::for_root(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for present in [
+            "use:",
+            "create:",
+            "list:",
+            "info:",
+            "search:",
+            "dry_run:",
+            "create_concept:",
+        ] {
+            assert!(
+                description.contains(present),
+                "root surface missing {present}"
+            );
+        }
+        assert!(
+            !description.contains("lint"),
+            "root surface must not advertise lint — the planner owns conformance"
+        );
+
+        let schema = tool.parameters_schema().expect("schema").to_string();
+        assert!(
+            schema.contains("create_concept"),
+            "root keeps concept actions"
+        );
+        assert!(!schema.contains("lint"));
+        let branches = tool.parameters_schema().unwrap()["oneOf"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(
+            branches, 6,
+            "root: named(use/info), create, list, search, dry_run, create_concept"
+        );
+    }
+
+    #[test]
+    fn planner_surface_keeps_lint_drops_concept_actions() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::for_planner(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for present in ["use:", "create:", "list:", "info:", "search:", "lint:"] {
+            assert!(
+                description.contains(present),
+                "planner surface missing {present}"
+            );
+        }
+        for hidden in ["dry_run", "create_concept"] {
+            assert!(
+                !description.contains(hidden),
+                "planner surface must not advertise {hidden} — guard rejects it (root_required)"
+            );
+        }
+        let schema = tool.parameters_schema().expect("schema").to_string();
+        assert!(schema.contains("lint"));
+        assert!(!schema.contains("create_concept"));
+    }
+
+    #[test]
+    fn subagent_surface_is_lifecycle_only() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::for_subagent(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for lifecycle in ["use:", "create:", "list:", "info:", "search:"] {
+            assert!(description.contains(lifecycle));
+        }
+        for template in ["lint", "dry_run", "create_concept"] {
+            assert!(
+                !description.contains(template),
+                "subagent surface must not advertise {template}"
+            );
+        }
+        let branches = tool.parameters_schema().unwrap()["oneOf"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(
+            branches, 4,
+            "subagent: named(use/info), create, list, search"
+        );
+    }
+
+    #[test]
+    fn full_surface_lists_all_actions() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+
+        let description = tool.description();
+        for action in [
+            "use:",
+            "create:",
+            "list:",
+            "info:",
+            "search:",
+            "lint:",
+            "dry_run:",
+            "create_concept:",
+        ] {
+            assert!(
+                description.contains(action),
+                "full surface missing {action}"
+            );
+        }
+        let branches = tool.parameters_schema().unwrap()["oneOf"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(branches, 6, "full schema keeps all six branches");
+        assert!(
+            tool.parameters_schema()
+                .unwrap()
+                .to_string()
+                .contains("lint")
+        );
+    }
+
+    #[test]
     fn ward_schema_exposes_template_directed_actions_and_rejects_extra_fields() {
         let dir = TempDir::new().unwrap();
         let tool = WardTool::new(
@@ -1746,7 +2243,325 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(created["ward_template"]["archetype"], "coding");
+        assert_eq!(created["ward_status"]["archetype"], "coding");
+    }
+
+    #[tokio::test]
+    async fn cold_graph_ward_entry_starts_planner_once_with_actual_ward() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({"action":"create","name":"creative-design"}),
+            )
+            .await
+            .expect("ward creation succeeds");
+
+        assert_eq!(result["planner"], "started");
+        let action = ctx.actions().delegate.expect("planner action is emitted");
+        assert_eq!(action.agent_id, "planner-agent");
+        assert!(action.wait_for_result);
+        assert!(!action.parallel);
+        assert!(action.task.contains("Active ward:"));
+        assert!(action.task.contains("creative-design"));
+        assert_eq!(
+            action.planning_capability_catalog,
+            Some(json!({"skills": [], "mcps": []}))
+        );
+
+        let second = tool
+            .execute(
+                ctx.clone(),
+                json!({"action":"use","name":"creative-design"}),
+            )
+            .await
+            .expect("re-entering the ward succeeds");
+        assert!(second.get("planner").is_none());
+    }
+
+    #[tokio::test]
+    async fn ward_entry_result_is_slim() {
+        let dir = TempDir::new().unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+
+        let result = tool
+            .execute(ctx, json!({"action":"create","name":"slim-check"}))
+            .await
+            .expect("ward creation succeeds");
+
+        // Exact key set — nothing the model cannot act on
+        let mut keys: Vec<&str> = result
+            .as_object()
+            .expect("result is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut expected = vec![
+            "__ward_changed__",
+            "ward_id",
+            "action",
+            "ward_status",
+            "files",
+            "file_count",
+            "agents_md",
+            "planner",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected);
+        assert_eq!(result["ward_status"]["status"], "available");
+        let rendered = result.to_string();
+        assert!(!rendered.contains("projection"), "no layout projection");
+        assert!(!rendered.contains("digest"), "no digests");
+        assert!(!rendered.contains("recall_nudge"));
+        assert!(!rendered.contains("planner_started"));
+        assert!(!rendered.contains("planner_error"));
+    }
+
+    /// Records the requested recall limit and returns a canned envelope.
+    struct RecordingFactStore {
+        requested_limit: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl RecordingFactStore {
+        fn envelope(limit: usize) -> Value {
+            let results: Vec<Value> = (0..limit)
+                .map(|i| json!({"content": format!("fact {i}"), "category": "correction"}))
+                .collect();
+            json!({
+                "query": "ward",
+                "results": results,
+                "count": limit,
+                "source": "memory_db",
+                "prioritized": true })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryFactStore for RecordingFactStore {
+        async fn save_fact(
+            &self,
+            _agent_id: &str,
+            _category: &str,
+            _key: &str,
+            _content: &str,
+            _confidence: f64,
+            _session_id: Option<&str>,
+            _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> zbot_stores_traits::StoreResult<Value> {
+            Ok(json!({"saved": true}))
+        }
+
+        async fn recall_facts(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            limit: usize,
+        ) -> zbot_stores_traits::StoreResult<Value> {
+            Ok(Self::envelope(limit))
+        }
+
+        async fn recall_facts_prioritized(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            limit: usize,
+            _as_of: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> zbot_stores_traits::StoreResult<Value> {
+            self.requested_limit.lock().unwrap().push(limit);
+            Ok(Self::envelope(limit))
+        }
+    }
+
+    #[tokio::test]
+    async fn ward_entry_recall_is_trimmed_and_present() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(RecordingFactStore {
+            requested_limit: std::sync::Mutex::new(Vec::new()),
+        });
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            Some(store.clone()),
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+        ctx.set_state("app:agent_id".to_string(), json!("root"));
+
+        let result = tool
+            .execute(ctx, json!({"action":"create","name":"knowing"}))
+            .await
+            .expect("ward creation succeeds");
+
+        // The tool must request exactly 3 facts (spec AC3)
+        assert_eq!(*store.requested_limit.lock().unwrap(), vec![3]);
+
+        let knowledge = result["ward_knowledge"]
+            .as_object()
+            .expect("knowledge present");
+        assert_eq!(
+            knowledge["count"], 3,
+            "count reports the trimmed result count"
+        );
+        assert_eq!(
+            knowledge["results"].as_array().map(Vec::len),
+            Some(3),
+            "at most 3 facts ride the entry payload"
+        );
+        // Full key set = slim schema + ward_knowledge
+        let mut keys: Vec<&str> = result
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut expected = vec![
+            "__ward_changed__",
+            "ward_id",
+            "action",
+            "ward_status",
+            "files",
+            "file_count",
+            "agents_md",
+            "planner",
+            "ward_knowledge",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected);
+    }
+
+    #[tokio::test]
+    async fn agents_md_is_bounded() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("verbose");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        // ~64 KiB of doctrine — double the cap
+        let huge = "# Verbose Ward\n\n".to_string() + &"doctrine line\n".repeat(4_500);
+        std::fs::write(ward.join(WARD_AGENTS_MD), &huge).unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::active_root("verbose"));
+
+        let result = tool
+            .execute(ctx, json!({"action":"use","name":"verbose"}))
+            .await
+            .expect("ward entry succeeds");
+
+        let agents_md = result["agents_md"].as_str().expect("agents_md present");
+        assert!(
+            agents_md.len() <= 32 * 1024 + 64,
+            "agents_md must be bounded, got {} bytes",
+            agents_md.len()
+        );
+        assert!(
+            agents_md.contains("truncated at 32 KiB"),
+            "oversized doctrine must carry a truncation marker"
+        );
+        assert!(agents_md.starts_with("# Verbose Ward"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_template_keeps_cold_graph_gated_until_retry_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::gated_cold_graph());
+
+        let unavailable = tool
+            .execute(ctx.clone(), json!({"action":"use","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(unavailable["planner"], "pending-template");
+        assert!(planning_gate_awaits_ward(ctx.as_ref()));
+        assert!(ctx.actions().delegate.is_none());
+
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        let retry = tool
+            .execute(ctx.clone(), json!({"action":"use","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(retry["planner"], "started");
+        assert!(!planning_gate_awaits_ward(ctx.as_ref()));
+        assert_eq!(
+            ctx.actions()
+                .delegate
+                .as_ref()
+                .map(|action| action.agent_id.as_str()),
+            Some("planner-agent")
+        );
+    }
+
+    #[test]
+    fn cold_graph_gate_allows_only_ward_establishment_and_safe_reads() {
+        let ctx = GateContext::gated_cold_graph();
+
+        for action in ["create", "use", "list", "info"] {
+            assert!(
+                !crate::tools::guards::planning_gate_blocks_tool(
+                    &ctx,
+                    "ward",
+                    &json!({"action": action})
+                ),
+                "{action} should remain available while establishing a ward"
+            );
+        }
+        for action in ["lint", "search", "dry_run", "create_concept"] {
+            assert!(
+                crate::tools::guards::planning_gate_blocks_tool(
+                    &ctx,
+                    "ward",
+                    &json!({"action": action})
+                ),
+                "{action} must not bypass planning"
+            );
+        }
+        assert!(crate::tools::guards::planning_gate_blocks_tool(
+            &ctx,
+            "blender_mcp__execute_code",
+            &json!({"code": "mutate_scene()"})
+        ));
+        let delegated = GateContext::delegated_cold_graph();
+        assert!(!crate::tools::guards::planning_gate_blocks_tool(
+            &delegated,
+            "shell",
+            &json!({})
+        ));
     }
 
     #[tokio::test]
@@ -1833,6 +2648,121 @@ mod tests {
             .unwrap();
         assert_eq!(result["ok"], false);
         assert_eq!(result["error"]["code"], "root_required");
+    }
+
+    #[tokio::test]
+    async fn planner_with_matching_host_packet_can_lint_selected_ward() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::delegated_planner("research"));
+
+        let lint = tool
+            .execute(ctx.clone(), json!({"action":"lint","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(lint["ok"], true);
+        assert_eq!(lint["template_digest"], "test");
+
+        for args in [
+            json!({"action":"search","name":"research","query":"secret"}),
+            json!({"action":"dry_run","name":"research"}),
+            json!({"action":"create_concept","name":"research"}),
+        ] {
+            let result = tool.execute(ctx.clone(), args).await.unwrap();
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["error"]["code"], "root_required");
+        }
+
+        let wrong_ward = tool
+            .execute(ctx, json!({"action":"lint","name":"other"}))
+            .await
+            .unwrap();
+        assert_eq!(wrong_ward["ok"], false);
+        assert_eq!(wrong_ward["error"]["code"], "template_stale");
+    }
+
+    #[tokio::test]
+    async fn planner_lint_rejects_a_packet_for_another_host_session() {
+        let dir = TempDir::new().unwrap();
+        let ward = dir.path().join("wards").join("research");
+        std::fs::create_dir_all(&ward).unwrap();
+        std::fs::write(ward.join("ward-conf.yaml"), "test").unwrap();
+        let tool = WardTool::new(
+            Arc::new(TestFs {
+                base: dir.path().to_path_buf(),
+            }),
+            None,
+            None,
+            test_layout(dir.path()),
+        );
+        let context = GateContext::delegated_planner("research");
+        context
+            .state
+            .lock()
+            .unwrap()
+            .insert("session_id".into(), json!("other-host-session"));
+        let ctx: Arc<dyn ToolContext> = Arc::new(context);
+
+        let lint = tool
+            .execute(ctx, json!({"action":"lint","name":"research"}))
+            .await
+            .unwrap();
+        assert_eq!(lint["ok"], false);
+        assert_eq!(lint["error"]["code"], "template_stale");
+    }
+
+    #[tokio::test]
+    async fn planner_cannot_switch_ward_before_writing() {
+        let dir = TempDir::new().unwrap();
+        for ward in ["research", "sibling"] {
+            let path = dir.path().join("wards").join(ward);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("ward-conf.yaml"), "test").unwrap();
+        }
+        let fs: Arc<dyn FileSystemContext> = Arc::new(TestFs {
+            base: dir.path().to_path_buf(),
+        });
+        let tool = WardTool::new(fs.clone(), None, None, test_layout(dir.path()));
+        let ctx: Arc<dyn ToolContext> = Arc::new(GateContext::delegated_planner("research"));
+
+        let error = tool
+            .execute(ctx.clone(), json!({"action":"use","name":"sibling"}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("planner_ward_locked"));
+        assert_eq!(ctx.get_state("ward_id"), Some(json!("research")));
+
+        let writer = crate::tools::WriteFileTool::new(fs);
+        writer
+            .execute(
+                ctx,
+                json!({
+                    "path":".zbot/specs/locked/spec.md",
+                    "content":"# Locked to selected ward\n"
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            dir.path()
+                .join("wards/research/.zbot/specs/locked/spec.md")
+                .is_file()
+        );
+        assert!(
+            !dir.path()
+                .join("wards/sibling/.zbot/specs/locked/spec.md")
+                .exists()
+        );
     }
 
     #[tokio::test]

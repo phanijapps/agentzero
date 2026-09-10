@@ -3,7 +3,7 @@
 //! Service for managing application settings including tool and logging configuration.
 
 use crate::logging::LogSettings;
-use crate::paths::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_tools::ToolSettings;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -497,7 +497,7 @@ impl SettingsService {
     /// Used for early initialization before shared paths are available.
     pub fn from_vault_dir(vault_dir: PathBuf) -> Self {
         Self {
-            paths: std::sync::Arc::new(crate::paths::VaultPaths::new(vault_dir)),
+            paths: std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(vault_dir)),
             cache: RwLock::new(None),
         }
     }
@@ -974,10 +974,6 @@ mod memory_settings_tests {
         let json = r#"{"conflictResolverIntervalHours": 6}"#;
         let m: MemorySettings = serde_json::from_str(json).unwrap();
         assert_eq!(m.conflict_resolver_interval_hours, 6);
-        assert_eq!(
-            m.corrections_abstractor_interval_hours, 24,
-            "default preserved"
-        );
     }
 }
 

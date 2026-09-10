@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use agent_primitives::vault_paths::VaultPaths;
 use gateway_execution::invoke::setup::AgentLoader;
-use gateway_services::{AgentService, ProviderService, SettingsService, VaultPaths};
+use gateway_services::{AgentService, ProviderService, SettingsService};
 
 // ============================================================================
 // HELPERS
@@ -141,7 +142,7 @@ async fn load_or_create_specialist_rejects_reserved_root_agent_id() {
         .await
         .expect_err("delegated root should be rejected");
 
-    assert!(err.contains("Reserved system agent id"));
+    assert!(err.to_string().contains("Reserved system agent id"));
 }
 
 /// Happy path: a ward directory with an `AGENTS.md` doctrine file produces
@@ -192,6 +193,9 @@ async fn load_or_create_specialist_synthesizes_ward_agent() {
             .contains("# --- WARD DOCTRINE: maritime ---"),
         "instructions should contain doctrine header"
     );
+    assert!(agent.instructions.contains("already bound to the ward"));
+    assert!(agent.instructions.contains("call update_plan"));
+    assert!(!agent.instructions.contains("ward(action=\"use\")"));
 }
 
 /// Error path: delegating to a `ward:` id whose directory does not exist
@@ -214,7 +218,7 @@ async fn load_or_create_specialist_errors_when_ward_dir_missing() {
         .expect_err("missing ward dir must error in P1");
 
     assert!(
-        err.contains("nonexistent"),
+        err.to_string().contains("nonexistent"),
         "error message should contain the ward name; got: {err}"
     );
 }

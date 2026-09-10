@@ -5,11 +5,15 @@
 use crate::bus::HttpGatewayBus;
 use crate::config::GatewayConfig;
 use crate::cron::{CronScheduler, CronService};
-use crate::error::Result;
+use crate::error::{GatewayError, Result};
 use crate::events::EventBus;
 use crate::http::create_http_router;
 use crate::services::{AgentService, RuntimeService};
 use crate::state::AppState;
+use crate::tasks::durable_agent::{
+    AgentTaskHandler, AgentTaskRuntime, DurableAgentTaskService, GatewayAgentTaskRuntime,
+    AGENT_TASK_TARGET,
+};
 use crate::websocket::WebSocketHandler;
 use discovery::InterfaceEnumerator;
 use gateway_services::{FileWatcher, WatchConfig};
@@ -25,18 +29,32 @@ pub struct GatewayServer {
     ws_handler: Arc<WebSocketHandler>,
     shutdown_tx: Option<broadcast::Sender<()>>,
     bridge_retry_handle: Option<tokio::task::JoinHandle<()>>,
+    durable_work_worker: Option<gateway_bus::WorkWorkerHandle>,
+    a2a_browse_handle: Option<discovery::BrowseHandle>,
+    a2a_candidates: discovery::CandidateRegistry,
     file_watcher: Option<FileWatcher>,
 }
 
 impl GatewayServer {
     /// Create a new gateway server with the given configuration.
     pub fn new(config: GatewayConfig, vault_dir: PathBuf) -> Self {
-        let state = AppState::new(vault_dir);
-        let ws_handler = Arc::new(WebSocketHandler::new_with_surfaces(
-            state.event_bus.clone(),
-            state.runtime.clone(),
-            config.agent_surfaces_enabled,
+        let state = AppState::new_with_a2a(vault_dir, config.a2a_enabled);
+        let agent_tasks = Arc::new(DurableAgentTaskService::new(
+            state.durable_work_store().clone(),
+            state.durable_work_transport().clone(),
+            state.state_service().clone(),
+            state.agents().clone(),
+            state.messages().clone(),
+            AGENT_TASK_TARGET,
         ));
+        let ws_handler = Arc::new(
+            WebSocketHandler::new_with_surfaces(
+                state.event_bus().clone(),
+                state.runtime().clone(),
+                config.agent_surfaces_enabled,
+            )
+            .with_agent_tasks(agent_tasks),
+        );
 
         Self {
             config,
@@ -44,6 +62,9 @@ impl GatewayServer {
             ws_handler,
             shutdown_tx: None,
             bridge_retry_handle: None,
+            durable_work_worker: None,
+            a2a_browse_handle: None,
+            a2a_candidates: discovery::CandidateRegistry::default(),
             file_watcher: None,
         }
     }
@@ -65,7 +86,7 @@ impl GatewayServer {
 
     /// Get the event bus for broadcasting events.
     pub fn event_bus(&self) -> Arc<EventBus> {
-        self.state.event_bus.clone()
+        self.state.event_bus().clone()
     }
 
     /// Get the WebSocket handler.
@@ -75,12 +96,12 @@ impl GatewayServer {
 
     /// Get the agent service.
     pub fn agents(&self) -> Arc<AgentService> {
-        self.state.agents.clone()
+        self.state.agents().clone()
     }
 
     /// Get the runtime service.
     pub fn runtime(&self) -> Arc<RuntimeService> {
-        self.state.runtime.clone()
+        self.state.runtime().clone()
     }
 
     /// Start the gateway server.
@@ -93,21 +114,21 @@ impl GatewayServer {
         self.recover_crashed_sessions();
 
         // Reset any bridge outbox items left inflight from crash
-        if let Err(e) = self.state.bridge_outbox.reset_all_inflight() {
+        if let Err(e) = self.state.bridge_outbox().reset_all_inflight() {
             warn!("Failed to reset bridge inflight items: {}", e);
         }
 
         // Create gateway bus for bridge inbound messages (MUST be before seed_defaults
         // which starts plugins, so plugins have the bus available for inbound messages)
-        if let Some(runner) = self.state.runtime.runner() {
+        if let Some(runner) = self.state.runtime().runner() {
             let bus: Arc<dyn gateway_bus::GatewayBus> = Arc::new(HttpGatewayBus::new(
                 runner.clone(),
-                self.state.state_service.clone(),
-                self.state.paths.vault_dir().clone(),
+                self.state.state_service().clone(),
+                self.state.paths().vault_dir().clone(),
             ));
             // Set bus on plugin manager so plugins can trigger agent sessions
-            self.state.plugin_manager.set_bus(bus.clone()).await;
-            self.state.bridge_bus = Some(bus);
+            self.state.plugin_manager().set_bus(bus.clone()).await;
+            self.state.transport.bridge_bus = Some(bus);
         }
 
         // Reconcile embedding backend: preflight Ollama, reindex on
@@ -118,7 +139,7 @@ impl GatewayServer {
         self.state.seed_defaults().await;
 
         // Initialize connector registry
-        if let Err(e) = self.state.connector_registry.init().await {
+        if let Err(e) = self.state.connector_registry().init().await {
             warn!("Failed to initialize connector registry: {}", e);
         }
 
@@ -130,12 +151,13 @@ impl GatewayServer {
 
         // Spawn bridge outbox retry loop
         self.bridge_retry_handle = Some(gateway_bridge::spawn_retry_loop(
-            self.state.bridge_registry.clone(),
-            self.state.bridge_outbox.clone(),
+            self.state.bridge_registry().clone(),
+            self.state.bridge_outbox().clone(),
         ));
 
         let (shutdown_tx, _) = broadcast::channel(1);
         self.shutdown_tx = Some(shutdown_tx.clone());
+        self.start_durable_work_worker()?;
 
         // Spawn the WS background tasks (subscription cleanup + event
         // router) BEFORE any WS transport starts accepting connections.
@@ -148,7 +170,7 @@ impl GatewayServer {
         // Read network settings from AppSettings (cached in SettingsService).
         // If exposeToLan changed since startup, the user must restart — this
         // read happens at boot so a stale toggle from a prior run is fine.
-        let network_cfg = match self.state.settings.load() {
+        let network_cfg = match self.state.settings().load() {
             Ok(s) => s.network,
             Err(e) => {
                 warn!(
@@ -213,11 +235,16 @@ impl GatewayServer {
                 .clone()
                 .unwrap_or_else(default_instance_name);
 
-            let instance_id = match network_cfg.discovery.instance_id.clone() {
+            let instance_id = match network_cfg
+                .discovery
+                .instance_id
+                .clone()
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+            {
                 Some(id) => id,
                 None => {
                     let new_id = uuid::Uuid::new_v4().to_string();
-                    if let Err(e) = persist_instance_id(&self.state.settings, &new_id) {
+                    if let Err(e) = persist_instance_id(&self.state.settings(), &new_id) {
                         warn!("failed to persist generated instance_id: {}", e);
                     }
                     new_id
@@ -238,6 +265,15 @@ impl GatewayServer {
             txt.insert("name".into(), instance_name.clone());
             txt.insert("path".into(), "/".into());
             txt.insert("ws".into(), "1".into());
+            if self.config.a2a_enabled {
+                match discovery::advertise_a2a_txt_records(
+                    &instance_id,
+                    discovery::A2A_AGENT_CARD_PATH,
+                ) {
+                    Ok(records) => txt.extend(records),
+                    Err(error) => warn!("A2A discovery metadata is invalid: {}", error),
+                }
+            }
             for (k, v) in &network_cfg.discovery.txt_records {
                 txt.entry(k.clone()).or_insert_with(|| v.clone());
             }
@@ -272,7 +308,7 @@ impl GatewayServer {
 
             match advertiser.advertise(info) {
                 Ok(handle) => {
-                    if let Ok(mut guard) = self.state.advertise_handle.lock() {
+                    if let Ok(mut guard) = self.state.advertise_handle().lock() {
                         *guard = Some(handle);
                     }
                     info!("mDNS advertising started for {}", instance_name);
@@ -286,6 +322,24 @@ impl GatewayServer {
             // treats advertise_handle.is_some() as the source of truth for "mDNS
             // is live", not AppState.advertiser's concrete type.
             drop(advertiser);
+
+            if self.config.a2a_enabled {
+                match discovery::MdnsBrowser::new().and_then(|browser| {
+                    discovery::start_browser_if_enabled(
+                        discovery::BrowseConfig::enabled(
+                            network_cfg.discovery.service_type.clone(),
+                        ),
+                        &browser,
+                        self.a2a_candidates.clone(),
+                    )
+                }) {
+                    Ok(handle) => self.a2a_browse_handle = handle,
+                    Err(error) => warn!(
+                        "A2A discovery browser failed to start; configured peers remain usable: {}",
+                        error
+                    ),
+                }
+            }
         }
 
         info!(
@@ -301,8 +355,10 @@ impl GatewayServer {
     /// This pauses all running sessions so they can be resumed on restart,
     /// disconnects bridge workers, and sends the shutdown signal.
     pub async fn shutdown(&mut self) {
+        self.a2a_browse_handle.take();
+
         // Withdraw mDNS advertisement before tearing down the listener.
-        if let Ok(mut guard) = self.state.advertise_handle.lock() {
+        if let Ok(mut guard) = self.state.advertise_handle().lock() {
             if let Some(handle) = guard.take() {
                 drop(handle); // Drop impl sends goodbye, blocks ~100ms
                 info!("mDNS advertisement withdrawn");
@@ -318,9 +374,18 @@ impl GatewayServer {
         }
 
         // Disconnect all bridge workers and abort retry loop
-        self.state.bridge_registry.disconnect_all().await;
+        self.state.bridge_registry().disconnect_all().await;
         if let Some(handle) = self.bridge_retry_handle.take() {
             handle.abort();
+        }
+
+        if let Some(worker) = self.durable_work_worker.take() {
+            if let Err(error) = worker.shutdown().await {
+                warn!(
+                    reason_code = error.reason_code(),
+                    "Durable work worker shutdown did not settle its active claim"
+                );
+            }
         }
 
         if let Some(tx) = &self.shutdown_tx {
@@ -329,11 +394,98 @@ impl GatewayServer {
         }
     }
 
+    fn start_durable_work_worker(&mut self) -> Result<()> {
+        let runtime = Arc::new(GatewayAgentTaskRuntime::new(
+            self.state.runtime().clone(),
+            self.state.state_service().clone(),
+            self.state.messages().clone(),
+            self.state.agents().clone(),
+        ));
+        self.start_durable_work_worker_with_runtime(runtime)
+    }
+
+    fn start_durable_work_worker_with_runtime(
+        &mut self,
+        runtime: Arc<dyn AgentTaskRuntime>,
+    ) -> Result<()> {
+        if self.durable_work_worker.is_some() {
+            return Err(GatewayError::Internal(
+                "durable work worker already started".to_owned(),
+            ));
+        }
+        let limits = gateway_bus::WorkWorkerLimits::new(
+            4,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(3_600),
+            std::time::Duration::from_secs(30),
+        )
+        .map_err(|_| GatewayError::Internal("durable work worker limits invalid".to_owned()))?;
+        let config = gateway_bus::WorkWorkerConfig::new(
+            AGENT_TASK_TARGET,
+            format!("gateway-{}", uuid::Uuid::new_v4()),
+            limits,
+        )
+        .map_err(|_| {
+            GatewayError::Internal("durable work worker configuration invalid".to_owned())
+        })?;
+        let handler: Arc<dyn gateway_bus::WorkHandler> =
+            Arc::new(AgentTaskHandler::new(runtime, AGENT_TASK_TARGET));
+        let peer_handler = self.state.runtime().peer_message_handler().ok_or_else(|| {
+            GatewayError::Internal("durable peer-message handler unavailable".to_owned())
+        })?;
+        let mut handlers = vec![handler, peer_handler];
+        if self.config.a2a_enabled {
+            let remote_transport: Arc<dyn gateway_a2a::client::A2aTransport> =
+                Arc::new(gateway_a2a::client::HttpA2aTransport::default());
+            handlers.push(Arc::new(crate::tasks::a2a::A2aInboundHandler::new(
+                self.state.paths().vault_dir(),
+                self.state.durable_work_store().clone(),
+                self.state.runtime().clone(),
+                self.state.state_service().clone(),
+                self.state.messages().clone(),
+                self.state.agents().clone(),
+            )) as Arc<dyn gateway_bus::WorkHandler>);
+            handlers.push(Arc::new(crate::tasks::a2a::A2aOutboundDispatchHandler::new(
+                self.state.paths().vault_dir(),
+                self.state.durable_work_store().clone(),
+                self.state.durable_work_transport().clone(),
+                remote_transport.clone(),
+            )) as Arc<dyn gateway_bus::WorkHandler>);
+            let steering = self
+                .state
+                .runtime()
+                .runner()
+                .ok_or_else(|| GatewayError::Internal("execution runner unavailable".to_owned()))?
+                .steering_registry();
+            handlers.push(Arc::new(crate::tasks::a2a::A2aOutboundPollHandler::new(
+                self.state.paths().vault_dir(),
+                remote_transport,
+                steering,
+                self.state.state_service().clone(),
+                self.state.messages().clone(),
+                self.state.event_bus().clone(),
+            )) as Arc<dyn gateway_bus::WorkHandler>);
+        }
+        let registry = gateway_bus::WorkHandlerRegistry::from_handlers(handlers).map_err(|_| {
+            GatewayError::Internal("durable work handler registry invalid".to_owned())
+        })?;
+        let worker = gateway_bus::DurableWorkWorker::new(
+            self.state.durable_work_store().clone(),
+            self.state.durable_work_transport().clone(),
+            registry,
+            config,
+        );
+        self.durable_work_worker = Some(worker.start());
+        Ok(())
+    }
+
     /// Pause all running sessions during graceful shutdown.
     ///
     /// This marks running sessions as paused so they can be resumed when the server restarts.
     fn pause_running_sessions(&self) {
-        match self.state.state_service.mark_running_as_paused() {
+        match self.state.state_service().mark_running_as_paused() {
             Ok(count) if count > 0 => {
                 info!("Paused {} running session(s) for graceful shutdown", count);
             }
@@ -351,7 +503,7 @@ impl GatewayServer {
     /// Sessions in RUNNING state at startup indicate an unexpected crash
     /// (graceful shutdown would have paused them). Mark them as CRASHED.
     fn recover_crashed_sessions(&self) {
-        match self.state.state_service.mark_running_as_crashed() {
+        match self.state.state_service().mark_running_as_crashed() {
             Ok(count) if count > 0 => {
                 warn!(
                     "Found {} session(s) still in RUNNING state - marked as CRASHED (unexpected shutdown)",
@@ -375,8 +527,8 @@ impl GatewayServer {
     fn start_file_watchers(&mut self) {
         let mut watcher = FileWatcher::new(WatchConfig::default());
 
-        let skills = self.state.skills.clone();
-        watcher.add_watch(self.state.paths.skills_dir(), "skills", move |path| {
+        let skills = self.state.skills().clone();
+        watcher.add_watch(self.state.paths().skills_dir(), "skills", move |path| {
             tracing::info!("Skills changed: {:?}, invalidating cache", path);
             let skills = skills.clone();
             tokio::spawn(async move {
@@ -384,8 +536,8 @@ impl GatewayServer {
             });
         });
 
-        let agents = self.state.agents.clone();
-        watcher.add_watch(self.state.paths.agents_dir(), "agents", move |path| {
+        let agents = self.state.agents().clone();
+        watcher.add_watch(self.state.paths().agents_dir(), "agents", move |path| {
             tracing::info!("Agents changed: {:?}, invalidating cache", path);
             let agents = agents.clone();
             tokio::spawn(async move {
@@ -393,8 +545,8 @@ impl GatewayServer {
             });
         });
 
-        let event_bus = self.state.event_bus.clone();
-        let config_dir = self.state.paths.config_dir();
+        let event_bus = self.state.event_bus().clone();
+        let config_dir = self.state.paths().config_dir();
         let config_dir_for_filter = config_dir.clone();
         watcher.add_watch(config_dir.clone(), "customization", move |path| {
             // Compute relative path; reject anything outside the customization allow-list.
@@ -432,7 +584,7 @@ impl GatewayServer {
     /// Initialize the cron scheduler.
     async fn init_cron_scheduler(&mut self) {
         // Get the execution runner from the runtime service
-        let runner = match self.state.runtime.runner() {
+        let runner = match self.state.runtime().runner() {
             Some(r) => r.clone(),
             None => {
                 warn!("Cannot initialize cron scheduler: execution runner not available");
@@ -443,12 +595,12 @@ impl GatewayServer {
         // Create the gateway bus for cron to submit sessions
         let gateway_bus = Arc::new(HttpGatewayBus::new(
             runner,
-            self.state.state_service.clone(),
-            self.state.paths.vault_dir().clone(),
+            self.state.state_service().clone(),
+            self.state.paths().vault_dir().clone(),
         ));
 
         // Create cron service and scheduler
-        let cron_service = CronService::new(self.state.paths.clone());
+        let cron_service = CronService::new(self.state.paths().clone());
 
         match CronScheduler::new(cron_service, gateway_bus).await {
             Ok(scheduler) => {
@@ -459,7 +611,7 @@ impl GatewayServer {
                 }
 
                 // Store in state
-                self.state.cron_scheduler = Some(Arc::new(scheduler));
+                self.state.workers.cron_scheduler = Some(Arc::new(scheduler));
 
                 info!("Cron scheduler initialized and started");
             }
@@ -492,7 +644,103 @@ pub(crate) fn persist_instance_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use execution_state::{
+        WorkAuthorization, WorkDraft, WorkEnvelope, WorkFailureCode, WorkPolicy, WorkPolicyError,
+        WorkStatus,
+    };
+    use gateway_bus::WorkTransport;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    struct GatewayWorkPolicy;
+
+    impl WorkPolicy for GatewayWorkPolicy {
+        fn authorize(
+            &self,
+            _draft: &WorkDraft,
+        ) -> std::result::Result<WorkAuthorization, WorkPolicyError> {
+            Ok(WorkAuthorization::new(
+                "gateway-test",
+                "node-local",
+                "root",
+                "session-test",
+                "execution-test",
+            ))
+        }
+    }
+
+    struct PersistedAgentTaskPolicy {
+        task: crate::tasks::durable_agent::AgentTaskV1,
+    }
+
+    impl WorkPolicy for PersistedAgentTaskPolicy {
+        fn authorize(
+            &self,
+            _draft: &WorkDraft,
+        ) -> std::result::Result<WorkAuthorization, WorkPolicyError> {
+            Ok(WorkAuthorization::new(
+                crate::tasks::durable_agent::AGENT_TASK_SOURCE,
+                crate::tasks::durable_agent::AGENT_TASK_TARGET,
+                "connection-restart",
+                &self.task.session_id,
+                &self.task.execution_id,
+            ))
+        }
+    }
+
+    struct RestartRuntime {
+        terminal: AtomicBool,
+        starts: AtomicUsize,
+        resumes: AtomicUsize,
+    }
+
+    impl RestartRuntime {
+        fn new() -> Self {
+            Self {
+                terminal: AtomicBool::new(false),
+                starts: AtomicUsize::new(0),
+                resumes: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tasks::durable_agent::AgentTaskRuntime for RestartRuntime {
+        async fn inspect(
+            &self,
+            _task: &crate::tasks::durable_agent::AgentTaskV1,
+        ) -> std::result::Result<
+            crate::tasks::durable_agent::AgentTaskRunState,
+            crate::tasks::durable_agent::AgentTaskRuntimeError,
+        > {
+            if self.resumes.load(Ordering::SeqCst) == 0 {
+                return Ok(crate::tasks::durable_agent::AgentTaskRunState::Resume);
+            }
+            if self.terminal.load(Ordering::SeqCst) {
+                Ok(crate::tasks::durable_agent::AgentTaskRunState::Completed)
+            } else {
+                Ok(crate::tasks::durable_agent::AgentTaskRunState::Running)
+            }
+        }
+
+        async fn start(
+            &self,
+            _task: &crate::tasks::durable_agent::AgentTaskV1,
+            _actor_id: &str,
+        ) -> std::result::Result<(), crate::tasks::durable_agent::AgentTaskRuntimeError> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn resume(
+            &self,
+            _task: &crate::tasks::durable_agent::AgentTaskV1,
+            _actor_id: &str,
+        ) -> std::result::Result<(), crate::tasks::durable_agent::AgentTaskRuntimeError> {
+            self.resumes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_server_creation() {
@@ -512,5 +760,338 @@ mod tests {
         };
         let server = GatewayServer::new(config, vault_dir);
         assert_eq!(server.config.http_port, 19001);
+    }
+
+    #[tokio::test]
+    async fn gateway_start_and_shutdown_own_one_durable_worker() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault_dir = temp_dir.path().to_path_buf();
+        let config = GatewayConfig {
+            host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            http_port: 0,
+            ..GatewayConfig::default()
+        };
+        let mut server = GatewayServer::new(config, vault_dir);
+
+        server.start().await.unwrap();
+        assert!(server
+            .durable_work_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished()));
+
+        let envelope = WorkEnvelope::authorize(
+            WorkDraft::new(
+                "test.same-store",
+                "zbot.local",
+                serde_json::json!({"value": "same-store"}),
+            ),
+            &GatewayWorkPolicy,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server
+            .state
+            .durable_work_store()
+            .enqueue(&envelope)
+            .unwrap();
+        server
+            .state
+            .durable_work_transport()
+            .publish(&envelope)
+            .await
+            .unwrap();
+        let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server
+                    .state
+                    .durable_work_store()
+                    .get(envelope.id())
+                    .unwrap()
+                {
+                    if item.status() == WorkStatus::DeadLetter {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            stored.last_failure_code(),
+            Some(WorkFailureCode::HandlerUnavailable)
+        );
+
+        let routed = WorkEnvelope::authorize(
+            WorkDraft::new(
+                crate::tasks::durable_agent::AGENT_TASK_KIND,
+                crate::tasks::durable_agent::AGENT_TASK_TARGET,
+                serde_json::json!({"not": "an agent task"}),
+            ),
+            &GatewayWorkPolicy,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server.state.durable_work_store().enqueue(&routed).unwrap();
+        server
+            .state
+            .durable_work_transport()
+            .publish(&routed)
+            .await
+            .unwrap();
+        let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server.state.durable_work_store().get(routed.id()).unwrap() {
+                    if item.status() == WorkStatus::DeadLetter {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            stored.last_failure_code(),
+            Some(WorkFailureCode::InvalidPayload)
+        );
+
+        let peer_routed = WorkEnvelope::authorize(
+            WorkDraft::new(
+                gateway_execution::peer_messaging::PEER_MESSAGE_KIND,
+                gateway_execution::peer_messaging::PEER_MESSAGE_TARGET,
+                serde_json::json!({"not": "a peer message"}),
+            ),
+            &GatewayWorkPolicy,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server
+            .state
+            .durable_work_store()
+            .enqueue(&peer_routed)
+            .unwrap();
+        server
+            .state
+            .durable_work_transport()
+            .publish(&peer_routed)
+            .await
+            .unwrap();
+        let peer_stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server
+                    .state
+                    .durable_work_store()
+                    .get(peer_routed.id())
+                    .unwrap()
+                {
+                    if item.status() == WorkStatus::DeadLetter {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            peer_stored.last_failure_code(),
+            Some(WorkFailureCode::InvalidPayload)
+        );
+        assert!(server.start_durable_work_worker().is_err());
+
+        server.shutdown().await;
+        assert!(server.durable_work_worker.is_none());
+    }
+
+    #[tokio::test]
+    async fn research_enqueue_is_durable_deduplicated_and_conflict_checked() {
+        let temp_dir = TempDir::new().unwrap();
+        let server = GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
+        let service = server.ws_handler.agent_tasks().unwrap();
+        let message_id = "msg-550e8400-e29b-41d4-a716-446655440000";
+
+        let first = service
+            .enqueue_research(
+                "connection-1",
+                "root",
+                "research-1",
+                "Investigate durable handoff",
+                None,
+                Some(message_id),
+            )
+            .await
+            .unwrap();
+        assert!(first.inserted);
+        assert_eq!(
+            first.session_id,
+            crate::tasks::durable_agent::reserved_session_id(message_id)
+        );
+        assert_eq!(
+            first.execution_id,
+            crate::tasks::durable_agent::reserved_execution_id(message_id)
+        );
+        assert_ne!(first.session_id[5..], message_id[4..]);
+
+        let duplicate = service
+            .enqueue_research(
+                "connection-1",
+                "root",
+                "research-1",
+                "Investigate durable handoff",
+                None,
+                Some(message_id),
+            )
+            .await
+            .unwrap();
+        assert!(!duplicate.inserted);
+        assert_eq!(duplicate.work_id, first.work_id);
+
+        assert_eq!(
+            service
+                .enqueue_research(
+                    "connection-1",
+                    "root",
+                    "research-1",
+                    "A conflicting prompt",
+                    None,
+                    Some(message_id),
+                )
+                .await,
+            Err(crate::tasks::durable_agent::AgentTaskEnqueueError::Conflict)
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_restart_polls_persisted_agent_tasks_without_a_wake() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut server =
+            GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
+        let message_id = "msg-550e8400-e29b-41d4-a716-446655440010";
+        let task = crate::tasks::durable_agent::AgentTaskV1 {
+            agent_id: "root".to_owned(),
+            conversation_id: "research-restart".to_owned(),
+            message: "Resume the durable research task".to_owned(),
+            mode: crate::tasks::durable_agent::AgentTaskMode::Research,
+            session_id: crate::tasks::durable_agent::reserved_session_id(message_id),
+            execution_id: crate::tasks::durable_agent::reserved_execution_id(message_id),
+            message_id: message_id.to_owned(),
+        };
+        let session = execution_state::Session::new_with_id(
+            &task.session_id,
+            &task.agent_id,
+            execution_state::TriggerSource::Web,
+        )
+        .unwrap();
+        server
+            .state
+            .state_service()
+            .create_session_from(&session)
+            .unwrap();
+        let execution = execution_state::AgentExecution::new_root_with_id(
+            &task.execution_id,
+            &task.session_id,
+            &task.agent_id,
+        )
+        .unwrap();
+        server
+            .state
+            .state_service()
+            .create_execution(&execution)
+            .unwrap();
+        server
+            .state
+            .messages()
+            .append(&zbot_conversation::Message {
+                id: task.message_id.clone(),
+                execution_id: Some(task.execution_id.clone()),
+                session_id: task.session_id.clone(),
+                role: "user".to_owned(),
+                content: task.message.clone(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                token_count: 1,
+                tool_calls: None,
+                tool_call_id: None,
+                seq: 0,
+            })
+            .unwrap();
+        let persisted = WorkEnvelope::authorize(
+            WorkDraft::new(
+                crate::tasks::durable_agent::AGENT_TASK_KIND,
+                crate::tasks::durable_agent::AGENT_TASK_TARGET,
+                serde_json::to_value(&task).unwrap(),
+            )
+            .with_correlation_id(&task.conversation_id)
+            .with_dedupe_key(&task.message_id),
+            &PersistedAgentTaskPolicy { task: task.clone() },
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        server
+            .state
+            .durable_work_store()
+            .enqueue(&persisted)
+            .unwrap();
+
+        let runtime = Arc::new(RestartRuntime::new());
+        server
+            .start_durable_work_worker_with_runtime(runtime.clone())
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if runtime.resumes.load(Ordering::SeqCst) == 1 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(runtime.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            server
+                .state
+                .durable_work_store()
+                .get(persisted.id())
+                .unwrap()
+                .unwrap()
+                .status(),
+            WorkStatus::Leased,
+            "work must remain leased until the resumed execution is terminal"
+        );
+        let messages = server
+            .state
+            .messages()
+            .replay(&task.session_id, None, 10)
+            .unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "restart must not append the prompt again"
+        );
+        assert_eq!(messages[0].id, task.message_id);
+
+        runtime.terminal.store(true, Ordering::SeqCst);
+        let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = server
+                    .state
+                    .durable_work_store()
+                    .get(persisted.id())
+                    .unwrap()
+                {
+                    if item.status() == WorkStatus::Completed {
+                        return item;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(stored.status(), WorkStatus::Completed);
+        assert_eq!(runtime.resumes.load(Ordering::SeqCst), 1);
+
+        server.shutdown().await;
     }
 }

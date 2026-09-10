@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use agent_runtime::llm::{openai::OpenAiClient, LlmClient, LlmConfig};
+use agent_runtime::llm::LlmClient;
 use async_trait::async_trait;
 use gateway_memory::{LlmClientConfig, MemoryLlmFactory};
 use gateway_services::ProviderService;
@@ -33,22 +33,13 @@ impl MemoryLlmFactory for ProviderServiceLlmFactory {
             .provider_service
             .list()
             .map_err(|e| format!("list providers: {e}"))?;
-        let provider = providers
-            .iter()
-            .find(|p| p.is_default)
-            .or_else(|| providers.first())
+        let provider = gateway_services::select_provider(&providers, None)
             .ok_or_else(|| "no providers configured".to_string())?;
-        let model = provider.default_model().to_string();
-        let provider_id = provider.id.clone().unwrap_or_else(|| "default".to_string());
-        let llm_config = LlmConfig::new(
-            provider.base_url.clone(),
-            provider.api_key.clone(),
-            model,
-            provider_id,
+        gateway_services::provider_client(
+            provider,
+            provider.default_model(),
+            config.temperature,
+            config.max_tokens,
         )
-        .with_temperature(config.temperature)
-        .with_max_tokens(config.max_tokens);
-        let client = OpenAiClient::new(llm_config).map_err(|e| format!("build client: {e}"))?;
-        Ok(Arc::new(client) as Arc<dyn LlmClient>)
     }
 }

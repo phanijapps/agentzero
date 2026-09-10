@@ -30,6 +30,39 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
 
 ---
 
+## multimodal-provider-file-dialects
+
+- **Multimodal Analyze URL Fetch AC2:** Give `multimodal_analyze` real
+  document/file analysis by encoding per-provider file dialects (OpenAI
+  `input_file`, GLM `file_url`) behind an encoder layer. Blocked because the
+  OpenAI-compatible chat/completions surface has no file content part — the
+  current shape (`{"type":"file","file":{"url":…}}`) is rejected by every
+  provider (Ollama: 400 "invalid message format"), so file inputs fast-fail
+  with shell-extraction guidance instead. Unblocked by a provider-dialect
+  encoder selected from the multimodal config, with captured-request tests
+  per dialect.
+
+## main-path-multimodal-dialect
+
+- **Multimodal Analyze URL Fetch (deferred):** Align the main LLM path's
+  multimodal serialization with the OpenAI wire dialect — `ChatMessage`
+  currently serializes image parts as `{"type":"image","source":…}` instead
+  of `{"type":"image_url","image_url":…}`. Latent: no caller flows multimodal
+  parts through the main LLM call today (vision goes through
+  `multimodal_analyze`), but any future native-vision agent message would be
+  rejected by providers. Unblocked by an encoder pass over message content
+  before `build_request_body`, with serialization tests pinning the dialect.
+
+## a2a-external-conformance
+
+- **A2A Federation and Discovery AC17:** Run the official A2A CLI/TCK and a
+  documented two-daemon pair/delegate/get/cancel/restart journey, then record
+  the commands and results in the verification artifact. Blocked because the
+  repository integration suite does not provide an external authenticated A2A
+  client or isolated process harness; unblocked by supplying that harness
+  without weakening peer authentication and passing the advertised HTTP+JSON
+  surface checks.
+
 ## p4-react-router-830
 
 - **P4 CI and E2E Debt Cleanup AC7:** Remove the narrow
@@ -40,21 +73,32 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   multiple other high-severity advisories. Unblocked when the patched release
   is installable and passes install, audit, lint, build, unit, and E2E gates.
 
-## engram-pinned-source-before-release
-
-- **engram-memory-engine-cutover AC5:** Release/publish still needs Engram
-  pinned through the sanctioned dependency mechanism instead of mutable local
-  path dependencies. Blocked on the final source mechanism; unblocked by
-  replacing local Engram path dependencies with the accepted pin and recording
-  metadata, lockfile, revision/provenance, and dirty-state evidence.
-
 ## engram-fresh-db-manual-smoke
 
-- **engram-memory-engine-cutover AC19:** User-run fresh-DB daemon/UI or CLI
-  smoke still needs to cover chat, memory/knowledge activity, AgentZero-owned
-  sleep-cycle cleanup, reload, and Memory/Graph/Observatory tabs. Blocked on
-  manual runtime validation; unblocked by running the smoke against a fresh
-  zbot data directory.
+- **engram-memory-engine-cutover AC19:** The 2026-08-06 isolated fresh-vault
+  smoke recorded provider startup, a root-agent turn, memory write/recall,
+  on-demand consolidation, restart/session reload, and Memory/Graph/Observatory
+  route rendering. Final acceptance is blocked on exercising knowledge-graph
+  activity and an AgentZero-owned sleep-cycle cleanup, and on removing
+  system-instruction fields from persisted traces; unblocked by recording the
+  missing fresh-vault checks and landing/validating the
+  `llm-instruction-log-redaction` follow-up. The separate CLI deep-mode
+  pre-start failure remains tracked below.
+
+## fresh-cli-deep-invocation
+
+- **engram-memory-engine-cutover AC19 smoke:** Fresh-vault CLI one-shot forces
+  deep mode and receives the normalized pre-start failure, while the fast
+  WebSocket route completed a root-agent turn. Blocked on diagnosing the
+  durable Research startup path; unblocked by a targeted fix and fresh-vault
+  CLI evidence.
+
+## llm-instruction-log-redaction
+
+- **engram-memory-engine-cutover AC19 smoke:** Fresh-vault tracing exposed LLM
+  system-instruction fields at info level. Blocked on safe trace serialization;
+  unblocked by redacting instruction/prompt fields before persistence and
+  validating that observability remains useful without private configuration.
 
 ## sqlite-store-crate-split
 

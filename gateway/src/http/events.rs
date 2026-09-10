@@ -24,23 +24,8 @@ use axum::{
     response::sse::{Event, Sse},
 };
 use futures::stream::{self, Stream};
-use serde::Serialize;
 use std::convert::Infallible;
 use std::time::Duration;
-
-/// Event data for SSE streaming.
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct SseEventData {
-    /// Event type (respond, agent_completed, token, etc).
-    pub event_type: String,
-
-    /// Conversation ID.
-    pub conversation_id: String,
-
-    /// Event payload.
-    pub payload: serde_json::Value,
-}
 
 /// Stream events for a specific conversation.
 ///
@@ -52,7 +37,7 @@ pub async fn event_stream(
     State(state): State<AppState>,
     Path(conversation_id): Path<String>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let event_bus = state.event_bus.clone();
+    let event_bus = state.event_bus().clone();
     let receiver = event_bus.subscribe_all();
     let target_conversation = conversation_id.clone();
 
@@ -99,7 +84,7 @@ pub async fn event_stream(
 pub async fn all_events_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let event_bus = state.event_bus.clone();
+    let event_bus = state.event_bus().clone();
     let receiver = event_bus.subscribe_all();
 
     let stream = stream::unfold(

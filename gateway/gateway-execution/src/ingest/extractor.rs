@@ -2,6 +2,7 @@
 //! on the entity list. Concrete LLM-backed impl lands in Tasks 5 and 6.
 //! `NoopExtractor` provides a test-friendly no-op for queue-level tests.
 
+use crate::errors::ExecutionError;
 use crate::ingest::json_shape::parse_llm_json;
 use agent_runtime::llm::{ChatMessage, LlmClient};
 use async_trait::async_trait;
@@ -23,8 +24,6 @@ struct EntityItem {
     type_str: Option<String>,
     summary: Option<String>,
     description: Option<String>,
-    #[allow(dead_code)]
-    aliases: Option<Vec<String>>,
 }
 
 /// Maximum length for the summary property. LLMs sometimes emit long
@@ -70,8 +69,8 @@ pub trait Extractor: Send + Sync {
         &self,
         episode_id: &str,
         chunk_text: &str,
-        kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
-    ) -> Result<(), String>;
+        kg_store: &Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
+    ) -> Result<(), ExecutionError>;
 }
 
 /// Test-only extractor: records each episode id and always succeeds.
@@ -99,8 +98,8 @@ impl Extractor for NoopExtractor {
         &self,
         episode_id: &str,
         _chunk_text: &str,
-        _kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
-    ) -> Result<(), String> {
+        _kg_store: &Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
+    ) -> Result<(), ExecutionError> {
         self.seen.lock().await.push(episode_id.to_string());
         Ok(())
     }
@@ -124,41 +123,22 @@ impl LlmExtractor {
     /// Build an LLM client from the current default provider. Mirrors
     /// `SessionDistiller::build_llm_client` so ingestion picks up provider
     /// changes without needing a restart.
-    fn build_client(&self) -> Result<Arc<dyn LlmClient>, String> {
+    fn build_client(&self) -> Result<Arc<dyn LlmClient>, ExecutionError> {
         let providers = self
             .provider_service
             .list()
-            .map_err(|e| format!("list providers: {e}"))?;
-        if providers.is_empty() {
-            return Err("No LLM providers configured".to_string());
-        }
-        let provider = providers
-            .iter()
-            .find(|p| p.is_default)
-            .or_else(|| providers.first())
-            .ok_or_else(|| "No suitable provider".to_string())?;
-
-        let model = provider.default_model().to_string();
-        let provider_id = provider.id.clone().unwrap_or_else(|| "default".to_string());
-        let config = agent_runtime::llm::LlmConfig::new(
-            provider.base_url.clone(),
-            provider.api_key.clone(),
-            model,
-            provider_id,
-        )
-        .with_temperature(0.2)
-        .with_max_tokens(4096);
-
-        let client = agent_runtime::llm::openai::OpenAiClient::new(config)
-            .map_err(|e| format!("build client: {e}"))?;
-        Ok(Arc::new(client) as Arc<dyn LlmClient>)
+            .map_err(|e| ExecutionError::from(format!("list providers: {e}")))?;
+        let provider = gateway_services::select_provider(&providers, None)
+            .ok_or_else(|| "No LLM providers configured".to_string())?;
+        gateway_services::provider_client(provider, provider.default_model(), 0.2, 4096)
+            .map_err(ExecutionError::from)
     }
 
     async fn extract_entities(
         &self,
         client: &Arc<dyn LlmClient>,
         chunk_text: &str,
-    ) -> Result<Vec<Entity>, String> {
+    ) -> Result<Vec<Entity>, ExecutionError> {
         let system = "You extract named entities from text. \
             Return ONLY valid JSON matching the schema. \
             Do not wrap in code fences. Do not add commentary.";
@@ -183,7 +163,7 @@ impl LlmExtractor {
         let response = client
             .chat(messages, None)
             .await
-            .map_err(|e| format!("llm entity pass failed: {e}"))?;
+            .map_err(|e| ExecutionError::from(format!("llm entity pass failed: {e}")))?;
 
         parse_entities_response(&response.content, &self.agent_id)
     }
@@ -193,7 +173,7 @@ impl LlmExtractor {
         client: &Arc<dyn LlmClient>,
         chunk_text: &str,
         entity_names: &[String],
-    ) -> Result<Vec<RelationshipTriple>, String> {
+    ) -> Result<Vec<RelationshipTriple>, ExecutionError> {
         if entity_names.len() < 2 {
             return Ok(Vec::new());
         }
@@ -217,7 +197,7 @@ impl LlmExtractor {
         let response = client
             .chat(messages, None)
             .await
-            .map_err(|e| format!("llm rel pass failed: {e}"))?;
+            .map_err(|e| ExecutionError::from(format!("llm rel pass failed: {e}")))?;
 
         parse_relationships_response(&response.content, entity_names)
     }
@@ -229,8 +209,8 @@ impl Extractor for LlmExtractor {
         &self,
         episode_id: &str,
         chunk_text: &str,
-        kg_store: &Arc<dyn zbot_stores::KnowledgeGraphStore>,
-    ) -> Result<(), String> {
+        kg_store: &Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>,
+    ) -> Result<(), ExecutionError> {
         if chunk_text.trim().is_empty() {
             return Ok(());
         }
@@ -301,17 +281,17 @@ impl Extractor for LlmExtractor {
         }
 
         // Phase B2: write through the trait surface so SurrealDB
-        // is honored. The trait wants `zbot_stores::ExtractedKnowledge`;
+        // is honored. The trait wants `knowledge_graph::kg_trait::ExtractedKnowledge`;
         // the local `knowledge_graph::ExtractedKnowledge` converts via
         // the `From` impl in zbot-stores.
-        let extracted = zbot_stores::ExtractedKnowledge {
+        let extracted = knowledge_graph::kg_trait::ExtractedKnowledge {
             entities,
             relationships: candidate_rels,
         };
         kg_store
             .store_knowledge(&self.agent_id, extracted)
             .await
-            .map_err(|e| format!("store_knowledge: {e}"))?;
+            .map_err(|e| ExecutionError::from(format!("store_knowledge: {e}")))?;
         Ok(())
     }
 }
@@ -319,7 +299,7 @@ impl Extractor for LlmExtractor {
 fn parse_relationships_response(
     content: &str,
     known_entities: &[String],
-) -> Result<Vec<RelationshipTriple>, String> {
+) -> Result<Vec<RelationshipTriple>, ExecutionError> {
     let env: RelationshipsEnvelope = parse_llm_json(content)?;
     let known: std::collections::HashSet<&str> =
         known_entities.iter().map(|s| s.as_str()).collect();
@@ -362,7 +342,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 /// Parse the LLM's JSON response into typed Entity values.
 /// Strips optional code-fence wrapping. Silently skips malformed items.
-fn parse_entities_response(content: &str, agent_id: &str) -> Result<Vec<Entity>, String> {
+fn parse_entities_response(content: &str, agent_id: &str) -> Result<Vec<Entity>, ExecutionError> {
     let env: EntitiesEnvelope = parse_llm_json(content)?;
     let mut out = Vec::new();
     for item in env.entities {

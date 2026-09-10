@@ -46,7 +46,7 @@ pub async fn open_ward_folder(
     Path(ward_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<OpenWardResponse>, HandlerError> {
-    let path = state.paths.ward_dir(&ward_id);
+    let path = state.paths().ward_dir(&ward_id);
     if !path.exists() {
         return Err((
             StatusCode::NOT_FOUND,

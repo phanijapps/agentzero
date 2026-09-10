@@ -10,8 +10,9 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use agent_primitives::vault_paths::VaultPaths;
 use agent_runtime::llm::embedding::EmbeddingClient;
-use gateway_services::VaultPaths;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_engram_adapter::{
     AdapterConfig, AdapterEmbeddingProviderConfig, AdapterSqliteStorageLayout,
     AllowUnclassifiedPolicy, EmbeddingMode, EngramBeliefStore, EngramKnowledgeGraphStore,
@@ -19,7 +20,7 @@ use zbot_engram_adapter::{
     EngramWikiStore, GovernanceCapabilityHealth, GovernanceOverlay, GovernancePolicy,
     GovernanceSelection, MigrationMode, ScopeTarget, SkosExpansionPolicy, ValidationMode,
 };
-use zbot_stores::{KnowledgeGraphStore, MemoryFactStore};
+use zbot_stores_traits::MemoryFactStore;
 
 /// Engram trait-object bundle used by `AppState` when configured.
 #[derive(Clone)]
@@ -224,9 +225,9 @@ fn map_scope_target(target: gateway_memory::MemoryScopeTarget) -> ScopeTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_primitives::vault_paths::VaultPaths;
     use agent_runtime::llm::embedding::EmbeddingError;
     use async_trait::async_trait;
-    use gateway_services::VaultPaths;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use zbot_engram_adapter::ProviderMode;
@@ -503,7 +504,7 @@ mod tests {
                 "agent-a",
                 "domain",
                 "finance.amd.valuation_methodology",
-                "AMD valuation analysis uses relative valuation methodology",
+                "AMD valuation analysis uses relative valuation against sector peers",
                 0.9,
                 None,
                 None,
@@ -524,14 +525,24 @@ mod tests {
             .get("results")
             .and_then(serde_json::Value::as_array)
             .expect("recall envelope results");
-        assert!(
-            results.is_empty(),
-            "composition-root Engram memory store must not broad-fallback on generic lexical content: {recalled:?}"
-        );
+        // The recording embedder is constant ([1.0, 0.0] for every text), so
+        // semantic recall necessarily returns the seeded fact. The precise
+        // assertion for this fixture: the hit arrived via the VECTOR lane
+        // (match_source "vec") — the live embedding client's vectors drove
+        // the search, not a broad lexical (fts) fallback — and the store
+        // reports no degradation.
         assert_eq!(recalled["degraded"], false);
         assert_eq!(
-            embedder.calls.load(Ordering::SeqCst),
+            results.len(),
             1,
+            "constant embedder recalls the seeded fact: {recalled:?}"
+        );
+        assert_eq!(
+            recalled["recalled"][0]["match_source"], "vec",
+            "hit must come from the semantic lane, not lexical fallback"
+        );
+        assert!(
+            embedder.calls.load(Ordering::SeqCst) >= 1,
             "composition root must pass the live embedding client into Engram memory recall"
         );
     }

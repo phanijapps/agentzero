@@ -32,10 +32,29 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max - 1) + "…";
 }
 
-function describeTimelineEntry(turn: AgentTurn): string | null {
+/**
+ * Silent-phase narration: while the turn is running, the engine heartbeat
+ * (arriving ~every 10s) proves the provider call is alive even when no
+ * tokens have streamed yet. Surface it so a slow provider reads as "still
+ * working" instead of a stale last-event description like "↳ done".
+ */
+function heartbeatSuffix(turn: AgentTurn, now: number): string | null {
+  if (turn.status !== "running" || turn.lastHeartbeatAt == null) return null;
+  const sinceStart = Math.max(0, Math.round((now - turn.startedAt) / 1000));
+  return `still working · ${sinceStart}s`;
+}
+
+function describeTimelineEntry(turn: AgentTurn, now: number = Date.now()): string | null {
+  const beat = heartbeatSuffix(turn, now);
   const last = turn.timeline[turn.timeline.length - 1];
   if (!last) {
-    return turn.status === "running" ? "waiting…" : null;
+    if (turn.status !== "running") return null;
+    return beat ?? "waiting…";
+  }
+  // Heartbeat is newer than the last timeline entry: the agent is inside a
+  // silent model call — prefer the live signal over the stale description.
+  if (beat && turn.lastHeartbeatAt != null && turn.lastHeartbeatAt > last.at) {
+    return beat;
   }
   if (last.kind === "thinking" || last.kind === "note") {
     return truncate(last.text, TICKER_MAX_LEN);

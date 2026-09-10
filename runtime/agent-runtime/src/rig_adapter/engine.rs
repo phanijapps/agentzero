@@ -2,11 +2,8 @@
 //!
 //! Drives a Rig [`Agent`](rig::agent::Agent) built from a [`RigAgentConfig`],
 //! a [`CompletionModel`], and a set of bridged [`ToolDyn`] tools, and maps its
-//! multi-turn stream onto AgentZero [`StreamEvent`]s. The existing
-//! [`AgentExecutor`](crate::executor::AgentExecutor) stays the live engine;
-//! `RigAgentEngine` is the T7 path that will replace it once parity is proven
-//! (T11). It is generic over the model so a stub model can drive it in tests
-//! without the LLM-client bridge (which lands as a separate T7a step).
+//! multi-turn stream onto AgentZero [`StreamEvent`]s. It is generic over the
+//! model so contract tests can drive it without the production provider bridge.
 //!
 //! ## Status (T7)
 //!
@@ -18,10 +15,8 @@
 //! `LlmCompletionModel` bridge (`model.rs`) lets Rig drive the real
 //! OpenAI-compatible `LlmClient`.
 //!
-//! Still deferred (see TODOs):
-//! - token-usage accounting through the bridge (`TokenUpdate`);
-//! - the raw/context/persisted/UI result distinction on `ToolResult`
-//!   (currently the model-visible text only) and tool-role history conversion.
+//! Tool results retain raw/error/duration telemetry separately from the
+//! offloaded/truncated/after-hook context sent to the model.
 //!
 //! T7c is wired: [`RigExecutionHook`] surfaces `before_tool_call`
 //! (`Block`→`Flow::Skip`) and `after_tool_call` (→`Flow::RewriteResult`), and
@@ -29,23 +24,23 @@
 //! `tool_concurrency(1)` keeps the shared context race-free.
 
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agent_primitives::CallbackContext;
 use futures::StreamExt;
 use rig::agent::{
     Agent, AgentBuilder, AgentHook, Flow, MultiTurnStreamItem, StepEvent, StreamingError,
 };
-use rig::completion::message::{ToolResult as RigToolResult, ToolResultContent};
 use rig::completion::{CompletionModel, Message};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
 use rig::tool::{ToolCallExtensions, ToolDyn};
-use serde_json::Value;
 
+use super::resources::SessionResources;
+use super::tool_hook::RigExecutionHook;
+use super::tool_results::{SharedToolResults, ToolResults};
+use crate::engine::hooks::HookSet;
+use crate::engine::ExecutorError;
 use crate::engine::{AgentEngine, StreamEventSink};
-use crate::executor::{AfterToolCallHook, BeforeToolCallHook, ExecutorError, ToolCallDecision};
 use crate::rig_adapter::{RigAgentConfig, SharedToolContext};
 use crate::types::events::current_timestamp;
 use crate::types::{ChatMessage, StreamEvent};
@@ -58,11 +53,15 @@ const DEFAULT_MAX_TURNS: usize = 50;
 /// `execute_*` calls; per-request hidden context is threaded through Rig's
 /// `ToolCallExtensions` each run.
 pub struct RigAgentEngine<M: CompletionModel> {
-    #[allow(dead_code)]
     config: RigAgentConfig,
     agent: Agent<M>,
     shared_context: SharedToolContext,
     max_turns: usize,
+    hard_turn_limit: u32,
+    resources: Option<SessionResources>,
+    hooks: Arc<HookSet>,
+    result_context: crate::ToolResultContextConfig,
+    context_policy: Option<Arc<super::context_policy::ContextPolicy>>,
 }
 
 impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
@@ -90,24 +89,27 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         shared_context: SharedToolContext,
         max_turns: usize,
     ) -> Self {
-        Self::build(config, model, tools, shared_context, max_turns, None, None)
+        Self::build(
+            config,
+            model,
+            tools,
+            shared_context,
+            max_turns,
+            Arc::new(HookSet::new()),
+        )
     }
 
-    /// Same as [`Self::new`] with before/after-tool hooks (T7c). The hooks map
-    /// onto Rig's `Flow` model: `before_tool_call` returning [`ToolCallDecision::Block`]
-    /// becomes `Flow::Skip` (the reason is returned to the model as the tool
-    /// result), and `after_tool_call` returning a replacement becomes
-    /// `Flow::RewriteResult`. The hook also sets the per-call `function_call_id`
-    /// on the shared context from `StepEvent::ToolCall`, resolving the race
-    /// noted in the T6 review.
+    /// Same as [`Self::new`] with the engine hook set. Hooks map onto Rig's
+    /// `Flow` model: a `before_tool` [`crate::ToolDecision::Block`] becomes
+    /// `Flow::Skip` (the reason returns to the model as the tool result);
+    /// an `after_tool` replacement becomes `Flow::RewriteResult`.
     #[must_use]
-    pub fn with_tool_hooks(
+    pub fn with_hooks(
         config: RigAgentConfig,
         model: M,
         tools: Vec<Box<dyn ToolDyn>>,
         shared_context: SharedToolContext,
-        before: Option<BeforeToolCallHook>,
-        after: Option<AfterToolCallHook>,
+        hooks: Arc<HookSet>,
     ) -> Self {
         Self::build(
             config,
@@ -115,8 +117,7 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
             tools,
             shared_context,
             DEFAULT_MAX_TURNS,
-            before,
-            after,
+            hooks,
         )
     }
 
@@ -126,28 +127,70 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         tools: Vec<Box<dyn ToolDyn>>,
         shared_context: SharedToolContext,
         max_turns: usize,
-        before: Option<BeforeToolCallHook>,
-        after: Option<AfterToolCallHook>,
+        hooks: Arc<HookSet>,
     ) -> Self {
-        let hook = RigExecutionHook::<M>::new(shared_context.clone(), before, after);
         let agent = AgentBuilder::new(model)
             .preamble(&config.instructions)
             .tools(tools)
             .default_max_turns(max_turns)
-            .add_hook(hook)
             .build();
         Self {
             config,
             agent,
             shared_context,
             max_turns,
+            hard_turn_limit: 0,
+            resources: None,
+            hooks,
+            result_context: crate::ToolResultContextConfig::default(),
+            context_policy: None,
         }
+    }
+
+    /// Attach the execution's configured MCP sessions, including cleanup for
+    /// an engine discarded before its first run.
+    pub(super) fn with_mcp_session(mut self, manager: Arc<crate::mcp::McpManager>) -> Self {
+        self.resources = Some(SessionResources::new(manager));
+        self
+    }
+
+    pub(super) fn with_result_context(mut self, config: crate::ToolResultContextConfig) -> Self {
+        self.result_context = config;
+        self
+    }
+
+    pub(super) fn with_context_policy(
+        mut self,
+        policy: Arc<super::context_policy::ContextPolicy>,
+    ) -> Self {
+        self.context_policy = Some(policy);
+        self
+    }
+
+    /// Preserve the configured tick-before-check contract without a second loop.
+    pub(super) fn with_execution_turn_limit(mut self, limit: u32) -> Self {
+        self.hard_turn_limit = limit;
+        // Rig's native counter differs at the first round-trip. Apply the
+        // exact policy at its one-based CompletionCall hook instead; disable
+        // the native cap without overflowing Rig's `max_turns + 1`.
+        self.max_turns = usize::MAX - 1;
+        self
+    }
+
+    fn emit_turn_limit(&self, on_event: &mut StreamEventSink<'_>) {
+        on_event(StreamEvent::Done {
+            timestamp: current_timestamp(),
+            final_message: format!(
+                "[Turn limit reached after {} iterations. Stopping execution.]",
+                self.hard_turn_limit
+            ),
+            token_count: 0,
+        });
     }
 
     /// Drive the Rig agent stream and map it onto [`StreamEvent`]s.
     ///
-    /// `stop_flag` enables cooperative cancellation: when set, the loop breaks
-    /// after the current item and finalizes with whatever was accumulated.
+    /// Stop interrupts pending stream polling and never reports completion.
     async fn run(
         &self,
         user_message: &str,
@@ -155,11 +198,63 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         stop_flag: Option<Arc<AtomicBool>>,
         on_event: &mut StreamEventSink<'_>,
     ) -> Result<(), ExecutorError> {
+        let cleanup = self.resources.as_ref().map(SessionResources::for_run);
+        let result = self
+            .run_inner(user_message, history, stop_flag, on_event)
+            .await;
+        if let Some(policy) = &self.context_policy {
+            if let Some(state) = policy.checkpoint() {
+                on_event(StreamEvent::ContextState {
+                    timestamp: current_timestamp(),
+                    state,
+                });
+            }
+        }
+        if let Some(cleanup) = cleanup {
+            if matches!(result, Err(ExecutorError::Stopped)) {
+                // Drop schedules supervised cleanup; user-visible stop must not
+                // wait for a transport's graceful shutdown budget.
+                drop(cleanup);
+            } else {
+                cleanup.close().await;
+            }
+        }
+        result
+    }
+
+    async fn run_inner(
+        &self,
+        user_message: &str,
+        history: &[ChatMessage],
+        stop_flag: Option<Arc<AtomicBool>>,
+        on_event: &mut StreamEventSink<'_>,
+    ) -> Result<(), ExecutorError> {
+        on_event(StreamEvent::Metadata {
+            timestamp: current_timestamp(),
+            agent_id: self.config.agent_id.clone(),
+            model: self.config.model.model.clone(),
+            provider: self.config.model.provider_id.clone(),
+        });
+        let is_stopped = || {
+            stop_flag
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+        };
+        if is_stopped() {
+            return Err(ExecutorError::Stopped);
+        }
         let prompt = Message::user(user_message.to_string());
         let chat_history = convert_history(history);
+        let results = Arc::new(ToolResults::default());
+        let mut policy_events = self
+            .context_policy
+            .as_ref()
+            .map(|policy| policy.begin(history, user_message, chat_history.len(), results.clone()))
+            .transpose()?;
 
         let mut extensions = ToolCallExtensions::new();
         extensions.insert::<SharedToolContext>(self.shared_context.clone());
+        extensions.insert::<SharedToolResults>(results.clone());
 
         // Awaiting the `StreamingPromptRequest` IntoFuture yields the agent
         // stream directly: `Stream<Item = Result<MultiTurnStreamItem, _>>`.
@@ -167,56 +262,101 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
         // matching the legacy executor and keeping the shared `ToolContext`'s
         // per-call state (e.g. function_call_id) race-free until T7c moves it
         // onto a proper per-call carrier.
-        let mut stream = self
+        let limit_reached = Arc::new(AtomicBool::new(false));
+        let mut request = self
             .agent
             .stream_chat(prompt, chat_history)
             .tool_extensions(extensions)
+            .add_hook(RigExecutionHook {
+                ctx: self.shared_context.clone(),
+                hooks: self.hooks.clone(),
+                results: results.clone(),
+                context_config: self.result_context.clone(),
+            })
+            .add_hook(TurnLimitHook {
+                limit: self.hard_turn_limit,
+                reached: limit_reached.clone(),
+            })
             .multi_turn(self.max_turns)
-            .tool_concurrency(1)
-            .await;
+            .tool_concurrency(1);
+        if let Some(policy) = &self.context_policy {
+            request = request.add_hook(super::context_policy::ContextCapture(policy.clone()));
+        }
+        let mut stream = request.await;
 
         let mut final_message = String::new();
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
         let mut tool_names_by_call_id = HashMap::new();
-        while let Some(item) = stream.next().await {
-            if let Some(flag) = &stop_flag {
-                if flag.load(Ordering::Acquire) {
-                    break;
+        let mut signal = super::turn_signal::TurnSignal::Continue;
+        let mut stop_poll = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(10),
+        );
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            // Check before polling Rig: its next poll may dispatch a tool.
+            if is_stopped() {
+                return Err(ExecutorError::Stopped);
+            }
+            let item = tokio::select! {
+            biased;
+            _ = stop_poll.tick(), if stop_flag.is_some() => { continue; }
+            event = async { match policy_events.as_mut() { Some(events) => events.recv().await, None => futures::future::pending().await } }, if policy_events.is_some() => {
+                if let Some(event) = event { on_event(event); } else { policy_events = None; }
+                continue;
+            }
+            _ = heartbeat.tick() => {
+                on_event(StreamEvent::Heartbeat { timestamp: current_timestamp() });
+                continue;
+            }
+            item = stream.next() => item };
+            if let Some(events) = &mut policy_events {
+                while let Ok(event) = events.try_recv() {
+                    on_event(event);
                 }
             }
+            if is_stopped() {
+                return Err(ExecutorError::Stopped);
+            }
+            let Some(item) = item else {
+                break;
+            };
             let item = match item {
                 Ok(item) => item,
-                Err(error) => return Err(map_streaming_error(error)),
+                Err(_) if limit_reached.load(Ordering::Acquire) => {
+                    self.emit_turn_limit(on_event);
+                    return Ok(());
+                }
+                Err(error) => {
+                    return Err(self
+                        .context_policy
+                        .as_ref()
+                        .and_then(|policy| policy.take_error())
+                        .unwrap_or_else(|| map_streaming_error(error)))
+                }
             };
             match item {
                 MultiTurnStreamItem::StreamAssistantItem(content) => match content {
                     StreamedAssistantContent::Text(text) => {
-                        final_message.push_str(&text.text);
-                        on_event(StreamEvent::Token {
-                            timestamp: current_timestamp(),
-                            content: text.text,
-                        });
+                        super::turn_events::map_assistant_text(
+                            self.context_policy.as_ref(),
+                            &text.text,
+                            &mut final_message,
+                            on_event,
+                        );
                     }
                     StreamedAssistantContent::ToolCall { tool_call, .. } => {
-                        let tool_id = tool_call
-                            .call_id
-                            .clone()
-                            .unwrap_or_else(|| tool_call.id.clone());
-                        tool_names_by_call_id
-                            .insert(tool_id.clone(), tool_call.function.name.clone());
-                        on_event(StreamEvent::ToolCallStart {
-                            timestamp: current_timestamp(),
-                            tool_id,
-                            tool_name: tool_call.function.name.clone(),
-                            args: tool_call.function.arguments.clone(),
-                        });
+                        super::turn_events::map_assistant_tool_call(
+                            &tool_call,
+                            &mut tool_names_by_call_id,
+                            results.peer_influenced(),
+                            on_event,
+                        );
                     }
                     StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
-                        on_event(StreamEvent::Reasoning {
-                            timestamp: current_timestamp(),
-                            content: reasoning,
-                        });
+                        super::turn_events::map_reasoning(reasoning, on_event);
                     }
                     other => {
                         // Deltas / complete-reasoning / unknown low-level items
@@ -227,188 +367,86 @@ impl<M: CompletionModel + Send + Sync + 'static> RigAgentEngine<M> {
                 },
                 MultiTurnStreamItem::StreamUserItem(user_content) => match user_content {
                     StreamedUserContent::ToolResult { tool_result, .. } => {
-                        let result_text = tool_result_text(&tool_result);
-                        let is_surface_tool = tool_names_by_call_id
-                            .remove(&tool_result.id)
-                            .is_some_and(|name| name == "present_surface");
-                        on_event(StreamEvent::ToolResult {
-                            timestamp: current_timestamp(),
-                            tool_id: tool_result.id.clone(),
-                            result: result_text.clone(),
-                            context_result: None,
-                            error: None,
-                            duration_ms: None,
-                        });
-                        // Surface tool side-effects set on the shared context
-                        // (delegate/respond), mirroring the legacy executor. Without
-                        // ActionDelegate, delegate_to_agent would not spawn a child
-                        // and wait_agent would hang forever on the Rig path.
-                        let actions = self.shared_context.take_actions();
-                        if let Some(delegate) = actions.delegate {
-                            on_event(StreamEvent::ActionDelegate {
-                                timestamp: current_timestamp(),
-                                agent_id: delegate.agent_id,
-                                task: delegate.task,
-                                context: delegate.context,
-                                wait_for_result: delegate.wait_for_result,
-                                max_iterations: delegate.max_iterations,
-                                output_schema: delegate.output_schema,
-                                skills: delegate.skills,
-                                capability_assignment: delegate.capability_assignment,
-                                planning_capability_catalog: delegate.planning_capability_catalog,
-                                complexity: delegate.complexity,
-                                mode: delegate.mode,
-                                parallel: delegate.parallel,
-                                child_execution_id: delegate.child_execution_id,
-                            });
-                        }
-                        if let Some(respond) = actions.respond {
-                            on_event(StreamEvent::ActionRespond {
-                                timestamp: current_timestamp(),
-                                message: respond.message,
-                                format: respond.format,
-                                conversation_id: respond.conversation_id,
-                                session_id: respond.session_id,
-                                artifacts: respond.artifacts,
-                            });
-                        }
-                        // Surface result-value markers. Ward/update_plan/title
-                        // marker producers signal via their return JSON
-                        // (`__ward_changed__`/`__plan_update`/`__session_title_changed__`
-                        // + payload fields); the legacy executor parses the tool
-                        // output. Without this, legacy marker producers never
-                        // publish the corresponding stream events.
-                        if let Ok(parsed) = serde_json::from_str::<Value>(&result_text) {
-                            if is_surface_tool {
-                                if parsed
-                                    .get("__work_surface")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface) = parsed
-                                        .get("surface")
-                                        .cloned()
-                                        .and_then(|value| serde_json::from_value(value).ok())
-                                    {
-                                        on_event(StreamEvent::WorkSurface {
-                                            timestamp: current_timestamp(),
-                                            surface,
-                                        });
-                                    }
-                                }
-                                if parsed
-                                    .get("__work_surface_updated")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface) = parsed
-                                        .get("surface")
-                                        .cloned()
-                                        .and_then(|value| serde_json::from_value(value).ok())
-                                    {
-                                        on_event(StreamEvent::WorkSurfaceUpdated {
-                                            timestamp: current_timestamp(),
-                                            surface,
-                                        });
-                                    }
-                                }
-                                if parsed
-                                    .get("__work_surface_deleted")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(surface_id) = parsed
-                                        .get("surface_id")
-                                        .and_then(Value::as_str)
-                                        .filter(|id| !id.is_empty() && id.len() <= 128)
-                                    {
-                                        on_event(StreamEvent::WorkSurfaceDeleted {
-                                            timestamp: current_timestamp(),
-                                            surface_id: surface_id.to_owned(),
-                                        });
-                                    }
-                                }
-                            }
-                            if parsed
-                                .get("__session_title_changed__")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                if let Some(title) = parsed.get("title").and_then(Value::as_str) {
-                                    on_event(StreamEvent::SessionTitleChanged {
-                                        timestamp: current_timestamp(),
-                                        title: title.to_string(),
-                                    });
-                                }
-                            }
-                            if parsed
-                                .get("__ward_changed__")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                if let Some(ward_id) = parsed.get("ward_id").and_then(Value::as_str)
-                                {
-                                    on_event(StreamEvent::WardChanged {
-                                        timestamp: current_timestamp(),
-                                        ward_id: ward_id.to_string(),
-                                    });
-                                }
-                            }
-                            if parsed
-                                .get("__plan_update")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                let plan = parsed
-                                    .get("plan")
-                                    .cloned()
-                                    .unwrap_or_else(|| Value::Array(Vec::new()));
-                                let explanation = parsed
-                                    .get("explanation")
-                                    .and_then(Value::as_str)
-                                    .map(std::string::ToString::to_string);
-                                on_event(StreamEvent::ActionPlanUpdate {
-                                    timestamp: current_timestamp(),
-                                    plan,
-                                    explanation,
-                                });
-                            }
-                        }
+                        signal = super::turn_events::map_tool_result(
+                            &tool_result,
+                            &results,
+                            self.context_policy.as_ref(),
+                            &self.shared_context,
+                            &mut tool_names_by_call_id,
+                            on_event,
+                        );
                     }
                 },
                 MultiTurnStreamItem::CompletionCall(cc) => {
-                    // Emit token usage (cumulative) so the gateway records
-                    // per-execution token counts via TokenUpdate → batch_writer.
-                    total_input += cc.usage.input_tokens;
-                    total_output += cc.usage.output_tokens;
-                    on_event(StreamEvent::TokenUpdate {
-                        timestamp: current_timestamp(),
-                        tokens_in: total_input,
-                        tokens_out: total_output,
-                    });
+                    super::turn_events::map_completion_call(
+                        cc.usage.input_tokens,
+                        cc.usage.output_tokens,
+                        &mut total_input,
+                        &mut total_output,
+                        on_event,
+                    );
                 }
-                MultiTurnStreamItem::FinalResponse(_) => {
+                MultiTurnStreamItem::FinalResponse(response) => {
+                    if let (Some(policy), Some(history)) =
+                        (&self.context_policy, response.history())
+                    {
+                        policy.final_history(history);
+                    }
                     // Terminal; final_message accumulated from tokens above.
                 }
                 // `MultiTurnStreamItem` is #[non_exhaustive]; future variants
                 // are ignored until the full mapping lands.
                 _ => {}
             }
+
+            // Delegation yields to the child; a successful respond completes
+            // this execution. Neither permits another model or tool call.
+            // A denied/failed respond has no action and remains recoverable.
+            if signal != super::turn_signal::TurnSignal::Continue {
+                break;
+            }
         }
 
-        on_event(StreamEvent::Done {
-            timestamp: current_timestamp(),
-            final_message,
-            token_count: (total_input + total_output) as usize,
-        });
+        if signal != super::turn_signal::TurnSignal::DelegationYield {
+            on_event(StreamEvent::Done {
+                timestamp: current_timestamp(),
+                final_message,
+                token_count: (total_input + total_output) as usize,
+            });
+        }
+        if self.context_policy.is_none() {
+            on_event(StreamEvent::ContextState {
+                timestamp: current_timestamp(),
+                state: self.shared_context.export_state(),
+            });
+        }
         Ok(())
+    }
+}
+
+/// Hard-limit policy at Rig's request boundary, not a duplicate turn loop.
+struct TurnLimitHook {
+    limit: u32,
+    reached: Arc<AtomicBool>,
+}
+
+impl<M: CompletionModel> AgentHook<M> for TurnLimitHook {
+    async fn on_event(&self, event: StepEvent<'_, M>) -> Flow {
+        if let StepEvent::CompletionCall { turn, .. } = event {
+            if self.limit > 0 && turn >= self.limit as usize {
+                self.reached.store(true, Ordering::Release);
+                return Flow::terminate("Configured hard turn limit reached");
+            }
+        }
+        Flow::cont()
     }
 }
 
 /// Convert AgentZero chat history into rig `Message`s (text-first).
 ///
-/// Tool-result (`role: "tool"`) and multimodal content are not yet converted;
-/// that fidelity rides on the remaining T7 work.
+/// This is Rig's structural seed only on the production path: ContextPolicy
+/// retains the original full-fidelity host messages for provider requests.
+/// Generic models without that policy retain the existing text-only projection.
 fn convert_history(history: &[ChatMessage]) -> Vec<Message> {
     history
         .iter()
@@ -419,19 +457,6 @@ fn convert_history(history: &[ChatMessage]) -> Vec<Message> {
             _ => None,
         })
         .collect()
-}
-
-/// Extract the model-visible text from a rig tool result.
-fn tool_result_text(tool_result: &RigToolResult) -> String {
-    tool_result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            ToolResultContent::Text(text) => Some(text.text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[async_trait::async_trait]
@@ -477,108 +502,24 @@ impl<M: CompletionModel + Send + Sync + 'static> AgentEngine for RigAgentEngine<
 
 /// Map a Rig streaming error onto the AgentZero executor error.
 ///
-/// Kept coarse for the first slice: tool/completion/prompt failures all surface
-/// as `ExecutorError::LlmError`. T7c may split these once the engine handles
-/// tool errors distinctly.
+/// Tool errors and invalid calls recover through tool-result policy before
+/// reaching this boundary; remaining provider/protocol failures are terminal.
 fn map_streaming_error(error: StreamingError) -> ExecutorError {
     ExecutorError::LlmError(error.to_string())
-}
-
-/// AgentZero execution hook bridging before/after-tool behavior onto Rig's
-/// [`Flow`] model and threading the per-call function-call id onto the shared
-/// [`ToolContext`].
-///
-/// - `StepEvent::ToolCall` sets `function_call_id` (resolving the T6 race —
-///   `tool_concurrency(1)` keeps the shared context safe), then applies
-///   `before_tool_call`; [`ToolCallDecision::Block`] becomes [`Flow::skip`].
-/// - `StepEvent::ToolResult` applies `after_tool_call`; a returned replacement
-///   becomes [`Flow::rewrite_result`] (model-visible only — the real result
-///   still ran).
-struct RigExecutionHook<M: CompletionModel> {
-    ctx: SharedToolContext,
-    before: Option<BeforeToolCallHook>,
-    after: Option<AfterToolCallHook>,
-    _marker: PhantomData<M>,
-}
-
-impl<M: CompletionModel> RigExecutionHook<M> {
-    fn new(
-        ctx: SharedToolContext,
-        before: Option<BeforeToolCallHook>,
-        after: Option<AfterToolCallHook>,
-    ) -> Self {
-        Self {
-            ctx,
-            before,
-            after,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<M: CompletionModel> AgentHook<M> for RigExecutionHook<M> {
-    async fn on_event(&self, event: StepEvent<'_, M>) -> Flow {
-        match event {
-            StepEvent::ToolCall {
-                tool_name,
-                tool_call_id,
-                args,
-                ..
-            } => {
-                if let Some(id) = tool_call_id.filter(|id: &&str| !id.is_empty()) {
-                    self.ctx.set_function_call_id((*id).to_string());
-                }
-                if let Some(before) = &self.before {
-                    let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                    if let ToolCallDecision::Block { reason } = before(tool_name, &args_value) {
-                        return Flow::skip(reason);
-                    }
-                }
-                Flow::cont()
-            }
-            StepEvent::CompletionCall { .. } => {
-                // Mirror the legacy executor's per-turn reset of the
-                // delegation claim. Without this, the first delegation's
-                // `app:delegation_active=true` is never released on the Rig
-                // path, so every subsequent `delegate_to_agent` is blocked
-                // with "You already have an active delegation" and the root
-                // deadlocks looping on queued delegations that never spawn.
-                self.ctx
-                    .set_state("app:delegation_active".to_string(), Value::Bool(false));
-                Flow::cont()
-            }
-            StepEvent::ToolResult {
-                tool_name,
-                args,
-                result,
-                ..
-            } => {
-                if let Some(after) = &self.after {
-                    let args_value = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-                    // rig's ToolResult fires for completed calls; the legacy
-                    // executor calls after_tool_call with succeeded=true on
-                    // this path, so we match it.
-                    if let Some(replacement) = after(tool_name, &args_value, result, true) {
-                        return Flow::rewrite_result(replacement);
-                    }
-                }
-                Flow::cont()
-            }
-            _ => Flow::cont(),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rig_adapter::RigToolAdapter;
+    use crate::ToolDecision;
     use rig::completion::{
         AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
         Usage,
     };
     use rig::one_or_many::OneOrMany;
     use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse};
+    use serde_json::Value;
     use std::sync::atomic::AtomicU32;
     use std::sync::Mutex;
 
@@ -725,7 +666,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_closure = stop.clone();
         let mut events = Vec::new();
-        engine
+        let result = engine
             .execute_stream_with_stop_flag("hi", &[], Some(stop.clone()), &mut |event| {
                 let is_token = matches!(event, StreamEvent::Token { .. });
                 events.push(event);
@@ -734,8 +675,8 @@ mod tests {
                     stop_for_closure.store(true, Ordering::Release);
                 }
             })
-            .await
-            .expect("stopped run should still finalize");
+            .await;
+        assert!(matches!(result, Err(ExecutorError::Stopped)));
 
         let tokens: Vec<String> = events
             .iter()
@@ -745,9 +686,9 @@ mod tests {
             })
             .collect();
         // The stop flag is checked before polling the next item, so exactly one
-        // token is emitted before the loop breaks and finalizes.
+        // token is emitted before the run stops without synthetic completion.
         assert_eq!(tokens, vec!["a".to_string()]);
-        assert!(events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
+        assert!(!events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
     }
 
     // End-to-end: the real LlmCompletionModel bridge over a stub AgentZero
@@ -757,7 +698,6 @@ mod tests {
     async fn llm_completion_model_drives_engine_end_to_end() {
         use crate::llm::{ChatResponse, LlmClient, LlmError, StreamCallback, StreamChunk};
         use crate::rig_adapter::model::LlmCompletionModel;
-        use serde_json::Value;
 
         struct StubLlm {
             chunks: Vec<String>,
@@ -803,7 +743,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(StubLlm {
             chunks: vec!["ri".to_string(), "gged".to_string()],
         });
-        let model = LlmCompletionModel::new(client, "stub");
+        let model = LlmCompletionModel::new(client);
         let engine = RigAgentEngine::new(
             sample_config(),
             model,
@@ -839,17 +779,24 @@ mod tests {
 
         let calls = Arc::new(AtomicU32::new(0));
         let tool = RigToolAdapter::boxed(Arc::new(RecordingTool::new("recorder", &calls)));
-        let before: BeforeToolCallHook = Arc::new(|_name, _args| ToolCallDecision::Block {
-            reason: "blocked".to_string(),
-        });
+        struct BlockAll;
+        #[async_trait::async_trait]
+        impl crate::EngineHook for BlockAll {
+            async fn before_tool(&self, _name: &str, _args: &serde_json::Value) -> ToolDecision {
+                ToolDecision::Block {
+                    reason: "blocked".to_string(),
+                }
+            }
+        }
+        let mut hooks = crate::HookSet::new();
+        hooks.add(Arc::new(BlockAll));
 
-        let engine = RigAgentEngine::with_tool_hooks(
+        let engine = RigAgentEngine::with_hooks(
             sample_config(),
             ToolCallModel::new("recorder"),
             vec![tool],
             Arc::new(crate::tools::context::ToolContext::default()),
-            Some(before),
-            None,
+            Arc::new(hooks),
         );
 
         let mut events = Vec::new();
@@ -1028,7 +975,6 @@ mod tests {
     async fn rig_engine_forwards_history_to_llm_unchanged() {
         use crate::llm::{ChatResponse, LlmClient, LlmError, StreamCallback, StreamChunk};
         use crate::rig_adapter::model::LlmCompletionModel;
-        use serde_json::Value;
 
         let sent: Arc<Mutex<Vec<Vec<ChatMessage>>>> = Arc::new(Mutex::new(Vec::new()));
         struct RecordingLlm {
@@ -1075,7 +1021,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(RecordingLlm { sent: sent.clone() });
         let engine = RigAgentEngine::new(
             sample_config(),
-            LlmCompletionModel::new(client, "stub"),
+            LlmCompletionModel::new(client),
             Vec::new(),
             Arc::new(crate::tools::context::ToolContext::default()),
         );
@@ -1238,6 +1184,140 @@ mod tests {
                     if agent_id == "ward:x" && task == "do thing"
             )),
             "ActionDelegate must surface after the tool runs; got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sequential_ward_planner_delegation_stops_later_rig_tools_and_done() {
+        #[derive(Clone)]
+        struct WardThenMutationModel;
+
+        impl CompletionModel for WardThenMutationModel {
+            type Response = ();
+            type StreamingResponse = ();
+            type Client = ();
+
+            fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+                Self
+            }
+
+            async fn completion(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
+                unreachable!("streaming test model")
+            }
+
+            async fn stream(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+            {
+                use rig::streaming::RawStreamingToolCall;
+                let call = |id: &str, name: &str| {
+                    Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall {
+                        id: id.to_string(),
+                        internal_call_id: id.to_string(),
+                        call_id: Some(id.to_string()),
+                        name: name.to_string(),
+                        arguments: serde_json::json!({}),
+                        signature: None,
+                        additional_params: None,
+                    }))
+                };
+                Ok(StreamingCompletionResponse::stream(Box::pin(
+                    futures::stream::iter(vec![
+                        call("ward_call", "ward"),
+                        call("mutation_call", "mutation"),
+                        Ok(RawStreamingChoice::FinalResponse(())),
+                    ]),
+                )))
+            }
+        }
+
+        struct WardPlannerTool;
+        #[async_trait::async_trait]
+        impl agent_primitives::Tool for WardPlannerTool {
+            fn name(&self) -> &str {
+                "ward"
+            }
+            fn description(&self) -> &str {
+                "bind ward and start planner"
+            }
+            async fn execute(
+                &self,
+                ctx: Arc<dyn agent_primitives::ToolContext>,
+                _args: Value,
+            ) -> Result<Value, agent_primitives::error::AgentError> {
+                let mut actions = ctx.actions();
+                actions.delegate = Some(agent_primitives::event::DelegateAction {
+                    agent_id: "planner-agent".to_string(),
+                    task: "plan ward work".to_string(),
+                    context: None,
+                    wait_for_result: true,
+                    max_iterations: None,
+                    output_schema: None,
+                    skills: vec![],
+                    capability_assignment: None,
+                    planning_capability_catalog: None,
+                    complexity: None,
+                    mode: None,
+                    parallel: false,
+                    child_execution_id: None,
+                });
+                ctx.set_actions(actions);
+                Ok(serde_json::json!({
+                    "__ward_changed__": true,
+                    "ward_id": "new-ward",
+                    "planner": "started"
+                }))
+            }
+        }
+
+        let mutation_calls = Arc::new(AtomicU32::new(0));
+        let engine = RigAgentEngine::new(
+            sample_config(),
+            WardThenMutationModel,
+            vec![
+                RigToolAdapter::boxed(Arc::new(WardPlannerTool)),
+                RigToolAdapter::boxed(Arc::new(RecordingTool::new("mutation", &mutation_calls))),
+            ],
+            Arc::new(crate::tools::context::ToolContext::default()),
+        );
+
+        let mut events = Vec::new();
+        engine
+            .execute_stream("hi", &[], &mut |event| events.push(event))
+            .await
+            .expect("run");
+
+        assert_eq!(
+            mutation_calls.load(Ordering::SeqCst),
+            0,
+            "Rig must stop before later tools execute after planner delegation"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ActionDelegate { agent_id, parallel: false, .. }
+                if agent_id == "planner-agent"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::WardChanged { ward_id, .. } if ward_id == "new-ward"
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::Done { .. })),
+            "delegated root must remain resumable instead of completing"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::ContextState { .. })
+        ));
+        let result_index = events.iter().position(|event| matches!(event, StreamEvent::ToolResult { tool_id, .. } if tool_id == "ward_call")).unwrap();
+        assert!(
+            matches!(&events[result_index + 1], StreamEvent::ToolCallEnd { tool_id, .. } if tool_id == "ward_call")
         );
     }
 

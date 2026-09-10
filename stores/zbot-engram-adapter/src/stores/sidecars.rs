@@ -4,11 +4,13 @@
 //! framework concepts. Keeping them here preserves the existing store-trait
 //! contracts without pushing zbot-only schema into Engram.
 
+use agent_primitives::vec_math::cosine_f64;
 use std::{
     collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -112,7 +114,7 @@ impl EngramSidecarStores {
                 PRAGMA journal_mode = WAL;
                 PRAGMA busy_timeout = 5000;
 
-                CREATE TABLE IF NOT EXISTS procedures (
+                CREATE TABLE IF NOT EXISTS zbot_procedures (
                     id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
                     ward_id TEXT,
@@ -126,9 +128,9 @@ impl EngramSidecarStores {
                     embedding_identity_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_sidecar_procedures_ward
-                    ON procedures(ward_id, updated_at);
+                    ON zbot_procedures(ward_id, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_sidecar_procedures_agent_name
-                    ON procedures(agent_id, name, success_count, created_at);
+                    ON zbot_procedures(agent_id, name, success_count, created_at);
 
                 CREATE TABLE IF NOT EXISTS episodes (
                     id TEXT PRIMARY KEY,
@@ -228,11 +230,46 @@ impl EngramSidecarStores {
                 component: SIDECAR_COMPONENT,
                 reason: error.to_string(),
             })?;
-        ensure_optional_column(&connection, "procedures", "embedding_identity_json", "TEXT")
+        // One-time migration: engram main now owns the `procedures` table
+        // name (its own procedural store). Legacy zbot rows in the old
+        // table copy into `zbot_procedures`; the copy is idempotent
+        // (INSERT OR IGNORE) and guarded on the legacy shape.
+        let legacy_has_ward = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('procedures') WHERE name = 'ward_id'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
             .map_err(|error| AdapterError::Bootstrap {
                 component: SIDECAR_COMPONENT,
                 reason: error.to_string(),
             })?;
+        if legacy_has_ward > 0 {
+            connection
+                .execute_batch(
+                    "INSERT OR IGNORE INTO zbot_procedures
+                        (id, agent_id, ward_id, name, success_count, failure_count,
+                         created_at, updated_at, record_json, embedding_json, embedding_identity_json)
+                     SELECT id, agent_id, ward_id, name, success_count, failure_count,
+                            created_at, updated_at, record_json, embedding_json, embedding_identity_json
+                     FROM procedures;",
+                )
+                .map_err(|error| AdapterError::Bootstrap {
+                    component: SIDECAR_COMPONENT,
+                    reason: format!("procedures table migration failed: {error}"),
+                })?;
+        }
+
+        ensure_optional_column(
+            &connection,
+            "zbot_procedures",
+            "embedding_identity_json",
+            "TEXT",
+        )
+        .map_err(|error| AdapterError::Bootstrap {
+            component: SIDECAR_COMPONENT,
+            reason: error.to_string(),
+        })?;
         ensure_optional_column(&connection, "episodes", "embedding_identity_json", "TEXT")
             .map_err(|error| AdapterError::Bootstrap {
                 component: SIDECAR_COMPONENT,
@@ -248,7 +285,7 @@ impl EngramSidecarStores {
         })
     }
 
-    async fn mirror_procedure(&self, procedure: &Procedure) -> Result<(), String> {
+    async fn mirror_procedure(&self, procedure: &Procedure) -> StoreResult<()> {
         let summary = procedure
             .trigger_pattern
             .as_ref()
@@ -275,10 +312,10 @@ impl EngramSidecarStores {
             .put_memory(record)
             .await
             .map(|_| ())
-            .map_err(|_| "canonical procedure mirror failed".to_string())
+            .map_err(|_| StoreError::Backend("canonical procedure mirror failed".to_string()))
     }
 
-    async fn mirror_episode(&self, episode: &SessionEpisode) -> Result<(), String> {
+    async fn mirror_episode(&self, episode: &SessionEpisode) -> StoreResult<()> {
         let record = self.governed_semantic_memory_record(
             &format!("zbot-sidecar:episode:{}", episode.id),
             MemoryKind::Episode,
@@ -296,10 +333,10 @@ impl EngramSidecarStores {
             .put_memory(record)
             .await
             .map(|_| ())
-            .map_err(|_| "canonical episode mirror failed".to_string())
+            .map_err(|_| StoreError::Backend("canonical episode mirror failed".to_string()))
     }
 
-    async fn mirror_evidence_payload(&self, payload: &str) -> Result<(), String> {
+    async fn mirror_evidence_payload(&self, payload: &str) -> StoreResult<()> {
         let Ok(value) = serde_json::from_str::<Value>(payload) else {
             // Normal ingestion chunks are arbitrary text. Only the structured
             // evidence-intake envelope is a durable semantic producer here.
@@ -336,7 +373,7 @@ impl EngramSidecarStores {
             .put_memory(record)
             .await
             .map(|_| ())
-            .map_err(|_| "canonical evidence mirror failed".to_string())
+            .map_err(|_| StoreError::Backend("canonical evidence mirror failed".to_string()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -353,7 +390,7 @@ impl EngramSidecarStores {
         created_at: &str,
         updated_at: Option<&str>,
         record_kind: &str,
-    ) -> Result<MemoryRecord, String> {
+    ) -> StoreResult<MemoryRecord> {
         let created_at = parse_sidecar_timestamp(created_at)?;
         let updated_at = updated_at.map(parse_sidecar_timestamp).transpose()?;
         let scope = self
@@ -433,41 +470,42 @@ impl EngramSidecarStores {
         })
     }
 
-    fn connection(&self) -> Result<MutexGuard<'_, Connection>, String> {
-        self.connection
-            .lock()
-            .map_err(|_| "adapter storage `zbot_sidecars` failed: lock poisoned".to_string())
+    fn connection(&self) -> StoreResult<MutexGuard<'_, Connection>> {
+        self.connection.lock().map_err(|_| {
+            StoreError::Backend("adapter storage `zbot_sidecars` failed: lock poisoned".to_string())
+        })
     }
 
-    fn procedure_by_id(&self, id: &str) -> Result<Option<Procedure>, String> {
+    fn procedure_by_id(&self, id: &str) -> StoreResult<Option<Procedure>> {
         self.connection()?
             .query_row(
-                "SELECT record_json FROM procedures WHERE id = ?1",
+                "SELECT record_json FROM zbot_procedures WHERE id = ?1",
                 params![id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(storage_error)?
+            .map_err(|error| StoreError::from(storage_error(error)))?
             .map(|json| serde_json::from_str::<Procedure>(&json))
             .transpose()
-            .map_err(|error| format!("decode Procedure: {error}"))
+            .map_err(|error| StoreError::Invalid(format!("decode Procedure: {error}")))
     }
 
     fn upsert_procedure_record(
         &self,
         procedure: &Procedure,
         embedding: Option<&[f32]>,
-    ) -> Result<(), String> {
-        let record_json = serde_json::to_string(procedure).map_err(|error| error.to_string())?;
+    ) -> StoreResult<()> {
+        let record_json = serde_json::to_string(procedure)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_json = embedding
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_identity_json = embedding.map(|_| encode_identity(&self.embedding_identity));
         self.connection()?
             .execute(
                 r#"
-                INSERT INTO procedures
+                INSERT INTO zbot_procedures
                     (id, agent_id, ward_id, name, success_count, failure_count,
                      created_at, updated_at, record_json, embedding_json, embedding_identity_json)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
@@ -480,8 +518,8 @@ impl EngramSidecarStores {
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
                     record_json = excluded.record_json,
-                    embedding_json = COALESCE(excluded.embedding_json, procedures.embedding_json),
-                    embedding_identity_json = COALESCE(excluded.embedding_identity_json, procedures.embedding_identity_json)
+                    embedding_json = COALESCE(excluded.embedding_json, zbot_procedures.embedding_json),
+                    embedding_identity_json = COALESCE(excluded.embedding_identity_json, zbot_procedures.embedding_identity_json)
                 "#,
                 params![
                     procedure.id.as_str(),
@@ -497,25 +535,35 @@ impl EngramSidecarStores {
                     embedding_identity_json,
                 ],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    fn row_jsons(&self, sql: &str, values: Vec<SqlValue>) -> Result<Vec<Value>, String> {
+    fn row_jsons(&self, sql: &str, values: Vec<SqlValue>) -> StoreResult<Vec<Value>> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare(sql).map_err(storage_error)?;
+        let mut statement = connection
+            .prepare(sql)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let mut rows = statement
             .query(params_from_iter(values))
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let mut values = Vec::new();
-        while let Some(row) = rows.next().map_err(storage_error)? {
-            let json: String = row.get(0).map_err(storage_error)?;
-            values.push(serde_json::from_str(&json).map_err(|error| error.to_string())?);
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| StoreError::from(storage_error(error)))?
+        {
+            let json: String = row
+                .get(0)
+                .map_err(|error| StoreError::from(storage_error(error)))?;
+            values.push(
+                serde_json::from_str(&json)
+                    .map_err(|error| StoreError::Backend(error.to_string()))?,
+            );
         }
         Ok(values)
     }
 
-    fn kg_episode_value(&self, id: &str) -> Result<Option<Value>, String> {
+    fn kg_episode_value(&self, id: &str) -> StoreResult<Option<Value>> {
         self.connection()?
             .query_row(
                 "SELECT id, source_type, source_ref, content_hash, session_id, agent_id,
@@ -525,15 +573,10 @@ impl EngramSidecarStores {
                 kg_episode_from_row,
             )
             .optional()
-            .map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 
-    fn insert_compaction(
-        &self,
-        run_id: &str,
-        kind: &str,
-        payload: Value,
-    ) -> Result<String, String> {
+    fn insert_compaction(&self, run_id: &str, kind: &str, payload: Value) -> StoreResult<String> {
         let id = format!("cmp-{}", Uuid::new_v4());
         self.connection()?
             .execute(
@@ -541,16 +584,16 @@ impl EngramSidecarStores {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![id, run_id, kind, payload.to_string(), now()],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(id)
     }
 }
 
 #[async_trait]
 impl ProcedureStore for EngramSidecarStores {
-    async fn list_by_ward(&self, ward_id: &str, limit: usize) -> Result<Vec<Value>, String> {
+    async fn list_by_ward(&self, ward_id: &str, limit: usize) -> StoreResult<Vec<Value>> {
         self.row_jsons(
-            "SELECT record_json FROM procedures
+            "SELECT record_json FROM zbot_procedures
              WHERE ward_id = ?1
              ORDER BY updated_at DESC, id ASC
              LIMIT ?2",
@@ -561,13 +604,36 @@ impl ProcedureStore for EngramSidecarStores {
         )
     }
 
+    async fn list_procedure_names(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> StoreResult<Vec<(String, Option<String>)>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT json_extract(record_json, '$.name'),
+                        json_extract(record_json, '$.description')
+                 FROM zbot_procedures
+                 WHERE agent_id = ?1
+                 ORDER BY updated_at DESC, id ASC
+                 LIMIT ?2",
+            )
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        let rows = statement
+            .query_map(params![agent_id, limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::from(storage_error(error)))
+    }
+
     async fn upsert_procedure(
         &self,
-        procedure: Value,
+        mut procedure: Procedure,
         embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
-        let mut procedure: Procedure = serde_json::from_value(procedure)
-            .map_err(|error| format!("decode Procedure: {error}"))?;
+    ) -> StoreResult<()> {
         procedure.embedding = None;
         self.mirror_procedure(&procedure).await?;
         self.upsert_procedure_record(&procedure, embedding.as_deref())
@@ -579,7 +645,7 @@ impl ProcedureStore for EngramSidecarStores {
         agent_id: &str,
         ward_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         self.search_procedures_by_similarity_with_identity(
             embedding, None, agent_id, ward_id, limit,
         )
@@ -593,7 +659,7 @@ impl ProcedureStore for EngramSidecarStores {
         agent_id: &str,
         ward_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         if !identity_compatible(&self.embedding_identity, query_identity, embedding.len()) {
             return Ok(Vec::new());
         }
@@ -604,26 +670,37 @@ impl ProcedureStore for EngramSidecarStores {
             clauses.push(format!("ward_id = ?{}", values.len()));
         }
         let sql = format!(
-            "SELECT record_json, embedding_json, embedding_identity_json FROM procedures WHERE {}",
+            "SELECT record_json, embedding_json, embedding_identity_json FROM zbot_procedures WHERE {}",
             clauses.join(" AND ")
         );
         let connection = self.connection()?;
-        let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let mut rows = statement
             .query(params_from_iter(values))
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let mut scored = Vec::new();
-        while let Some(row) = rows.next().map_err(storage_error)? {
-            let record_json: String = row.get(0).map_err(storage_error)?;
-            let embedding_json: Option<String> = row.get(1).map_err(storage_error)?;
-            let identity_json: Option<String> = row.get(2).map_err(storage_error)?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| StoreError::from(storage_error(error)))?
+        {
+            let record_json: String = row
+                .get(0)
+                .map_err(|error| StoreError::from(storage_error(error)))?;
+            let embedding_json: Option<String> = row
+                .get(1)
+                .map_err(|error| StoreError::from(storage_error(error)))?;
+            let identity_json: Option<String> = row
+                .get(2)
+                .map_err(|error| StoreError::from(storage_error(error)))?;
             let Some(stored) = decode_embedding(embedding_json)? else {
                 continue;
             };
             if !stored_identity_compatible(&self.embedding_identity, identity_json, stored.len())? {
                 continue;
             }
-            let score = cosine_similarity(embedding, &stored);
+            let score = cosine_f64(embedding, &stored);
             if score > 0.0 {
                 scored.push((
                     serde_json::from_str::<Value>(&record_json).map_err(|e| e.to_string())?,
@@ -649,7 +726,7 @@ impl ProcedureStore for EngramSidecarStores {
         id: &str,
         duration_ms: Option<i64>,
         token_cost: Option<i64>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let Some(mut procedure) = self.procedure_by_id(id)? else {
             return Ok(());
         };
@@ -662,7 +739,7 @@ impl ProcedureStore for EngramSidecarStores {
         self.upsert_procedure_record(&procedure, None)
     }
 
-    async fn increment_failure(&self, id: &str) -> Result<(), String> {
+    async fn increment_failure(&self, id: &str) -> StoreResult<()> {
         let Some(mut procedure) = self.procedure_by_id(id)? else {
             return Ok(());
         };
@@ -672,11 +749,11 @@ impl ProcedureStore for EngramSidecarStores {
         self.upsert_procedure_record(&procedure, None)
     }
 
-    async fn procedure_stats(&self) -> Result<ProcedureStats, String> {
+    async fn procedure_stats(&self) -> StoreResult<ProcedureStats> {
         let total = self
             .connection()?
-            .query_row("SELECT COUNT(*) FROM procedures", [], |row| row.get(0))
-            .map_err(storage_error)?;
+            .query_row("SELECT COUNT(*) FROM zbot_procedures", [], |row| row.get(0))
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(ProcedureStats { total })
     }
 
@@ -684,10 +761,10 @@ impl ProcedureStore for EngramSidecarStores {
         &self,
         agent_id: &str,
         name: &str,
-    ) -> Result<Option<ProcedureSummary>, String> {
+    ) -> StoreResult<Option<ProcedureSummary>> {
         self.connection()?
             .query_row(
-                "SELECT id, name, success_count FROM procedures
+                "SELECT id, name, success_count FROM zbot_procedures
                  WHERE agent_id = ?1 AND name = ?2
                  ORDER BY success_count DESC, created_at DESC, id ASC
                  LIMIT 1",
@@ -701,17 +778,17 @@ impl ProcedureStore for EngramSidecarStores {
                 },
             )
             .optional()
-            .map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 
     async fn get_procedure_by_name(
         &self,
         agent_id: &str,
         name: &str,
-    ) -> Result<Option<Procedure>, String> {
+    ) -> StoreResult<Option<Procedure>> {
         self.connection()?
             .query_row(
-                "SELECT record_json FROM procedures
+                "SELECT record_json FROM zbot_procedures
                  WHERE agent_id = ?1 AND name = ?2
                  ORDER BY success_count DESC, created_at DESC, id ASC
                  LIMIT 1",
@@ -719,56 +796,53 @@ impl ProcedureStore for EngramSidecarStores {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(storage_error)?
+            .map_err(|error| StoreError::from(storage_error(error)))?
             .map(|json| serde_json::from_str::<Procedure>(&json))
             .transpose()
-            .map_err(|error| format!("decode Procedure: {error}"))
+            .map_err(|error| StoreError::Invalid(format!("decode Procedure: {error}")))
     }
 
-    async fn dedupe_procedures_by_name(&self) -> Result<usize, String> {
+    async fn dedupe_procedures_by_name(&self) -> StoreResult<usize> {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT agent_id, name FROM procedures
+                "SELECT agent_id, name FROM zbot_procedures
                  GROUP BY agent_id, name HAVING COUNT(*) > 1",
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let groups = statement
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .map_err(storage_error)?
+            .map_err(|error| StoreError::from(storage_error(error)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         drop(statement);
 
         let mut deleted = 0;
         for (agent_id, name) in groups {
             let keep: String = connection
                 .query_row(
-                    "SELECT id FROM procedures
+                    "SELECT id FROM zbot_procedures
                      WHERE agent_id = ?1 AND name = ?2
                      ORDER BY success_count DESC, created_at DESC, id ASC
                      LIMIT 1",
                     params![agent_id, name],
                     |row| row.get(0),
                 )
-                .map_err(storage_error)?;
+                .map_err(|error| StoreError::from(storage_error(error)))?;
             deleted += connection
                 .execute(
-                    "DELETE FROM procedures
+                    "DELETE FROM zbot_procedures
                      WHERE agent_id = ?1 AND name = ?2 AND id <> ?3",
                     params![agent_id, name, keep],
                 )
-                .map_err(storage_error)?;
+                .map_err(|error| StoreError::from(storage_error(error)))?;
         }
         Ok(deleted)
     }
 
-    async fn insert_pattern_procedure(
-        &self,
-        req: PatternProcedureInsert,
-    ) -> Result<String, String> {
+    async fn insert_pattern_procedure(&self, req: PatternProcedureInsert) -> StoreResult<String> {
         let id = format!("proc-{}", Uuid::new_v4());
         let timestamp = now();
         let procedure = Procedure {
@@ -797,7 +871,7 @@ impl ProcedureStore for EngramSidecarStores {
 
 #[async_trait]
 impl EpisodeStore for EngramSidecarStores {
-    async fn list_by_ward(&self, ward_id: &str, limit: usize) -> Result<Vec<Value>, String> {
+    async fn list_by_ward(&self, ward_id: &str, limit: usize) -> StoreResult<Vec<Value>> {
         self.row_jsons(
             "SELECT record_json FROM episodes
              WHERE ward_id = ?1
@@ -812,23 +886,22 @@ impl EpisodeStore for EngramSidecarStores {
 
     async fn insert_episode(
         &self,
-        episode: Value,
+        mut episode: SessionEpisode,
         embedding: Option<Vec<f32>>,
-    ) -> Result<String, String> {
-        let mut episode: SessionEpisode = serde_json::from_value(episode)
-            .map_err(|error| format!("decode SessionEpisode: {error}"))?;
+    ) -> StoreResult<String> {
         if episode.id.is_empty() {
             episode.id = format!("ep-{}", Uuid::new_v4());
         }
         let id = episode.id.clone();
         episode.embedding = None;
         self.mirror_episode(&episode).await?;
-        let record_json = serde_json::to_string(&episode).map_err(|error| error.to_string())?;
+        let record_json = serde_json::to_string(&episode)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_json = embedding
             .as_deref()
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let embedding_identity_json = embedding
             .as_ref()
             .map(|_| encode_identity(&self.embedding_identity));
@@ -865,7 +938,7 @@ impl EpisodeStore for EngramSidecarStores {
                     embedding_identity_json,
                 ],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(id)
     }
 
@@ -875,7 +948,7 @@ impl EpisodeStore for EngramSidecarStores {
         embedding: &[f32],
         threshold: f32,
         limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         self.search_episodes_by_similarity_with_identity(
             agent_id, embedding, None, threshold, limit,
         )
@@ -889,7 +962,7 @@ impl EpisodeStore for EngramSidecarStores {
         query_identity: Option<&EmbeddingQueryIdentity>,
         threshold: f32,
         limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         if !identity_compatible(&self.embedding_identity, query_identity, embedding.len()) {
             return Ok(Vec::new());
         }
@@ -898,20 +971,31 @@ impl EpisodeStore for EngramSidecarStores {
             .prepare(
                 "SELECT record_json, embedding_json, embedding_identity_json FROM episodes WHERE agent_id = ?1",
             )
-            .map_err(storage_error)?;
-        let mut rows = statement.query(params![agent_id]).map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        let mut rows = statement
+            .query(params![agent_id])
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let mut scored = Vec::new();
-        while let Some(row) = rows.next().map_err(storage_error)? {
-            let record_json: String = row.get(0).map_err(storage_error)?;
-            let embedding_json: Option<String> = row.get(1).map_err(storage_error)?;
-            let identity_json: Option<String> = row.get(2).map_err(storage_error)?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| StoreError::from(storage_error(error)))?
+        {
+            let record_json: String = row
+                .get(0)
+                .map_err(|error| StoreError::from(storage_error(error)))?;
+            let embedding_json: Option<String> = row
+                .get(1)
+                .map_err(|error| StoreError::from(storage_error(error)))?;
+            let identity_json: Option<String> = row
+                .get(2)
+                .map_err(|error| StoreError::from(storage_error(error)))?;
             let Some(stored) = decode_embedding(embedding_json)? else {
                 continue;
             };
             if !stored_identity_compatible(&self.embedding_identity, identity_json, stored.len())? {
                 continue;
             }
-            let score = cosine_similarity(embedding, &stored);
+            let score = cosine_f64(embedding, &stored);
             if score >= f64::from(threshold) {
                 scored.push((
                     serde_json::from_str::<Value>(&record_json).map_err(|e| e.to_string())?,
@@ -937,7 +1021,7 @@ impl EpisodeStore for EngramSidecarStores {
         query: &str,
         ward_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<SessionEpisode>, String> {
+    ) -> StoreResult<Vec<SessionEpisode>> {
         let pattern = format!("%{}%", query);
         let (sql, values) = if let Some(ward_id) = ward_id {
             (
@@ -960,7 +1044,10 @@ impl EpisodeStore for EngramSidecarStores {
         };
         self.row_jsons(sql, values)?
             .into_iter()
-            .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
+            .map(|value| {
+                serde_json::from_value(value)
+                    .map_err(|error| StoreError::Backend(error.to_string()))
+            })
             .collect()
     }
 
@@ -968,10 +1055,10 @@ impl EpisodeStore for EngramSidecarStores {
         &self,
         ward_id: &str,
         limit: usize,
-    ) -> Result<Vec<SessionEpisode>, String> {
+    ) -> StoreResult<Vec<SessionEpisode>> {
         self.row_jsons(
             "SELECT record_json FROM episodes
-             WHERE ward_id = ?1 AND outcome = 'success'
+             WHERE ward_id = ?1 AND outcome IN ('success', 'partial')
              ORDER BY created_at DESC, id ASC LIMIT ?2",
             vec![
                 SqlValue::Text(ward_id.to_string()),
@@ -979,15 +1066,39 @@ impl EpisodeStore for EngramSidecarStores {
             ],
         )?
         .into_iter()
-        .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| StoreError::Backend(error.to_string()))
+        })
         .collect()
     }
 
-    async fn episode_stats(&self) -> Result<EpisodeStats, String> {
+    async fn fetch_recent_failed_by_ward(
+        &self,
+        ward_id: &str,
+        limit: usize,
+    ) -> StoreResult<Vec<SessionEpisode>> {
+        self.row_jsons(
+            "SELECT record_json FROM episodes
+             WHERE ward_id = ?1 AND outcome = 'failed'
+               AND key_learnings IS NOT NULL AND key_learnings != ''
+             ORDER BY created_at DESC, id ASC LIMIT ?2",
+            vec![
+                SqlValue::Text(ward_id.to_string()),
+                SqlValue::Integer(limit as i64),
+            ],
+        )?
+        .into_iter()
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| StoreError::Backend(error.to_string()))
+        })
+        .collect()
+    }
+
+    async fn episode_stats(&self) -> StoreResult<EpisodeStats> {
         let total = self
             .connection()?
             .query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(EpisodeStats { total })
     }
 
@@ -995,7 +1106,7 @@ impl EpisodeStore for EngramSidecarStores {
         &self,
         lookback_days: i64,
         limit: usize,
-    ) -> Result<Vec<SuccessfulEpisode>, String> {
+    ) -> StoreResult<Vec<SuccessfulEpisode>> {
         let cutoff = (Utc::now() - Duration::days(lookback_days)).to_rfc3339();
         let connection = self.connection()?;
         let mut statement = connection
@@ -1005,7 +1116,7 @@ impl EpisodeStore for EngramSidecarStores {
                  WHERE outcome = 'success' AND created_at >= ?1
                  ORDER BY created_at DESC, id ASC LIMIT ?2",
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let rows = statement
             .query_map(params![cutoff, limit as i64], |row| {
                 Ok((
@@ -1017,10 +1128,10 @@ impl EpisodeStore for EngramSidecarStores {
                     row.get::<_, Option<String>>(5)?,
                 ))
             })
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         rows.map(|row| {
             let (id, session_id, agent_id, task_summary, embedding_json, identity_json) =
-                row.map_err(storage_error)?;
+                row.map_err(|error| StoreError::from(storage_error(error)))?;
             let embedding = decode_embedding(embedding_json)?;
             let embedding = match embedding {
                 Some(vector)
@@ -1048,7 +1159,7 @@ impl EpisodeStore for EngramSidecarStores {
     async fn task_summaries_for_sessions(
         &self,
         session_ids: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> StoreResult<Vec<String>> {
         if session_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1062,17 +1173,20 @@ impl EpisodeStore for EngramSidecarStores {
             .map(|id| SqlValue::Text(id.clone()))
             .collect::<Vec<_>>();
         let connection = self.connection()?;
-        let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let rows = statement
             .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
-            .map_err(storage_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 }
 
 #[async_trait]
 impl KgEpisodeStore for EngramSidecarStores {
-    async fn get_episode(&self, id: &str) -> Result<Option<Value>, String> {
+    async fn get_episode(&self, id: &str) -> StoreResult<Option<Value>> {
         self.kg_episode_value(id)
     }
 
@@ -1080,7 +1194,7 @@ impl KgEpisodeStore for EngramSidecarStores {
         &self,
         source_type: &str,
         content_hash: &str,
-    ) -> Result<Option<Value>, String> {
+    ) -> StoreResult<Option<Value>> {
         let id = self
             .connection()?
             .query_row(
@@ -1089,13 +1203,13 @@ impl KgEpisodeStore for EngramSidecarStores {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         id.map(|id| self.kg_episode_value(&id))
             .transpose()
             .map(Option::flatten)
     }
 
-    async fn list_by_session(&self, session_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_by_session(&self, session_id: &str) -> StoreResult<Vec<Value>> {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
@@ -1103,17 +1217,18 @@ impl KgEpisodeStore for EngramSidecarStores {
                         status, retry_count, error, created_at, started_at, completed_at
                  FROM kg_episodes WHERE session_id = ?1 ORDER BY created_at DESC",
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let rows = statement
             .query_map(params![session_id], kg_episode_from_row)
-            .map_err(storage_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 
     async fn status_counts_for_source(
         &self,
         source_ref_prefix: &str,
-    ) -> Result<KgEpisodeStatusCounts, String> {
+    ) -> StoreResult<KgEpisodeStatusCounts> {
         let connection = self.connection()?;
         status_counts(
             &connection,
@@ -1122,7 +1237,7 @@ impl KgEpisodeStore for EngramSidecarStores {
         )
     }
 
-    async fn count_pending_global(&self) -> Result<u64, String> {
+    async fn count_pending_global(&self) -> StoreResult<u64> {
         self.connection()?
             .query_row(
                 "SELECT COUNT(*) FROM kg_episodes WHERE status = 'pending'",
@@ -1130,10 +1245,10 @@ impl KgEpisodeStore for EngramSidecarStores {
                 |row| row.get::<_, i64>(0),
             )
             .map(|count| count as u64)
-            .map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 
-    async fn count_pending_for_source(&self, source_ref_prefix: &str) -> Result<u64, String> {
+    async fn count_pending_for_source(&self, source_ref_prefix: &str) -> StoreResult<u64> {
         self.connection()?
             .query_row(
                 "SELECT COUNT(*) FROM kg_episodes
@@ -1142,7 +1257,7 @@ impl KgEpisodeStore for EngramSidecarStores {
                 |row| row.get::<_, i64>(0),
             )
             .map(|count| count as u64)
-            .map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 
     async fn upsert_pending(
@@ -1152,7 +1267,7 @@ impl KgEpisodeStore for EngramSidecarStores {
         content_hash: &str,
         session_id: Option<&str>,
         agent_id: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         if let Some(existing) = self
             .connection()?
             .query_row(
@@ -1161,7 +1276,7 @@ impl KgEpisodeStore for EngramSidecarStores {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(storage_error)?
+            .map_err(|error| StoreError::from(storage_error(error)))?
         {
             return Ok(existing);
         }
@@ -1183,11 +1298,11 @@ impl KgEpisodeStore for EngramSidecarStores {
                     now()
                 ],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(id)
     }
 
-    async fn claim_next_pending(&self) -> Result<Option<Value>, String> {
+    async fn claim_next_pending(&self) -> StoreResult<Option<Value>> {
         let id = self
             .connection()?
             .query_row(
@@ -1198,7 +1313,7 @@ impl KgEpisodeStore for EngramSidecarStores {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let Some(id) = id else {
             return Ok(None);
         };
@@ -1207,31 +1322,31 @@ impl KgEpisodeStore for EngramSidecarStores {
                 "UPDATE kg_episodes SET status = 'running', started_at = ?1 WHERE id = ?2",
                 params![now(), id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         self.kg_episode_value(&id)
     }
 
-    async fn mark_done(&self, id: &str) -> Result<(), String> {
+    async fn mark_done(&self, id: &str) -> StoreResult<()> {
         self.connection()?
             .execute(
                 "UPDATE kg_episodes SET status = 'done', completed_at = ?1, error = NULL WHERE id = ?2",
                 params![now(), id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    async fn mark_failed(&self, id: &str, error: &str) -> Result<(), String> {
+    async fn mark_failed(&self, id: &str, error: &str) -> StoreResult<()> {
         self.connection()?
             .execute(
                 "UPDATE kg_episodes SET status = 'failed', completed_at = ?1, error = ?2 WHERE id = ?3",
                 params![now(), error, id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    async fn retry_if_eligible(&self, id: &str, max_retries: u32) -> Result<bool, String> {
+    async fn retry_if_eligible(&self, id: &str, max_retries: u32) -> StoreResult<bool> {
         let retry_count = self
             .connection()?
             .query_row(
@@ -1240,7 +1355,7 @@ impl KgEpisodeStore for EngramSidecarStores {
                 |row| row.get::<_, i64>(0),
             )
             .optional()
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let Some(retry_count) = retry_count else {
             return Ok(false);
         };
@@ -1255,22 +1370,22 @@ impl KgEpisodeStore for EngramSidecarStores {
                  WHERE id = ?1",
                 params![id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(true)
     }
 
-    async fn set_payload(&self, id: &str, text: &str) -> Result<(), String> {
+    async fn set_payload(&self, id: &str, text: &str) -> StoreResult<()> {
         self.mirror_evidence_payload(text).await?;
         self.connection()?
             .execute(
                 "UPDATE kg_episodes SET payload = ?1 WHERE id = ?2",
                 params![text, id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    async fn get_payload(&self, id: &str) -> Result<Option<String>, String> {
+    async fn get_payload(&self, id: &str) -> StoreResult<Option<String>> {
         self.connection()?
             .query_row(
                 "SELECT payload FROM kg_episodes WHERE id = ?1",
@@ -1278,14 +1393,14 @@ impl KgEpisodeStore for EngramSidecarStores {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))
             .map(Option::flatten)
     }
 }
 
 #[async_trait]
 impl GoalStore for EngramSidecarStores {
-    async fn get_goal(&self, goal_id: &str) -> Result<Option<Value>, String> {
+    async fn get_goal(&self, goal_id: &str) -> StoreResult<Option<Value>> {
         self.connection()?
             .query_row(
                 "SELECT record_json FROM goals WHERE id = ?1",
@@ -1293,13 +1408,13 @@ impl GoalStore for EngramSidecarStores {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(storage_error)?
+            .map_err(|error| StoreError::from(storage_error(error)))?
             .map(|json| serde_json::from_str::<Value>(&json))
             .transpose()
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    async fn list_active_goals(&self, agent_id: &str) -> Result<Vec<Value>, String> {
+    async fn list_active_goals(&self, agent_id: &str) -> StoreResult<Vec<Value>> {
         self.row_jsons(
             "SELECT record_json FROM goals
              WHERE agent_id = ?1 AND state = 'active'
@@ -1308,7 +1423,7 @@ impl GoalStore for EngramSidecarStores {
         )
     }
 
-    async fn create_goal(&self, mut goal: Value) -> Result<String, String> {
+    async fn create_goal(&self, mut goal: Value) -> StoreResult<String> {
         let id = json_string(&goal, "id").unwrap_or_else(|| format!("goal-{}", Uuid::new_v4()));
         let agent_id = json_string(&goal, "agent_id")
             .or_else(|| json_string(&goal, "agentId"))
@@ -1328,11 +1443,11 @@ impl GoalStore for EngramSidecarStores {
                     updated_at = excluded.updated_at",
                 params![id, agent_id, state, goal.to_string(), now()],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(id)
     }
 
-    async fn update_goal_state(&self, goal_id: &str, new_state: &str) -> Result<(), String> {
+    async fn update_goal_state(&self, goal_id: &str, new_state: &str) -> StoreResult<()> {
         let Some(mut goal) = self.get_goal(goal_id).await? else {
             return Ok(());
         };
@@ -1342,7 +1457,7 @@ impl GoalStore for EngramSidecarStores {
                 "UPDATE goals SET state = ?1, record_json = ?2, updated_at = ?3 WHERE id = ?4",
                 params![new_state, goal.to_string(), now(), goal_id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
@@ -1350,7 +1465,7 @@ impl GoalStore for EngramSidecarStores {
         &self,
         goal_id: &str,
         filled_slots_json: &str,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let Some(mut goal) = self.get_goal(goal_id).await? else {
             return Ok(());
         };
@@ -1364,14 +1479,14 @@ impl GoalStore for EngramSidecarStores {
                 "UPDATE goals SET record_json = ?1, updated_at = ?2 WHERE id = ?3",
                 params![goal.to_string(), now(), goal_id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 }
 
 #[async_trait]
 impl RecallLogStore for EngramSidecarStores {
-    async fn log_recall(&self, session_id: &str, fact_key: &str) -> Result<(), String> {
+    async fn log_recall(&self, session_id: &str, fact_key: &str) -> StoreResult<()> {
         self.connection()?
             .execute(
                 "INSERT INTO recall_log (session_id, fact_key, recalled_at)
@@ -1379,22 +1494,23 @@ impl RecallLogStore for EngramSidecarStores {
                  ON CONFLICT(session_id, fact_key) DO UPDATE SET recalled_at = excluded.recalled_at",
                 params![session_id, fact_key, now()],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    async fn get_keys_for_session(&self, session_id: &str) -> Result<Vec<String>, String> {
+    async fn get_keys_for_session(&self, session_id: &str) -> StoreResult<Vec<String>> {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare("SELECT fact_key FROM recall_log WHERE session_id = ?1 ORDER BY fact_key ASC")
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let rows = statement
             .query_map(params![session_id], |row| row.get::<_, String>(0))
-            .map_err(storage_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 
-    async fn get_keys_for_sessions(&self, session_ids: &[String]) -> Result<Vec<String>, String> {
+    async fn get_keys_for_sessions(&self, session_ids: &[String]) -> StoreResult<Vec<String>> {
         if session_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1410,17 +1526,20 @@ impl RecallLogStore for EngramSidecarStores {
             .map(|id| SqlValue::Text(id.clone()))
             .collect::<Vec<_>>();
         let connection = self.connection()?;
-        let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let rows = statement
             .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
-            .map_err(storage_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 }
 
 #[async_trait]
 impl DistillationStore for EngramSidecarStores {
-    async fn insert_run(&self, run: Value) -> Result<(), String> {
+    async fn insert_run(&self, run: Value) -> StoreResult<()> {
         let session_id = json_string(&run, "session_id")
             .or_else(|| json_string(&run, "sessionId"))
             .ok_or_else(|| "distillation run missing session_id".to_string())?;
@@ -1441,11 +1560,11 @@ impl DistillationStore for EngramSidecarStores {
                     updated_at = excluded.updated_at",
                 params![session_id, status, retry_count, run.to_string(), now()],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    async fn get_run_by_session(&self, session_id: &str) -> Result<Option<Value>, String> {
+    async fn get_run_by_session(&self, session_id: &str) -> StoreResult<Option<Value>> {
         self.connection()?
             .query_row(
                 "SELECT record_json FROM distillation_runs WHERE session_id = ?1",
@@ -1453,13 +1572,13 @@ impl DistillationStore for EngramSidecarStores {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(storage_error)?
+            .map_err(|error| StoreError::from(storage_error(error)))?
             .map(|json| serde_json::from_str::<Value>(&json))
             .transpose()
-            .map_err(|error| error.to_string())
+            .map_err(|error| StoreError::Backend(error.to_string()))
     }
 
-    async fn update_retry(&self, session_id: &str) -> Result<(), String> {
+    async fn update_retry(&self, session_id: &str) -> StoreResult<()> {
         let mut run = self.get_run_by_session(session_id).await?.unwrap_or_else(
             || json!({ "session_id": session_id, "status": "failed", "retry_count": 0 }),
         );
@@ -1469,11 +1588,7 @@ impl DistillationStore for EngramSidecarStores {
         self.insert_run(run).await
     }
 
-    async fn update_success(
-        &self,
-        session_id: &str,
-        summary: Option<String>,
-    ) -> Result<(), String> {
+    async fn update_success(&self, session_id: &str, summary: Option<String>) -> StoreResult<()> {
         let mut run = self
             .get_run_by_session(session_id)
             .await?
@@ -1490,12 +1605,11 @@ impl DistillationStore for EngramSidecarStores {
         session_id: &str,
         status: &str,
         error: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let mut run = json!({
             "session_id": session_id,
             "status": status,
-            "retry_count": 0,
-        });
+            "retry_count": 0 });
         if let Some(error) = error {
             set_json_string(&mut run, "error", error);
         }
@@ -1510,7 +1624,7 @@ impl DistillationStore for EngramSidecarStores {
         relationships: i32,
         episode_created: bool,
         duration_ms: i64,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         self.insert_run(json!({
             "session_id": session_id,
             "status": "success",
@@ -1519,9 +1633,8 @@ impl DistillationStore for EngramSidecarStores {
             "entities_extracted": entities,
             "relationships_extracted": relationships,
             "episode_created": episode_created,
-            "duration_ms": duration_ms,
-        }))
-        .await
+            "duration_ms": duration_ms }))
+            .await
     }
 
     async fn record_distillation_failure(
@@ -1530,12 +1643,11 @@ impl DistillationStore for EngramSidecarStores {
         status: &str,
         retry_count: i32,
         error: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         let mut run = json!({
             "session_id": session_id,
             "status": status,
-            "retry_count": retry_count,
-        });
+            "retry_count": retry_count });
         if let Some(error) = error {
             set_json_string(&mut run, "error", error);
         }
@@ -1551,15 +1663,14 @@ impl CompactionStore for EngramSidecarStores {
         loser_entity_id: &str,
         winner_entity_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.insert_compaction(
             run_id,
             "merge",
             json!({
                 "loser_entity_id": loser_entity_id,
                 "winner_entity_id": winner_entity_id,
-                "reason": reason,
-            }),
+                "reason": reason }),
         )
     }
 
@@ -1568,7 +1679,7 @@ impl CompactionStore for EngramSidecarStores {
         run_id: &str,
         fact_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.insert_compaction(
             run_id,
             "synthesis",
@@ -1581,7 +1692,7 @@ impl CompactionStore for EngramSidecarStores {
         run_id: &str,
         procedure_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.insert_compaction(
             run_id,
             "pattern",
@@ -1595,15 +1706,14 @@ impl CompactionStore for EngramSidecarStores {
         entity_id: Option<&str>,
         relationship_id: Option<&str>,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.insert_compaction(
             run_id,
             "prune",
             json!({
                 "entity_id": entity_id,
                 "relationship_id": relationship_id,
-                "reason": reason,
-            }),
+                "reason": reason }),
         )
     }
 
@@ -1612,7 +1722,7 @@ impl CompactionStore for EngramSidecarStores {
         run_id: &str,
         entity_id: &str,
         reason: &str,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.insert_compaction(
             run_id,
             "archival",
@@ -1620,7 +1730,7 @@ impl CompactionStore for EngramSidecarStores {
         )
     }
 
-    async fn latest_run_summary(&self) -> Result<Option<CompactionRunSummary>, String> {
+    async fn latest_run_summary(&self) -> StoreResult<Option<CompactionRunSummary>> {
         let latest = self
             .connection()?
             .query_row(
@@ -1630,7 +1740,7 @@ impl CompactionStore for EngramSidecarStores {
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         let Some((run_id, latest_at)) = latest else {
             return Ok(None);
         };
@@ -1644,7 +1754,7 @@ impl CompactionStore for EngramSidecarStores {
                 params![run_id],
                 |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(Some(CompactionRunSummary {
             run_id,
             latest_at,
@@ -1663,7 +1773,7 @@ impl OutboxStore for EngramSidecarStores {
         session_id: Option<&str>,
         thread_id: Option<&str>,
         agent_id: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         let id = format!("obx-{}", Uuid::new_v4());
         let timestamp = now();
         self.connection()?
@@ -1683,38 +1793,38 @@ impl OutboxStore for EngramSidecarStores {
                     timestamp,
                 ],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(id)
     }
 
-    fn mark_inflight(&self, id: &str) -> Result<(), String> {
+    fn mark_inflight(&self, id: &str) -> StoreResult<()> {
         self.connection()?
             .execute(
                 "UPDATE outbox SET status = 'inflight', updated_at = ?1 WHERE id = ?2",
                 params![now(), id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    fn mark_sent(&self, id: &str) -> Result<(), String> {
+    fn mark_sent(&self, id: &str) -> StoreResult<()> {
         self.connection()?
             .execute(
                 "UPDATE outbox SET status = 'sent', updated_at = ?1 WHERE id = ?2",
                 params![now(), id],
             )
-            .map_err(storage_error)?;
+            .map_err(|error| StoreError::from(storage_error(error)))?;
         Ok(())
     }
 
-    fn reset_inflight(&self, adapter_id: &str) -> Result<usize, String> {
+    fn reset_inflight(&self, adapter_id: &str) -> StoreResult<usize> {
         self.connection()?
             .execute(
                 "UPDATE outbox SET status = 'pending', updated_at = ?1
                  WHERE adapter_id = ?2 AND status = 'inflight'",
                 params![now(), adapter_id],
             )
-            .map_err(storage_error)
+            .map_err(|error| StoreError::from(storage_error(error)))
     }
 }
 
@@ -1731,25 +1841,26 @@ fn kg_episode_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "error": row.get::<_, Option<String>>(8)?,
         "created_at": row.get::<_, String>(9)?,
         "started_at": row.get::<_, Option<String>>(10)?,
-        "completed_at": row.get::<_, Option<String>>(11)?,
-    }))
+        "completed_at": row.get::<_, Option<String>>(11)? }))
 }
 
 fn status_counts(
     connection: &Connection,
     predicate: &str,
     values: &[SqlValue],
-) -> Result<KgEpisodeStatusCounts, String> {
+) -> StoreResult<KgEpisodeStatusCounts> {
     let sql = format!("SELECT status, COUNT(*) FROM kg_episodes WHERE {predicate} GROUP BY status");
-    let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| StoreError::from(storage_error(error)))?;
     let rows = statement
         .query_map(params_from_iter(values.iter().cloned()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
-        .map_err(storage_error)?;
+        .map_err(|error| StoreError::from(storage_error(error)))?;
     let mut counts = KgEpisodeStatusCounts::default();
     for row in rows {
-        let (status, count) = row.map_err(storage_error)?;
+        let (status, count) = row.map_err(|error| StoreError::from(storage_error(error)))?;
         match status.as_str() {
             "pending" => counts.pending = count as u64,
             "running" => counts.running = count as u64,
@@ -1780,11 +1891,11 @@ fn set_json_i64(value: &mut Value, key: &str, content: i64) {
     }
 }
 
-fn decode_embedding(value: Option<String>) -> Result<Option<Vec<f32>>, String> {
+fn decode_embedding(value: Option<String>) -> StoreResult<Option<Vec<f32>>> {
     value
         .map(|json| serde_json::from_str::<Vec<f32>>(&json))
         .transpose()
-        .map_err(|error| format!("decode embedding: {error}"))
+        .map_err(|error| StoreError::Invalid(format!("decode embedding: {error}")))
 }
 
 fn ensure_optional_column(
@@ -1823,22 +1934,22 @@ fn encode_identity(identity: &EmbeddingQueryIdentity) -> String {
         "model": identity.model.clone(),
         "dimensions": identity.dimensions,
         "promptProfile": identity.prompt_profile.clone(),
-        "normalization": identity.normalization.clone(),
-    })
+        "normalization": identity.normalization.clone() })
     .to_string()
 }
 
-fn decode_identity(value: Option<String>) -> Result<Option<EmbeddingQueryIdentity>, String> {
+fn decode_identity(value: Option<String>) -> StoreResult<Option<EmbeddingQueryIdentity>> {
     let Some(json) = value else {
         return Ok(None);
     };
     let value: Value = serde_json::from_str(&json)
-        .map_err(|error| format!("decode embedding identity: {error}"))?;
+        .map_err(|error| StoreError::Invalid(format!("decode embedding identity: {error}")))?;
     let dimensions = value
         .get("dimensions")
         .and_then(Value::as_u64)
-        .ok_or_else(|| "decode embedding identity: missing dimensions".to_string())?
-        as u32;
+        .ok_or_else(|| {
+            StoreError::Invalid("decode embedding identity: missing dimensions".into())
+        })? as u32;
     Ok(Some(EmbeddingQueryIdentity {
         provider_type: value
             .get("providerType")
@@ -1883,7 +1994,7 @@ fn stored_identity_compatible(
     expected: &EmbeddingQueryIdentity,
     identity_json: Option<String>,
     vector_dimensions: usize,
-) -> Result<bool, String> {
+) -> StoreResult<bool> {
     let actual = decode_identity(identity_json)?;
     Ok(identity_compatible(
         expected,
@@ -1892,36 +2003,16 @@ fn stored_identity_compatible(
     ))
 }
 
-fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
-    if left.len() != right.len() || left.is_empty() {
-        return 0.0;
-    }
-
-    let mut dot = 0.0;
-    let mut left_norm = 0.0;
-    let mut right_norm = 0.0;
-    for (left, right) in left.iter().zip(right.iter()) {
-        let left = f64::from(*left);
-        let right = f64::from(*right);
-        dot += left * right;
-        left_norm += left * left;
-        right_norm += right * right;
-    }
-    if left_norm == 0.0 || right_norm == 0.0 {
-        0.0
-    } else {
-        dot / (left_norm.sqrt() * right_norm.sqrt())
-    }
-}
-
 fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
-fn parse_sidecar_timestamp(value: &str) -> Result<DateTime<Utc>, String> {
+fn parse_sidecar_timestamp(value: &str) -> StoreResult<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|timestamp| timestamp.with_timezone(&Utc))
-        .map_err(|_| "sidecar semantic record has an invalid timestamp".to_string())
+        .map_err(|_| {
+            StoreError::Backend("sidecar semantic record has an invalid timestamp".to_string())
+        })
 }
 
 fn storage_error(error: rusqlite::Error) -> String {
@@ -1974,13 +2065,9 @@ mod tests {
         let store = EngramSidecarStores::open(governed_config(&root)).expect("store");
         let procedure = procedure();
 
-        ProcedureStore::upsert_procedure(
-            &store,
-            serde_json::to_value(&procedure).expect("procedure json"),
-            None,
-        )
-        .await
-        .expect("procedure write");
+        ProcedureStore::upsert_procedure(&store, procedure, None)
+            .await
+            .expect("procedure write");
 
         let scope = store
             .mapper
@@ -2026,13 +2113,9 @@ mod tests {
             embedding: None,
             created_at: "2026-07-13T00:00:00Z".to_string(),
         };
-        EpisodeStore::insert_episode(
-            &store,
-            serde_json::to_value(&episode).expect("episode json"),
-            None,
-        )
-        .await
-        .expect("episode write");
+        EpisodeStore::insert_episode(&store, episode, None)
+            .await
+            .expect("episode write");
         let episode_scope = store
             .mapper
             .memory_fact_scope("ward-a", Some("sess-a"))
@@ -2081,8 +2164,7 @@ mod tests {
                 "source_id": "source-a",
                 "source_type": "connector",
                 "session_id": "sess-a",
-                "ward_id": "ward-a",
-            })
+                "ward_id": "ward-a" })
             .to_string(),
         )
         .await

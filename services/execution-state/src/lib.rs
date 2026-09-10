@@ -31,6 +31,7 @@ pub mod handlers;
 mod repository;
 mod service;
 mod types;
+mod work;
 
 #[cfg(test)]
 pub mod test_utils;
@@ -39,6 +40,7 @@ pub mod test_utils;
 pub use repository::StateDbProvider;
 pub use service::StateService;
 pub use types::*;
+pub use work::*;
 
 use axum::{routing::delete, routing::get, routing::post, Router};
 use std::sync::Arc;

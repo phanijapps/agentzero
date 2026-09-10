@@ -36,6 +36,22 @@ pub struct GatewayConfig {
     /// the daemon's `--no-agent-surfaces` flag provides an immediate rollback.
     #[serde(default = "default_agent_surfaces_enabled")]
     pub agent_surfaces_enabled: bool,
+
+    /// Enable the authenticated A2A federation surface. Disabled by default.
+    #[serde(default)]
+    pub a2a_enabled: bool,
+
+    /// Public origin advertised in the A2A Agent Card.
+    #[serde(default)]
+    pub a2a_public_base_url: Option<String>,
+
+    /// Exact browser origins allowed to call authenticated A2A routes.
+    #[serde(default)]
+    pub a2a_allowed_origins: Vec<String>,
+
+    /// Operator-approved public instructions used for inbound remote work.
+    #[serde(default = "default_a2a_public_skill_instructions")]
+    pub a2a_public_skill_instructions: String,
 }
 
 fn default_serve_dashboard() -> bool {
@@ -44,6 +60,10 @@ fn default_serve_dashboard() -> bool {
 
 fn default_agent_surfaces_enabled() -> bool {
     true
+}
+
+fn default_a2a_public_skill_instructions() -> String {
+    "Answer the bounded remote text request without taking external actions.".to_string()
 }
 
 fn default_host() -> IpAddr {
@@ -67,6 +87,10 @@ impl Default for GatewayConfig {
             static_dir: None,
             serve_dashboard: true,
             agent_surfaces_enabled: true,
+            a2a_enabled: false,
+            a2a_public_base_url: None,
+            a2a_allowed_origins: Vec::new(),
+            a2a_public_skill_instructions: default_a2a_public_skill_instructions(),
         }
     }
 }
@@ -171,6 +195,7 @@ mod gateway_config_tests {
         assert!(cfg.serve_dashboard);
         assert!(cfg.cors_enabled);
         assert!(cfg.agent_surfaces_enabled);
+        assert!(!cfg.a2a_enabled);
         assert!(cfg
             .cors_origins
             .contains(&"http://localhost:1420".to_string()));
@@ -223,5 +248,6 @@ mod gateway_config_tests {
         assert!(cfg.cors_origins.is_empty());
         assert!(cfg.static_dir.is_none());
         assert!(cfg.agent_surfaces_enabled);
+        assert!(!cfg.a2a_enabled);
     }
 }

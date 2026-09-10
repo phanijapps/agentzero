@@ -1,4 +1,6 @@
 use chrono::Utc;
+use knowledge_graph::kg_trait::{ExtractedKnowledge, KnowledgeGraphStore};
+use knowledge_graph::types::Direction;
 use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
 use serde_json::json;
 use zbot_engram_adapter::{
@@ -6,7 +8,6 @@ use zbot_engram_adapter::{
     AdapterConfig, AdapterFeature, CapabilityReport, EngramKnowledgeGraphStore, EngramWikiStore,
     GovernancePolicy, GovernanceSelection, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID,
 };
-use zbot_stores::{types::Direction, KnowledgeGraphStore};
 use zbot_stores_domain::WikiArticle;
 use zbot_stores_traits::{EmbeddingQueryIdentity, WikiStore};
 
@@ -169,10 +170,7 @@ async fn wiki_articles_round_trip_through_engram_knowledge() {
     );
 
     store
-        .upsert_article(
-            serde_json::to_value(&article).expect("article json"),
-            Some(vec![0.25, 0.5, 0.75]),
-        )
+        .upsert_article(article.clone(), Some(vec![0.25, 0.5, 0.75]))
         .await
         .expect("upsert");
 
@@ -226,7 +224,7 @@ async fn wiki_articles_round_trip_through_engram_knowledge() {
 
     article.content = "Updated content about Engram knowledge mapping.".to_string();
     store
-        .upsert_article(serde_json::to_value(&article).expect("article json"), None)
+        .upsert_article(article.clone(), None)
         .await
         .expect("update");
     let updated = store
@@ -253,6 +251,58 @@ async fn wiki_articles_round_trip_through_engram_knowledge() {
         .await
         .expect("list after delete")
         .is_empty());
+}
+
+#[tokio::test]
+async fn normalized_entity_lookup_is_exact_case_and_whitespace_insensitive() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(engram_config(&root)).expect("store");
+    let mut entity = Entity::new(
+        "agent-normalized".into(),
+        EntityType::Organization,
+        "AgentZero".into(),
+    );
+    entity.id = "entity-agentzero".to_string();
+    store
+        .upsert_entity("agent-normalized", entity)
+        .await
+        .expect("store entity");
+
+    // These would fill the old `search_entities_by_name(..., 16)` ranked
+    // window, leaving the exact match below it. The normalized lookup must
+    // remain an exact query instead of regressing to ranked substring search.
+    for index in 0..16 {
+        let mut distractor = Entity::new(
+            "agent-normalized".into(),
+            EntityType::Organization,
+            format!("agentzero-distractor-{index}"),
+        );
+        distractor.id = format!("entity-agentzero-distractor-{index}");
+        let distractor_id = store
+            .upsert_entity("agent-normalized", distractor)
+            .await
+            .expect("store distractor");
+        store
+            .bump_entity_mention(&distractor_id)
+            .await
+            .expect("promote distractor");
+    }
+
+    let found = store
+        .get_entity_by_normalized_name("agent-normalized", "  agentzero  ")
+        .await
+        .expect("normalized lookup")
+        .expect("case variant resolves");
+
+    assert_eq!(found.id, "entity-agentzero");
+    assert!(
+        store
+            .get_entity_by_normalized_name("agent-normalized", "agentzero-missing")
+            .await
+            .expect("missing normalized lookup")
+            .is_none(),
+        "normalized lookup is exact, not a substring search"
+    );
 }
 
 #[tokio::test]
@@ -287,7 +337,7 @@ async fn graph_entities_relationships_and_read_models_round_trip() {
             .resolve_entity("agent-a", &EntityType::Person, "Ada", None)
             .await
             .expect("resolve"),
-        zbot_stores::types::ResolveOutcome::Match(found) if found == alice_id
+        knowledge_graph::kg_trait::kg_types::ResolveOutcome::Match(found) if found == alice_id
     ));
 
     let mut rel = Relationship::new(
@@ -684,9 +734,29 @@ async fn relationship_dedup_respects_scope_and_visibility_boundaries() {
 }
 
 #[tokio::test]
-async fn advisory_governance_findings_do_not_block_relationship_writes() {
+async fn admission_gate_rejects_unclassified_entity_and_predicate_before_persisting() {
     let root = tempfile::tempdir().expect("root");
     let store = EngramKnowledgeGraphStore::open(governed_engram_config(&root)).expect("store");
+    let mut unclassified = Entity::new(
+        "agent-a".into(),
+        EntityType::Custom("generated_label".into()),
+        "Generated Label".into(),
+    );
+    unclassified.id = "entity-unclassified".to_string();
+    assert!(store
+        .upsert_entity("agent-a", unclassified)
+        .await
+        .expect_err("custom entity type must be rejected")
+        .to_string()
+        .contains("built-in ontology class"));
+    assert!(store
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
+            "entity-unclassified".into()
+        ))
+        .await
+        .expect("read rejected entity")
+        .is_none());
+
     let mut source = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
     source.id = "entity-governed-alice".to_string();
     let mut target = Entity::new("agent-a".into(), EntityType::Project, "ZBot".into());
@@ -715,41 +785,144 @@ async fn advisory_governance_findings_do_not_block_relationship_writes() {
         json!(["untrusted.ontology:v1"]),
     );
 
-    let relationship_id = store
+    let error = store
         .upsert_relationship("agent-a", relationship)
         .await
-        .expect("advisory write succeeds");
+        .expect_err("custom predicate must be rejected");
+    assert!(error.to_string().contains("built-in ontology predicate"));
 
     let relationships = store
         .list_relationships("agent-a", None, 10, 0)
         .await
         .expect("relationships");
-    assert_eq!(relationships.len(), 1);
-    assert_eq!(
-        relationships[0].properties.get("governance_ontology_ids"),
-        Some(&json!([ZBOT_BASE_ONTOLOGY_ID]))
-    );
-    assert_eq!(
-        relationships[0]
-            .properties
-            .get("governance_taxonomy_scheme_ids"),
-        Some(&json!([ZBOT_GENERAL_SCHEME_ID]))
-    );
-    assert_eq!(
-        relationships[0].properties.get("governance_record_kind"),
-        Some(&json!("relationship"))
-    );
+    assert!(relationships.is_empty());
     let findings = store
         .list_governance_findings(Some("agent-a"), 10)
         .expect("findings");
-    assert_eq!(relationship_id.0, "rel-governance-custom");
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].code, "unknown_predicate");
-    let finding_json = serde_json::to_string(&findings[0]).expect("finding json");
-    assert!(!finding_json.contains("/home/example"));
-    assert!(!finding_json.contains("providers.json"));
-    assert!(!finding_json.contains("TOKEN_VALUE"));
-    assert!(!finding_json.contains("raw_context"));
+    assert!(findings.is_empty());
+}
+
+#[tokio::test]
+async fn admission_gate_rejects_cross_agent_entity_id_takeover_direct_and_in_batch() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(engram_config(&root)).expect("store");
+    let mut owned = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    owned.id = "entity-shared-id".to_string();
+    store
+        .upsert_entity("agent-a", owned)
+        .await
+        .expect("seed owner entity");
+
+    let mut takeover = Entity::new("agent-b".into(), EntityType::Person, "Mallory".into());
+    takeover.id = "entity-shared-id".to_string();
+    let direct_error = store
+        .upsert_entity("agent-b", takeover.clone())
+        .await
+        .expect_err("direct cross-agent takeover must fail");
+    assert!(direct_error
+        .to_string()
+        .contains("entity id belongs to another agent"));
+    let retained = store
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
+            "entity-shared-id".into(),
+        ))
+        .await
+        .expect("read owner")
+        .expect("owner retained");
+    assert_eq!(retained.agent_id, "agent-a");
+    assert_eq!(retained.name, "Alice");
+
+    let mut fresh = Entity::new("agent-b".into(), EntityType::Project, "Fresh".into());
+    fresh.id = "entity-fresh-before-collision".to_string();
+    let batch_error = store
+        .store_knowledge(
+            "agent-b",
+            ExtractedKnowledge {
+                entities: vec![fresh, takeover],
+                relationships: vec![],
+            },
+        )
+        .await
+        .expect_err("batch cross-agent takeover must fail before mutation");
+    assert!(batch_error
+        .to_string()
+        .contains("entity id belongs to another agent"));
+    assert!(store
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
+            "entity-fresh-before-collision".into()
+        ))
+        .await
+        .expect("read fresh")
+        .is_none());
+}
+
+#[tokio::test]
+async fn concurrent_cross_agent_entity_claim_has_exactly_one_owner() {
+    let root = tempfile::tempdir().expect("root");
+    let store =
+        std::sync::Arc::new(EngramKnowledgeGraphStore::open(engram_config(&root)).expect("store"));
+    let mut alice = Entity::new("agent-a".into(), EntityType::Person, "Alice".into());
+    alice.id = "entity-concurrent-claim".to_string();
+    let mut mallory = Entity::new("agent-b".into(), EntityType::Person, "Mallory".into());
+    mallory.id = "entity-concurrent-claim".to_string();
+
+    let (alice_result, mallory_result) = tokio::join!(
+        store.upsert_entity("agent-a", alice),
+        store.upsert_entity("agent-b", mallory)
+    );
+
+    assert_ne!(
+        alice_result.is_ok(),
+        mallory_result.is_ok(),
+        "exactly one agent must acquire a fresh entity ID"
+    );
+    let retained = store
+        .get_entity(&knowledge_graph::kg_trait::kg_types::EntityId(
+            "entity-concurrent-claim".into(),
+        ))
+        .await
+        .expect("read winner")
+        .expect("winner persisted");
+    if alice_result.is_ok() {
+        assert_eq!(retained.agent_id, "agent-a");
+        assert_eq!(retained.name, "Alice");
+        assert!(mallory_result
+            .expect_err("Mallory loses")
+            .to_string()
+            .contains("entity id belongs to another agent"));
+    } else {
+        assert_eq!(retained.agent_id, "agent-b");
+        assert_eq!(retained.name, "Mallory");
+        assert!(alice_result
+            .expect_err("Alice loses")
+            .to_string()
+            .contains("entity id belongs to another agent"));
+    }
+}
+
+#[tokio::test]
+async fn admission_gate_rejects_dangling_relationships() {
+    let root = tempfile::tempdir().expect("root");
+    let store = EngramKnowledgeGraphStore::open(engram_config(&root)).expect("store");
+    let mut relationship = Relationship::new(
+        "agent-a".into(),
+        "missing-source".into(),
+        "missing-target".into(),
+        RelationshipType::RelatedTo,
+    );
+    relationship.id = "rel-dangling".to_string();
+
+    assert!(store
+        .upsert_relationship("agent-a", relationship)
+        .await
+        .expect_err("relationship endpoints must exist")
+        .to_string()
+        .contains("source entity does not exist"));
+    assert!(store
+        .list_relationships("agent-a", None, 10, 0)
+        .await
+        .expect("relationships")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1020,7 +1193,7 @@ async fn hierarchy_aggregate_summary_and_path_round_trip() {
         .list_inter_cluster_relations("agent-a", &[aggregate.clone(), other])
         .await
         .expect("inter");
-    assert_eq!(inter[0].relationship_type, "related-via");
+    assert_eq!(inter[0].relationship_type, "related_to");
 }
 
 #[test]

@@ -76,6 +76,7 @@ export type ResearchAction =
   | { type: "TOOL_CALL"; turnId: string; entry: TimelineEntry }
   | { type: "TOOL_RESULT"; turnId: string; entry: TimelineEntry }
   | { type: "TOKEN"; turnId: string; text: string }
+  | { type: "HEARTBEAT"; turnId: string; at: number }
   | { type: "RESPOND"; turnId: string; text: string }
   | { type: "TOGGLE_THINKING"; turnId: string }
   | { type: "TURN_COMPLETE"; turnId: string }
@@ -106,6 +107,7 @@ function newOpenTurn(payload: UserMessagePayload, prior: number): SessionTurn {
     assistantText: null,
     assistantStreaming: "",
     timeline: [],
+    lastHeartbeatAt: null,
     status: "running",
     startedAt: payload.createdAt,
     endedAt: null,
@@ -190,6 +192,7 @@ function newSubagent(args: {
     wardId: args.wardId,
     request: args.request,
     timeline: [],
+    lastHeartbeatAt: null,
     tokenCount: 0,
     respond: null,
     respondStreaming: "",
@@ -471,6 +474,20 @@ function handleToken(
   }));
 }
 
+function handleHeartbeat(
+  state: ResearchSessionState,
+  action: Extract<ResearchAction, { type: "HEARTBEAT" }>,
+): ResearchSessionState {
+  if (action.turnId === state.rootExecutionId) {
+    return setLastTurn(state, (t) =>
+      t.status === "running" ? { ...t, lastHeartbeatAt: action.at } : t,
+    );
+  }
+  return updateSubagent(state, action.turnId, (s) =>
+    s.status === "running" ? { ...s, lastHeartbeatAt: action.at } : s,
+  );
+}
+
 function handleRespond(
   state: ResearchSessionState,
   action: Extract<ResearchAction, { type: "RESPOND" }>,
@@ -547,6 +564,8 @@ export function reduceResearch(
     case "TOOL_CALL":
     case "TOOL_RESULT":
       return handleTimelineAppend(state, action.turnId, action.entry);
+    case "HEARTBEAT":
+      return handleHeartbeat(state, action);
     case "TOKEN":
       return handleToken(state, action);
     case "RESPOND":

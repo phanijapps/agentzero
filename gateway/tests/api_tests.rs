@@ -206,8 +206,7 @@ async fn autonomy_eligibility_is_a_read_only_policy_projection() {
                 "objective": "Review release state",
                 "next_action": "Inspect the latest checks",
                 "dedupe_key": format!("eligibility-{index}"),
-                "approval_policy": policy,
-            }))
+                "approval_policy": policy }))
             .await;
         create.assert_status(StatusCode::CREATED);
         let created: Value = create.json();
@@ -236,8 +235,8 @@ async fn autonomy_eligibility_is_a_read_only_policy_projection() {
                 .await
                 .assert_status_ok();
         }
-        let before = state.autonomy.get(id).unwrap().unwrap();
-        let runs_before = state.autonomy.runs(id).unwrap();
+        let before = state.autonomy().get(id).unwrap().unwrap();
+        let runs_before = state.autonomy().runs(id).unwrap();
 
         let eligibility = server
             .get(&format!("/api/autonomy/{id}/eligibility?trigger=timer"))
@@ -253,12 +252,12 @@ async fn autonomy_eligibility_is_a_read_only_policy_projection() {
         assert_eq!(body["scheduler_configured"], false);
         assert_eq!(body["execution_started"], false);
         assert_eq!(
-            state.autonomy.get(id).unwrap().unwrap().updated_at,
+            state.autonomy().get(id).unwrap().unwrap().updated_at,
             before.updated_at,
             "{target_state}/{policy} must not update the item"
         );
         assert_eq!(
-            state.autonomy.runs(id).unwrap().len(),
+            state.autonomy().runs(id).unwrap().len(),
             runs_before.len(),
             "{target_state}/{policy} must not create an audit run"
         );
@@ -269,7 +268,7 @@ async fn autonomy_eligibility_is_a_read_only_policy_projection() {
 async fn autonomy_resume_requires_approval_and_audits_before_runtime_invocation() {
     let (server, _dir, state) = setup();
     let (source_session, _) = state
-        .state_service
+        .state_service()
         .create_session_with_source("root", TriggerSource::Web)
         .unwrap();
     let create = server
@@ -291,14 +290,14 @@ async fn autonomy_resume_requires_approval_and_audits_before_runtime_invocation(
         .json(&json!({ "packet": { "objective": "run this" } }))
         .await;
     smuggled_packet.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(state.autonomy.runs(id).unwrap().len(), 1);
+    assert_eq!(state.autonomy().runs(id).unwrap().len(), 1);
 
     let unapproved = server
         .post(&format!("/api/autonomy/{id}/resume"))
         .json(&json!({}))
         .await;
     unapproved.assert_status(StatusCode::CONFLICT);
-    assert_eq!(state.autonomy.runs(id).unwrap().len(), 1);
+    assert_eq!(state.autonomy().runs(id).unwrap().len(), 1);
 
     let approved = server
         .post(&format!("/api/autonomy/{id}/transition"))
@@ -313,7 +312,7 @@ async fn autonomy_resume_requires_approval_and_audits_before_runtime_invocation(
         .json(&json!({}))
         .await;
     resume.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
-    let runs = state.autonomy.runs(id).unwrap();
+    let runs = state.autonomy().runs(id).unwrap();
     assert_eq!(
         runs.iter()
             .filter(|run| run.kind == "resume_requested")
@@ -641,13 +640,14 @@ async fn memory_get_and_delete_reject_internal_facts_even_by_id() {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         futures::executor::block_on(
             state
-                .memory_store
+                .memory_store()
                 .as_ref()
                 .expect("memory_store")
-                .upsert_typed_fact(serde_json::to_value(fact).expect("encode fact"), None),
+                .upsert_typed_fact(fact.clone(), None),
         )
         .expect("seed internal fact");
 
@@ -662,7 +662,7 @@ async fn memory_get_and_delete_reject_internal_facts_even_by_id() {
         delete_response.assert_status(StatusCode::FORBIDDEN);
 
         let still_exists = state
-            .memory_store
+            .memory_store()
             .as_ref()
             .expect("memory_store")
             .get_memory_fact_by_id(&fact_id)

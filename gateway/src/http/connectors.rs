@@ -2,6 +2,7 @@
 //!
 //! REST API for managing external connectors.
 
+use super::ErrorResponse;
 use crate::bus::{GatewayBus, HttpGatewayBus, SessionRequest};
 use crate::connectors::{
     ConnectorServiceError, CreateConnectorRequest, InboundLogEntry, InboundPayload, InboundResult,
@@ -15,55 +16,40 @@ use axum::{
     Json,
 };
 use execution_state::TriggerSource;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{error, info};
 
-/// Error response for connector operations.
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    error: String,
-    code: String,
+fn err_not_found(id: &str) -> ErrorResponse {
+    ErrorResponse::with_code(
+        format!("Connector not found: {}", id),
+        "CONNECTOR_NOT_FOUND",
+    )
 }
 
-impl ErrorResponse {
-    fn not_found(id: &str) -> Self {
-        Self {
-            error: format!("Connector not found: {}", id),
-            code: "CONNECTOR_NOT_FOUND".to_string(),
-        }
-    }
+fn err_already_exists(id: &str) -> ErrorResponse {
+    ErrorResponse::with_code(
+        format!("Connector already exists: {}", id),
+        "CONNECTOR_EXISTS",
+    )
+}
 
-    fn already_exists(id: &str) -> Self {
-        Self {
-            error: format!("Connector already exists: {}", id),
-            code: "CONNECTOR_EXISTS".to_string(),
-        }
-    }
+fn err_invalid_id(msg: &str) -> ErrorResponse {
+    ErrorResponse::with_code(msg.to_string(), "INVALID_ID")
+}
 
-    fn invalid_id(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            code: "INVALID_ID".to_string(),
-        }
-    }
-
-    fn internal(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            code: "INTERNAL_ERROR".to_string(),
-        }
-    }
+fn err_internal(msg: &str) -> ErrorResponse {
+    ErrorResponse::with_code(msg.to_string(), "INTERNAL_ERROR")
 }
 
 /// GET /api/connectors - List all connectors.
 pub async fn list_connectors(State(state): State<AppState>) -> impl IntoResponse {
-    match state.connector_registry.list().await {
+    match state.connector_registry().list().await {
         Ok(connectors) => Json(connectors).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to list connectors");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::internal(&e.to_string())),
+                Json(err_internal(&e.to_string())),
             )
                 .into_response()
         }
@@ -77,26 +63,22 @@ pub async fn create_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %request.id, "Creating connector");
 
-    match state.connector_registry.create(request).await {
+    match state.connector_registry().create(request).await {
         Ok(connector) => (StatusCode::CREATED, Json(connector)).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
             match &e {
-                ConnectorServiceError::AlreadyExists(id) => (
-                    StatusCode::CONFLICT,
-                    Json(ErrorResponse::already_exists(id)),
-                )
-                    .into_response(),
-                ConnectorServiceError::InvalidId(msg) => (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse::invalid_id(msg)),
-                )
-                    .into_response(),
+                ConnectorServiceError::AlreadyExists(id) => {
+                    (StatusCode::CONFLICT, Json(err_already_exists(id))).into_response()
+                }
+                ConnectorServiceError::InvalidId(msg) => {
+                    (StatusCode::BAD_REQUEST, Json(err_invalid_id(msg))).into_response()
+                }
                 _ => {
                     error!(error = %e, "Failed to create connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -110,19 +92,19 @@ pub async fn get_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.connector_registry.get(&id).await {
+    match state.connector_registry().get(&id).await {
         Ok(connector) => Json(connector).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to get connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -139,19 +121,19 @@ pub async fn update_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %id, "Updating connector");
 
-    match state.connector_registry.update(&id, request).await {
+    match state.connector_registry().update(&id, request).await {
         Ok(connector) => Json(connector).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to update connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -167,19 +149,19 @@ pub async fn delete_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %id, "Deleting connector");
 
-    match state.connector_registry.delete(&id).await {
+    match state.connector_registry().delete(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to delete connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -193,19 +175,19 @@ pub async fn get_connector_metadata(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.connector_registry.get(&id).await {
+    match state.connector_registry().get(&id).await {
         Ok(connector) => Json(connector.metadata).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to get connector metadata");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -221,7 +203,7 @@ pub async fn test_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %id, "Testing connector connectivity");
 
-    match state.connector_registry.test(&id).await {
+    match state.connector_registry().test(&id).await {
         Ok(result) => {
             let status = if result.success {
                 StatusCode::OK
@@ -234,13 +216,13 @@ pub async fn test_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to test connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -257,7 +239,7 @@ pub async fn enable_connector(
     info!(connector_id = %id, "Enabling connector");
 
     match state
-        .connector_registry
+        .connector_registry()
         .update(
             &id,
             UpdateConnectorRequest {
@@ -272,13 +254,13 @@ pub async fn enable_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to enable connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -295,7 +277,7 @@ pub async fn disable_connector(
     info!(connector_id = %id, "Disabling connector");
 
     match state
-        .connector_registry
+        .connector_registry()
         .update(
             &id,
             UpdateConnectorRequest {
@@ -310,13 +292,13 @@ pub async fn disable_connector(
             use crate::connectors::ConnectorServiceError;
             match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => {
                     error!(error = %e, "Failed to disable connector");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::internal(&e.to_string())),
+                        Json(err_internal(&e.to_string())),
                     )
                         .into_response()
                 }
@@ -334,16 +316,16 @@ pub async fn inbound(
     info!(connector_id = %id, "Inbound message from connector");
 
     // Look up connector
-    let connector = match state.connector_registry.get(&id).await {
+    let connector = match state.connector_registry().get(&id).await {
         Ok(c) => c,
         Err(e) => {
             return match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::internal(&e.to_string())),
+                    Json(err_internal(&e.to_string())),
                 )
                     .into_response(),
             };
@@ -354,10 +336,10 @@ pub async fn inbound(
     if !connector.enabled {
         return (
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: format!("Connector '{}' is disabled", id),
-                code: "CONNECTOR_DISABLED".to_string(),
-            }),
+            Json(ErrorResponse::with_code(
+                format!("Connector '{}' is disabled", id),
+                "CONNECTOR_DISABLED",
+            )),
         )
             .into_response();
     }
@@ -365,21 +347,22 @@ pub async fn inbound(
     if !connector.inbound_enabled {
         return (
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: format!("Inbound not enabled for connector '{}'", id),
-                code: "INBOUND_DISABLED".to_string(),
-            }),
+            Json(ErrorResponse::with_code(
+                format!("Inbound not enabled for connector '{}'", id),
+                "INBOUND_DISABLED",
+            )),
         )
             .into_response();
     }
 
     // Get the runner
-    let runner = match state.runtime.runner() {
+    let runtime = state.runtime();
+    let runner = match runtime.runner() {
         Some(r) => r,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::internal("Execution runner not initialized")),
+                Json(err_internal("Execution runner not initialized")),
             )
                 .into_response();
         }
@@ -410,8 +393,7 @@ pub async fn inbound(
                     "sender".to_string(),
                     serde_json::json!({
                         "id": sender.id,
-                        "name": sender.name,
-                    }),
+                        "name": sender.name }),
                 );
             }
         }
@@ -420,16 +402,15 @@ pub async fn inbound(
         request = request.with_metadata(serde_json::json!({
             "sender": {
                 "id": sender.id,
-                "name": sender.name,
-            }
+                "name": sender.name }
         }));
     }
 
     // Submit via bus
     let bus = HttpGatewayBus::new(
         runner.clone(),
-        state.state_service.clone(),
-        state.vault_dir.clone(),
+        state.state_service().clone(),
+        state.vault_dir().clone(),
     );
 
     match bus.submit(request).await {
@@ -442,7 +423,7 @@ pub async fn inbound(
 
             // Log the inbound message
             state
-                .connector_registry
+                .connector_registry()
                 .log_inbound(InboundLogEntry {
                     connector_id: id.clone(),
                     message: payload.message,
@@ -466,7 +447,7 @@ pub async fn inbound(
             error!(connector_id = %id, error = %e, "Failed to submit inbound session");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::internal(&e.to_string())),
+                Json(err_internal(&e.to_string())),
             )
                 .into_response()
         }
@@ -491,16 +472,16 @@ pub async fn get_inbound_log(
     Query(query): Query<InboundLogQuery>,
 ) -> impl IntoResponse {
     // Verify connector exists
-    match state.connector_registry.get(&id).await {
+    match state.connector_registry().get(&id).await {
         Ok(_) => {}
         Err(e) => {
             return match &e {
                 ConnectorServiceError::NotFound(id) => {
-                    (StatusCode::NOT_FOUND, Json(ErrorResponse::not_found(id))).into_response()
+                    (StatusCode::NOT_FOUND, Json(err_not_found(id))).into_response()
                 }
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::internal(&e.to_string())),
+                    Json(err_internal(&e.to_string())),
                 )
                     .into_response(),
             };
@@ -508,6 +489,6 @@ pub async fn get_inbound_log(
     }
 
     let limit = query.limit.min(500);
-    let entries = state.connector_registry.get_inbound_log(&id, limit).await;
+    let entries = state.connector_registry().get_inbound_log(&id, limit).await;
     Json(entries).into_response()
 }

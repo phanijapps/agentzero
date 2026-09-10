@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
 
 use crate::ingest::extractor::Extractor;
-use zbot_stores::KnowledgeGraphStore;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use zbot_stores_traits::KgEpisodeStore;
 
 const WAKE_CHANNEL_CAPACITY: usize = 256;
@@ -134,7 +134,9 @@ async fn worker_loop(
                     error = %err_msg,
                     "extractor failed; marking episode failed",
                 );
-                episode_store.mark_failed(&episode_id, &err_msg).await
+                episode_store
+                    .mark_failed(&episode_id, &err_msg.to_string())
+                    .await
             }
         };
 

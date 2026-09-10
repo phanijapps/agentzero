@@ -1,5 +1,6 @@
 //! `ProcedureStore` trait — backend-agnostic interface for learned procedures.
 
+use crate::error::{StoreError, StoreResult};
 use crate::memory_facts::EmbeddingQueryIdentity;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -15,18 +16,32 @@ pub struct ProcedureStats {
 #[async_trait]
 pub trait ProcedureStore: Send + Sync {
     /// List procedures for a ward, capped at `limit`. Default empty.
-    async fn list_by_ward(&self, _ward_id: &str, _limit: usize) -> Result<Vec<Value>, String> {
+    async fn list_by_ward(&self, _ward_id: &str, _limit: usize) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
-    /// Upsert a procedure. The `procedure` Value carries the full
-    /// `Procedure` shape; `embedding` is optional.
+    /// List `(name, home ward)` pairs for an agent across ALL wards, capped
+    /// at `limit`. The global name index for deterministic macro matching —
+    /// wards organize context, not callables, so procedure names are never
+    /// ward-scoped. Default empty.
+    async fn list_procedure_names(
+        &self,
+        _agent_id: &str,
+        _limit: usize,
+    ) -> StoreResult<Vec<(String, Option<String>)>> {
+        Ok(Vec::new())
+    }
+
+    /// Upsert a procedure; `embedding` is optional.
     async fn upsert_procedure(
         &self,
-        _procedure: Value,
-        _embedding: Option<Vec<f32>>,
-    ) -> Result<(), String> {
-        Err("upsert_procedure not implemented for this store".to_string())
+        procedure: Procedure,
+        embedding: Option<Vec<f32>>,
+    ) -> StoreResult<()> {
+        let _ = (procedure, embedding);
+        Err(StoreError::Unavailable(
+            "upsert_procedure not implemented for this store".into(),
+        ))
     }
 
     /// Vector-similarity search scoped to an agent (and optional ward).
@@ -37,7 +52,7 @@ pub trait ProcedureStore: Send + Sync {
         _agent_id: &str,
         _ward_id: Option<&str>,
         _limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
@@ -49,7 +64,7 @@ pub trait ProcedureStore: Send + Sync {
         agent_id: &str,
         ward_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let _ = query_identity;
         self.search_procedures_by_similarity(embedding, agent_id, ward_id, limit)
             .await
@@ -64,7 +79,7 @@ pub trait ProcedureStore: Send + Sync {
         agent_id: &str,
         ward_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<(Procedure, f64)>, String> {
+    ) -> StoreResult<Vec<(Procedure, f64)>> {
         self.search_procedures_by_similarity_typed_with_identity(
             embedding, None, agent_id, ward_id, limit,
         )
@@ -79,7 +94,7 @@ pub trait ProcedureStore: Send + Sync {
         agent_id: &str,
         ward_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<(Procedure, f64)>, String> {
+    ) -> StoreResult<Vec<(Procedure, f64)>> {
         let rows = self
             .search_procedures_by_similarity_with_identity(
                 embedding,
@@ -109,15 +124,15 @@ pub trait ProcedureStore: Send + Sync {
         _id: &str,
         _duration_ms: Option<i64>,
         _token_cost: Option<i64>,
-    ) -> Result<(), String> {
+    ) -> StoreResult<()> {
         Ok(())
     }
 
-    async fn increment_failure(&self, _id: &str) -> Result<(), String> {
+    async fn increment_failure(&self, _id: &str) -> StoreResult<()> {
         Ok(())
     }
 
-    async fn procedure_stats(&self) -> Result<ProcedureStats, String> {
+    async fn procedure_stats(&self) -> StoreResult<ProcedureStats> {
         Ok(ProcedureStats::default())
     }
 
@@ -132,7 +147,7 @@ pub trait ProcedureStore: Send + Sync {
         &self,
         _agent_id: &str,
         _name: &str,
-    ) -> Result<Option<ProcedureSummary>, String> {
+    ) -> StoreResult<Option<ProcedureSummary>> {
         Ok(None)
     }
 
@@ -143,7 +158,7 @@ pub trait ProcedureStore: Send + Sync {
         &self,
         _agent_id: &str,
         _name: &str,
-    ) -> Result<Option<Procedure>, String> {
+    ) -> StoreResult<Option<Procedure>> {
         Ok(None)
     }
 
@@ -159,17 +174,16 @@ pub trait ProcedureStore: Send + Sync {
     /// retroactively collapses the existing pile. Vec-index rows are
     /// cleaned up alongside the procedure rows so similarity search
     /// stays consistent.
-    async fn dedupe_procedures_by_name(&self) -> Result<usize, String> {
+    async fn dedupe_procedures_by_name(&self) -> StoreResult<usize> {
         Ok(0)
     }
 
     /// Insert a synthesised procedure pattern. Pre-built from the
     /// LLM's structured response by `PatternExtractor`. Returns the
     /// procedure id used. Default: no-op error so misuse is loud.
-    async fn insert_pattern_procedure(
-        &self,
-        _req: PatternProcedureInsert,
-    ) -> Result<String, String> {
-        Err("insert_pattern_procedure not implemented for this store".to_string())
+    async fn insert_pattern_procedure(&self, _req: PatternProcedureInsert) -> StoreResult<String> {
+        Err(StoreError::Unavailable(
+            "insert_pattern_procedure not implemented for this store".into(),
+        ))
     }
 }

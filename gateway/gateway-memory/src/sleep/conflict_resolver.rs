@@ -4,6 +4,7 @@
 //! the same topic disagree, the lower-confidence/older one is marked with
 //! `superseded_by` pointing to the winner. Recall filters superseded facts.
 
+use agent_primitives::vec_math::cosine_f32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -154,7 +155,7 @@ impl ConflictResolver {
                     continue;
                 }
                 let sim = match (facts[i].embedding.as_ref(), facts[j].embedding.as_ref()) {
-                    (Some(a), Some(b)) => cosine(a, b),
+                    (Some(a), Some(b)) => cosine_f32(a, b),
                     _ => continue,
                 };
                 if sim < MIN_SIMILARITY {
@@ -270,27 +271,6 @@ fn pick_winner<'a>(a: &'a MemoryFact, b: &'a MemoryFact) -> (&'a MemoryFact, &'a
     }
 }
 
-/// Cosine similarity between two `f32` vectors. Returns 0.0 for empty or
-/// mismatched-length inputs (caller treats below-threshold as no candidate).
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    if a.is_empty() || a.len() != b.len() {
-        return 0.0;
-    }
-    let mut dot = 0.0_f32;
-    let mut na = 0.0_f32;
-    let mut nb = 0.0_f32;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
-    }
-}
-
 // ============================================================================
 // LLM-backed implementation
 // ============================================================================
@@ -342,13 +322,8 @@ impl ConflictJudgeLlm for LlmConflictJudge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use crate::sleep::test_support;
     use std::sync::Mutex;
-    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zbot_stores_sqlite::{
-        CompactionRepository, GatewayCompactionStore, GatewayMemoryFactStore, KnowledgeDatabase,
-        MemoryRepository,
-    };
 
     struct MockJudge {
         response: Mutex<ConflictResponse>,
@@ -373,30 +348,21 @@ mod tests {
         _tmp: tempfile::TempDir,
         memory_store: Arc<dyn MemoryFactStore>,
         compaction_store: Arc<dyn CompactionStore>,
-        knowledge_db: Arc<KnowledgeDatabase>,
     }
 
     fn setup() -> Harness {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("db"));
-        let vec_index: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(db.clone(), vec_index));
-        let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
+        let memory_store = test_support::fact_store(&tmp);
+        let compaction_store = test_support::compaction_store(&tmp);
         Harness {
             _tmp: tmp,
-            memory_store: Arc::new(GatewayMemoryFactStore::new(memory_repo, None)),
-            compaction_store: Arc::new(GatewayCompactionStore::new(compaction_repo)),
-            knowledge_db: db,
+            memory_store,
+            compaction_store,
         }
     }
 
     /// Seed two schema facts with identical embeddings → guaranteed similar
-    /// (cosine == 1.0, well above MIN_SIMILARITY = 0.85). Uses
+    /// (cosine_f32 == 1.0, well above MIN_SIMILARITY = 0.85). Uses
     /// `upsert_typed_fact` so the embedding is persisted regardless of whether
     /// the test harness has an embedder client configured.
     async fn seed_two_schemas(
@@ -408,7 +374,7 @@ mod tests {
         use serde_json::json;
         let now = chrono::Utc::now().to_rfc3339();
         // 384-dim unit vector along axis 0 — matches the sqlite-vec DDL dimension
-        // and cosine(v, v) == 1.0, well above MIN_SIMILARITY = 0.85.
+        // and cosine_f32(v, v) == 1.0, well above MIN_SIMILARITY = 0.85.
         let mut embedding: Vec<f32> = vec![0.0; 384];
         embedding[0] = 1.0;
 
@@ -417,7 +383,7 @@ mod tests {
             ("schema.b", b_content, 0.8_f64),
         ] {
             let id = format!("fact-{}", uuid::Uuid::new_v4());
-            let fact = json!({
+            let fact: zbot_stores_domain::MemoryFact = serde_json::from_value(json!({
                 "id": id,
                 "session_id": null,
                 "agent_id": agent_id,
@@ -439,8 +405,8 @@ mod tests {
                 "pinned": false,
                 "epistemic_class": "current",
                 "source_episode_id": null,
-                "source_ref": null,
-            });
+                "source_ref": null }))
+            .unwrap();
             store
                 .upsert_typed_fact(fact, Some(embedding.clone()))
                 .await
@@ -450,11 +416,11 @@ mod tests {
 
     #[tokio::test]
     async fn cosine_handles_empty_and_mismatched() {
-        assert_eq!(cosine(&[], &[]), 0.0);
-        assert_eq!(cosine(&[1.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(cosine_f32(&[], &[]), 0.0);
+        assert_eq!(cosine_f32(&[1.0], &[1.0, 2.0]), 0.0);
         let v = vec![1.0_f32, 0.0, 0.0];
         // identical vectors → 1.0
-        assert!((cosine(&v, &v) - 1.0).abs() < 1e-6);
+        assert!((cosine_f32(&v, &v) - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -484,6 +450,7 @@ mod tests {
             epistemic_class: Some("current".into()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         let mut low = high.clone();
         low.id = "lo".into();
@@ -600,9 +567,7 @@ mod tests {
     /// marked stale.
     #[tokio::test]
     async fn supersession_fires_belief_propagation() {
-        use zbot_stores_sqlite::SqliteBeliefStore;
         use zbot_stores_traits::Belief;
-        use zbot_stores_traits::BeliefStore;
 
         let h = setup();
         seed_two_schemas(
@@ -636,8 +601,7 @@ mod tests {
 
         // Wire a real SqliteBeliefStore against the same KnowledgeDatabase
         // the memory store uses.
-        let knowledge_db = h.knowledge_db.clone();
-        let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(knowledge_db));
+        let (belief_store, _contradictions) = test_support::belief_stores(&h._tmp);
         let now = chrono::Utc::now();
         let sole_belief = Belief {
             id: "belief-sole".into(),

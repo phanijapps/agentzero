@@ -3,7 +3,6 @@
 //! Functions for compacting, sanitizing, and truncating message history
 //! to keep context within token limits.
 
-use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -292,46 +291,6 @@ pub(crate) fn sanitize_messages(messages: &mut Vec<ChatMessage>) {
     }
 }
 
-/// Truncate tool arguments to prevent context explosion.
-///
-/// When LLMs generate tool calls with massive arguments (e.g., including
-/// full conversation context), storing these in message history causes
-/// exponential growth. This function truncates arguments to a reasonable size.
-#[allow(dead_code)]
-fn truncate_tool_args(args: &Value, max_chars: usize) -> Value {
-    let args_str = serde_json::to_string(args).unwrap_or_default();
-    if args_str.len() <= max_chars {
-        return args.clone();
-    }
-
-    // For objects, try to truncate string values
-    if let Some(obj) = args.as_object() {
-        let mut truncated = serde_json::Map::new();
-        for (key, value) in obj {
-            if let Some(s) = value.as_str() {
-                if s.len() > 200 {
-                    truncated.insert(
-                        key.clone(),
-                        Value::String(format!(
-                            "{}... [truncated, {} chars]",
-                            agent_primitives::truncate_str(s, 200),
-                            s.len()
-                        )),
-                    );
-                } else {
-                    truncated.insert(key.clone(), value.clone());
-                }
-            } else {
-                truncated.insert(key.clone(), value.clone());
-            }
-        }
-        return Value::Object(truncated);
-    }
-
-    // Fallback: return a placeholder
-    json!({"_truncated": true, "_original_size": args_str.len()})
-}
-
 /// Truncate a tool result string if it exceeds `max_chars`.
 ///
 /// Keeps the first ~80% and last ~20% of the budget with a truncation notice.
@@ -577,21 +536,6 @@ mod truncation_tests {
         assert!(!filename.contains('-'));
 
         std::fs::remove_dir_all(&tmp).expect("cleanup");
-    }
-
-    #[test]
-    fn test_truncate_tool_args_small() {
-        let args = json!({"key": "value"});
-        let result = truncate_tool_args(&args, 500);
-        assert_eq!(result, args);
-    }
-
-    #[test]
-    fn test_truncate_tool_args_large_string() {
-        let args = json!({"content": "x".repeat(500)});
-        let result = truncate_tool_args(&args, 100);
-        let content = result.get("content").unwrap().as_str().unwrap();
-        assert!(content.contains("truncated"));
     }
 }
 
@@ -887,30 +831,5 @@ mod helper_coverage_tests {
         let before = messages.len();
         sanitize_messages(&mut messages);
         assert_eq!(messages.len(), before);
-    }
-
-    // ------------- truncate_tool_args -------------
-    #[test]
-    fn truncate_tool_args_returns_clone_when_under_budget() {
-        let v = json!({"a": 1, "b": "x"});
-        let out = truncate_tool_args(&v, 100);
-        assert_eq!(out, v);
-    }
-
-    #[test]
-    fn truncate_tool_args_passes_through_short_strings_in_object() {
-        let v = json!({"name": "small"});
-        // Force args_str.len() > max_chars but the inner string is short → preserved.
-        let out = truncate_tool_args(&v, 5);
-        // Output is an object copy; "name" should still be the original short string.
-        assert_eq!(out.get("name").unwrap(), "small");
-    }
-
-    #[test]
-    fn truncate_tool_args_non_object_returns_placeholder() {
-        let v = json!("a very long string ".repeat(50));
-        let out = truncate_tool_args(&v, 10);
-        assert_eq!(out.get("_truncated"), Some(&Value::Bool(true)));
-        assert!(out.get("_original_size").is_some());
     }
 }

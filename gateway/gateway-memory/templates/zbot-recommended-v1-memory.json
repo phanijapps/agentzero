@@ -7,7 +7,6 @@
     "neighborhoodPrefixDepth": 1
   },
   "conflictResolverIntervalHours": 24,
-  "correctionsAbstractorIntervalHours": 1,
   "hierarchy": {
     "clusterTargetSize": 20,
     "enabled": true,
@@ -79,12 +78,5 @@
     },
     "tenant": "agentzero",
     "wardScopeTarget": "workspace"
-  },
-  "queryGate": {
-    "enabled": true,
-    "maxSubqueries": 4,
-    "maxSubqueryLen": 200,
-    "modelId": null,
-    "timeoutMs": 3000
   }
 }

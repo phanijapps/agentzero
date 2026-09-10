@@ -24,7 +24,7 @@ uuid = { workspace = true }
 
 # Knowledge-graph store traits (used by Pruner, OrphanArchiver, DecayEngine,
 # and the recall adapters/MemoryRecall).
-zbot-stores = { path = "../../stores/zbot-stores" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 zbot-stores-traits = { path = "../../stores/zbot-stores-traits" }
 
 # Domain types (MemoryFact, Procedure, ScoredFact, WikiArticle) used by recall.
@@ -32,6 +32,14 @@ zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }
 
 # Entity / EntityType types used by Compactor's PairwiseVerifier trait.
+engram-domain = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-runtime = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-rerank-mmr = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-retrieval = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-belief = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-hierarchy = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-reflection = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-consolidation = { git = "https://github.com/phanijapps/engram", branch = "main" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
 
 # LLM client trait (EmbeddingClient) used by Synthesizer + sleep components
@@ -52,7 +60,7 @@ tempfile = "3"
 # (previous_episodes uses VaultPaths/KnowledgeDatabase/EpisodeRepository).
 gateway-services = { path = "../gateway-services" }
 rusqlite = { version = "0.32", features = ["bundled"] }
-zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
+zbot-engram-adapter = { path = "../../stores/zbot-engram-adapter" }
 
 [lints]
 workspace = true

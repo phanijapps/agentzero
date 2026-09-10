@@ -6,6 +6,7 @@
 //! based on the `HookContext` that was set when the agent was invoked.
 
 use agent_primitives::{Tool, ToolContext};
+use agent_tools::guards::planning_gate_awaits_ward;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -98,6 +99,13 @@ impl Tool for RespondTool {
         ctx: Arc<dyn ToolContext>,
         args: Value,
     ) -> agent_primitives::Result<Value> {
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request is awaiting ward(create/use). The system will start planner-agent after ward entry; do not finish the request before planning."
+            }));
+        }
+
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
@@ -108,10 +116,22 @@ impl Tool for RespondTool {
             .and_then(|v| v.as_str())
             .unwrap_or("text");
 
-        let artifacts: Vec<agent_primitives::event::ArtifactDeclaration> = args
+        let mut artifacts: Vec<agent_primitives::event::ArtifactDeclaration> = args
             .get("artifacts")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
+        // Artifacts listed in the final response ARE the goal's deliverables
+        // — the declaration's serde default (false) hid them from the
+        // research artifact strip whenever the model omitted the flag
+        // (sess-c71656d7: the chart page was built, declared, and filtered).
+        // Absent key → goal artifact; an explicit false is honored.
+        if let Some(raw) = args.get("artifacts").and_then(|v| v.as_array()) {
+            for (artifact, raw_decl) in artifacts.iter_mut().zip(raw) {
+                if raw_decl.get("is_goal_artifact").is_none() {
+                    artifact.is_goal_artifact = true;
+                }
+            }
+        }
 
         // Get hook context from state
         let hook_context = ctx.get_state("hook_context");
@@ -212,6 +232,68 @@ mod tests {
             Some("unknown")
         );
         assert_eq!(res.get("message_length").and_then(|v| v.as_u64()), Some(5));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_response_before_planning() {
+        use agent_primitives::CallbackContext;
+
+        let tool = RespondTool::new();
+        let inner = crate::tools::context::ToolContext::new();
+        inner.set_state(
+            agent_tools::guards::PLANNING_GATE_STATE.to_string(),
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan this graph request",
+            ))
+            .unwrap(),
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(inner);
+
+        let result = tool
+            .execute(ctx.clone(), json!({"message": "done"}))
+            .await
+            .expect("planning gate returns a redirect");
+
+        assert_eq!(result["status"], "redirect");
+        assert!(ctx.actions().respond.is_none());
+    }
+
+    /// Absent `is_goal_artifact` in a respond declaration means goal
+    /// artifact — the final answer's deliverables (sess-c71656d7: the chart
+    /// page was built, declared, and hidden by the false serde default).
+    #[tokio::test]
+    async fn respond_artifacts_default_to_goal_artifacts() {
+        let tool = RespondTool::new();
+        let inner = crate::tools::context::ToolContext::full(
+            "agent".to_string(),
+            Some("conv-1".to_string()),
+            vec![],
+        );
+        let ctx: Arc<dyn ToolContext> = Arc::new(inner);
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({
+                    "message": "done",
+                    "artifacts": [
+                        {"path": "outputs/chart.html", "label": "Chart page"},
+                        {"path": "tmp/work.json", "label": "Working data", "is_goal_artifact": false}
+                    ]
+                }),
+            )
+            .await
+            .expect("respond succeeds");
+
+        let actions = ctx.actions();
+        let respond_action = actions.respond.expect("respond action");
+        let declared: &[agent_primitives::event::ArtifactDeclaration] = &respond_action.artifacts;
+        assert!(
+            declared[0].is_goal_artifact,
+            "absent flag must default to goal artifact"
+        );
+        assert!(!declared[1].is_goal_artifact, "explicit false honored");
+        let _ = result;
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ mod tools;
 pub use tools::guards;
 
 pub use tools::{
+    BeliefTool,
     ConnectorInvokeTool,
     ConnectorResourceTool,
     EditFileTool,
@@ -34,8 +35,7 @@ pub use tools::{
     IngestTool,
     IngestionAccess,
     LoadSkillTool,
-    MemoryEntry,
-    MemoryStore,
+    MemorySearchTool,
     MemoryTool,
     MemoryWriteTool,
     // Multimodal vision fallback
@@ -73,9 +73,10 @@ pub use tools::{
     UnifiedRecallRequest,
     UnifiedRecallResponse,
     UpdatePlanTool,
+    // Orchestrator tools
+    WardAudience,
     WardLayoutAccess,
     WardLayoutState,
-    // Orchestrator tools
     WardTool,
     // Ward-curator observer trait (see gateway/gateway-execution/.../ward_usage_adapter.rs)
     WardUsageAccess,

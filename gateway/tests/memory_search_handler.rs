@@ -46,20 +46,20 @@ fn setup_with_seeded_fact(agent_id: &str) -> (TestServer, TempDir) {
         epistemic_class: Some("current".to_string()),
         source_episode_id: None,
         source_ref: None,
+        last_accessed: None,
     };
-    let fact_v = serde_json::to_value(&fact).expect("encode MemoryFact");
     futures::executor::block_on(
         state
-            .memory_store
+            .memory_store()
             .as_ref()
             .expect("memory_store")
-            .upsert_typed_fact(fact_v, None),
+            .upsert_typed_fact(fact.clone(), None),
     )
     .expect("upsert fact");
 
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let router = create_http_router(GatewayConfig::default(), state, ws_handler);
     let server = TestServer::new(router).expect("test server");

@@ -34,6 +34,7 @@ use rig::tool::{ToolCallExtensions, ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
 use serde_json::{json, Value};
 
+use super::tool_results::{SharedToolResults, ToolOutcome};
 use crate::tools::context::ToolContext;
 
 /// Shared AgentZero tool execution context carried through Rig's
@@ -52,6 +53,10 @@ pub type SharedToolContext = Arc<ToolContext>;
 pub struct RigToolAdapter {
     inner: Arc<dyn ZeroTool>,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Host tool execution context is missing")]
+struct MissingToolContext;
 
 impl RigToolAdapter {
     /// Wrap an existing AgentZero tool.
@@ -76,10 +81,12 @@ impl ToolDyn for RigToolAdapter {
         // Clone the Arc so the returned future does not borrow `self`.
         let inner = self.inner.clone();
         Box::pin(async move {
-            let parameters = inner
-                .parameters_schema()
-                .filter(|v| !v.is_null())
-                .unwrap_or_else(empty_object_schema);
+            let parameters = crate::tool_schema::harden_tool_schema(
+                inner
+                    .parameters_schema()
+                    .filter(|v| !v.is_null())
+                    .unwrap_or_else(empty_object_schema),
+            );
             ToolDefinition {
                 name: inner.name().to_string(),
                 description: inner.description().to_string(),
@@ -91,7 +98,7 @@ impl ToolDyn for RigToolAdapter {
     fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
         // No extensions on this path; the engine is expected to go through the
         // `call_with_extensions` entry point for real runs.
-        self.dispatch(args, None)
+        self.dispatch(args, None, None)
     }
 
     fn call_with_extensions<'a>(
@@ -102,7 +109,11 @@ impl ToolDyn for RigToolAdapter {
         // Extract hidden runtime context into an owned value up front so the
         // returned future does not borrow `extensions` (keeps the borrow off
         // the await boundary and off the `call` path's temporary).
-        self.dispatch(args, extensions.get::<SharedToolContext>().cloned())
+        self.dispatch(
+            args,
+            extensions.get::<SharedToolContext>().cloned(),
+            extensions.get::<SharedToolResults>().cloned(),
+        )
     }
 }
 
@@ -110,7 +121,7 @@ impl RigToolAdapter {
     /// Core dispatch shared by both `ToolDyn` entry points.
     ///
     /// Takes an owned context so the returned future borrows nothing from the
-    /// caller. `shared_ctx` is `None` only on the degraded no-extensions path;
+    /// caller. `shared_ctx` is required and cannot be supplied by model arguments;
     /// the engine inserts a real shared context for every run.
     ///
     /// Per-tool-call id is deliberately NOT threaded here: rig builds one
@@ -122,36 +133,84 @@ impl RigToolAdapter {
         &'a self,
         args: String,
         shared_ctx: Option<SharedToolContext>,
+        results: Option<SharedToolResults>,
     ) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
         let ctx = match shared_ctx {
             Some(ctx) => ctx,
             None => {
-                tracing::warn!(
-                    target: "rig_adapter",
-                    tool = self.inner.name(),
-                    "Rig tool dispatched without a SharedToolContext; running with an empty (no session/agent/auth) context"
-                );
-                Arc::new(ToolContext::default())
+                return Box::pin(async {
+                    Err(ToolError::ToolCallError(Box::new(MissingToolContext)))
+                });
             }
         };
         let inner = self.inner.clone();
         Box::pin(async move {
-            // LLMs send `null` for tools whose arguments are all optional. JSON
-            // `null` parses to `Value::Null`, so normalize both the parsed-null
-            // and the unparseable cases to an empty object.
-            let args_value: Value = match serde_json::from_str::<Value>(&args) {
-                Ok(Value::Null) => Value::Object(Default::default()),
-                Ok(v) => v,
-                Err(_) if args.trim() == "null" => Value::Object(Default::default()),
-                Err(e) => return Err(ToolError::JsonError(e)),
-            };
+            let started = std::time::Instant::now();
+            let result = async {
+                if results
+                    .as_ref()
+                    .is_some_and(|results| results.peer_influenced())
+                    && inner.name() != "respond"
+                {
+                    return Ok(
+                        json!({"blocked":true,"reason":"peer_data_authority_boundary"}).to_string(),
+                    );
+                }
+                // LLMs send `null` for tools whose arguments are all optional. JSON
+                // `null` parses to `Value::Null`, so normalize both the parsed-null
+                // and the unparseable cases to an empty object.
+                let args_value: Value = match serde_json::from_str::<Value>(&args) {
+                    Ok(Value::Null) => Value::Object(Default::default()),
+                    Ok(v) => v,
+                    Err(_) if args.trim() == "null" => Value::Object(Default::default()),
+                    Err(e) => return Err(ToolError::JsonError(e)),
+                };
 
-            let result = inner
-                .execute(ctx, args_value)
-                .await
-                .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
+                if agent_tools::guards::planning_gate_blocks_tool(
+                    ctx.as_ref(),
+                    inner.name(),
+                    &args_value,
+                ) {
+                    return Ok(agent_tools::guards::cold_graph_redirect().to_string());
+                }
 
-            Ok(serialize_model_visible(result))
+                if let Some(result) = crate::tool_replay::intercept(ctx.as_ref(), inner.name()) {
+                    return Ok(result);
+                }
+
+                let result = inner
+                    .execute(ctx, args_value)
+                    .await
+                    .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
+
+                Ok(serialize_model_visible(result))
+            }
+            .await;
+            if let Some(results) = results {
+                let duration_ms = started.elapsed().as_millis() as i64;
+                match result {
+                    Ok(raw) => {
+                        results.record(ToolOutcome {
+                            raw: Some(raw.clone()),
+                            duration_ms,
+                            ..ToolOutcome::default()
+                        });
+                        Ok(raw)
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        results.record(ToolOutcome {
+                            raw: Some(String::new()),
+                            error: Some(error.clone()),
+                            duration_ms,
+                            ..ToolOutcome::default()
+                        });
+                        Ok(json!({"error":error}).to_string())
+                    }
+                }
+            } else {
+                result
+            }
         })
     }
 }
@@ -275,7 +334,8 @@ mod tests {
             json!({
                 "type": "object",
                 "properties": {"x": {"type": "number"}},
-                "required": ["x"]
+                "required": ["x"],
+                "additionalProperties": false
             })
         );
     }
@@ -325,6 +385,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_graph_gate_blocks_rig_tool_dispatch_before_execution() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let adapter = RigToolAdapter::new(Arc::new(RecordingTool {
+            name: "shell".to_string(),
+            description: "mutates the workspace".to_string(),
+            schema: None,
+            seen: seen.clone(),
+        }));
+        let ctx = shared_context_with_secret();
+        ctx.set_state(
+            agent_tools::guards::PLANNING_GATE_STATE.to_string(),
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan this graph request",
+            ))
+            .unwrap(),
+        );
+        let mut extensions = ToolCallExtensions::new();
+        extensions.insert::<SharedToolContext>(ctx);
+
+        let result = adapter
+            .call_with_extensions("{}".to_string(), &extensions)
+            .await
+            .expect("gate returns a redirect");
+
+        assert!(result.contains("redirect"));
+        assert!(result.contains("planner-agent"));
+        // Canonical shared message (guards::cold_graph_redirect) — pins the
+        // exact text so this site can never silently drift from the executor's.
+        assert!(result.contains("do not call MCP tools or other tools yet."));
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn null_args_normalize_to_empty_object() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let adapter = RigToolAdapter::new(Arc::new(RecordingTool::new(seen.clone())));
@@ -339,6 +432,23 @@ mod tests {
 
         let calls = seen.lock().unwrap();
         assert_eq!(calls[0].args, Value::Object(Default::default()));
+    }
+
+    #[tokio::test]
+    async fn direct_dispatch_respects_host_owned_peer_authority() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let adapter = RigToolAdapter::new(Arc::new(RecordingTool::new(seen.clone())));
+        let mut extensions = ToolCallExtensions::new();
+        extensions.insert::<SharedToolContext>(shared_context_with_secret());
+        let results = Arc::new(super::super::tool_results::ToolResults::default());
+        results.mark_peer_influenced();
+        extensions.insert::<SharedToolResults>(results);
+        let response = adapter
+            .call_with_extensions("{\"peer_influenced\":false}".into(), &extensions)
+            .await
+            .unwrap();
+        assert!(response.contains("peer_data_authority_boundary"));
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -379,7 +489,8 @@ mod tests {
             }
         }
 
-        let extensions = ToolCallExtensions::new();
+        let mut extensions = ToolCallExtensions::new();
+        extensions.insert::<SharedToolContext>(shared_context_with_secret());
 
         let s = RigToolAdapter::new(Arc::new(StringTool))
             .call_with_extensions("{}".to_string(), &extensions)
@@ -448,21 +559,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_runs_without_inserted_context_as_degraded_empty() {
-        // No SharedToolContext inserted -> adapter must not panic; tool runs with
-        // an empty context. The engine is expected to insert it for real runs.
+    async fn tool_without_host_context_fails_closed_even_with_forged_identity() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let adapter = RigToolAdapter::new(Arc::new(RecordingTool::new(seen.clone())));
 
         let extensions = ToolCallExtensions::new();
         adapter
-            .call_with_extensions("{}".to_string(), &extensions)
+            .call_with_extensions(
+                r#"{"agent_id":"forged","execution_id":"forged"}"#.to_string(),
+                &extensions,
+            )
             .await
-            .expect("degraded call should still succeed");
+            .expect_err("hidden host context is mandatory");
 
         let calls = seen.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert!(calls[0].agent_id.is_none());
+        assert!(calls.is_empty());
     }
 
     #[test]
@@ -488,6 +599,72 @@ mod tests {
         let adapter = RigToolAdapter::new(Arc::new(NoSchema));
         // Drive the definition future on a current-thread runtime.
         let def = futures::executor::block_on(adapter.definition(String::new()));
-        assert_eq!(def.parameters, empty_object_schema());
+        assert_eq!(
+            def.parameters,
+            crate::tool_schema::harden_tool_schema(empty_object_schema())
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_interception_precedes_live_tool_side_effects() {
+        use futures::FutureExt;
+        if let Ok(mode) = std::env::var("ZBOT_RIG_REPLAY_PROBE") {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let adapter = RigToolAdapter::new(Arc::new(RecordingTool::new(seen.clone())));
+            let mut extensions = ToolCallExtensions::new();
+            extensions.insert::<SharedToolContext>(shared_context_with_secret());
+            let output = std::panic::AssertUnwindSafe(
+                adapter.call_with_extensions("{}".into(), &extensions),
+            )
+            .catch_unwind()
+            .await;
+            match mode.as_str() {
+                "hit" => {
+                    assert_eq!(output.unwrap().unwrap(), "recorded without execution");
+                    assert!(seen.lock().unwrap().is_empty());
+                }
+                "strict" | "drift" => {
+                    assert!(output.is_err());
+                    assert!(seen.lock().unwrap().is_empty());
+                }
+                "lenient" => {
+                    output.unwrap().unwrap();
+                    assert_eq!(seen.lock().unwrap().len(), 1);
+                }
+                _ => panic!("unknown probe"),
+            }
+            return;
+        }
+        // The replay store intentionally initializes once per process. Fresh
+        // child test processes exercise its real environment boundary without
+        // racing unrelated tests or injecting a test-only dispatch mechanism.
+        for mode in ["hit", "strict", "drift", "lenient"] {
+            let dir = tempfile::tempdir().unwrap();
+            let record = if mode == "hit" || mode == "drift" {
+                json!({"execution_id":"conv-7","tool_index":0,"tool_name":if mode=="drift" {"other"}else{"record"},"args_hash":"fixture","result":"recorded without execution"}).to_string()
+            } else {
+                String::new()
+            };
+            std::fs::write(dir.path().join("tool-results.jsonl"), record).unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "rig_adapter::tool::tests::replay_interception_precedes_live_tool_side_effects",
+                    "--nocapture",
+                ])
+                .env("ZBOT_RIG_REPLAY_PROBE", mode)
+                .env("ZBOT_REPLAY_DIR", dir.path())
+                .env(
+                    "ZBOT_REPLAY_STRICT",
+                    if mode == "lenient" { "0" } else { "1" },
+                )
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+        }
     }
 }

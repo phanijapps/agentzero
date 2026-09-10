@@ -27,7 +27,6 @@ agent-runtime = { path = "../runtime/agent-runtime" }
 agent-tools = { path = "../runtime/agent-tools" }
 agent-primitives = { path = "../runtime/agent-primitives" }
 agent-surfaces = { path = "../runtime/agent-surfaces" }
-zbot-stores = { path = "../stores/zbot-stores" }
 zbot-engram-adapter = { path = "../stores/zbot-engram-adapter" }
 zbot-stores-domain = { path = "../stores/zbot-stores-domain" }
 zbot-stores-traits = { path = "../stores/zbot-stores-traits" }
@@ -39,13 +38,16 @@ gateway-templates = { path = "gateway-templates" }
 gateway-connectors = { path = "gateway-connectors" }
 gateway-services = { path = "gateway-services" }
 gateway-execution = { path = "gateway-execution" }
+distillation = { path = "../services/distillation" }
 gateway-memory = { path = "gateway-memory" }
 gateway-hooks = { path = "gateway-hooks" }
 gateway-cron = { path = "gateway-cron" }
 gateway-bus = { path = "gateway-bus" }
 gateway-ws-protocol = { path = "gateway-ws-protocol" }
 gateway-bridge = { path = "gateway-bridge" }
+gateway-a2a = { path = "gateway-a2a" }
 discovery = { path = "../discovery" }
+a2a-lf = { workspace = true }
 
 # Web framework
 axum = { version = "0.7", features = ["ws", "macros", "multipart"] }
@@ -63,6 +65,7 @@ tokio-stream = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+base64 = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
@@ -86,19 +89,16 @@ sha2 = "0.10"
 tokio-cron-scheduler = "0.13"
 
 # Database — D9: gateway no longer depends on rusqlite/r2d2 directly.
-# All SQLite-coupled types come through `zbot-stores-sqlite` (the trait
-# implementation) and `zbot-stores-traits` (the abstract surface). New
-# backends drop in by implementing the same traits in their own crate.
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
-zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }
 # Used only by the `query_session` debug example. The lib + bin do not
 # depend on rusqlite directly — production SQLite access flows through
 # `zbot-runtime-sqlite`; legacy semantic SQLite is test-only.
 rusqlite = { version = "0.32", features = ["bundled"] }
 assert_matches = "1.5"
+tracing-subscriber = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 axum-test = { version = "16", features = ["ws"] }
 

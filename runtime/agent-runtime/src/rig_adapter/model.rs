@@ -19,13 +19,18 @@
 //!   callback is a synchronous `Fn` invoked from inside the async `chat_stream`,
 //!   where `tokio::mpsc::blocking_send` would panic; an unbounded channel sends
 //!   synchronously without blocking.
-//! - **Usage is not yet threaded** (response type is `()`). Token-usage
-//!   accounting through the Rig bridge is deferred; the legacy `AgentExecutor`
-//!   path still owns it until the cutover completes.
+//! - **Usage travels in the final response.** Rig reads provider token counts
+//!   through `GetTokenUsage` when completing each model call.
+//! - **The stream owns the provider task.** Dropping it aborts an outstanding
+//!   request, including one that has not produced its first token.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use futures::channel::mpsc;
+use futures::Stream;
 use rig::completion::message::ToolResultContent;
 use rig::completion::{
     AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
@@ -85,18 +90,68 @@ impl GetTokenUsage for LlmCompletionResponse {
 #[derive(Clone)]
 pub struct LlmCompletionModel {
     client: Arc<dyn LlmClient>,
-    #[allow(dead_code)]
-    model_id: String,
+    single_action_mode: bool,
+    context_policy: Option<Arc<super::context_policy::ContextPolicy>>,
+}
+
+/// Bind callback-driven provider work to the lifetime of its consuming stream.
+struct ProviderStream {
+    receiver:
+        mpsc::UnboundedReceiver<Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>>,
+    task: tokio::task::JoinHandle<()>,
+    joined: bool,
+}
+
+impl Stream for ProviderStream {
+    type Item = Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.receiver).poll_next(cx) {
+            Poll::Ready(None) if !self.joined => match Pin::new(&mut self.task).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(result) => {
+                    self.joined = true;
+                    Poll::Ready(result.err().map(|_| {
+                        Err(CompletionError::ProviderError(
+                            "Provider task failed".into(),
+                        ))
+                    }))
+                }
+            },
+            item => item,
+        }
+    }
+}
+
+impl Drop for ProviderStream {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl LlmCompletionModel {
     /// Wrap an AgentZero LLM client for use as a Rig completion model.
     #[must_use]
-    pub fn new(client: Arc<dyn LlmClient>, model_id: impl Into<String>) -> Self {
+    pub fn new(client: Arc<dyn LlmClient>) -> Self {
         Self {
             client,
-            model_id: model_id.into(),
+            single_action_mode: false,
+            context_policy: None,
         }
+    }
+
+    /// Constrain authoritative complete calls before Rig can dispatch siblings.
+    pub(super) fn with_single_action_mode(mut self, enabled: bool) -> Self {
+        self.single_action_mode = enabled;
+        self
+    }
+
+    pub(super) fn with_context_policy(
+        mut self,
+        policy: Arc<super::context_policy::ContextPolicy>,
+    ) -> Self {
+        self.context_policy = Some(policy);
+        self
     }
 }
 
@@ -105,25 +160,52 @@ impl CompletionModel for LlmCompletionModel {
     type StreamingResponse = LlmCompletionResponse;
     type Client = super::client::LlmCompletionClient;
 
-    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
-        Self::new(client.client.clone(), model)
+    fn make(client: &Self::Client, _model: impl Into<String>) -> Self {
+        Self::new(client.client.clone())
     }
 
     async fn completion(
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
-        let messages = convert_messages(&request)?;
         let tools = convert_tools(&request.tools);
+        let super::context_policy::PreparedRequest {
+            messages,
+            tools,
+            acks,
+        } = match &self.context_policy {
+            Some(policy) => policy.prepare(&request, &tools).await?,
+            None => super::context_policy::PreparedRequest {
+                messages: convert_messages(&request)?,
+                tools,
+                acks: Vec::new(),
+            },
+        };
         let output_schema = request
             .output_schema
             .as_ref()
             .map(|schema| schema.as_value().clone());
-        let response = self
+        let mut response = self
             .client
             .chat_with_schema(messages, tools, output_schema)
             .await
             .map_err(llm_error_to_completion)?;
+        for ack in acks {
+            let _ = ack.send(());
+        }
+        if let Some(policy) = &self.context_policy {
+            policy.record_usage(
+                response
+                    .usage
+                    .as_ref()
+                    .map(|usage| u64::from(usage.prompt_tokens)),
+            );
+        }
+        if self.single_action_mode {
+            if let Some(calls) = &mut response.tool_calls {
+                calls.truncate(1);
+            }
+        }
 
         let choice = if let Some(calls) = nonempty_tool_calls(&response) {
             OneOrMany::many(calls).map_err(|_| {
@@ -145,9 +227,22 @@ impl CompletionModel for LlmCompletionModel {
         &self,
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
-        let messages = convert_messages(&request)?;
         let tools = convert_tools(&request.tools);
+        let super::context_policy::PreparedRequest {
+            messages,
+            tools,
+            acks,
+        } = match &self.context_policy {
+            Some(policy) => policy.prepare(&request, &tools).await?,
+            None => super::context_policy::PreparedRequest {
+                messages: convert_messages(&request)?,
+                tools,
+                acks: Vec::new(),
+            },
+        };
         let client = self.client.clone();
+        let single_action_mode = self.single_action_mode;
+        let policy = self.context_policy.clone();
 
         let (tx, rx) =
             mpsc::unbounded::<Result<RawStreamingChoice<LlmCompletionResponse>, CompletionError>>();
@@ -170,11 +265,26 @@ impl CompletionModel for LlmCompletionModel {
             StreamChunk::ToolCall(_) => {}
         });
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let result = client.chat_stream(messages, tools, callback).await;
             match result {
                 Ok(response) => {
-                    for call in response.tool_calls.unwrap_or_default() {
+                    if let Some(policy) = &policy {
+                        policy.record_usage(
+                            response
+                                .usage
+                                .as_ref()
+                                .map(|usage| u64::from(usage.prompt_tokens)),
+                        );
+                    }
+                    for ack in acks {
+                        let _ = ack.send(());
+                    }
+                    let mut calls = response.tool_calls.unwrap_or_default();
+                    if single_action_mode {
+                        calls.truncate(1);
+                    }
+                    for call in calls {
                         let _ = tx.unbounded_send(Ok(raw_tool_call(call)));
                     }
                     let _ = tx.unbounded_send(Ok(RawStreamingChoice::FinalResponse(
@@ -188,7 +298,13 @@ impl CompletionModel for LlmCompletionModel {
             // Dropping `tx` ends the stream.
         });
 
-        Ok(StreamingCompletionResponse::stream(Box::pin(rx)))
+        Ok(StreamingCompletionResponse::stream(Box::pin(
+            ProviderStream {
+                receiver: rx,
+                task,
+                joined: false,
+            },
+        )))
     }
 }
 
@@ -204,11 +320,17 @@ impl CompletionModel for LlmCompletionModel {
 pub(crate) fn convert_messages(
     request: &CompletionRequest,
 ) -> Result<Vec<ChatMessage>, CompletionError> {
+    convert_rig_messages(request.chat_history.iter())
+}
+
+pub(super) fn convert_rig_messages<'a>(
+    messages: impl IntoIterator<Item = &'a Message>,
+) -> Result<Vec<ChatMessage>, CompletionError> {
     use agent_primitives::types::Part;
     use rig::completion::message::{AssistantContent, UserContent};
 
     let mut out = Vec::new();
-    for message in request.chat_history.iter() {
+    for message in messages {
         match message {
             Message::System { content } => out.push(ChatMessage::system(content.clone())),
 
@@ -299,8 +421,7 @@ pub(crate) fn convert_tools(tools: &[ToolDefinition]) -> Option<Value> {
                     "function": {
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.parameters,
-                    }
+                        "parameters": t.parameters }
                 })
             })
             .collect(),
@@ -334,7 +455,9 @@ fn raw_tool_call(call: AgentToolCall) -> RawStreamingChoice<LlmCompletionRespons
         // Rig correlates tool results by `internal_call_id`; reuse the
         // provider call id so the result round-trips match.
         internal_call_id: call.id.clone(),
-        call_id: None,
+        // Rig's tool hook exposes this field, not `id`. Preserve the same
+        // authoritative ID for hidden context and provider result correlation.
+        call_id: Some(call.id.clone()),
         name: call.name.clone(),
         arguments: call.arguments.clone(),
         signature: None,
@@ -450,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn bridge_streams_text_tokens_then_final() {
         let (stub, _seen) = StubLlm::text(&["hel", "lo"]);
-        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>, "stub");
+        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>);
 
         let stream = model
             .stream(rig_request("hi"))
@@ -480,7 +603,7 @@ mod tests {
             seen: Arc::new(Mutex::new(Vec::new())),
             seen_schema: Arc::new(Mutex::new(Vec::new())),
         });
-        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>, "stub");
+        let model = LlmCompletionModel::new(stub as Arc<dyn LlmClient>);
 
         let stream = model.stream(rig_request("use tool")).await.expect("stream");
         let mut tool_calls = Vec::new();
@@ -491,6 +614,7 @@ mod tests {
                     tool_call.function.name,
                     tool_call.function.arguments,
                     tool_call.id,
+                    tool_call.call_id,
                 ));
             }
         }
@@ -498,6 +622,7 @@ mod tests {
         assert_eq!(tool_calls[0].0, "calculator");
         assert_eq!(tool_calls[0].1, json!({"x": 1}));
         assert_eq!(tool_calls[0].2, "call_1");
+        assert_eq!(tool_calls[0].3.as_deref(), Some("call_1"));
     }
 
     #[tokio::test]
@@ -527,7 +652,7 @@ mod tests {
                 Err(LlmError::ApiError("boom".to_string()))
             }
         }
-        let model = LlmCompletionModel::new(Arc::new(ErrorLlm) as Arc<dyn LlmClient>, "err");
+        let model = LlmCompletionModel::new(Arc::new(ErrorLlm) as Arc<dyn LlmClient>);
         let mut stream = model.stream(rig_request("hi")).await.expect("stream");
         match stream.next().await.expect("an item") {
             Err(CompletionError::ProviderError(msg)) => assert!(msg.contains("boom")),
@@ -548,6 +673,103 @@ mod tests {
             additional_params: None,
             output_schema: None,
         }
+    }
+
+    #[tokio::test]
+    async fn dropping_bridge_stream_aborts_pending_provider() {
+        struct PendingLlm {
+            entered: Arc<tokio::sync::Notify>,
+            dropped: Arc<tokio::sync::Notify>,
+        }
+        struct DropNotice(Arc<tokio::sync::Notify>);
+        impl Drop for DropNotice {
+            fn drop(&mut self) {
+                self.0.notify_one();
+            }
+        }
+        #[async_trait]
+        impl LlmClient for PendingLlm {
+            fn model(&self) -> &str {
+                "pending"
+            }
+            fn provider(&self) -> &str {
+                "fixture"
+            }
+            async fn chat(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Option<Value>,
+            ) -> Result<ChatResponse, LlmError> {
+                panic!("streaming fixture");
+            }
+            async fn chat_stream(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Option<Value>,
+                _: StreamCallback,
+            ) -> Result<ChatResponse, LlmError> {
+                let _notice = DropNotice(self.dropped.clone());
+                self.entered.notify_one();
+                futures::future::pending().await
+            }
+        }
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let model = LlmCompletionModel::new(Arc::new(PendingLlm {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        }));
+        let stream = model.stream(rig_request("hello")).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("provider task must actually start");
+        drop(stream);
+        tokio::time::timeout(std::time::Duration::from_secs(1), dropped.notified())
+            .await
+            .expect("stream owns and cancels the pending provider task");
+    }
+
+    fn invalid_tool_request() -> CompletionRequest {
+        let mut request = rig_request("hello");
+        request.tools = vec![ToolDefinition {
+            name: "x".repeat(65),
+            description: "invalid provider tool name".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        request
+    }
+
+    #[tokio::test]
+    async fn completion_and_stream_reject_invalid_tools_before_network_io() {
+        let config = crate::llm::LlmConfig::new(
+            "https://api.example.invalid".to_string(),
+            "test-key".to_string(),
+            "gpt-4-turbo".to_string(),
+            "openai".to_string(),
+        );
+        let client = crate::llm::OpenAiClient::new(config).expect("test OpenAI client");
+        let model = LlmCompletionModel::new(Arc::new(client) as Arc<dyn LlmClient>);
+
+        let completion = model
+            .completion(invalid_tool_request())
+            .await
+            .expect_err("Rig completion must surface local validation");
+        assert!(completion
+            .to_string()
+            .contains("tool_schema_rule=function_name"));
+
+        let mut stream = model
+            .stream(invalid_tool_request())
+            .await
+            .expect("Rig stream should initialize");
+        let stream_error = stream
+            .next()
+            .await
+            .expect("Rig stream must surface an error")
+            .expect_err("Rig stream must reject the invalid tool");
+        assert!(stream_error
+            .to_string()
+            .contains("tool_schema_rule=function_name"));
     }
 
     #[test]
@@ -625,7 +847,7 @@ mod tests {
             },
             "required": ["value"]
         });
-        let model = LlmCompletionModel::new(stub.clone() as Arc<dyn LlmClient>, "stub");
+        let model = LlmCompletionModel::new(stub.clone() as Arc<dyn LlmClient>);
         let mut request = rig_request("typed");
         request.output_schema = Some(schemars::Schema::try_from(schema.clone()).unwrap());
 

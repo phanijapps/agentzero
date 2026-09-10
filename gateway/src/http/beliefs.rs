@@ -14,6 +14,7 @@
 //! Unavailable` with a helpful message — *not* `404`, because the route
 //! exists; the feature is just dormant.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -145,11 +146,6 @@ pub struct ContradictionListResponse {
     pub contradictions: Vec<BeliefContradictionResponse>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ListBeliefsQuery {
     #[serde(default = "default_list_limit")]
@@ -237,9 +233,9 @@ pub async fn get_belief_detail(
     if belief.partition_id != agent_id {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Belief does not belong to this agent".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Belief does not belong to this agent".to_string(),
+            )),
         ));
     }
 
@@ -249,7 +245,7 @@ pub async fn get_belief_detail(
 
     // Pull contradictions involving this belief. Best-effort: if the
     // contradiction store is missing the detail view still renders.
-    let contradictions = match &state.belief_contradiction_store {
+    let contradictions = match &state.belief_contradiction_store() {
         Some(cs) => cs
             .for_belief(&belief.id)
             .await
@@ -320,14 +316,12 @@ pub async fn resolve_contradiction(
 
 fn require_belief_store(
     state: &AppState,
-) -> Result<&std::sync::Arc<dyn zbot_stores_traits::BeliefStore>, (StatusCode, Json<ErrorResponse>)>
+) -> Result<std::sync::Arc<dyn zbot_stores_traits::BeliefStore>, (StatusCode, Json<ErrorResponse>)>
 {
-    state.belief_store.as_ref().ok_or_else(|| {
+    state.belief_store().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: BELIEF_DISABLED_MSG.to_string(),
-            }),
+            Json(ErrorResponse::new(BELIEF_DISABLED_MSG)),
         )
     })
 }
@@ -335,33 +329,29 @@ fn require_belief_store(
 fn require_contradiction_store(
     state: &AppState,
 ) -> Result<
-    &std::sync::Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
+    std::sync::Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
     (StatusCode, Json<ErrorResponse>),
 > {
-    state.belief_contradiction_store.as_ref().ok_or_else(|| {
+    state.belief_contradiction_store().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: BELIEF_DISABLED_MSG.to_string(),
-            }),
+            Json(ErrorResponse::new(BELIEF_DISABLED_MSG)),
         )
     })
 }
 
-fn internal(e: String) -> (StatusCode, Json<ErrorResponse>) {
+fn internal(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>) {
     tracing::error!("belief endpoint error: {e}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse { error: e }),
+        Json(ErrorResponse::new(e.to_string())),
     )
 }
 
 fn not_found(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorResponse {
-            error: msg.to_string(),
-        }),
+        Json(ErrorResponse::new(msg.to_string())),
     )
 }
 
@@ -372,12 +362,10 @@ fn parse_resolution(s: &str) -> Result<Resolution, (StatusCode, Json<ErrorRespon
         "compatible" => Ok(Resolution::Compatible),
         other => Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "Invalid resolution '{}' (expected: a_won | b_won | compatible)",
-                    other
-                ),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Invalid resolution '{}' (expected: a_won | b_won | compatible)",
+                other
+            ))),
         )),
     }
 }
@@ -386,7 +374,7 @@ fn parse_resolution(s: &str) -> Result<Resolution, (StatusCode, Json<ErrorRespon
 /// fact is fetched independently; failures are swallowed so the detail
 /// view still renders for callers when one fact has been deleted.
 async fn resolve_source_facts(state: &AppState, fact_ids: &[String]) -> Vec<SourceFactSummary> {
-    let Some(memory_store) = state.memory_store.as_ref() else {
+    let Some(memory_store) = state.memory_store() else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(fact_ids.len());
@@ -427,6 +415,7 @@ fn summarize_fact(fact_id: &str, value: &serde_json::Value) -> Option<SourceFact
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use zbot_stores_traits::StoreResult;
 
     fn make_state() -> (TempDir, AppState) {
         let dir = TempDir::new().expect("temp dir");
@@ -548,14 +537,10 @@ mod tests {
             _partition_id: &str,
             _subject: &str,
             _as_of: Option<DateTime<Utc>>,
-        ) -> Result<Option<Belief>, String> {
+        ) -> StoreResult<Option<Belief>> {
             Ok(None)
         }
-        async fn list_beliefs(
-            &self,
-            partition_id: &str,
-            limit: usize,
-        ) -> Result<Vec<Belief>, String> {
+        async fn list_beliefs(&self, partition_id: &str, limit: usize) -> StoreResult<Vec<Belief>> {
             Ok(self
                 .beliefs
                 .iter()
@@ -564,7 +549,7 @@ mod tests {
                 .cloned()
                 .collect())
         }
-        async fn upsert_belief(&self, _b: &Belief) -> Result<(), String> {
+        async fn upsert_belief(&self, _b: &Belief) -> StoreResult<()> {
             Ok(())
         }
         async fn supersede_belief(
@@ -572,25 +557,25 @@ mod tests {
             _old: &str,
             _new: &str,
             _t: DateTime<Utc>,
-        ) -> Result<(), String> {
+        ) -> StoreResult<()> {
             Ok(())
         }
-        async fn mark_stale(&self, _id: &str) -> Result<(), String> {
+        async fn mark_stale(&self, _id: &str) -> StoreResult<()> {
             Ok(())
         }
-        async fn retract_belief(&self, _id: &str, _t: DateTime<Utc>) -> Result<(), String> {
+        async fn retract_belief(&self, _id: &str, _t: DateTime<Utc>) -> StoreResult<()> {
             Ok(())
         }
-        async fn beliefs_referencing_fact(&self, _f: &str) -> Result<Vec<String>, String> {
+        async fn beliefs_referencing_fact(&self, _f: &str) -> StoreResult<Vec<String>> {
             Ok(vec![])
         }
-        async fn get_belief_by_id(&self, id: &str) -> Result<Option<Belief>, String> {
+        async fn get_belief_by_id(&self, id: &str) -> StoreResult<Option<Belief>> {
             Ok(self.beliefs.iter().find(|b| b.id == id).cloned())
         }
-        async fn list_stale(&self, _p: &str, _l: usize) -> Result<Vec<Belief>, String> {
+        async fn list_stale(&self, _p: &str, _l: usize) -> StoreResult<Vec<Belief>> {
             Ok(vec![])
         }
-        async fn clear_stale(&self, _id: &str) -> Result<(), String> {
+        async fn clear_stale(&self, _id: &str) -> StoreResult<()> {
             Ok(())
         }
         async fn search_beliefs(
@@ -598,7 +583,7 @@ mod tests {
             _p: &str,
             _q: &[f32],
             _l: usize,
-        ) -> Result<Vec<ScoredBelief>, String> {
+        ) -> StoreResult<Vec<ScoredBelief>> {
             Ok(vec![])
         }
     }
@@ -627,7 +612,7 @@ mod tests {
     fn state_with_stub_beliefs(beliefs: Vec<Belief>) -> (TempDir, AppState) {
         let (dir, mut state) = make_state();
         let store: Arc<dyn BeliefStore> = Arc::new(StubBeliefStore { beliefs });
-        state.belief_store = Some(store);
+        state.stores.belief_store = Some(store);
         (dir, state)
     }
 

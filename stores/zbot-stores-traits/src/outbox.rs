@@ -33,6 +33,7 @@
 //       primitives only used directly by gateway today; can be promoted
 //       into the trait when a cross-cutting consumer appears.
 
+use crate::error::StoreResult;
 use serde_json::Value;
 
 /// Backend-agnostic interface for the bridge outbox.
@@ -55,15 +56,15 @@ pub trait OutboxStore: Send + Sync {
         session_id: Option<&str>,
         thread_id: Option<&str>,
         agent_id: Option<&str>,
-    ) -> Result<String, String>;
+    ) -> StoreResult<String>;
 
     /// Mark an item as inflight (being sent to worker).
-    fn mark_inflight(&self, id: &str) -> Result<(), String>;
+    fn mark_inflight(&self, id: &str) -> StoreResult<()>;
 
     /// Mark an item as sent (ACK received from worker).
-    fn mark_sent(&self, id: &str) -> Result<(), String>;
+    fn mark_sent(&self, id: &str) -> StoreResult<()>;
 
     /// Reset all inflight items for an adapter back to pending (on disconnect).
     /// Returns the number of rows updated.
-    fn reset_inflight(&self, adapter_id: &str) -> Result<usize, String>;
+    fn reset_inflight(&self, adapter_id: &str) -> StoreResult<usize>;
 }

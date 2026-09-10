@@ -15,37 +15,30 @@ pub use recall::context_atoms::{
     dropped_candidate_for_superseded_fact, scored_fact_to_context_atom,
     scored_item_to_context_atom, scored_items_to_context_atoms,
 };
-pub use recall::query_gate::{
-    GateResponse, LlmQueryGate, QueryGate, QueryGateLlm, RetrievalDecision,
-};
-pub use recall::scored_item::{
-    intent_boost, rrf_merge, GoalLite, ItemKind, Provenance, ScoredItem,
-};
+pub use recall::scored_item::{intent_boost, GoalLite, ItemKind, Provenance, ScoredItem};
 pub use recall::{
     MemoryRecall, RecallProviderScope, RecallSkosExpansionLimits, UnifiedRecallOutcome,
     UnifiedRecallReasonCode, UnifiedRecallScope, UnifiedRecallSourceState,
     UnifiedRecallSourceStatus, UnifiedRecallSourceSummary, UnifiedRecallTaxonomyCandidate,
     UnifiedRecallTaxonomyRelation, UnifiedRecallTaxonomyTrace,
 };
-pub use sleep::belief_contradiction_detector::{
-    BeliefContradictionConfig, BeliefContradictionDetector, ContradictionDetectionStats,
-    ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision, LlmContradictionJudge,
+pub use sleep::belief_engram::{
+    BeliefConsolidation, BeliefConsolidationParts, BeliefContradictionConfig,
+    ContradictionDetectionStats, ContradictionJudgeLlm, ContradictionJudgeResponse, JudgeDecision,
+    LlmContradictionJudge,
+};
+pub use sleep::belief_engram::{
+    BeliefSynthesisLlm, BeliefSynthesisStats, LlmBeliefSynthesizer, SynthesisLlmResponse,
+    ZbotBeliefSink, ZbotBeliefSynthesizer, ZbotContradictionArm, ZbotContradictionDetector,
 };
 pub use sleep::belief_network_activity::{
     RecentBeliefNetworkActivity, TimestampedContradictionStats, TimestampedPropagationStats,
     TimestampedSynthesisStats, RECENT_CAPACITY as BELIEF_NETWORK_RECENT_CAPACITY,
 };
 pub use sleep::belief_propagator::{BeliefPropagationStats, BeliefPropagator};
-pub use sleep::belief_synthesizer::{
-    BeliefSynthesisLlm, BeliefSynthesisStats, BeliefSynthesizer, LlmBeliefSynthesizer,
-    SynthesisLlmResponse,
-};
 pub use sleep::compactor::{CompactionStats, Compactor, PairwiseVerifier};
 pub use sleep::conflict_resolver::{
     ConflictJudgeLlm, ConflictResolver, ConflictResponse, ConflictStats,
-};
-pub use sleep::corrections_abstractor::{
-    AbstractionLlm, AbstractionResponse, AbstractionStats, CorrectionsAbstractor,
 };
 pub use sleep::decay::{DecayConfig, DecayEngine, KgDecayStats, PruneCandidate};
 pub use sleep::orphan_archiver::{OrphanArchiver, OrphanArchiverStats};
@@ -409,19 +402,10 @@ pub struct MemorySettings {
     /// memory provider; SQLite remains only for conversations/execution state.
     #[serde(default)]
     pub provider: MemoryProviderSettings,
-    /// Minimum hours between corrections-abstraction LLM calls.
-    /// Default: 24. Set to 0 to run on every sleep cycle (hourly).
-    #[serde(default = "default_corrections_abstractor_interval_hours")]
-    pub corrections_abstractor_interval_hours: u32,
     /// Minimum hours between conflict-resolution LLM judge passes.
     /// Default: 24. Set to 0 to run on every sleep cycle (hourly).
     #[serde(default = "default_conflict_resolver_interval_hours")]
     pub conflict_resolver_interval_hours: u32,
-    /// Self-RAG retrieval-gate configuration — controls whether a small LLM
-    /// pre-step decides skip/direct/split before the hybrid search runs.
-    /// Disabled by default; opt-in via `enabled: true`.
-    #[serde(default)]
-    pub query_gate: QueryGateConfig,
     /// Belief Network synthesizer configuration. Phase B-1 of the
     /// reflective memory roadmap — opt-in (disabled by default).
     #[serde(default)]
@@ -449,10 +433,6 @@ pub struct MemorySettings {
     pub procedure_recommendation: ProcedureRecommendationConfig,
 }
 
-pub fn default_corrections_abstractor_interval_hours() -> u32 {
-    24
-}
-
 pub fn default_conflict_resolver_interval_hours() -> u32 {
     24
 }
@@ -461,9 +441,7 @@ impl Default for MemorySettings {
     fn default() -> Self {
         Self {
             provider: MemoryProviderSettings::default(),
-            corrections_abstractor_interval_hours: default_corrections_abstractor_interval_hours(),
             conflict_resolver_interval_hours: default_conflict_resolver_interval_hours(),
-            query_gate: QueryGateConfig::default(),
             belief_network: BeliefNetworkConfig::default(),
             mmr: MmrConfig::default(),
             hierarchy: HierarchySettings::default(),
@@ -877,10 +855,10 @@ impl Default for ProcedureRecommendationConfig {
 }
 
 /// Hierarchical-memory configuration (Phase H-3). Toggled by a master
-/// `enabled` flag; when off, the sleep-time `HierarchyBuilder` is never
+/// `enabled` flag; when off, the sleep-time hierarchy build is never
 /// constructed and the existing recall path is byte-for-byte unchanged.
 ///
-/// All tuning knobs map 1:1 onto `sleep::hierarchy_builder::HierarchyConfig`
+/// All tuning knobs map 1:1 onto `sleep::hierarchy_engram::HierarchyConfig`
 /// fields — see that struct's docs for the per-knob semantics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1008,73 +986,10 @@ impl Default for BeliefNetworkConfig {
 }
 
 // ============================================================================
-// QUERY GATE CONFIG
-// Self-RAG retrieval gate — small LLM call that decides skip/direct/split
-// before the hybrid search runs. Reduces signal dilution on multi-topic queries.
-// ============================================================================
-
-/// Configuration for the Self-RAG retrieval gate.
-///
-/// When `enabled: true`, `MemoryRecall::recall` runs a small LLM call before
-/// the hybrid search. The LLM returns one of three decisions:
-///
-/// - `skip` — context already suffices; no hybrid search.
-/// - `direct` — single-topic query; use the reformulated query for hybrid search.
-/// - `split` — multi-topic input; run hybrid search per subquery and dedup-merge.
-///
-/// Always-inject corrections (driven from the bootstrap path) are unaffected
-/// by the gate decision. The gate scopes only the hybrid-search portion of recall.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueryGateConfig {
-    /// Master switch. Default: `false` (opt-in).
-    #[serde(default)]
-    pub enabled: bool,
-    /// LLM model identifier. `None` = use the distillation/default model
-    /// resolved by `MemoryLlmFactory`.
-    #[serde(default)]
-    pub model_id: Option<String>,
-    /// Maximum number of subqueries accepted from a Split decision. Excess
-    /// subqueries are truncated to the first N.
-    #[serde(default = "default_max_subqueries")]
-    pub max_subqueries: usize,
-    /// Maximum character length of any single subquery. Longer subqueries
-    /// are truncated.
-    #[serde(default = "default_max_subquery_len")]
-    pub max_subquery_len: usize,
-    /// LLM call timeout in milliseconds. Kept for future use by the
-    /// production gate impl; the trait surface accepts the value verbatim.
-    #[serde(default = "default_query_gate_timeout_ms")]
-    pub timeout_ms: u64,
-}
-
-pub fn default_max_subqueries() -> usize {
-    4
-}
-pub fn default_max_subquery_len() -> usize {
-    200
-}
-pub fn default_query_gate_timeout_ms() -> u64 {
-    3000
-}
-
-impl Default for QueryGateConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            model_id: None,
-            max_subqueries: default_max_subqueries(),
-            max_subquery_len: default_max_subquery_len(),
-            timeout_ms: default_query_gate_timeout_ms(),
-        }
-    }
-}
-
-// ============================================================================
 // MMR CONFIG
 // Maximal Marginal Relevance diversity reranking — post-rescore step that
 // trades a little relevance for diversity in the final recalled set.
-// Default-disabled; opt-in via `memory.mmr.enabled = true`.
+// Default-enabled (P2); disable via `memory.mmr.enabled = false`.
 // ============================================================================
 
 /// Configuration for Maximal Marginal Relevance (MMR) diversity reranking.
@@ -1094,8 +1009,10 @@ impl Default for QueryGateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MmrConfig {
-    /// Master switch. Default: `false` (opt-in).
-    #[serde(default)]
+    /// Master switch. Default: `true` — diversity reranking is on in
+    /// production (P2 of the recall migration); the golden floors hold
+    /// with it enabled.
+    #[serde(default = "default_mmr_enabled")]
     pub enabled: bool,
     /// Relevance/diversity tradeoff in `[0.0, 1.0]`. `1.0` = pure relevance
     /// (degenerates to identity sort); `0.0` = pure diversity. Default: `0.6`.
@@ -1106,6 +1023,10 @@ pub struct MmrConfig {
     /// MMR has to choose from. Default: `30`.
     #[serde(default = "default_mmr_candidate_pool")]
     pub candidate_pool: usize,
+}
+
+pub fn default_mmr_enabled() -> bool {
+    true
 }
 
 pub fn default_mmr_lambda() -> f64 {
@@ -1119,7 +1040,7 @@ pub fn default_mmr_candidate_pool() -> usize {
 impl Default for MmrConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_mmr_enabled(),
             lambda: default_mmr_lambda(),
             candidate_pool: default_mmr_candidate_pool(),
         }
@@ -1436,10 +1357,6 @@ mod tests {
         let m: MemorySettings = serde_json::from_str(json).unwrap();
         assert_eq!(m.conflict_resolver_interval_hours, 6);
         assert_eq!(m.provider.mode, MemoryProviderMode::Engram);
-        assert_eq!(
-            m.corrections_abstractor_interval_hours, 24,
-            "default preserved"
-        );
     }
 
     #[test]
@@ -1573,39 +1490,6 @@ mod tests {
     }
 
     #[test]
-    fn query_gate_default_is_disabled() {
-        let cfg = QueryGateConfig::default();
-        assert!(!cfg.enabled, "query gate must default to disabled");
-        assert_eq!(cfg.max_subqueries, 4);
-        assert_eq!(cfg.max_subquery_len, 200);
-        assert_eq!(cfg.timeout_ms, 3000);
-        assert!(cfg.model_id.is_none());
-    }
-
-    #[test]
-    fn memory_settings_default_query_gate_disabled() {
-        let m = MemorySettings::default();
-        assert!(!m.query_gate.enabled);
-    }
-
-    #[test]
-    fn query_gate_deserializes_camel_case() {
-        let json = r#"{
-            "enabled": true,
-            "modelId": "gpt-4o-mini",
-            "maxSubqueries": 6,
-            "maxSubqueryLen": 120,
-            "timeoutMs": 5000
-        }"#;
-        let cfg: QueryGateConfig = serde_json::from_str(json).unwrap();
-        assert!(cfg.enabled);
-        assert_eq!(cfg.model_id.as_deref(), Some("gpt-4o-mini"));
-        assert_eq!(cfg.max_subqueries, 6);
-        assert_eq!(cfg.max_subquery_len, 120);
-        assert_eq!(cfg.timeout_ms, 5000);
-    }
-
-    #[test]
     fn belief_network_default_values() {
         let cfg = BeliefNetworkConfig::default();
         assert!(!cfg.enabled, "belief network must default to disabled");
@@ -1667,7 +1551,7 @@ mod tests {
     #[test]
     fn mmr_config_default_is_disabled() {
         let cfg = MmrConfig::default();
-        assert!(!cfg.enabled, "MMR must default to disabled");
+        assert!(cfg.enabled, "MMR now defaults to enabled (P2)");
         assert!((cfg.lambda - 0.6).abs() < f64::EPSILON);
         assert_eq!(cfg.candidate_pool, 30);
     }
@@ -1675,7 +1559,7 @@ mod tests {
     #[test]
     fn memory_settings_default_mmr_disabled() {
         let m = MemorySettings::default();
-        assert!(!m.mmr.enabled);
+        assert!(m.mmr.enabled);
         assert!((m.mmr.lambda - 0.6).abs() < f64::EPSILON);
         assert_eq!(m.mmr.candidate_pool, 30);
     }
@@ -1711,23 +1595,11 @@ mod tests {
         // MemorySettings deserialization must still succeed with defaults.
         let json = r#"{"conflictResolverIntervalHours": 12}"#;
         let m: MemorySettings = serde_json::from_str(json).unwrap();
-        assert!(!m.mmr.enabled);
+        // P2: MMR defaults on even when the block is absent; explicit
+        // `{"mmr":{"enabled":false}}` remains the opt-out.
+        assert!(m.mmr.enabled);
         assert!((m.mmr.lambda - 0.6).abs() < f64::EPSILON);
         assert_eq!(m.mmr.candidate_pool, 30);
-    }
-
-    #[test]
-    fn memory_settings_with_query_gate_block_round_trips() {
-        let json = r#"{
-            "queryGate": { "enabled": true, "maxSubqueries": 3 }
-        }"#;
-        let m: MemorySettings = serde_json::from_str(json).unwrap();
-        assert!(m.query_gate.enabled);
-        assert_eq!(m.query_gate.max_subqueries, 3);
-        // unspecified fields keep defaults
-        assert_eq!(m.query_gate.max_subquery_len, 200);
-        assert_eq!(m.query_gate.timeout_ms, 3000);
-        assert!(m.query_gate.model_id.is_none());
     }
 
     #[test]
@@ -1785,21 +1657,12 @@ mod tests {
     // AC4 — the V1 preset pins approved tuning and built-in identity.
     #[test]
     fn zbot_recommended_v1_pins_memory_tuning_and_builtin_embeddings() {
-        let defaults = serde_json::to_value(MemorySettings::default()).unwrap();
         let profile = MemorySettings::zbot_recommended_v1();
         let approved: serde_json::Value =
             serde_json::from_str(include_str!("../templates/zbot-recommended-v1-memory.json"))
                 .unwrap();
 
         assert_eq!(serde_json::to_value(&profile).unwrap(), approved);
-        assert_eq!(
-            defaults["correctionsAbstractorIntervalHours"],
-            serde_json::json!(24)
-        );
-        assert_eq!(defaults["queryGate"]["enabled"], serde_json::json!(false));
-
-        assert_eq!(profile.corrections_abstractor_interval_hours, 1);
-        assert!(profile.query_gate.enabled);
         assert!(profile.belief_network.enabled);
         assert_eq!(profile.belief_network.interval_hours, 0);
         assert_eq!(profile.belief_network.contradiction_budget_per_cycle, 200);

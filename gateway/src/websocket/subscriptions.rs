@@ -145,11 +145,8 @@ pub fn should_send_to_scope(
 // =============================================================================
 
 /// Client connection state
-#[allow(dead_code)]
 struct Client {
-    id: ClientId,
     sender: mpsc::UnboundedSender<ServerMessage>,
-    connected_at: Instant,
     last_activity: Instant,
     subscription_count: usize,
     /// Track if channel has failed (for cleanup)
@@ -159,10 +156,7 @@ struct Client {
 
 /// Per-subscription state including scope and cached identifiers.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct SubscriptionEntry {
-    /// Client ID
-    client_id: ClientId,
     /// Event filtering scope
     scope: SubscriptionScope,
     /// Cached state for Session scope filtering (None for other scopes)
@@ -180,6 +174,7 @@ struct SubscriptionState {
     sequence_numbers: HashMap<String, u64>,
     /// Subscription entries with scope state (conversation_id, client_id) -> entry
     subscription_entries: HashMap<(String, ClientId), SubscriptionEntry>,
+    session_owners: HashMap<String, ClientId>,
 }
 
 /// Subscription manager for routing events to subscribed clients.
@@ -236,6 +231,7 @@ impl SubscriptionManager {
                 client_subscriptions: HashMap::new(),
                 sequence_numbers: HashMap::new(),
                 subscription_entries: HashMap::new(),
+                session_owners: HashMap::new(),
             }),
             max_subscriptions_per_client: Self::DEFAULT_MAX_SUBS_PER_CLIENT,
             max_subscribers_per_conversation: Self::DEFAULT_MAX_SUBS_PER_CONV,
@@ -254,9 +250,7 @@ impl SubscriptionManager {
         state.clients.insert(
             client_id.clone(),
             Client {
-                id: client_id.clone(),
                 sender,
-                connected_at: Instant::now(),
                 last_activity: Instant::now(),
                 subscription_count: 0,
                 channel_healthy: true,
@@ -285,6 +279,18 @@ impl SubscriptionManager {
         }
     }
 
+    /// Bind only server-accepted invokes to their originating connection.
+    pub async fn bind_session_owner(&self, client_id: &ClientId, session_id: String) {
+        let mut state = self.state.write().await;
+        if state.clients.contains_key(client_id) {
+            state.session_owners.insert(session_id, client_id.clone());
+        }
+    }
+
+    pub async fn owns_session(&self, client_id: &ClientId, session_id: &str) -> bool {
+        self.state.read().await.session_owners.get(session_id) == Some(client_id)
+    }
+
     /// Disconnect and cleanup - atomic, no race conditions.
     pub async fn disconnect(&self, client_id: &ClientId) {
         let mut state = self.state.write().await;
@@ -293,6 +299,7 @@ impl SubscriptionManager {
 
     /// Internal disconnect with state already locked.
     fn disconnect_internal(&self, state: &mut SubscriptionState, client_id: &ClientId) {
+        state.session_owners.retain(|_, owner| owner != client_id);
         if let Some(conversations) = state.client_subscriptions.remove(client_id) {
             for conv_id in &conversations {
                 if let Some(subscribers) = state.subscriptions.get_mut(conv_id) {
@@ -416,14 +423,9 @@ impl SubscriptionManager {
 
         // Store subscription entry with scope and state
         let entry_key = (conversation_id.clone(), client_id.clone());
-        state.subscription_entries.insert(
-            entry_key,
-            SubscriptionEntry {
-                client_id: client_id.clone(),
-                scope,
-                scope_state,
-            },
-        );
+        state
+            .subscription_entries
+            .insert(entry_key, SubscriptionEntry { scope, scope_state });
 
         let current_seq = *state.sequence_numbers.entry(conversation_id).or_insert(0);
 

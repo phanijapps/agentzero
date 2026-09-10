@@ -20,15 +20,16 @@ execution-state = { path = "../../services/execution-state" }
 agent-primitives = { path = "../../runtime/agent-primitives" }
 agent-surfaces = { path = "../../runtime/agent-surfaces" }
 gateway-events = { path = "../gateway-events" }
+gateway-bus = { path = "../gateway-bus" }
 # JSON Schema derivation for the Rig extractor (intent analysis typed output).
 schemars = { workspace = true }
 gateway-memory = { path = "../gateway-memory" }
 gateway-services = { path = "../gateway-services" }
 gateway-connectors = { path = "../gateway-connectors" }
 gateway-templates = { path = "../gateway-templates" }
+distillation = { path = "../../services/distillation" }
 gateway-bridge = { path = "../gateway-bridge" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
-zbot-stores = { path = "../../stores/zbot-stores" }
 zbot-stores-domain = { path = "../../stores/zbot-stores-domain" }
 zbot-conversation = { path = "../../stores/zbot-conversation" }
 zbot-trace = { path = "../../stores/zbot-trace" }
@@ -44,6 +45,7 @@ tokio-stream = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 serde_yaml = { workspace = true }
 
 # Error handling
@@ -87,7 +89,7 @@ test-stubs = []
 
 [dev-dependencies]
 tempfile = "3"
-zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
+zbot-engram-adapter = { path = "../../stores/zbot-engram-adapter" }
 tokio-test = "0.4"
 filetime = "0.2"
 

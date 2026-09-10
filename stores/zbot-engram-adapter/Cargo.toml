@@ -8,6 +8,7 @@ description = "AgentZero compatibility adapter scaffold for Engram-backed stores
 
 [dependencies]
 agent-runtime = { path = "../../runtime/agent-runtime" }
+agent-primitives = { path = "../../runtime/agent-primitives" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 engram-domain = { git = "https://github.com/phanijapps/engram", branch = "main" }
@@ -16,6 +17,7 @@ engram-memory = { git = "https://github.com/phanijapps/engram", branch = "main" 
 engram-integration = { git = "https://github.com/phanijapps/engram", branch = "main", features = ["sqlite"] }
 engram-hierarchy = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-knowledge = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-retrieval = { git = "https://github.com/phanijapps/engram", branch = "main" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { workspace = true }
@@ -25,7 +27,6 @@ tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 zbot-stores-domain = { path = "../zbot-stores-domain" }
-zbot-stores = { path = "../zbot-stores" }
 zbot-stores-traits = { path = "../zbot-stores-traits" }
 
 [dev-dependencies]

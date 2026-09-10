@@ -18,6 +18,7 @@ import {
   Gauge,
   GitBranch,
   Radio,
+  Square,
   Sparkles,
 } from "lucide-react";
 import type { LogSession } from "@/services/transport/types";
@@ -28,9 +29,10 @@ import { useMissionControlSessions } from "./useMissionControlSessions";
 type AttentionState = "active" | "watch" | "alert" | "complete";
 
 export function MissionControlPage() {
-  const { sessions, loading, error, tokenIndex, refreshGeneration } = useMissionControlSessions(50);
+  const { sessions, loading, error, tokenIndex, refreshGeneration, refetch } = useMissionControlSessions(50);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState(true);
+  const [cancellingSessionId, setCancellingSessionId] = useState<string | null>(null);
 
   const ranked = useMemo(() => [...sessions].sort(compareAttention), [sessions]);
   const selected = useMemo(() => {
@@ -46,6 +48,18 @@ export function MissionControlPage() {
   const chooseMission = (sessionId: string) => {
     setSelectedId(sessionId);
     setInspecting(true);
+  };
+  const cancelMission = async (session: LogSession) => {
+    setCancellingSessionId(session.session_id);
+    try {
+      const response = await fetch(`/api/gateway/cancel/${encodeURIComponent(session.conversation_id)}`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(`Cancellation failed (${response.status})`);
+      refetch();
+    } finally {
+      setCancellingSessionId(null);
+    }
   };
 
   return (
@@ -106,6 +120,8 @@ export function MissionControlPage() {
               tokenTotal={tokenIndex.byRootExecId.get(selected.session_id)?.total ?? selected.token_count}
               inspecting={inspecting}
               onInspect={() => setInspecting((current) => !current)}
+              onCancel={() => void cancelMission(selected)}
+              cancelling={cancellingSessionId === selected.session_id}
             />
           ) : (
             <div className="mission-radar__focus-empty">
@@ -190,11 +206,13 @@ function MissionRow({ session, selected, onSelect }: { session: LogSession; sele
   );
 }
 
-function FocusedMission({ session, tokenTotal, inspecting, onInspect }: {
+function FocusedMission({ session, tokenTotal, inspecting, onInspect, onCancel, cancelling }: {
   session: LogSession;
   tokenTotal: number;
   inspecting: boolean;
   onInspect(): void;
+  onCancel(): void;
+  cancelling: boolean;
 }) {
   const attention = attentionOf(session);
   const delegationCount = session.subagent_count ?? session.child_session_ids?.length ?? 0;
@@ -223,6 +241,11 @@ function FocusedMission({ session, tokenTotal, inspecting, onInspect }: {
         <button type="button" onClick={onInspect} aria-expanded={inspecting}>
           {inspecting ? "Hide inspector" : "Inspect mission"} <ArrowUpRight size={14} aria-hidden="true" />
         </button>
+        {session.status === "running" && (
+          <button type="button" onClick={onCancel} disabled={cancelling} aria-label="Stop session">
+            <Square size={14} aria-hidden="true" /> {cancelling ? "Stopping…" : "Stop session"}
+          </button>
+        )}
       </section>
     </article>
   );

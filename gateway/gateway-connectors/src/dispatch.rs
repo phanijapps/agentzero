@@ -163,7 +163,11 @@ async fn dispatch_http(
         Ok(response) => {
             let status = response.status().as_u16();
             let success = response.status().is_success();
-            let body = response.text().await.ok();
+            let body = if success {
+                response.text().await.ok()
+            } else {
+                Some(crate::http_failure_summary(status))
+            };
 
             if success {
                 info!(
@@ -175,7 +179,6 @@ async fn dispatch_http(
                 warn!(
                     connector_id = %connector_id,
                     status = %status,
-                    body = ?body,
                     "Connector dispatch received non-success status"
                 );
             }
@@ -187,6 +190,7 @@ async fn dispatch_http(
             })
         }
         Err(e) => {
+            let e = e.without_url();
             error!(
                 connector_id = %connector_id,
                 error = %e,

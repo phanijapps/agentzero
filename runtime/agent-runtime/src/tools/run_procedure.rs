@@ -10,10 +10,12 @@
 //! Task 8 lands the dispatch loop. Task 9 lands argument interpolation.
 
 use agent_primitives::{AgentError, Result, Tool, ToolContext};
+use agent_tools::guards::planning_gate_awaits_ward;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use zbot_stores_traits::{PatternStep, ProcedureStore};
+use zbot_stores_traits::{StoreError, StoreResult};
 
 use crate::tools::registry::ToolRegistry;
 
@@ -167,13 +169,12 @@ impl RunProcedureTool {
     }
 }
 
-fn required_parameters(
-    proc: &zbot_stores_traits::Procedure,
-) -> std::result::Result<Vec<String>, String> {
+fn required_parameters(proc: &zbot_stores_traits::Procedure) -> StoreResult<Vec<String>> {
     let Some(raw) = proc.parameters.as_deref() else {
         return Ok(Vec::new());
     };
-    serde_json::from_str(raw).map_err(|error| format!("procedure parameters unparseable: {error}"))
+    serde_json::from_str(raw)
+        .map_err(|error| StoreError::Invalid(format!("procedure parameters unparseable: {error}")))
 }
 
 #[async_trait]
@@ -209,6 +210,13 @@ impl Tool for RunProcedureTool {
     }
 
     async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request is awaiting ward(create/use). The system will start planner-agent after ward entry; do not run a procedure before planning."
+            }));
+        }
+
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
@@ -230,7 +238,8 @@ impl Tool for RunProcedureTool {
             .get("args")
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
-        let declared = required_parameters(&proc).map_err(AgentError::Tool)?;
+        let declared =
+            required_parameters(&proc).map_err(|e: StoreError| AgentError::Tool(e.to_string()))?;
         let missing: Vec<_> = declared
             .iter()
             .filter(|name| top_args.get(name.as_str()).is_none())
@@ -260,7 +269,9 @@ impl Tool for RunProcedureTool {
                     tracing::warn!(error = %error, "increment_failure failed");
                 }
                 return Err(AgentError::Tool(format!(
-                    "run_procedure '{}' step {i} is a legacy task template, not executable tool args",
+                    "run_procedure '{}' step {i} is a legacy task template, not executable tool args. \
+                     This stored procedure is permanently non-executable — do not retry it; \
+                     do the task directly instead",
                     proc.name
                 )));
             }
@@ -336,6 +347,23 @@ mod tests {
         ))
     }
 
+    fn cold_graph_ctx() -> Arc<dyn ToolContext> {
+        let mut state = std::collections::HashMap::new();
+        state.insert(
+            agent_tools::guards::PLANNING_GATE_STATE.to_string(),
+            serde_json::to_value(agent_tools::guards::PlanningGate::awaiting_ward(
+                "Plan this graph request",
+            ))
+            .unwrap(),
+        );
+        Arc::new(ConcreteCtx::full_with_state(
+            "root".into(),
+            Some("c1".into()),
+            vec![],
+            state,
+        ))
+    }
+
     fn test_procedure(id: &str, name: &str, steps_json: &str) -> Procedure {
         Procedure {
             id: id.into(),
@@ -389,7 +417,7 @@ mod tests {
             &self,
             _agent_id: &str,
             name: &str,
-        ) -> std::result::Result<Option<Procedure>, String> {
+        ) -> StoreResult<Option<Procedure>> {
             let p = self.proc.lock().await;
             if p.name == name {
                 Ok(Some(p.clone()))
@@ -402,14 +430,14 @@ mod tests {
             id: &str,
             _duration_ms: Option<i64>,
             _token_cost: Option<i64>,
-        ) -> std::result::Result<(), String> {
+        ) -> StoreResult<()> {
             let mut p = self.proc.lock().await;
             if p.id == id {
                 p.success_count += 1;
             }
             Ok(())
         }
-        async fn increment_failure(&self, id: &str) -> std::result::Result<(), String> {
+        async fn increment_failure(&self, id: &str) -> StoreResult<()> {
             let mut p = self.proc.lock().await;
             if p.id == id {
                 p.failure_count += 1;
@@ -437,6 +465,17 @@ mod tests {
         let res = tool.execute(test_ctx(), json!({})).await;
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[tokio::test]
+    async fn cold_graph_gate_redirects_procedure_before_lookup_or_dispatch() {
+        let tool =
+            RunProcedureTool::new(Arc::new(ToolRegistry::new()), Arc::new(NoOpProcedureStore));
+        let result = tool
+            .execute(cold_graph_ctx(), json!({"name": "anything"}))
+            .await
+            .expect("planning gate returns a redirect");
+        assert_eq!(result["status"], "redirect");
     }
 
     #[tokio::test]
@@ -566,6 +605,40 @@ mod tests {
         let err_msg = res.unwrap_err().to_string();
         assert!(err_msg.contains("not a registered tool"), "got: {err_msg}");
         assert!(store.failure_was_incremented("p3").await);
+    }
+
+    #[tokio::test]
+    async fn legacy_template_step_error_tells_the_model_to_abandon() {
+        let registry = Arc::new(ToolRegistry::new()); // empty registry
+
+        // Session sess-a0788ab4: a stored procedure whose steps carry
+        // task_template prose instead of executable tool args. The model
+        // retried it because the old error never said it was permanent.
+        let steps_json = serde_json::to_string(&vec![
+            json!({"action": "shell", "args": {}, "binds": [], "task_template": "Analyze {ticker}"}),
+        ])
+        .unwrap();
+        let store = Arc::new(InMemoryProcedureStore::with_one(test_procedure(
+            "p4",
+            "equity_peer_valuation_analysis",
+            &steps_json,
+        )));
+
+        let tool = RunProcedureTool::new(registry, store.clone());
+        let res = tool
+            .execute(
+                test_ctx(),
+                json!({"name": "equity_peer_valuation_analysis"}),
+            )
+            .await;
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("legacy task template"), "got: {err_msg}");
+        assert!(
+            err_msg.contains("do not retry"),
+            "error must steer the model away from a permanently broken procedure: {err_msg}"
+        );
+        assert!(store.failure_was_incremented("p4").await);
     }
 
     #[tokio::test]

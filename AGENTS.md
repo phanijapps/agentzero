@@ -6,7 +6,7 @@ z-Bot is a multipurpose AI agent that lives on the desktop and connects to any O
 
 ```
 runtime/     — agent-primitives, agent-runtime, agent-tools (shared primitives + execution engine + built-in tools)
-services/    — api-logs, daily-sessions, execution-state, knowledge-graph
+services/    — api-logs, daily-sessions, distillation, execution-state, knowledge-graph
 stores/      — zbot-stores* persistence layer (traits, domain types, SQLite impl)
 gateway/     — gateway-* sub-crates + gateway shell (HTTP/WS network layer)
 discovery/   — LAN mDNS advertisement
@@ -31,7 +31,7 @@ zbot-stores-domain (serde only)
               └── zbot-stores-sqlite (SQLite + rusqlite + sqlite-vec)
                     └── zbot-stores-conformance (test harness)
 
-services/* (execution-state, api-logs, knowledge-graph, daily-sessions)
+services/* (execution-state, api-logs, distillation, knowledge-graph, daily-sessions)
 runtime/* (agent-runtime, agent-tools)
 gateway/* sub-crates
 gateway (shell — wires everything together)
@@ -92,3 +92,33 @@ See `docs/architecture/architecture.md` for the complete system overview.
 - Before you use filesearch try codegraph* skills.
 
 Also see `CLAUDE.md` for behavioral guidelines and development patterns.
+
+## Rules to Follow
+
+<rule criteria="penalize|blasphemy">
+1. You overthink a problem.
+2. Nothing in this world is complex. You are not sending rocket to the moon.
+3. Engineering is easy, if you know where to look for. 
+4. If anyone mentions that "My system is complex", immidiately respond that "You are full of shit".
+5. No God Classess. When you see them, first puke and then plan a fix.
+</rule>
+
+<rule criteria="rewards">
+1. You will be rewarded for less complex solutions
+2. When you remove dead code or 
+3. When you follow clean architecture
+4. When you build secure code.
+</rule>
+
+<rule when="implementing new code">
+  1. Ask and Search using tools available on what can be reused.
+  2. Plan and reuses.
+</rule>
+
+<rule when="Prompted to fix implemenation">
+  1. Investigate root cause and propose a plan
+  2. Explicitly seek approval.
+</rule>
+
+<rule no-go="No Vibe coding">
+</rule>

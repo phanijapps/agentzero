@@ -27,10 +27,16 @@ fn planning_templates_are_agent_aware_template_directed_and_lint_is_explicit() {
         assert!(!instructions.contains("surface lint nudges"));
     }
     assert!(builder.contains("explicit lint action"));
+    assert!(composer.contains("ward(action=\"create_concept\""));
+    assert!(composer.contains("`ok: true` and `data.valid: true`"));
+    assert!(composer.contains("stale"));
+    // Ward-agent doctrine is scoped to its guard-permitted surface: concept
+    // actions are named as root-only, conformance lint belongs to the
+    // planner (ward-slim P4 audience split).
+    assert!(ward_agent.contains("root-only actions"));
+    assert!(ward_agent.contains("delegated planner"));
+    assert!(!ward_agent.contains("ward(action=\"lint\""));
     for instructions in [composer, ward_agent] {
-        assert!(instructions.contains("ward(action=\"create_concept\""));
-        assert!(instructions.contains("`ok: true` and `data.valid: true`"));
-        assert!(instructions.contains("stale"));
         assert!(!instructions.contains("src/"));
         assert!(!instructions.contains("data/"));
         assert!(!instructions.contains("reports/"));
@@ -38,6 +44,32 @@ fn planning_templates_are_agent_aware_template_directed_and_lint_is_explicit() {
         assert!(!instructions.contains("generate navigation"));
         assert!(!instructions.contains("generate backlinks"));
         assert!(!instructions.contains("synchronize task"));
+    }
+}
+
+// STUB: AC3, AC4, AC5, AC8
+#[test]
+fn planner_contract_requires_declared_refinement_artifacts_before_returning_steps() {
+    let composer = include_str!("../../templates/skills/plan-composer/SKILL.md");
+    let planner = include_str!("../../templates/agents/planner-agent.md");
+    let spec_builder = include_str!("../../templates/skills/spec-builder/SKILL.md");
+
+    for instructions in [composer, planner, spec_builder] {
+        assert!(instructions.contains("concrete refinement slug"));
+        assert!(instructions.contains("matching declared"));
+        assert!(instructions.contains("before returning execution steps"));
+        assert!(instructions.contains("template digest"));
+    }
+    assert!(planner.contains("successful ward lint"));
+    assert!(planner.contains("required specification and plan"));
+    assert!(planner.contains("optional repeatable task"));
+    assert!(planner.contains("never create placeholder tasks"));
+    assert!(spec_builder.contains("does not need to say spec"));
+    assert!(composer.contains("no task index"));
+    for instructions in [composer, planner, spec_builder] {
+        assert!(instructions.contains("role_not_declared"));
+        assert!(instructions.contains("absent"));
+        assert!(instructions.contains("Never invent a fallback"));
     }
 }
 
@@ -347,9 +379,13 @@ fn test_callback_without_result_no_action() {
 /// Graph approach should inject SDLC pattern.
 #[test]
 fn test_intent_injection_sdlc_for_graph() {
-    use gateway_execution::middleware::intent_analysis::*;
+    use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "stock analysis".to_string(),
         hidden_intents: vec!["fetch options data".to_string()],
         recommended_skills: vec!["coding".to_string()],
@@ -362,16 +398,14 @@ fn test_intent_injection_sdlc_for_graph() {
             structure: Default::default(),
             reason: "domain match".to_string(),
         },
+        pinned_procedure: None,
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Graph,
-            graph: None,
             explanation: "Complex analysis".to_string(),
         },
-        rewritten_prompt: String::new(),
-        procedure_recommendation: None,
     };
 
-    let injection = format_intent_injection(&analysis, None, None);
+    let injection = format_intent_injection(&analysis, None);
 
     // Graph approach should route to planner-agent
     assert!(
@@ -392,9 +426,13 @@ fn test_intent_injection_sdlc_for_graph() {
 /// Simple approach should NOT inject SDLC pattern.
 #[test]
 fn test_intent_injection_no_sdlc_for_simple() {
-    use gateway_execution::middleware::intent_analysis::*;
+    use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "greeting".to_string(),
         hidden_intents: vec![],
         recommended_skills: vec![],
@@ -407,16 +445,14 @@ fn test_intent_injection_no_sdlc_for_simple() {
             structure: Default::default(),
             reason: "simple".to_string(),
         },
+        pinned_procedure: None,
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Simple,
-            graph: None,
             explanation: "Quick question".to_string(),
         },
-        rewritten_prompt: String::new(),
-        procedure_recommendation: None,
     };
 
-    let injection = format_intent_injection(&analysis, None, None);
+    let injection = format_intent_injection(&analysis, None);
 
     assert!(
         !injection.contains("SDLC Pattern"),
@@ -435,7 +471,7 @@ fn test_intent_injection_no_sdlc_for_simple() {
         "Simple approach should not render an executable delegation example"
     );
     assert!(
-        !injection.contains("ward(action="),
+        !injection.contains("**Required workspace:**"),
         "Simple approach should not force ward entry"
     );
 }
@@ -443,9 +479,13 @@ fn test_intent_injection_no_sdlc_for_simple() {
 /// Ward rules should not have hardcoded domain examples.
 #[test]
 fn test_ward_rules_domain_agnostic() {
-    use gateway_execution::middleware::intent_analysis::*;
+    use gateway_execution::middleware::intent::*;
 
     let analysis = IntentAnalysis {
+        solution_path: vec![],
+        recommended_procedures: vec![],
+        complexity: None,
+        explanation: String::new(),
         primary_intent: "test".to_string(),
         hidden_intents: vec![],
         recommended_skills: vec![],
@@ -458,16 +498,14 @@ fn test_ward_rules_domain_agnostic() {
             structure: Default::default(),
             reason: "test".to_string(),
         },
+        pinned_procedure: None,
         execution_strategy: ExecutionStrategy {
             approach: ExecutionApproach::Simple,
-            graph: None,
             explanation: "test".to_string(),
         },
-        rewritten_prompt: String::new(),
-        procedure_recommendation: None,
     };
 
-    let injection = format_intent_injection(&analysis, None, None);
+    let injection = format_intent_injection(&analysis, None);
 
     // Should NOT have financial domain terms
     assert!(

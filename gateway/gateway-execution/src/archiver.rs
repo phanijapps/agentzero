@@ -4,6 +4,7 @@
 // keeping SQLite lean for constrained environments (Raspberry Pi, etc.).
 // ============================================================================
 
+use crate::errors::ExecutionError;
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,7 +63,7 @@ impl SessionArchiver {
     /// Safety: the file is fully written and flushed before any SQLite rows
     /// are deleted. If the file write succeeds but a DELETE fails, data exists
     /// in both places (safe but wasteful).
-    pub fn archive_session(&self, session_id: &str) -> Result<ArchiveResult, String> {
+    pub fn archive_session(&self, session_id: &str) -> Result<ArchiveResult, ExecutionError> {
         // 1. Load messages for session
         let messages = self.db.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -82,8 +83,7 @@ impl SessionArchiver {
                     "token_count": row.get::<_, i32>(6)?,
                     "tool_calls": row.get::<_, Option<String>>(7)?,
                     "tool_results": row.get::<_, Option<String>>(8)?,
-                    "tool_call_id": row.get::<_, Option<String>>(9)?,
-                }))
+                    "tool_call_id": row.get::<_, Option<String>>(9)? }))
             })?;
             rows.collect::<Result<Vec<_>, _>>()
         })?;
@@ -108,8 +108,7 @@ impl SessionArchiver {
                     "category": row.get::<_, String>(7)?,
                     "message": row.get::<_, String>(8)?,
                     "metadata": row.get::<_, Option<String>>(9)?,
-                    "duration_ms": row.get::<_, Option<i64>>(10)?,
-                }))
+                    "duration_ms": row.get::<_, Option<i64>>(10)? }))
             })?;
             rows.collect::<Result<Vec<_>, _>>()
         })?;
@@ -234,7 +233,10 @@ impl SessionArchiver {
     /// - archived = 0
     /// - completed_at is older than `older_than_days`
     /// - a distillation_runs entry with status = 'success' exists
-    pub fn archive_old_sessions(&self, older_than_days: u32) -> Result<Vec<ArchiveResult>, String> {
+    pub fn archive_old_sessions(
+        &self,
+        older_than_days: u32,
+    ) -> Result<Vec<ArchiveResult>, ExecutionError> {
         let session_ids: Vec<String> = self.db.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT s.id
@@ -267,14 +269,14 @@ impl SessionArchiver {
     /// Restore an archived session from its compressed JSONL file back into SQLite.
     ///
     /// Returns the total number of records restored (messages + logs).
-    pub fn restore_session(&self, session_id: &str) -> Result<usize, String> {
+    pub fn restore_session(&self, session_id: &str) -> Result<usize, ExecutionError> {
         let archive_file = self.archive_path.join(format!("{}.jsonl.gz", session_id));
 
         if !archive_file.exists() {
-            return Err(format!(
+            return Err(ExecutionError::from(format!(
                 "Archive file not found: {}",
                 archive_file.display()
-            ));
+            )));
         }
 
         // 1. Read and decompress
@@ -343,54 +345,58 @@ impl SessionArchiver {
     // =========================================================================
 
     /// Re-insert a single message row from its JSON representation.
-    fn restore_message(&self, data: &serde_json::Value) -> Result<(), String> {
-        self.db.with_connection(|conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO messages
+    fn restore_message(&self, data: &serde_json::Value) -> Result<(), ExecutionError> {
+        self.db
+            .with_connection(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO messages
                     (id, execution_id, session_id, role, content, created_at,
                      token_count, tool_calls, tool_results, tool_call_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    data["id"].as_str().unwrap_or_default(),
-                    data["execution_id"].as_str(),
-                    data["session_id"].as_str(),
-                    data["role"].as_str().unwrap_or_default(),
-                    data["content"].as_str().unwrap_or_default(),
-                    data["created_at"].as_str().unwrap_or_default(),
-                    data["token_count"].as_i64().unwrap_or(0) as i32,
-                    data["tool_calls"].as_str(),
-                    data["tool_results"].as_str(),
-                    data["tool_call_id"].as_str(),
-                ],
-            )?;
-            Ok(())
-        })
+                    params![
+                        data["id"].as_str().unwrap_or_default(),
+                        data["execution_id"].as_str(),
+                        data["session_id"].as_str(),
+                        data["role"].as_str().unwrap_or_default(),
+                        data["content"].as_str().unwrap_or_default(),
+                        data["created_at"].as_str().unwrap_or_default(),
+                        data["token_count"].as_i64().unwrap_or(0) as i32,
+                        data["tool_calls"].as_str(),
+                        data["tool_results"].as_str(),
+                        data["tool_call_id"].as_str(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .map_err(ExecutionError::Store)
     }
 
     /// Re-insert a single execution_log row from its JSON representation.
-    fn restore_execution_log(&self, data: &serde_json::Value) -> Result<(), String> {
-        self.db.with_connection(|conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO execution_logs
+    fn restore_execution_log(&self, data: &serde_json::Value) -> Result<(), ExecutionError> {
+        self.db
+            .with_connection(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO execution_logs
                     (id, session_id, conversation_id, agent_id, parent_session_id,
                      timestamp, level, category, message, metadata, duration_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    data["id"].as_str().unwrap_or_default(),
-                    data["session_id"].as_str().unwrap_or_default(),
-                    data["conversation_id"].as_str(),
-                    data["agent_id"].as_str().unwrap_or_default(),
-                    data["parent_session_id"].as_str(),
-                    data["timestamp"].as_str().unwrap_or_default(),
-                    data["level"].as_str().unwrap_or_default(),
-                    data["category"].as_str().unwrap_or_default(),
-                    data["message"].as_str().unwrap_or_default(),
-                    data["metadata"].as_str(),
-                    data["duration_ms"].as_i64(),
-                ],
-            )?;
-            Ok(())
-        })
+                    params![
+                        data["id"].as_str().unwrap_or_default(),
+                        data["session_id"].as_str().unwrap_or_default(),
+                        data["conversation_id"].as_str(),
+                        data["agent_id"].as_str().unwrap_or_default(),
+                        data["parent_session_id"].as_str(),
+                        data["timestamp"].as_str().unwrap_or_default(),
+                        data["level"].as_str().unwrap_or_default(),
+                        data["category"].as_str().unwrap_or_default(),
+                        data["message"].as_str().unwrap_or_default(),
+                        data["metadata"].as_str(),
+                        data["duration_ms"].as_i64(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .map_err(ExecutionError::Store)
     }
 }
 
@@ -401,7 +407,7 @@ impl SessionArchiver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_services::VaultPaths;
+    use agent_primitives::vault_paths::VaultPaths;
     use rusqlite::params;
     use tempfile::TempDir;
 

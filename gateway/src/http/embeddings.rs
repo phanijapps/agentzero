@@ -45,7 +45,7 @@ pub struct HealthResponse {
 }
 
 pub async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let svc = &state.embedding_service;
+    let svc = &state.embedding_service();
     let client = svc.client();
     let snapshot = svc.config_snapshot();
     let status_str = match svc.health() {
@@ -74,13 +74,13 @@ pub async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
 /// fall back to "all five tables missing, zero indexed" so the
 /// endpoint keeps responding — same degraded-but-honest behavior the
 /// historical handler exhibited on DB errors.
-async fn vec_health_snapshot(state: &AppState) -> zbot_stores::VecIndexHealth {
-    if let Some(kg_store) = state.kg_store.as_ref() {
+async fn vec_health_snapshot(state: &AppState) -> knowledge_graph::kg_trait::VecIndexHealth {
+    if let Some(kg_store) = state.kg_store().as_ref() {
         if let Ok(h) = kg_store.vec_index_health().await {
             return h;
         }
     }
-    zbot_stores::VecIndexHealth {
+    knowledge_graph::kg_trait::VecIndexHealth {
         tables_present: Vec::new(),
         tables_missing: Vec::new(),
         indexed_rows: 0,
@@ -191,7 +191,7 @@ pub async fn configure(
     State(state): State<AppState>,
     Json(new): Json<EmbeddingConfig>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
-    let svc = state.embedding_service.clone();
+    let svc = state.embedding_service().clone();
     // Persist the intent first so a daemon restart will honor the selection.
     svc.persist_settings(&new)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -233,8 +233,7 @@ pub async fn configure(
                 Health::Reindexing { .. } => ("reindexing", false),
                 Health::Pulling { .. } => ("pulling", false),
                 Health::OllamaUnreachable => ("error", true),
-                Health::ModelMissing => ("error", true),
-            };
+                Health::ModelMissing => ("error", true) };
             let payload = serde_json::to_string(&h).unwrap_or_else(|_| "{}".into());
             let ev = Event::default().event(ev_name).data(payload);
             yield Ok::<_, Infallible>(ev);
@@ -256,12 +255,12 @@ pub async fn configure(
 /// as the backend-agnostic manual trigger used by Settings/Observatory.
 pub async fn reindex(
     State(state): State<AppState>,
-) -> Result<Json<zbot_stores::ReindexReport>, (StatusCode, String)> {
-    let kg_store = state.kg_store.clone().ok_or((
+) -> Result<Json<knowledge_graph::kg_trait::ReindexReport>, (StatusCode, String)> {
+    let kg_store = state.kg_store().clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "knowledge graph store not available".to_string(),
     ))?;
-    let dim = state.embedding_service.dimensions();
+    let dim = state.embedding_service().dimensions();
     kg_store
         .reindex_embeddings(dim)
         .await

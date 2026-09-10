@@ -816,9 +816,9 @@ mod tests {
 
         let registry = Arc::new(BridgeRegistry::new());
         let outbox = Arc::new(OutboxRepository::new(Arc::new(
-            zbot_runtime_sqlite::DatabaseManager::new(Arc::new(gateway_services::VaultPaths::new(
-                dir.path().to_path_buf(),
-            )))
+            zbot_runtime_sqlite::DatabaseManager::new(Arc::new(
+                agent_primitives::vault_paths::VaultPaths::new(dir.path().to_path_buf()),
+            ))
             .unwrap(),
         )));
 

@@ -9,8 +9,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::executor::{AgentExecutor, ExecutorError};
+pub mod config;
+pub mod error;
+pub mod hooks;
+pub mod prepared;
+pub mod snapshot;
+
 use crate::types::{ChatMessage, StreamEvent};
+pub use config::ExecutorConfig;
+pub use error::ExecutorError;
+pub use hooks::{
+    EngineHook, HookError, HookSet, RecallPacket, RecallSchedule, ToolDecision, ToolExecutionMode,
+};
+pub use prepared::PreparedExecution;
 
 /// Event sink used by execution engines.
 pub type StreamEventSink<'a> = dyn FnMut(StreamEvent) + Send + 'a;
@@ -45,48 +56,9 @@ pub trait AgentEngine: Send + Sync {
         history: &[ChatMessage],
     ) -> Result<String, ExecutorError>;
 
-    /// Identifier for which engine implementation is driving — for observability
-    /// and for testing the Rig cutover selector.
+    /// Identifier for which engine implementation is driving — for
+    /// observability. The default covers loop-free boundary fakes.
     fn engine_name(&self) -> &'static str {
-        "agent-executor"
-    }
-}
-
-#[async_trait]
-impl AgentEngine for AgentExecutor {
-    async fn execute_stream(
-        &self,
-        user_message: &str,
-        history: &[ChatMessage],
-        mut on_event: &mut StreamEventSink<'_>,
-    ) -> Result<(), ExecutorError> {
-        AgentExecutor::execute_stream(self, user_message, history, &mut on_event).await
-    }
-
-    async fn execute_stream_with_stop_flag(
-        &self,
-        user_message: &str,
-        history: &[ChatMessage],
-        stop_flag: Option<Arc<AtomicBool>>,
-        on_event: &mut StreamEventSink<'_>,
-    ) -> Result<(), ExecutorError> {
-        AgentExecutor::execute_stream_with_stop_flag(
-            self,
-            user_message,
-            history,
-            stop_flag,
-            |event| {
-                on_event(event);
-            },
-        )
-        .await
-    }
-
-    async fn execute(
-        &self,
-        user_message: &str,
-        history: &[ChatMessage],
-    ) -> Result<String, ExecutorError> {
-        AgentExecutor::execute(self, user_message, history).await
+        "engine"
     }
 }

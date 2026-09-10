@@ -123,6 +123,18 @@ struct Args {
     /// default for the native web UI and can be rolled back without a deploy.
     #[arg(long)]
     no_agent_surfaces: bool,
+
+    /// Enable the authenticated A2A federation routes.
+    #[arg(long)]
+    a2a: bool,
+
+    /// Public base URL advertised in the A2A Agent Card.
+    #[arg(long)]
+    a2a_public_base_url: Option<String>,
+
+    /// Exact browser origin allowed to call A2A routes (repeatable).
+    #[arg(long = "a2a-allow-origin")]
+    a2a_allowed_origins: Vec<String>,
 }
 
 /// Merged logging configuration from settings.json and CLI args.
@@ -269,6 +281,9 @@ fn setup_logging(
 ) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let level = parse_level(&config.level);
     let env_filter = EnvFilter::from_default_env().add_directive(level.into());
+    let registry = tracing_subscriber::registry().with(env_filter).with(
+        tracing_subscriber::filter::filter_fn(gateway::safe_runtime_diagnostics),
+    );
 
     // Check if file logging is enabled
     if config.enabled {
@@ -305,8 +320,7 @@ fn setup_logging(
 
         if config.suppress_stdout {
             // Only file logging
-            tracing_subscriber::registry()
-                .with(env_filter)
+            registry
                 .with(
                     fmt::layer()
                         .with_writer(file_writer)
@@ -321,8 +335,7 @@ fn setup_logging(
             // Both stdout and file logging using combined writer
             let combined_writer = file_writer.and(std::io::stdout);
 
-            tracing_subscriber::registry()
-                .with(env_filter)
+            registry
                 .with(
                     fmt::layer()
                         .with_writer(combined_writer)
@@ -344,8 +357,7 @@ fn setup_logging(
         Ok(Some(file_guard))
     } else {
         // Only stdout logging (default behavior)
-        tracing_subscriber::registry()
-            .with(env_filter)
+        registry
             .with(
                 fmt::layer()
                     .with_target(true)
@@ -403,6 +415,9 @@ async fn main() -> Result<()> {
             host: args.host.parse()?,
             http_port: args.http_port,
             agent_surfaces_enabled: !args.no_agent_surfaces,
+            a2a_enabled: args.a2a,
+            a2a_public_base_url: args.a2a_public_base_url.clone(),
+            a2a_allowed_origins: args.a2a_allowed_origins.clone(),
             ..Default::default()
         }
     };
@@ -417,6 +432,15 @@ async fn main() -> Result<()> {
     }
     if args.no_agent_surfaces {
         gateway_config.agent_surfaces_enabled = false;
+    }
+    if args.a2a {
+        gateway_config.a2a_enabled = true;
+    }
+    if let Some(base_url) = args.a2a_public_base_url {
+        gateway_config.a2a_public_base_url = Some(base_url);
+    }
+    if !args.a2a_allowed_origins.is_empty() {
+        gateway_config.a2a_allowed_origins = args.a2a_allowed_origins;
     }
 
     // Create and start server

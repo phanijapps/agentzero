@@ -8,10 +8,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Tracks execution progress to distinguish productive work from stuck loops.
 ///
-/// Used by the executor to decide whether to auto-extend iterations when
-/// `max_iterations` is reached. Scores each iteration based on tool diversity,
-/// success rate, and repetition patterns.
-#[allow(dead_code)] // Extension fields kept for diagnostics/legacy
+/// Scores each iteration based on tool diversity, success rate, and
+/// repetition patterns. Drives stuck-detection nudges and planning nudges.
 pub(crate) struct ProgressTracker {
     /// Recent tool calls as (name, `args_hash`) for repetition detection
     pub(crate) recent_tool_calls: VecDeque<(String, u64)>,
@@ -21,10 +19,6 @@ pub(crate) struct ProgressTracker {
     pub(crate) unique_tools_used: HashSet<String>,
     /// Cumulative progress score for the current window
     pub(crate) score: i32,
-    /// Number of auto-extensions granted so far
-    pub(crate) extensions_granted: u32,
-    /// Maximum extensions allowed
-    pub(crate) max_extensions: u32,
     /// Total iterations consumed across all windows
     pub(crate) total_iterations: u32,
     /// Rolling window of tool names (last 20 calls) for diversity tracking
@@ -39,6 +33,11 @@ pub(crate) struct ProgressTracker {
     pub(crate) plan_items_completed: u32,
     /// Whether the planning nudge has been injected (max 1)
     pub(crate) planning_nudge_sent: bool,
+    /// Consecutive-failure tracking per (tool name, args hash): count
+    /// plus the most recent error text. Cleared on success of the same
+    /// call. Feeds the structured failure feedback nudge so the agent
+    /// sees WHY a repeated call keeps failing instead of burning turns.
+    pub(crate) failing_calls: HashMap<(String, u64), (u32, String)>,
     /// Non-planning tool calls made before first update_plan.
     pub(crate) tool_calls_before_plan: u32,
     /// Per-path count of `write_file` overwrites. Catches the "rewrite the
@@ -50,14 +49,12 @@ pub(crate) struct ProgressTracker {
 }
 
 impl ProgressTracker {
-    pub(crate) fn new(max_extensions: u32) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             recent_tool_calls: VecDeque::with_capacity(10),
             recent_errors: VecDeque::with_capacity(5),
             unique_tools_used: HashSet::new(),
             score: 0,
-            extensions_granted: 0,
-            max_extensions,
             total_iterations: 0,
             tool_name_window: VecDeque::with_capacity(20),
             window_tool_calls: 0,
@@ -65,6 +62,7 @@ impl ProgressTracker {
             plan_items_created: 0,
             plan_items_completed: 0,
             planning_nudge_sent: false,
+            failing_calls: HashMap::new(),
             tool_calls_before_plan: 0,
             write_target_repeats: HashMap::new(),
         }
@@ -80,7 +78,8 @@ impl ProgressTracker {
     }
 
     /// Record a tool call and update the progress score.
-    pub(crate) fn record_tool_call(&mut self, name: &str, args: &Value, succeeded: bool) {
+    pub(crate) fn record_tool_call(&mut self, name: &str, args: &Value, error: Option<&str>) {
+        let succeeded = error.is_none();
         // Planning enforcement: detect update_plan usage.
         if name == "update_plan" && succeeded {
             // update_plan uses {plan: [{step, status}]} — lightweight, fire-and-forget.
@@ -119,6 +118,22 @@ impl ProgressTracker {
             .any(|(n, h)| n == name && *h == args_hash);
         if is_exact_repeat && !succeeded {
             self.score -= 3;
+        }
+
+        // Structured failure feedback: on the 2nd+ consecutive failure of
+        // the same call, the policy layer surfaces the error text to the
+        // agent. Success of the same call clears the counter.
+        let key = (name.to_string(), args_hash);
+        if succeeded {
+            self.failing_calls.remove(&key);
+        } else if let Some(entry) = self.failing_calls.get_mut(&key) {
+            entry.0 += 1;
+            if let Some(error) = error {
+                entry.1 = error.to_string();
+            }
+        } else {
+            self.failing_calls
+                .insert(key, (1, error.map(str::to_string).unwrap_or_default()));
         }
 
         // Same-file rewrite loop. A builder that overwrites the SAME path
@@ -220,6 +235,17 @@ impl ProgressTracker {
         }
     }
 
+    /// The repeated-failure call (tool + count + last error) that most
+    /// deserves an explicit nudge, if any. Returns `Some` when the same
+    /// exact call has failed 2+ consecutive times.
+    pub(crate) fn top_failing_call(&self) -> Option<(&str, u32, &str)> {
+        self.failing_calls
+            .iter()
+            .filter(|(_, (count, _))| *count >= 2)
+            .max_by_key(|(_, (count, _))| *count)
+            .map(|((name, _), (count, error))| (name.as_str(), *count, error.as_str()))
+    }
+
     /// Record that a respond action was emitted — agent is finishing.
     pub(crate) fn record_respond(&mut self) {
         self.score += 10;
@@ -228,20 +254,6 @@ impl ProgressTracker {
     /// Record one iteration consumed.
     pub(crate) fn tick(&mut self) {
         self.total_iterations += 1;
-    }
-
-    /// Whether an auto-extension should be granted.
-    /// Planless agents get a -3 effective score penalty.
-    /// NOTE: No longer called from executor loop (iteration limits removed).
-    /// Kept for potential future use and testing.
-    #[allow(dead_code)]
-    pub(crate) fn should_extend(&self) -> bool {
-        let effective_score = if self.has_plan {
-            self.score
-        } else {
-            self.score - 3 // Planless agents need score > 3 to extend
-        };
-        effective_score > 0 && self.extensions_granted < self.max_extensions
     }
 
     /// Check if the agent is clearly stuck and should stop early (before window boundary).
@@ -259,21 +271,6 @@ impl ProgressTracker {
         } else {
             false
         }
-    }
-
-    /// Grant an extension: reset the score window and increment counter.
-    /// NOTE: `tool_name_window` is NOT cleared — diversity tracking spans full session.
-    /// NOTE: `has_plan`, `plan_items_created`, `plan_items_completed`, `planning_nudge_sent`,
-    ///       and `tool_calls_before_plan` are intentionally NOT reset — planning state
-    ///       spans the full execution.
-    #[allow(dead_code)]
-    pub(crate) fn grant_extension(&mut self) {
-        self.extensions_granted += 1;
-        self.score = 0;
-        self.unique_tools_used.clear();
-        self.recent_tool_calls.clear();
-        self.recent_errors.clear();
-        self.window_tool_calls = 0;
     }
 
     /// Build a human-readable diagnosis of the current state.
@@ -308,121 +305,23 @@ impl ProgressTracker {
             )
         }
     }
-
-    /// Build a reason string for the extension event.
-    #[allow(dead_code)]
-    pub(crate) fn extension_reason(&self) -> String {
-        format!(
-            "Making progress: {} unique tools used, score {} (extension {}/{})",
-            self.unique_tools_used.len(),
-            self.score,
-            self.extensions_granted + 1,
-            self.max_extensions
-        )
-    }
 }
 
 #[cfg(test)]
 mod progress_tracker_tests {
     use super::*;
     use crate::context_management::compact_messages;
-    use crate::executor::ExecutorConfig;
+    use crate::engine::ExecutorConfig;
     use crate::types::ChatMessage;
     use agent_primitives::types::Part;
     use serde_json::json;
 
     #[test]
-    fn test_new_tracker_no_extension() {
-        let tracker = ProgressTracker::new(3);
-        assert!(!tracker.should_extend(), "Empty tracker should not extend");
-    }
-
-    #[test]
-    fn test_unique_tools_grant_extension() {
-        let mut tracker = ProgressTracker::new(3);
-        // Create a plan first so the -3 planless penalty doesn't apply
-        tracker.record_tool_call(
-            "update_plan",
-            &json!({"plan": [{"step": "read", "status": "pending"}]}),
-            true,
-        );
-        tracker.record_tool_call("read", &json!({"path": "/a"}), true);
-        tracker.record_tool_call("write", &json!({"path": "/b"}), true);
-        tracker.record_tool_call("shell", &json!({"cmd": "ls"}), true);
-        // update_plan: +4(plan bonus) +1(unique) = 5, then +1 each for 3 more unique tools = 8
-        assert!(tracker.should_extend());
-    }
-
-    #[test]
-    fn test_repeated_calls_prevent_extension() {
-        let mut tracker = ProgressTracker::new(3);
-        let args = json!({"path": "/same"});
-        // Same tool+args 5 times, all failed
-        for _ in 0..5 {
-            tracker.record_tool_call("read", &args, false);
-        }
-        // First call: +1 (unique) = 1
-        // Subsequent 4 calls: -3 (repeat) each = -12
-        // Total: 1 + (-12) = -11
-        assert!(!tracker.should_extend());
-    }
-
-    #[test]
-    fn test_repeated_errors_prevent_extension() {
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("shell", &json!({"cmd": "fail"}), false);
-        tracker.record_error("connection refused");
-        tracker.record_error("connection refused");
-        tracker.record_error("connection refused"); // 3rd time: -5
-                                                    // tool call: +1 (unique) +0 (failed) = 1
-                                                    // errors: -5
-                                                    // total: 1 - 5 = -4
-        assert!(!tracker.should_extend());
-    }
-
-    #[test]
-    fn test_respond_boosts_score() {
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_respond();
-        // +10 from respond
-        assert!(tracker.should_extend());
-    }
-
-    #[test]
-    fn test_max_extensions_respected() {
-        let mut tracker = ProgressTracker::new(2);
-        tracker.record_respond(); // +10
-        assert!(tracker.should_extend());
-        tracker.grant_extension();
-
-        tracker.record_respond(); // +10 (fresh window)
-        assert!(tracker.should_extend());
-        tracker.grant_extension();
-
-        tracker.record_respond(); // +10 (fresh window)
-        assert!(
-            !tracker.should_extend(),
-            "Should not extend beyond max_extensions=2"
-        );
-    }
-
-    #[test]
-    fn test_grant_extension_resets_window() {
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("read", &json!({}), true); // +1 (unique only)
-        tracker.grant_extension();
-        // After grant, score=0, unique_tools cleared, window_tool_calls reset
-        assert!(!tracker.should_extend(), "Score reset to 0 after grant");
-        assert_eq!(tracker.extensions_granted, 1);
-        assert_eq!(tracker.window_tool_calls, 0);
-    }
-
-    #[test]
     fn test_diagnosis_stuck() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         let args = json!({"path": "/same"});
         for _ in 0..6 {
-            tracker.record_tool_call("read", &args, false);
+            tracker.record_tool_call("read", &args, Some("err"));
         }
         let diagnosis = tracker.diagnosis();
         assert!(
@@ -433,11 +332,11 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_diagnosis_progress() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         // Use enough diverse tools to stay positive
-        tracker.record_tool_call("read", &json!({}), true);
-        tracker.record_tool_call("write", &json!({}), true);
-        tracker.record_tool_call("shell", &json!({}), true);
+        tracker.record_tool_call("read", &json!({}), None);
+        tracker.record_tool_call("write", &json!({}), None);
+        tracker.record_tool_call("shell", &json!({}), None);
         let diagnosis = tracker.diagnosis();
         assert!(diagnosis.contains("progress"), "Got: {diagnosis}");
     }
@@ -454,11 +353,11 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_low_diversity_loop_detected() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         // Simulate write+shell loop for 20 iterations, all failed (different args each time)
         for i in 0..20 {
             let tool = if i % 2 == 0 { "write" } else { "shell" };
-            tracker.record_tool_call(tool, &json!({"i": i}), false);
+            tracker.record_tool_call(tool, &json!({"i": i}), Some("err"));
         }
         // After 20 failed calls:
         // 2 unique tools (+1 each = +2)
@@ -475,7 +374,7 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_high_diversity_extends() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         // Use 10 unique tools in 10 calls (all succeed)
         let tools = [
             "read",
@@ -490,7 +389,7 @@ mod progress_tracker_tests {
             "load_skill",
         ];
         for (i, tool) in tools.iter().enumerate() {
-            tracker.record_tool_call(tool, &json!({"i": i}), true);
+            tracker.record_tool_call(tool, &json!({"i": i}), None);
         }
         // 10 unique tools: +1 each = 10, +1 success each = 10
         // No diversity check (only tracks failed calls, none here)
@@ -500,15 +399,11 @@ mod progress_tracker_tests {
             "High diversity should produce positive score, got: {}",
             tracker.score
         );
-        assert!(
-            tracker.should_extend(),
-            "High diversity should allow extension"
-        );
     }
 
     #[test]
     fn test_early_stop_deeply_stuck() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         let args = json!({"path": "/same"});
         // Same exact tool+args repeated, all failed — triggers repetition and diversity penalties
         // Call 1: +1 (unique) = 1
@@ -518,7 +413,7 @@ mod progress_tracker_tests {
         // At 20 failed calls: diversity = 1/20 ≤ 0.15 → -8
         // Total: 1 - 57 - 8 - 8 - 8 = -80
         for _ in 0..20 {
-            tracker.record_tool_call("read", &args, false);
+            tracker.record_tool_call("read", &args, Some("err"));
         }
         // With 10+ window_tool_calls and deeply negative score, should be stuck
         assert!(
@@ -539,42 +434,17 @@ mod progress_tracker_tests {
         );
     }
 
-    #[test]
-    fn test_tool_name_window_preserved_across_extensions() {
-        let mut tracker = ProgressTracker::new(3);
-        // Add some failed tool calls to fill the name window (only failed calls tracked)
-        for i in 0..10 {
-            let tool = if i % 2 == 0 { "write" } else { "shell" };
-            tracker.record_tool_call(tool, &json!({"i": i}), false);
-        }
-        assert_eq!(tracker.tool_name_window.len(), 10);
-
-        // Grant extension
-        tracker.grant_extension();
-
-        // tool_name_window should be preserved
-        assert_eq!(
-            tracker.tool_name_window.len(),
-            10,
-            "tool_name_window should survive grant_extension"
-        );
-        // But window_tool_calls should reset
-        assert_eq!(tracker.window_tool_calls, 0);
-        // And score should reset
-        assert_eq!(tracker.score, 0);
-    }
-
     // ========================================================================
     // PLANNING ENFORCEMENT TESTS
     // ========================================================================
 
     #[test]
     fn test_update_plan_sets_has_plan() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            true,
+            None,
         );
         assert!(tracker.has_plan);
         assert_eq!(tracker.plan_items_created, 1);
@@ -582,7 +452,7 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_update_plan_counts_items() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [
@@ -590,7 +460,7 @@ mod progress_tracker_tests {
                 {"step": "step 2", "status": "pending"},
                 {"step": "step 3", "status": "pending"}
             ]}),
-            true,
+            None,
         );
         assert!(tracker.has_plan);
         assert_eq!(tracker.plan_items_created, 3);
@@ -598,14 +468,14 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_update_plan_boosts_score() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [
                 {"step": "step 1", "status": "pending"},
                 {"step": "step 2", "status": "pending"}
             ]}),
-            true,
+            None,
         );
         // +3 base + 2 items + 1 unique tool + 1 success = 7
         assert_eq!(tracker.score, 7);
@@ -613,19 +483,19 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_update_plan_completed_boosts_score() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         // First add a plan so we have context.
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            true,
+            None,
         );
         let score_after_add = tracker.score;
         // Complete the item.
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [{"step": "step 1", "status": "completed"}]}),
-            true,
+            None,
         );
         // +2 completion bonus + 1 success (unique tool bonus already used)
         assert_eq!(tracker.score, score_after_add + 3);
@@ -634,11 +504,11 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_update_plan_incomplete_no_completion_bonus() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            true,
+            None,
         );
         // +3 plan base + 1 item + 1 unique tool + 1 success = 6, no completion bonus.
         assert_eq!(tracker.score, 6);
@@ -647,11 +517,11 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_failed_update_plan_not_counted() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            false,
+            Some("err"),
         );
         assert!(!tracker.has_plan);
         assert_eq!(tracker.plan_items_created, 0);
@@ -659,29 +529,29 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_tool_calls_before_plan_counted() {
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("read", &json!({"path": "/a"}), true);
-        tracker.record_tool_call("write", &json!({"path": "/b"}), true);
+        let mut tracker = ProgressTracker::new();
+        tracker.record_tool_call("read", &json!({"path": "/a"}), None);
+        tracker.record_tool_call("write", &json!({"path": "/b"}), None);
         assert_eq!(tracker.tool_calls_before_plan, 2);
 
         // Create plan
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            true,
+            None,
         );
         assert_eq!(tracker.tool_calls_before_plan, 2); // Frozen
 
         // More tool calls after plan — counter should not increase
-        tracker.record_tool_call("shell", &json!({"cmd": "ls"}), true);
+        tracker.record_tool_call("shell", &json!({"cmd": "ls"}), None);
         assert_eq!(tracker.tool_calls_before_plan, 2);
     }
 
     #[test]
     fn test_needs_planning_nudge_at_threshold() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         for i in 0..5 {
-            tracker.record_tool_call("read", &json!({"path": format!("/{}", i)}), true);
+            tracker.record_tool_call("read", &json!({"path": format!("/{}", i)}), None);
         }
         assert_eq!(tracker.tool_calls_before_plan, 5);
         assert!(tracker.needs_planning_nudge());
@@ -689,9 +559,9 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_needs_planning_nudge_only_once() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         for i in 0..6 {
-            tracker.record_tool_call("read", &json!({"path": format!("/{}", i)}), true);
+            tracker.record_tool_call("read", &json!({"path": format!("/{}", i)}), None);
         }
         assert!(tracker.needs_planning_nudge());
         assert!(
@@ -702,118 +572,30 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_no_nudge_if_plan_exists() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         // Create plan first.
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            true,
+            None,
         );
         // Then do 10 tool calls
         for i in 0..10 {
-            tracker.record_tool_call("read", &json!({"path": format!("/{}", i)}), true);
+            tracker.record_tool_call("read", &json!({"path": format!("/{}", i)}), None);
         }
         assert!(!tracker.needs_planning_nudge());
     }
 
     #[test]
-    fn test_should_extend_penalizes_no_plan() {
-        // Score 2 without plan → effective -1 → no extend
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("read", &json!({}), true); // +1 unique + 1 success = 2
-        assert!(!tracker.has_plan);
-        assert_eq!(tracker.score, 2);
-        assert!(
-            !tracker.should_extend(),
-            "Score 2 without plan should not extend (effective -1)"
-        );
-
-        // Score 4 without plan → effective 1 → extends (but let's test score 3 first)
-        let mut tracker2 = ProgressTracker::new(3);
-        tracker2.record_tool_call("read", &json!({}), true); // +2
-        tracker2.record_tool_call("write", &json!({}), true); // +2
-        assert!(!tracker2.has_plan);
-        assert_eq!(tracker2.score, 4);
-        assert!(
-            tracker2.should_extend(),
-            "Score 4 without plan should extend (effective 1)"
-        );
-
-        // Score 8 without plan → effective 5 → extends
-        let mut tracker3 = ProgressTracker::new(3);
-        tracker3.record_tool_call("read", &json!({}), true); // +2
-        tracker3.record_tool_call("write", &json!({}), true); // +2
-        tracker3.record_tool_call("shell", &json!({}), true); // +2
-        tracker3.record_tool_call("edit", &json!({}), true); // +2
-        assert!(!tracker3.has_plan);
-        assert_eq!(tracker3.score, 8);
-        assert!(
-            tracker3.should_extend(),
-            "Score 8 without plan should extend (effective 5)"
-        );
-    }
-
-    #[test]
-    fn test_should_extend_no_penalty_with_plan() {
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call(
-            "update_plan",
-            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            true,
-        );
-        tracker.record_tool_call("read", &json!({}), true);
-        tracker.record_tool_call("write", &json!({}), true);
-        assert!(tracker.has_plan);
-        assert!(tracker.score > 0);
-        assert!(
-            tracker.should_extend(),
-            "With plan, positive score should extend"
-        );
-    }
-
-    #[test]
-    fn test_planning_state_survives_grant_extension() {
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call(
-            "update_plan",
-            &json!({"plan": [{"step": "step 1", "status": "pending"}]}),
-            true,
-        );
-        tracker.record_tool_call(
-            "update_plan",
-            &json!({"plan": [{"step": "step 1", "status": "completed"}]}),
-            true,
-        );
-        // Force a nudge scenario before plan (won't fire since has_plan=true, but set for test)
-        tracker.tool_calls_before_plan = 10;
-
-        tracker.grant_extension();
-
-        assert!(tracker.has_plan, "has_plan should survive grant_extension");
-        assert_eq!(
-            tracker.plan_items_created, 1,
-            "plan_items_created should survive"
-        );
-        assert_eq!(
-            tracker.plan_items_completed, 1,
-            "plan_items_completed should survive"
-        );
-        assert_eq!(
-            tracker.tool_calls_before_plan, 10,
-            "tool_calls_before_plan should survive"
-        );
-    }
-
-    #[test]
     fn test_diagnosis_includes_plan_status() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         tracker.record_tool_call(
             "update_plan",
             &json!({"plan": [
                 {"step": "a", "status": "pending"},
                 {"step": "b", "status": "pending"}
             ]}),
-            true,
+            None,
         );
         tracker.record_tool_call(
             "update_plan",
@@ -821,7 +603,7 @@ mod progress_tracker_tests {
                 {"step": "a", "status": "completed"},
                 {"step": "b", "status": "pending"}
             ]}),
-            true,
+            None,
         );
         let diagnosis = tracker.diagnosis();
         assert!(
@@ -832,8 +614,8 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_diagnosis_shows_no_plan() {
-        let mut tracker = ProgressTracker::new(3);
-        tracker.record_tool_call("read", &json!({}), true);
+        let mut tracker = ProgressTracker::new();
+        tracker.record_tool_call("read", &json!({}), None);
         let diagnosis = tracker.diagnosis();
         assert!(
             diagnosis.contains("no plan created"),
@@ -847,11 +629,11 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_is_clearly_stuck_requires_10_calls() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         let args = json!({"path": "/same"});
         // 9 repeated failed calls — not enough window_tool_calls to trigger
         for _ in 0..9 {
-            tracker.record_tool_call("read", &args, false);
+            tracker.record_tool_call("read", &args, Some("err"));
         }
         assert!(
             !tracker.is_clearly_stuck(),
@@ -860,7 +642,7 @@ mod progress_tracker_tests {
             tracker.score
         );
         // 10th call pushes over the threshold
-        tracker.record_tool_call("read", &args, false);
+        tracker.record_tool_call("read", &args, Some("err"));
         assert!(
             tracker.is_clearly_stuck(),
             "Should be stuck at {} calls with score {}",
@@ -871,10 +653,10 @@ mod progress_tracker_tests {
 
     #[test]
     fn test_safety_valve_at_negative_12() {
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         let args = json!({"path": "/same"});
         for _ in 0..15 {
-            tracker.record_tool_call("read", &args, false);
+            tracker.record_tool_call("read", &args, Some("err"));
         }
         // Score: +1(unique) - 14*3(repeats) - 8(div@10) - 8(div@15) = 1-42-8-8 = -57
         assert!(
@@ -894,12 +676,12 @@ mod progress_tracker_tests {
         // each time with different content, every write succeeding. The
         // old scoring rewarded every success (+1) and never tripped — this
         // is the regression that let builders burn 600K-1.8M tokens.
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         for i in 0..10 {
             // Different content each call → different args hash → the
             // exact-repeat guard does NOT fire. Same path → our new guard does.
             let args = json!({"path": "report.html", "content": format!("v{i}")});
-            tracker.record_tool_call("write_file", &args, true);
+            tracker.record_tool_call("write_file", &args, None);
         }
         assert!(
             tracker.is_clearly_stuck(),
@@ -912,10 +694,10 @@ mod progress_tracker_tests {
     fn distinct_path_writes_do_not_trip_stuck() {
         // Writing 10 DIFFERENT files is productive work, not a loop. The
         // per-path penalty must not fire — no path is overwritten 4+ times.
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         for i in 0..10 {
             let args = json!({"path": format!("file_{i}.py"), "content": "x"});
-            tracker.record_tool_call("write_file", &args, true);
+            tracker.record_tool_call("write_file", &args, None);
         }
         assert!(
             !tracker.is_clearly_stuck(),
@@ -928,10 +710,10 @@ mod progress_tracker_tests {
     fn three_rewrites_of_same_file_still_allowed() {
         // 3 overwrites = normal write→test→fix debugging. The 4th is where
         // the penalty kicks in, so 3 must stay penalty-free.
-        let mut tracker = ProgressTracker::new(3);
+        let mut tracker = ProgressTracker::new();
         for i in 0..3 {
             let args = json!({"path": "x.py", "content": format!("v{i}")});
-            tracker.record_tool_call("write_file", &args, true);
+            tracker.record_tool_call("write_file", &args, None);
         }
         assert!(
             tracker.score > 0,
@@ -1036,8 +818,7 @@ mod progress_tracker_tests {
     /// Successful tool calls should not tank the progress score.
     #[test]
     fn test_loop_detector_productive_agent_survives() {
-        let config = ExecutorConfig::new("a".into(), "p".into(), "m".into());
-        let mut tracker = ProgressTracker::new(config.max_extensions);
+        let mut tracker = ProgressTracker::new();
 
         // Simulate a productive iterative workflow:
         // shell(get task) -> write_file(create file) -> shell(verify) -> shell(mark done)
@@ -1046,22 +827,22 @@ mod progress_tracker_tests {
             tracker.record_tool_call(
                 "shell",
                 &json!({"command": format!("get_task {}", i)}),
-                true,
+                None,
             );
             tracker.record_tool_call(
                 "write_file",
                 &json!({"path": format!("core/mod{}.py", i)}),
-                true,
+                None,
             );
             tracker.record_tool_call(
                 "shell",
                 &json!({"command": format!("python3 -c 'import core.mod{}'", i)}),
-                true,
+                None,
             );
             tracker.record_tool_call(
                 "shell",
                 &json!({"command": format!("mark_done {}", i)}),
-                true,
+                None,
             );
         }
 
@@ -1080,12 +861,15 @@ mod progress_tracker_tests {
     /// Failed repeated tool calls should tank the score.
     #[test]
     fn test_loop_detector_stuck_agent_dies() {
-        let config = ExecutorConfig::new("a".into(), "p".into(), "m".into());
-        let mut tracker = ProgressTracker::new(config.max_extensions);
+        let mut tracker = ProgressTracker::new();
 
         // Simulate a stuck agent: same shell command failing repeatedly
         for _ in 0..15 {
-            tracker.record_tool_call("shell", &json!({"command": "cat nonexistent.py"}), false);
+            tracker.record_tool_call(
+                "shell",
+                &json!({"command": "cat nonexistent.py"}),
+                Some("err"),
+            );
         }
 
         assert!(
@@ -1098,16 +882,15 @@ mod progress_tracker_tests {
     /// Mixed success/failure: productive work with occasional errors should survive.
     #[test]
     fn test_loop_detector_mixed_survives() {
-        let config = ExecutorConfig::new("a".into(), "p".into(), "m".into());
-        let mut tracker = ProgressTracker::new(config.max_extensions);
+        let mut tracker = ProgressTracker::new();
 
         // 8 successes, 2 failures — should be fine
         for i in 0..10 {
-            let succeeded = i % 5 != 3; // fail on iteration 3 and 8
+            let error: Option<&str> = if i % 5 != 3 { None } else { Some("err") }; // fail on 3 and 8
             tracker.record_tool_call(
                 if i % 2 == 0 { "shell" } else { "write_file" },
                 &json!({"arg": format!("call_{}", i)}),
-                succeeded,
+                error,
             );
         }
 
@@ -1116,5 +899,34 @@ mod progress_tracker_tests {
             "Agent with 80% success rate should NOT be stuck. Score: {}",
             tracker.score
         );
+    }
+    #[test]
+    fn top_failing_call_reports_count_and_last_error() {
+        let mut tracker = ProgressTracker::new();
+        let args = json!({"path": "/etc/hosts"});
+        tracker.record_tool_call("read", &args, Some("permission denied"));
+        assert!(
+            tracker.top_failing_call().is_none(),
+            "1st failure not yet a pattern"
+        );
+        tracker.record_tool_call("read", &args, Some("permission denied"));
+        let (name, count, error) = tracker.top_failing_call().expect("2nd failure surfaces");
+        assert_eq!(name, "read");
+        assert_eq!(count, 2);
+        assert_eq!(error, "permission denied");
+        // A success of the same call clears it.
+        tracker.record_tool_call("read", &args, None);
+        assert!(tracker.top_failing_call().is_none());
+    }
+
+    #[test]
+    fn top_failing_call_updates_error_text() {
+        let mut tracker = ProgressTracker::new();
+        let args = json!({"cmd": "deploy"});
+        tracker.record_tool_call("shell", &args, Some("timeout"));
+        tracker.record_tool_call("shell", &args, Some("auth rejected"));
+        let (_, count, error) = tracker.top_failing_call().expect("surfaces");
+        assert_eq!(count, 2);
+        assert_eq!(error, "auth rejected", "latest error wins");
     }
 }

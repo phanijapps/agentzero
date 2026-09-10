@@ -20,8 +20,8 @@ use axum::{
     extract::{Query, State},
     Json,
 };
+use knowledge_graph::kg_trait::HierarchySummary;
 use serde::{Deserialize, Serialize};
-use zbot_stores::HierarchySummary;
 
 /// `agent_id` queried by the stats endpoint. Mirrors the root-agent
 /// convention used everywhere else in the gateway (see also
@@ -68,7 +68,7 @@ pub async fn get_stats(
     Query(query): Query<HierarchyStatsQuery>,
 ) -> Json<HierarchyStatsResponse> {
     let enabled = state
-        .settings
+        .settings()
         .get_execution_settings()
         .map(|s| s.memory.hierarchy.enabled)
         .unwrap_or(false);
@@ -77,7 +77,7 @@ pub async fn get_stats(
     // Hierarchy is opt-in. Avoid opening the graph store at all when disabled:
     // on a large graph even a summary must not become an accidental page-load cost.
     let summary = if enabled {
-        match state.kg_store.as_ref() {
+        match state.kg_store().as_ref() {
             Some(store) => store
                 .hierarchy_summary(DEFAULT_AGENT_ID, top_n)
                 .await

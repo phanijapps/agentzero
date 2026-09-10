@@ -3,7 +3,7 @@
 // LLM provider management for the gateway
 // ============================================================================
 
-use crate::paths::SharedVaultPaths;
+use agent_primitives::vault_paths::SharedVaultPaths;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,7 +18,9 @@ pub fn provider_mutation_lock() -> &'static tokio::sync::Mutex<()> {
     PROVIDER_MUTATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-pub fn ollama_cloud_commissioning_pending(paths: &crate::paths::VaultPaths) -> bool {
+pub fn ollama_cloud_commissioning_pending(
+    paths: &agent_primitives::vault_paths::VaultPaths,
+) -> bool {
     match std::fs::symlink_metadata(paths.config_dir().join(OLLAMA_CLOUD_PENDING_MARKER)) {
         Ok(_) => true,
         Err(error) => error.kind() != std::io::ErrorKind::NotFound,
@@ -560,7 +562,9 @@ mod tests {
     fn update_cannot_rename_ollama_cloud_to_bypass_origin_policy() {
         let vault = tempfile::tempdir().unwrap();
         std::fs::create_dir(vault.path().join("config")).unwrap();
-        let paths = std::sync::Arc::new(crate::paths::VaultPaths::new(vault.path().to_path_buf()));
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            vault.path().to_path_buf(),
+        ));
         let service = ProviderService::new(paths);
         service
             .create(ollama_cloud("https://ollama.com/v1"))
@@ -578,7 +582,9 @@ mod tests {
     fn correcting_a_hand_edited_cloud_origin_retains_a_blank_omitted_key() {
         let vault = tempfile::tempdir().unwrap();
         std::fs::create_dir(vault.path().join("config")).unwrap();
-        let paths = std::sync::Arc::new(crate::paths::VaultPaths::new(vault.path().to_path_buf()));
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            vault.path().to_path_buf(),
+        ));
         std::fs::write(
             paths.providers(),
             serde_json::to_vec(&vec![ollama_cloud("https://attacker.example/v1")]).unwrap(),
@@ -597,7 +603,9 @@ mod tests {
     fn create_rejects_a_blank_api_key() {
         let vault = tempfile::tempdir().unwrap();
         std::fs::create_dir(vault.path().join("config")).unwrap();
-        let paths = std::sync::Arc::new(crate::paths::VaultPaths::new(vault.path().to_path_buf()));
+        let paths = std::sync::Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            vault.path().to_path_buf(),
+        ));
         let service = ProviderService::new(paths);
         let mut provider = ollama_cloud("https://ollama.com/v1");
         provider.api_key = "   ".to_string();

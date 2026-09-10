@@ -152,7 +152,14 @@ export function QuickChat() {
         </div>
         <div className="quick-chat__actions">
           {state.status === "running" && (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={stopAgent} title="Stop">
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={stopAgent}
+              title="Stop"
+              aria-label="Stop chat"
+              disabled={!state.sessionId}
+            >
               <Square size={14} />
             </button>
           )}
@@ -177,7 +184,7 @@ export function QuickChat() {
         <div className="quick-chat__scroll">
           <div className="quick-chat__messages">
             {state.messages.map((m) => <MessageRow key={m.id} message={m} />)}
-            {(surfaces ?? []).map(surface => <A2uiSurfaceRenderer key={surface.surface_id} surface={surface} />)}
+            {(surfaces ?? []).map(item => <A2uiSurfaceRenderer key={item.surface.surface_id} surface={item.surface} />)}
             {hasArtifacts && (
               <section className="quick-chat__deliverables" aria-labelledby="quick-chat-deliverables-heading">
                 <div className="quick-chat__deliverables-heading">

@@ -143,6 +143,7 @@ const MAX_TIMEOUT_SECS: u64 = 600;
 /// - Disabled when running as root/administrator
 /// - Configurable timeout to prevent runaway processes
 pub struct ShellTool {
+    fs: Option<Arc<dyn agent_primitives::FileSystemContext>>,
     /// Whether the tool is disabled due to elevated privileges
     disabled: bool,
     /// Reason for being disabled
@@ -158,9 +159,17 @@ impl ShellTool {
     pub fn new() -> Self {
         let (disabled, disabled_reason) = Self::check_elevated_privileges();
         Self {
+            fs: None,
             disabled,
             disabled_reason,
         }
+    }
+
+    /// Use the host's configured vault/ward paths rather than desktop defaults.
+    #[must_use]
+    pub fn with_filesystem(mut self, fs: Arc<dyn agent_primitives::FileSystemContext>) -> Self {
+        self.fs = Some(fs);
+        self
     }
 
     /// Check if running with elevated privileges (root/sudo/administrator)
@@ -401,8 +410,7 @@ impl Tool for ShellTool {
                 "stdout": "",
                 "stderr": guidance,
                 "truncated": false,
-                "shell": "none (arguments were truncated before execution)",
-            }));
+                "shell": "none (arguments were truncated before execution)" }));
         }
 
         // Check if tool is disabled due to elevated privileges
@@ -464,6 +472,7 @@ impl Tool for ShellTool {
         // Build the command
         let mut cmd = Command::new(&shell);
         cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
 
         // Add shell args
         for arg in &shell_args {
@@ -471,12 +480,15 @@ impl Tool for ShellTool {
         }
         cmd.arg(command);
 
-        // Set sandboxed Python virtual environment and Node.js modules
-        // Use ~/Documents/zbot (matching gateway data_dir resolution)
-        if let Some(doc_dir) = dirs::document_dir().or_else(dirs::home_dir) {
-            let zbot_dir = doc_dir.join("zbot");
-            let wards_dir = zbot_dir.join("wards");
-
+        // Use host-configured paths when available. Library-only callers retain
+        // the desktop default; explicit cwd remains an intentional override.
+        let wards_dir = match &self.fs {
+            Some(fs) => fs.wards_root_dir(),
+            None => dirs::document_dir()
+                .or_else(dirs::home_dir)
+                .map(|dir| dir.join("zbot/wards")),
+        };
+        if let Some(wards_dir) = &wards_dir {
             // === Python Virtual Environment (shared across all wards) ===
             let venv_path = wards_dir.join(".venv");
 
@@ -529,16 +541,18 @@ impl Tool for ShellTool {
                 ));
             }
             cmd.current_dir(dir);
-        } else if let Some(doc_dir) = dirs::document_dir().or_else(dirs::home_dir) {
-            let wards_dir = doc_dir.join("zbot").join("wards");
-
+        } else if let Some(wards_dir) = wards_dir {
             // Use ward_id if set, otherwise fall back to "scratch"
             let ward_id = ctx
                 .get_state("ward_id")
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_else(|| "scratch".to_string());
 
-            let ward_dir = wards_dir.join(&ward_id);
+            let ward_dir = self
+                .fs
+                .as_ref()
+                .and_then(|fs| fs.ward_dir(&ward_id))
+                .unwrap_or_else(|| wards_dir.join(&ward_id));
             if !ward_dir.exists()
                 && let Err(e) = std::fs::create_dir_all(&ward_dir)
             {
@@ -581,8 +595,7 @@ impl Tool for ShellTool {
                     "stdout": stdout,
                     "stderr": stderr,
                     "truncated": stdout_truncated || stderr_truncated,
-                    "shell": shell,
-                }))
+                    "shell": shell }))
             }
             Ok(Err(e)) => Err(AgentError::Tool(format!(
                 "Failed to execute command: {}",

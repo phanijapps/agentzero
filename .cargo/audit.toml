@@ -1,0 +1,6 @@
+[advisories]
+# rust_decimal declares rkyv as an optional dependency, so Cargo.lock resolves
+# rkyv 0.7.46 even though no workspace target enables or compiles that feature.
+# RUSTSEC-2026-0235 affects rkyv archive validation APIs, which are absent from
+# the active dependency graph (`cargo tree --all-features --target all -i rkyv`).
+ignore = ["RUSTSEC-2026-0235"]

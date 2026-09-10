@@ -27,7 +27,7 @@ fn ev(session: &str, tool: &str, level: &str) -> TraceEvent {
 #[tokio::test]
 async fn trace_query_sessions_with_failed_tool_returns_matching_sessions() {
     let (server, _dir, state) = setup();
-    let traces_dir = state.paths.traces_dir();
+    let traces_dir = state.paths().traces_dir();
     std::fs::create_dir_all(&traces_dir).unwrap();
     let mut writer = TraceWriter::open_confined(&traces_dir, "sess-trace-1").unwrap();
     writer

@@ -11,6 +11,7 @@ Quick reference for all system components. Check this before planning changes.
 | — Files | [execution-loop/files.md](execution-loop/files.md) | Every file across UI, gateway, runtime, services with function references |
 | Subagent Capability Policy | [subagent-capability-policy/overview.md](subagent-capability-policy/overview.md) | Runtime actor/tool boundary for root, delegated executors, delegated reviewers, and ward agents. Documents reviewer-agent seeding and why ward-as-agent remains full-tool. |
 | Agent Handoff Notes | [agent-handoff-notes/overview.md](agent-handoff-notes/overview.md) | Current-session agent roster and one-way handoff notes over existing steering. Not Pattern 4 peer messaging, persistence, or federation. |
+| Durable Peer Messaging | [durable-peer-messaging/overview.md](durable-peer-messaging/overview.md) | Durable same-session asynchronous messages and recipient-bound replies over the local work queue, with broker/federation adapters deferred. |
 | Intent Analysis | [intent-analysis/overview.md](intent-analysis/overview.md) | Pre-execution middleware: indexes resources, semantic search, LLM analysis, emits events. Root agent only. |
 | Ward Scaffolding | [ward-scaffolding/overview.md](ward-scaffolding/overview.md) | Post-execution: skill-driven directory scaffolding, AGENTS.md generation, core module indexing via language configs. |
 | — Data Flow | [intent-analysis/data-flow.md](intent-analysis/data-flow.md) | Live execution pipeline, session replay, WS event routing |

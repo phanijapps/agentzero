@@ -1,5 +1,6 @@
 //! `EpisodeStore` trait — backend-agnostic interface for session episodes.
 
+use crate::error::{StoreError, StoreResult};
 use crate::memory_facts::EmbeddingQueryIdentity;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -28,19 +29,21 @@ pub struct EpisodeStats {
 pub trait EpisodeStore: Send + Sync {
     /// List episodes for a ward, capped at `limit`. Used by the ward
     /// content endpoint and Observatory views.
-    async fn list_by_ward(&self, _ward_id: &str, _limit: usize) -> Result<Vec<Value>, String> {
+    async fn list_by_ward(&self, _ward_id: &str, _limit: usize) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
-    /// Insert an episode. The `episode` Value carries the full
-    /// `SessionEpisode` shape; `embedding` is the optional L2-normalized
+    /// Insert an episode. `embedding` is the optional L2-normalized
     /// vector to persist alongside. Returns the persisted row id.
     async fn insert_episode(
         &self,
-        _episode: Value,
-        _embedding: Option<Vec<f32>>,
-    ) -> Result<String, String> {
-        Err("insert_episode not implemented for this store".to_string())
+        episode: SessionEpisode,
+        embedding: Option<Vec<f32>>,
+    ) -> StoreResult<String> {
+        let _ = (episode, embedding);
+        Err(StoreError::Unavailable(
+            "insert_episode not implemented for this store".into(),
+        ))
     }
 
     /// Vector-similarity search for episodes scoped to an agent.
@@ -52,7 +55,7 @@ pub trait EpisodeStore: Send + Sync {
         _embedding: &[f32],
         _threshold: f32,
         _limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         Ok(Vec::new())
     }
 
@@ -64,7 +67,7 @@ pub trait EpisodeStore: Send + Sync {
         query_identity: Option<&EmbeddingQueryIdentity>,
         threshold: f32,
         limit: usize,
-    ) -> Result<Vec<Value>, String> {
+    ) -> StoreResult<Vec<Value>> {
         let _ = query_identity;
         self.search_episodes_by_similarity(agent_id, embedding, threshold, limit)
             .await
@@ -80,7 +83,7 @@ pub trait EpisodeStore: Send + Sync {
         embedding: &[f32],
         threshold: f32,
         limit: usize,
-    ) -> Result<Vec<(SessionEpisode, f64)>, String> {
+    ) -> StoreResult<Vec<(SessionEpisode, f64)>> {
         self.search_episodes_by_similarity_typed_with_identity(
             agent_id, embedding, None, threshold, limit,
         )
@@ -95,7 +98,7 @@ pub trait EpisodeStore: Send + Sync {
         query_identity: Option<&EmbeddingQueryIdentity>,
         threshold: f32,
         limit: usize,
-    ) -> Result<Vec<(SessionEpisode, f64)>, String> {
+    ) -> StoreResult<Vec<(SessionEpisode, f64)>> {
         let rows = self
             .search_episodes_by_similarity_with_identity(
                 agent_id,
@@ -128,7 +131,7 @@ pub trait EpisodeStore: Send + Sync {
         _query: &str,
         _ward_id: Option<&str>,
         _limit: usize,
-    ) -> Result<Vec<SessionEpisode>, String> {
+    ) -> StoreResult<Vec<SessionEpisode>> {
         Ok(Vec::new())
     }
 
@@ -140,13 +143,25 @@ pub trait EpisodeStore: Send + Sync {
         &self,
         _ward_id: &str,
         _limit: usize,
-    ) -> Result<Vec<SessionEpisode>, String> {
+    ) -> StoreResult<Vec<SessionEpisode>> {
+        Ok(Vec::new())
+    }
+
+    /// Most recent failed episodes for a ward, newest first. Consumers
+    /// surface these as an avoid-list at session start so the agent
+    /// doesn't repeat known failures. Backends that don't track
+    /// outcomes gracefully degrade to empty.
+    async fn fetch_recent_failed_by_ward(
+        &self,
+        _ward_id: &str,
+        _limit: usize,
+    ) -> StoreResult<Vec<SessionEpisode>> {
         Ok(Vec::new())
     }
 
     /// Aggregate counts. Default returns zero so backends that don't
     /// track this gracefully degrade.
-    async fn episode_stats(&self) -> Result<EpisodeStats, String> {
+    async fn episode_stats(&self) -> StoreResult<EpisodeStats> {
         Ok(EpisodeStats::default())
     }
 
@@ -165,7 +180,7 @@ pub trait EpisodeStore: Send + Sync {
         &self,
         _lookback_days: i64,
         _limit: usize,
-    ) -> Result<Vec<SuccessfulEpisode>, String> {
+    ) -> StoreResult<Vec<SuccessfulEpisode>> {
         Ok(Vec::new())
     }
 
@@ -176,7 +191,7 @@ pub trait EpisodeStore: Send + Sync {
     async fn task_summaries_for_sessions(
         &self,
         _session_ids: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> StoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 }

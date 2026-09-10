@@ -7,9 +7,7 @@
 
 use crate::connectors::ConnectorRegistry;
 use crate::events::{EventBus, GatewayEvent};
-use crate::execution::{
-    ExecutionConfig, ExecutionHandle, ExecutionRunner, MemoryRecall, SessionDistiller,
-};
+use crate::execution::{ExecutionConfig, ExecutionHandle, ExecutionRunner, MemoryRecall};
 use crate::hooks::HookContext;
 use crate::services::{AgentService, McpService, ProviderService, SharedVaultPaths, SkillService};
 use api_logs::LogService;
@@ -80,6 +78,8 @@ impl RuntimeService {
             skill_service,
             log_service,
             state_service,
+            None, // peer_messages
+            None, // a2a_delegation
             None,
             None, // memory_store
             None, // distiller
@@ -93,6 +93,8 @@ impl RuntimeService {
             None, // ingestion_adapter
             None, // goal_adapter
             None, // procedure_store
+            None, // belief_store
+            None, // belief_contradiction_store
             gateway_memory::ProcedureRecommendationConfig::default(),
             memory_llm_factory,
         )
@@ -112,19 +114,23 @@ impl RuntimeService {
         skill_service: Arc<SkillService>,
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
+        peer_messages: Option<Arc<gateway_execution::peer_messaging::DurablePeerMessageService>>,
+        a2a_delegation: Option<Arc<dyn gateway_execution::a2a::A2aDelegationService>>,
         connector_registry: Option<Arc<ConnectorRegistry>>,
-        memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-        distiller: Option<Arc<SessionDistiller>>,
+        memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
+        distiller: Option<Arc<distillation::SessionDistiller>>,
         memory_recall: Option<Arc<MemoryRecall>>,
         bridge_registry: Option<Arc<gateway_bridge::BridgeRegistry>>,
         bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
         embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
         max_parallel_agents: u32,
-        kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+        kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
         kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
         ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
         goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
         procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
+        belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
+        belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
         procedure_recommendation_cfg: gateway_memory::ProcedureRecommendationConfig,
         memory_llm_factory: Arc<dyn gateway_memory::MemoryLlmFactory>,
     ) -> Self {
@@ -151,6 +157,8 @@ impl RuntimeService {
             skill_service,
             log_service,
             state_service,
+            peer_messages,
+            a2a_delegation,
             connector_registry,
             memory_store,
             distiller,
@@ -184,6 +192,8 @@ impl RuntimeService {
             runner.set_goal_adapter(a);
         }
 
+        runner.set_belief_stores(belief_store, belief_contradiction_store);
+
         Self {
             event_bus,
             runner: Some(Arc::new(runner)),
@@ -199,6 +209,11 @@ impl RuntimeService {
     /// Get the execution runner.
     pub fn runner(&self) -> Option<&Arc<ExecutionRunner>> {
         self.runner.as_ref()
+    }
+
+    /// Build the exact durable peer-message handler from runner-owned state.
+    pub fn peer_message_handler(&self) -> Option<Arc<dyn gateway_bus::WorkHandler>> {
+        self.runner.as_ref()?.peer_message_handler()
     }
 
     /// Invoke an agent with a message.
@@ -245,7 +260,10 @@ impl RuntimeService {
             config = config.with_session_id(sid);
         }
 
-        runner.invoke(config, message.to_string()).await
+        runner
+            .invoke(config, message.to_string())
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Start a fresh execution for a server-validated decision-thread packet.
@@ -275,8 +293,7 @@ impl RuntimeService {
                 config,
                 "Continue the explicitly selected approved decision thread using the saved next action."
                     .to_string(),
-            )
-            .await
+            ).await.map_err(|e| e.to_string())
     }
 
     /// Invoke an agent with a message and hook context.
@@ -311,7 +328,10 @@ impl RuntimeService {
             config = config.with_session_id(sid);
         }
 
-        runner.invoke(config, message.to_string()).await
+        runner
+            .invoke(config, message.to_string())
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Invoke an agent with hook context and a session-ready callback.
@@ -329,6 +349,100 @@ impl RuntimeService {
         on_session_ready: Option<gateway_execution::OnSessionReady>,
         mode: Option<String>,
         client_message_id: Option<String>,
+    ) -> Result<(ExecutionHandle, String), String> {
+        self.invoke_with_hook_and_callback_policy(
+            agent_id,
+            conversation_id,
+            message,
+            hook_context,
+            session_id,
+            on_session_ready,
+            mode,
+            client_message_id,
+            false,
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Invoke a durable task through the ordinary bootstrap while keeping
+    /// provider/setup diagnostics behind the normalized task boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_durable_with_hook_and_callback(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        hook_context: HookContext,
+        session_id: Option<String>,
+        on_session_ready: Option<gateway_execution::OnSessionReady>,
+        mode: Option<String>,
+        client_message_id: Option<String>,
+    ) -> Result<(ExecutionHandle, String), String> {
+        self.invoke_with_hook_and_callback_policy(
+            agent_id,
+            conversation_id,
+            message,
+            hook_context,
+            session_id,
+            on_session_ready,
+            mode,
+            client_message_id,
+            true,
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Invoke authenticated remote A2A work through the isolated RemotePeer
+    /// actor profile. The prompt is built by the trusted host boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_remote_peer_durable(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        actor_id: &str,
+        session_id: String,
+        client_message_id: String,
+        prompt: gateway_execution::a2a::RemotePeerPrompt,
+    ) -> Result<(ExecutionHandle, String), String> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            "Runtime not initialized with executor. Call with_runner() first.".to_string()
+        })?;
+        let paths = self
+            .paths
+            .clone()
+            .ok_or_else(|| "Vault paths not set".to_string())?;
+        let config = ExecutionConfig::new(
+            agent_id.to_string(),
+            conversation_id.to_string(),
+            paths.vault_dir().clone(),
+        )
+        .with_hook_context(HookContext::web(actor_id))
+        .with_session_id(session_id)
+        .with_mode("chat".to_string())
+        .with_client_message_id(client_message_id)
+        .with_remote_peer_prompt(prompt)
+        .with_redacted_diagnostics();
+        runner
+            .invoke_redacted_with_callback(config, message.to_string(), None)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_with_hook_and_callback_policy(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        hook_context: HookContext,
+        session_id: Option<String>,
+        on_session_ready: Option<gateway_execution::OnSessionReady>,
+        mode: Option<String>,
+        client_message_id: Option<String>,
+        redact_setup_errors: bool,
     ) -> Result<(ExecutionHandle, String), String> {
         let runner = self.runner.as_ref().ok_or_else(|| {
             "Runtime not initialized with executor. Call with_runner() first.".to_string()
@@ -358,9 +472,107 @@ impl RuntimeService {
             config = config.with_client_message_id(client_message_id);
         }
 
+        if redact_setup_errors {
+            runner
+                .invoke_redacted_with_callback(config, message.to_string(), on_session_ready)
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            runner
+                .invoke_with_callback(config, message.to_string(), on_session_ready)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    /// Resume an initial invocation whose exact root message is already
+    /// durable, preserving the ordinary bootstrap path after append.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_persisted_with_hook_and_callback(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        hook_context: HookContext,
+        session_id: String,
+        execution_id: String,
+        message_id: String,
+        on_session_ready: Option<gateway_execution::OnSessionReady>,
+        mode: Option<String>,
+    ) -> Result<(ExecutionHandle, String), String> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            "Runtime not initialized with executor. Call with_runner() first.".to_string()
+        })?;
+        let paths = self
+            .paths
+            .clone()
+            .ok_or_else(|| "Vault paths not set".to_string())?;
+        let mut config = ExecutionConfig::new(
+            agent_id.to_string(),
+            conversation_id.to_string(),
+            paths.vault_dir().clone(),
+        )
+        .with_hook_context(hook_context)
+        .with_session_id(session_id)
+        .with_mode(mode.unwrap_or_else(|| "research".to_owned()))
+        .with_client_message_id(message_id.clone());
+        config.source = execution_state::TriggerSource::Web;
+
         runner
-            .invoke_with_callback(config, message.to_string(), on_session_ready)
+            .invoke_persisted_with_callback(
+                config,
+                message.to_owned(),
+                execution_id,
+                message_id,
+                on_session_ready,
+            )
             .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Resume an A2A execution while preserving the same isolated prompt and
+    /// RemotePeer tool policy used for its first launch.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_remote_peer_persisted(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        message: &str,
+        actor_id: &str,
+        session_id: String,
+        execution_id: String,
+        message_id: String,
+        prompt: gateway_execution::a2a::RemotePeerPrompt,
+    ) -> Result<(ExecutionHandle, String), String> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            "Runtime not initialized with executor. Call with_runner() first.".to_string()
+        })?;
+        let paths = self
+            .paths
+            .clone()
+            .ok_or_else(|| "Vault paths not set".to_string())?;
+        let mut config = ExecutionConfig::new(
+            agent_id.to_string(),
+            conversation_id.to_string(),
+            paths.vault_dir().clone(),
+        )
+        .with_hook_context(HookContext::web(actor_id))
+        .with_session_id(session_id)
+        .with_mode("chat".to_string())
+        .with_client_message_id(message_id.clone())
+        .with_remote_peer_prompt(prompt)
+        .with_redacted_diagnostics();
+        config.source = execution_state::TriggerSource::Web;
+        runner
+            .invoke_persisted_with_callback(
+                config,
+                message.to_owned(),
+                execution_id,
+                message_id,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Invoke with a placeholder response (for testing without LLM).
@@ -402,8 +614,7 @@ impl RuntimeService {
                         "Gateway placeholder response. Set OPENAI_API_KEY for real execution. Message: {}",
                         message.chars().take(50).collect::<String>()
                     )),
-                    conversation_id: Some(conversation_id.clone()),
-                })
+                    conversation_id: Some(conversation_id.clone()) })
                 .await;
         });
 
@@ -413,7 +624,10 @@ impl RuntimeService {
     /// Stop an agent execution.
     pub async fn stop(&self, conversation_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.stop(conversation_id).await
+            runner
+                .stop(conversation_id)
+                .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -429,6 +643,7 @@ impl RuntimeService {
             runner
                 .continue_execution(conversation_id, additional_iterations)
                 .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -437,7 +652,7 @@ impl RuntimeService {
     /// Pause an agent execution.
     pub async fn pause(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.pause(session_id).await
+            runner.pause(session_id).await.map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -446,7 +661,7 @@ impl RuntimeService {
     /// Resume a paused agent execution.
     pub async fn resume(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.resume(session_id).await
+            runner.resume(session_id).await.map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -455,7 +670,24 @@ impl RuntimeService {
     /// Cancel an agent execution.
     pub async fn cancel(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.cancel(session_id).await
+            runner.cancel(session_id).await.map_err(|e| e.to_string())
+        } else {
+            Err("Runtime not initialized with executor".to_string())
+        }
+    }
+
+    /// Cancel one known session/conversation pair without signaling unrelated
+    /// live executions.
+    pub async fn cancel_exact(
+        &self,
+        session_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), String> {
+        if let Some(runner) = &self.runner {
+            runner
+                .cancel_exact(session_id, conversation_id)
+                .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }
@@ -466,7 +698,10 @@ impl RuntimeService {
     /// Called when user explicitly ends a session via /end, /new, or +new button.
     pub async fn end_session(&self, session_id: &str) -> Result<(), String> {
         if let Some(runner) = &self.runner {
-            runner.end_session(session_id).await
+            runner
+                .end_session(session_id)
+                .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Runtime not initialized with executor".to_string())
         }

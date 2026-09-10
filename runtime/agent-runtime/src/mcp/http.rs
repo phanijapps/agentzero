@@ -25,12 +25,12 @@ const HTTP_MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// HTTP-based MCP client
 pub(super) struct HttpMcpClient {
-    #[allow(dead_code)] // Reserved for future connection tracking
     id: String,
     name: String,
     url: String,
     headers: HashMap<String, String>,
-    client: reqwest::Client,
+    client: std::sync::Mutex<Option<reqwest::Client>>,
+    canceled: tokio::sync::watch::Sender<bool>,
 }
 
 impl HttpMcpClient {
@@ -46,16 +46,27 @@ impl HttpMcpClient {
             name,
             url,
             headers,
-            client: reqwest::Client::builder()
-                .timeout(HTTP_MCP_TIMEOUT)
-                .connect_timeout(HTTP_MCP_CONNECT_TIMEOUT)
-                .build()
-                .expect("reqwest client"),
+            canceled: tokio::sync::watch::channel(false).0,
+            client: std::sync::Mutex::new(Some(
+                reqwest::Client::builder()
+                    .timeout(HTTP_MCP_TIMEOUT)
+                    .connect_timeout(HTTP_MCP_CONNECT_TIMEOUT)
+                    .build()
+                    .expect("reqwest client"),
+            )),
         }
     }
 
     /// Send a JSON-RPC request to the HTTP MCP server
     async fn send_request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        let mut canceled = self.canceled.subscribe();
+        tokio::select! {
+        biased;
+        _ = canceled.wait_for(|value| *value) => Err(McpError::ProtocolError("MCP session closed".into())),
+        result = self.send_request_inner(method, params) => result }
+    }
+
+    async fn send_request_inner(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let auth_secrets = auth_redaction_values(&self.headers);
         let request_body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -66,8 +77,13 @@ impl HttpMcpClient {
 
         tracing::debug!(mcp_id = %self.id, "Sending HTTP MCP request");
 
-        let mut req = self
+        let client = self
             .client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(|| McpError::ProtocolError("MCP session closed".into()))?;
+        let mut req = client
             .post(&self.url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
@@ -122,16 +138,15 @@ impl HttpMcpClient {
     }
 }
 
-fn auth_redaction_values(headers: &HashMap<String, String>) -> Vec<String> {
+pub(super) fn auth_redaction_values(headers: &HashMap<String, String>) -> Vec<String> {
     let mut values = Vec::new();
     for (key, value) in headers {
         if key.eq_ignore_ascii_case("authorization") && !value.trim().is_empty() {
             values.push(value.clone());
             let mut parts = value.trim().splitn(2, char::is_whitespace);
-            if parts
-                .next()
-                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer"))
-            {
+            if parts.next().is_some_and(|scheme| {
+                scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic")
+            }) {
                 if let Some(token) = parts
                     .next()
                     .map(str::trim)
@@ -155,7 +170,7 @@ fn redact_text(text: &str, secrets: &[String]) -> String {
     })
 }
 
-fn redact_json(value: &mut Value, secrets: &[String]) {
+pub(super) fn redact_json(value: &mut Value, secrets: &[String]) {
     match value {
         Value::String(text) => {
             *text = redact_text(text, secrets);
@@ -166,8 +181,9 @@ fn redact_json(value: &mut Value, secrets: &[String]) {
             }
         }
         Value::Object(map) => {
-            for value in map.values_mut() {
-                redact_json(value, secrets);
+            for (key, mut entry) in std::mem::take(map) {
+                redact_json(&mut entry, secrets);
+                map.insert(redact_text(&key, secrets), entry);
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
@@ -253,6 +269,10 @@ fn parse_sse_event(
 
 #[async_trait]
 impl McpClient for HttpMcpClient {
+    fn cancel(&self) {
+        self.canceled.send_replace(true);
+        self.client.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
     fn name(&self) -> &str {
         &self.name
     }

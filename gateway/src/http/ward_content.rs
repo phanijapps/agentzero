@@ -13,6 +13,7 @@
 //! Requests that arrive before stores are wired return `503 Service
 //! Unavailable`.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -73,21 +74,13 @@ pub struct Counts {
     pub episodes: usize,
 }
 
-/// Error response shape (matches the convention used by other HTTP modules).
-#[derive(Debug, Serialize)]
-pub struct ErrorBody {
-    pub error: String,
-}
-
-pub type HandlerError = (StatusCode, Json<ErrorBody>);
+pub type HandlerError = (StatusCode, Json<ErrorResponse>);
 
 fn internal(context: &str, e: impl std::fmt::Display) -> HandlerError {
     tracing::error!("{}: {}", context, e);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorBody {
-            error: format!("{}: {}", context, e),
-        }),
+        Json(ErrorResponse::new(format!("{}: {}", context, e))),
     )
 }
 
@@ -142,12 +135,7 @@ fn build_summary(ward_id: &str, wiki: &[WikiArticle]) -> WardSummary {
 /// state). Returns 503 so the UI can surface a clean error instead of a
 /// panic.
 fn store_unavailable(what: &str) -> HandlerError {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(ErrorBody {
-            error: format!("{what} store unavailable"),
-        }),
-    )
+    ErrorResponse::service_disabled(&format!("{what} store unavailable"))
 }
 
 fn fact_to_value(fact: MemoryFact, now: DateTime<Utc>) -> Value {
@@ -171,8 +159,7 @@ fn fact_to_value(fact: MemoryFact, now: DateTime<Utc>) -> Value {
         "updated_at": fact.updated_at,
         "pinned": fact.pinned,
         "epistemic_class": fact.epistemic_class,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     stamp(body, now, Some(&updated))
 }
 
@@ -190,8 +177,7 @@ fn wiki_to_value(article: WikiArticle, now: DateTime<Utc>) -> Value {
         "version": article.version,
         "created_at": article.created_at,
         "updated_at": article.updated_at,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     stamp(body, now, Some(&updated))
 }
 
@@ -225,8 +211,7 @@ fn procedure_to_value(proc: Procedure, now: DateTime<Utc>) -> Value {
         "last_used": proc.last_used,
         "created_at": proc.created_at,
         "updated_at": proc.updated_at,
-        "route_hint": route_hint,
-    });
+        "route_hint": route_hint });
     stamp(body, now, Some(&anchor))
 }
 
@@ -246,8 +231,7 @@ fn episode_to_value(ep: SessionEpisode, now: DateTime<Utc>) -> Value {
         "key_learnings": ep.key_learnings,
         "token_cost": ep.token_cost,
         "created_at": ep.created_at,
-        "route_hint": route_hint_value(route_hint),
-    });
+        "route_hint": route_hint_value(route_hint) });
     stamp(body, now, Some(&created))
 }
 
@@ -257,20 +241,16 @@ pub async fn get_ward_content(
     Path(ward_id): Path<String>,
 ) -> Result<Json<WardContentResponse>, HandlerError> {
     let memory_store = state
-        .memory_store
-        .as_ref()
+        .memory_store()
         .ok_or_else(|| store_unavailable("memory"))?;
     let episode_store = state
-        .episode_store
-        .as_ref()
+        .episode_store()
         .ok_or_else(|| store_unavailable("episode"))?;
     let wiki_store = state
-        .wiki_store
-        .as_ref()
+        .wiki_store()
         .ok_or_else(|| store_unavailable("wiki"))?;
     let procedure_store = state
-        .procedure_store
-        .as_ref()
+        .procedure_store()
         .ok_or_else(|| store_unavailable("procedure"))?;
 
     // Memory facts: trait surface lacks a `list_by_ward` projection so we
@@ -368,8 +348,7 @@ pub async fn list_wards(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<WardListItem>>, HandlerError> {
     let memory_store = state
-        .memory_store
-        .as_ref()
+        .memory_store()
         .ok_or_else(|| store_unavailable("memory"))?;
 
     const WARD_AGG_LIMIT: usize = 5000;
@@ -552,6 +531,7 @@ mod helpers_tests {
             epistemic_class: Some("convention".into()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         let v = fact_to_value(fact, now);
         assert_eq!(v["age_bucket"], "today");

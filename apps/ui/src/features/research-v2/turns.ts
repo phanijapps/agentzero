@@ -28,6 +28,7 @@ export interface TurnBoundary {
     content: string;
     createdAt: string;
     attachments?: MessageAttachment[];
+    executionId?: string;
   };
   startedAt: string;
   endedAt: string | null;
@@ -58,6 +59,7 @@ export function findTurnBoundaries(
     return {
       userMessage: {
         id: m.id,
+        executionId: m.execution_id ?? undefined,
         content: parsed.content,
         createdAt: m.created_at,
         ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
@@ -276,12 +278,14 @@ export function buildSessionTurns(input: BuildSessionTurnsInput): SessionTurn[] 
 
     return {
       id: `turn-${b.userMessage.id}`,
+      executionId: b.userMessage.executionId,
       index: i,
       userMessage: b.userMessage,
       subagents,
       assistantText,
       assistantStreaming: "",
       timeline,
+      lastHeartbeatAt: null,
       status,
       startedAt: b.startedAt,
       endedAt: b.endedAt,

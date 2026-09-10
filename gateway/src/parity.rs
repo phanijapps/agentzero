@@ -34,8 +34,7 @@ pub fn old_engine_event_signature() -> Value {
         },
         "stream_scenarios": stream_scenarios(),
         "gateway_scenarios": gateway_scenarios(),
-        "direct_server_messages": direct_server_messages(),
-    })
+        "direct_server_messages": direct_server_messages() })
 }
 
 fn stream_scenarios() -> Vec<Value> {
@@ -284,24 +283,19 @@ fn gateway_scenarios() -> Vec<Value> {
 fn direct_server_messages() -> Vec<Value> {
     [
         ServerMessage::SessionCancelled {
-            session_id: SESSION_ID.to_string(),
-        },
+            session_id: SESSION_ID.to_string() },
         ServerMessage::SessionPaused {
-            session_id: SESSION_ID.to_string(),
-        },
+            session_id: SESSION_ID.to_string() },
         ServerMessage::SessionResumed {
-            session_id: SESSION_ID.to_string(),
-        },
+            session_id: SESSION_ID.to_string() },
         ServerMessage::SessionEnded {
-            session_id: SESSION_ID.to_string(),
-        },
+            session_id: SESSION_ID.to_string() },
     ]
     .into_iter()
     .map(|message| {
         json!({
             "variant": variant_name(&message),
-            "shape": json_shape(&serde_json::to_value(message).expect("server message serializes")),
-        })
+            "shape": json_shape(&serde_json::to_value(message).expect("server message serializes")) })
     })
     .collect()
 }
@@ -323,16 +317,14 @@ fn stream_scenario(name: &str, events: Vec<StreamEvent>) -> Value {
             json!({
                 "stream_event": stream_variant,
                 "gateway_event": gateway_variant,
-                "server_message": server_message_signature(server_message),
-            })
+                "server_message": server_message_signature(server_message) })
         })
         .collect();
 
     json!({
         "name": name,
         "records": records,
-        "sequence_hash": sequence_hash(&records),
-    })
+        "sequence_hash": sequence_hash(&records) })
 }
 
 fn gateway_scenario(name: &str, events: Vec<GatewayEvent>) -> Value {
@@ -343,24 +335,21 @@ fn gateway_scenario(name: &str, events: Vec<GatewayEvent>) -> Value {
             let server_message = gateway_event_to_server_message(event);
             json!({
                 "gateway_event": gateway_variant,
-                "server_message": server_message_signature(server_message),
-            })
+                "server_message": server_message_signature(server_message) })
         })
         .collect();
 
     json!({
         "name": name,
         "records": records,
-        "sequence_hash": sequence_hash(&records),
-    })
+        "sequence_hash": sequence_hash(&records) })
 }
 
 fn server_message_signature(message: Option<ServerMessage>) -> Value {
     match message {
         Some(message) => json!({
             "variant": variant_name(&message),
-            "shape": json_shape(&serde_json::to_value(message).expect("server message serializes")),
-        }),
+            "shape": json_shape(&serde_json::to_value(message).expect("server message serializes")) }),
         None => Value::Null,
     }
 }
@@ -390,8 +379,7 @@ fn json_shape(value: &Value) -> Value {
                 .collect::<BTreeSet<_>>();
             json!({
                 "array_len": bucket_number(items.len()),
-                "item_shapes": item_shapes,
-            })
+                "item_shapes": item_shapes })
         }
         Value::Object(map) => {
             let mut fields = Map::new();

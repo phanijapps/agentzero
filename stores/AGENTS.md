@@ -9,7 +9,8 @@ Backend-agnostic persistence layer for AgentZero. Separates domain types, trait 
 | `zbot-stores-domain` | Pure-data domain types (serde only, no DB) |
 | `zbot-stores-traits` | Store trait surfaces — lightweight, no DB drivers |
 | `zbot-stores` | Re-exports traits + types; also holds `KnowledgeGraphStore` / `MemoryFactStore` traits |
-| `zbot-stores-sqlite` | SQLite implementation (rusqlite + sqlite-vec + r2d2) — the only concrete backend |
+| `zbot-stores-sqlite` | SQLite implementation (rusqlite + sqlite-vec + r2d2) |
+| `zbot-engram-adapter` | Engram-backed store implementations (facts, wiki, graph, beliefs, procedures) |
 | `zbot-stores-conformance` | Cross-impl behavioral test harness |
 
 ## Dependency Order

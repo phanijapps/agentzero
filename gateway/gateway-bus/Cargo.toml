@@ -16,12 +16,24 @@ execution-state = { path = "../../services/execution-state" }
 
 # Async
 async-trait = { workspace = true }
+tokio = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Queue coordination
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
 [dev-dependencies]
+agent-primitives = { path = "../../runtime/agent-primitives" }
+gateway-services = { path = "../gateway-services" }
+rusqlite = "0.32"
+tracing-subscriber = { workspace = true }
+zbot-runtime-sqlite = { path = "../../stores/zbot-runtime-sqlite" }
+tempfile = "3"
 tokio-test = "0.4"
 
 [lints]

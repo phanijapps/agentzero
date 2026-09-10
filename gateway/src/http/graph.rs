@@ -2,18 +2,20 @@
 //!
 //! HTTP API for querying the knowledge graph.
 
+use super::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
+use knowledge_graph::types::Direction as StoreDirection;
 use knowledge_graph::{Direction, Entity, GraphStats, Relationship, Subgraph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use zbot_engram_adapter::GovernanceCapabilityHealth;
-use zbot_stores::{Direction as StoreDirection, KnowledgeGraphStore};
 use zbot_stores_domain::{DistillationStats, UndistilledSession};
 
 // ============================================================================
@@ -208,12 +210,6 @@ impl From<Subgraph> for SubgraphResponse {
     }
 }
 
-/// Error response.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 // ============================================================================
 // HANDLERS
 // ============================================================================
@@ -383,50 +379,49 @@ pub async fn search_entities(
 fn require_kg_store(
     state: &AppState,
 ) -> Result<Arc<dyn KnowledgeGraphStore>, (StatusCode, Json<ErrorResponse>)> {
-    state.kg_store.clone().ok_or_else(|| {
+    state.kg_store().clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "Knowledge graph store unavailable".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Knowledge graph store unavailable".to_string(),
+            )),
         )
     })
 }
 
-/// Map a [`zbot_stores::StoreError`] to the HTTP error pair used by graph
+/// Map a [`knowledge_graph::kg_trait::GraphStoreError`] to the HTTP error pair used by graph
 /// handlers: `(StatusCode, Json<ErrorResponse>)`.
-fn store_err_to_http(err: zbot_stores::StoreError) -> (StatusCode, Json<ErrorResponse>) {
-    use zbot_stores::StoreError;
+fn store_err_to_http(
+    err: knowledge_graph::kg_trait::GraphStoreError,
+) -> (StatusCode, Json<ErrorResponse>) {
+    use knowledge_graph::kg_trait::GraphStoreError;
     match err {
-        StoreError::NotFound => (
+        GraphStoreError::NotFound => (
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Entity not found".to_string(),
-            }),
+            Json(ErrorResponse::new("Entity not found".to_string())),
         ),
-        StoreError::Conflict(msg) => (
+        GraphStoreError::Conflict(msg) => (
             StatusCode::CONFLICT,
-            Json(ErrorResponse {
-                error: format!("Conflict: {}", msg),
-            }),
+            Json(ErrorResponse::new(format!("Conflict: {}", msg))),
         ),
-        StoreError::Invalid(msg) => (
+        GraphStoreError::Invalid(msg) => (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("Invalid request: {}", msg),
-            }),
+            Json(ErrorResponse::new(format!("Invalid request: {}", msg))),
         ),
-        StoreError::Unavailable { .. } => (
+        GraphStoreError::Unavailable { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "Knowledge graph store temporarily unavailable".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Knowledge graph store temporarily unavailable".to_string(),
+            )),
         ),
-        StoreError::Schema(msg) | StoreError::Backend(msg) | StoreError::Config(msg) => (
+        GraphStoreError::Schema(msg)
+        | GraphStoreError::Backend(msg)
+        | GraphStoreError::Config(msg) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Knowledge graph error: {}", msg),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Knowledge graph error: {}",
+                msg
+            ))),
         ),
     }
 }
@@ -480,7 +475,8 @@ pub struct AggregateGraphStats {
 pub async fn distillation_status(
     State(state): State<AppState>,
 ) -> Result<Json<DistillationStats>, (StatusCode, Json<ErrorResponse>)> {
-    let repo = match &state.distillation_repo {
+    let repo_slot = state.distillation_repo();
+    let repo = match repo_slot.as_deref() {
         Some(repo) => repo,
         None => return Ok(Json(DistillationStats::default())),
     };
@@ -489,9 +485,10 @@ pub async fn distillation_status(
         Ok(stats) => Ok(Json(stats)),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to get distillation stats: {}", e),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Failed to get distillation stats: {}",
+                e
+            ))),
         )),
     }
 }
@@ -503,7 +500,8 @@ pub async fn distillation_status(
 pub async fn undistilled_sessions(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UndistilledSession>>, (StatusCode, Json<ErrorResponse>)> {
-    let repo = match &state.distillation_repo {
+    let repo_slot = state.distillation_repo();
+    let repo = match repo_slot.as_deref() {
         Some(repo) => repo,
         None => return Ok(Json(Vec::new())),
     };
@@ -512,9 +510,10 @@ pub async fn undistilled_sessions(
         Ok(sessions) => Ok(Json(sessions)),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to get undistilled sessions: {}", e),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Failed to get undistilled sessions: {}",
+                e
+            ))),
         )),
     }
 }
@@ -534,35 +533,37 @@ pub async fn trigger_distillation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<TriggerDistillationResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let distiller = match &state.distiller {
+    let distiller = match &state.distiller() {
         Some(d) => d.clone(),
         None => {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Distillation service not available".to_string(),
-                }),
+                Json(ErrorResponse::new(
+                    "Distillation service not available".to_string(),
+                )),
             ));
         }
     };
 
     // Look up the root_agent_id for this session from the database
-    let agent_id = match state.session_meta.session_agent_id(&session_id) {
+    let agent_id = match state.session_meta().session_agent_id(&session_id) {
         Ok(Some(aid)) => aid,
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Session '{}' not found", session_id),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Session '{}' not found",
+                    session_id
+                ))),
             ));
         }
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to look up session: {}", e),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Failed to look up session: {}",
+                    e
+                ))),
             ));
         }
     };
@@ -578,7 +579,7 @@ pub async fn trigger_distillation(
             session_id,
             status: "failed".to_string(),
             facts_upserted: 0,
-            error: Some(e),
+            error: Some(e.to_string()),
         })),
     }
 }
@@ -597,8 +598,11 @@ pub async fn trigger_distillation(
 pub async fn graph_stats(
     State(state): State<AppState>,
 ) -> Result<Json<AggregateGraphStats>, (StatusCode, Json<ErrorResponse>)> {
+    // Reads through the stores group: this handler needs 5 of its members.
+    let stores = state.stores();
+
     // Entity + relationship counts from kg_store.
-    let (entities, relationships) = match &state.kg_store {
+    let (entities, relationships) = match &stores.kg_store {
         Some(store) => {
             let e = store.count_all_entities().await.unwrap_or(0);
             let r = store.count_all_relationships().await.unwrap_or(0);
@@ -608,7 +612,7 @@ pub async fn graph_stats(
     };
 
     // Fact count from memory_store.
-    let facts = match &state.memory_store {
+    let facts = match &stores.memory_store {
         Some(store) => store
             .count_all_facts(None)
             .await
@@ -618,13 +622,13 @@ pub async fn graph_stats(
         None => 0,
     };
 
-    let episodes = match &state.episode_store {
+    let episodes = match &stores.episode_store {
         Some(store) => store.episode_stats().await.map(|s| s.total).unwrap_or(0),
         None => 0,
     };
 
     // Distillation stats
-    let distillation = match &state.distillation_repo {
+    let distillation = match stores.distillation_repo.as_deref() {
         Some(repo) => repo.get_stats().ok(),
         None => None,
     };
@@ -635,7 +639,7 @@ pub async fn graph_stats(
         facts,
         episodes,
         distillation,
-        governance: state.governance_health.clone(),
+        governance: stores.governance_health.clone(),
     }))
 }
 
@@ -689,6 +693,14 @@ pub struct ReindexResponse {
     pub entities_created: usize,
 }
 
+fn valid_ward_directory_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 /// POST /api/graph/reindex — force re-indexing of every ward on disk.
 /// Idempotent: relationships upsert via UNIQUE(source, target, type).
 ///
@@ -698,38 +710,65 @@ pub struct ReindexResponse {
 pub async fn reindex_all_wards(
     State(state): State<AppState>,
 ) -> Result<Json<ReindexResponse>, StatusCode> {
-    use gateway_execution::ward_artifact_indexer::{index_ward_with_options, IndexOptions};
-
     let episode_store = state
-        .kg_episode_store
+        .kg_episode_store()
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let kg_store = state
-        .kg_store
+        .kg_store()
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let wards_dir = state.paths.wards_dir();
-    let Ok(read) = std::fs::read_dir(&wards_dir) else {
-        return Ok(Json(ReindexResponse {
+    let response =
+        reindex_ward_directories(&state.paths().wards_dir(), &episode_store, &kg_store).await;
+    Ok(Json(response))
+}
+
+async fn reindex_ward_directories(
+    wards_dir: &std::path::Path,
+    episode_store: &Arc<dyn zbot_stores_traits::KgEpisodeStore>,
+    kg_store: &Arc<dyn KnowledgeGraphStore>,
+) -> ReindexResponse {
+    use gateway_execution::ward_artifact_indexer::{index_ward_with_options, IndexOptions};
+
+    if std::fs::symlink_metadata(wards_dir)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        return ReindexResponse {
             wards_processed: 0,
             entities_created: 0,
-        }));
+        };
+    }
+    let Ok(read) = std::fs::read_dir(wards_dir) else {
+        return ReindexResponse {
+            wards_processed: 0,
+            entities_created: 0,
+        };
     };
 
     let mut total_entities = 0_usize;
     let mut wards_processed = 0_usize;
     for entry in read.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
             continue;
         }
+        let file_name = entry.file_name();
+        let Some(ward_id) = file_name.to_str().filter(|id| valid_ward_directory_id(id)) else {
+            tracing::warn!(path = %path.display(), "Skipping invalid Ward directory during graph reindex");
+            continue;
+        };
         let n = index_ward_with_options(
             &path,
+            ward_id,
             "admin-reindex",
             "root",
-            &episode_store,
-            &kg_store,
+            episode_store,
+            kg_store,
             IndexOptions {
                 force_reindex: true,
             },
@@ -739,8 +778,127 @@ pub async fn reindex_all_wards(
         wards_processed += 1;
     }
 
-    Ok(Json(ReindexResponse {
+    ReindexResponse {
         wards_processed,
         entities_created: total_entities,
-    }))
+    }
+}
+
+#[cfg(test)]
+mod reindex_scope_tests {
+    use super::{reindex_ward_directories, valid_ward_directory_id};
+    use knowledge_graph::kg_trait::KnowledgeGraphStore;
+    use std::sync::Arc;
+
+    #[test]
+    fn ward_directory_scope_requires_a_single_valid_component() {
+        assert!(valid_ward_directory_id("research-ward_1"));
+        assert!(!valid_ward_directory_id(""));
+        assert!(!valid_ward_directory_id("../other-ward"));
+        assert!(!valid_ward_directory_id("ward/other"));
+        assert!(!valid_ward_directory_id(&"a".repeat(65)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reindex_uses_directory_ward_scope_and_skips_invalid_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wards_dir = tmp.path().join("wards");
+        let valid = wards_dir.join("research-ward");
+        let invalid = wards_dir.join("invalid.ward");
+        std::fs::create_dir_all(&valid).expect("valid ward");
+        std::fs::create_dir_all(&invalid).expect("invalid ward");
+        std::fs::write(
+            valid.join("people.json"),
+            r#"[{"name":"Ada Lovelace","role":"Mathematician"}]"#,
+        )
+        .expect("valid artifact");
+        std::fs::write(
+            invalid.join("people.json"),
+            r#"[{"name":"Must Not Index"}]"#,
+        )
+        .expect("invalid artifact");
+        let outside = tmp.path().join("outside-ward");
+        std::fs::create_dir_all(&outside).expect("outside Ward directory");
+        std::fs::write(
+            outside.join("people.json"),
+            r#"[{"name":"Must Not Follow Ward Symlink"}]"#,
+        )
+        .expect("outside Ward artifact");
+        std::os::unix::fs::symlink(&outside, wards_dir.join("symlink-ward")).expect("symlink ward");
+        let nested_outside = tmp.path().join("outside-nested");
+        std::fs::create_dir_all(&nested_outside).expect("outside nested directory");
+        std::fs::write(
+            nested_outside.join("people.json"),
+            r#"[{"name":"Must Not Follow Nested Symlink"}]"#,
+        )
+        .expect("outside nested artifact");
+        std::os::unix::fs::symlink(&nested_outside, valid.join("linked-outside"))
+            .expect("nested symlink");
+
+        // Production wiring: engram adapter stores on a tempdir.
+        use zbot_engram_adapter::{
+            AdapterConfig, EngramKnowledgeGraphStore, EngramProvider, EngramSidecarStores,
+        };
+        let root = tmp.path().join("engram-reindex");
+        std::fs::create_dir_all(&root).expect("root");
+        let mut config = AdapterConfig::engram_for_data_root(&root, "engram.db");
+        config.embedding_provider.provider_type = "gateway-test".to_string();
+        config.embedding_provider.model = "gateway-test".to_string();
+        config.embedding_provider.dimensions = 8;
+        let provider = EngramProvider::open(config.clone()).expect("provider");
+        let episode_store: Arc<dyn zbot_stores_traits::KgEpisodeStore> = Arc::new(
+            EngramSidecarStores::from_provider(config.clone(), &provider).expect("episode store"),
+        );
+        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(
+            EngramKnowledgeGraphStore::from_provider(config, &provider).expect("kg store"),
+        );
+
+        let response = reindex_ward_directories(&wards_dir, &episode_store, &kg_store).await;
+
+        assert_eq!(response.wards_processed, 1);
+        assert!(response.entities_created >= 2);
+        let ada = knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+            kg_store.as_ref(),
+            "root",
+            "Ada Lovelace",
+        )
+        .await
+        .expect("query Ada")
+        .expect("Ada indexed");
+        assert_eq!(
+            ada.properties.get("ward_id"),
+            Some(&serde_json::json!("research-ward"))
+        );
+        assert!(
+            knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+                kg_store.as_ref(),
+                "root",
+                "Must Not Index"
+            )
+            .await
+            .expect("query invalid artifact")
+            .is_none()
+        );
+        assert!(
+            knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+                kg_store.as_ref(),
+                "root",
+                "Must Not Follow Ward Symlink"
+            )
+            .await
+            .expect("query Ward symlink artifact")
+            .is_none()
+        );
+        assert!(
+            knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+                kg_store.as_ref(),
+                "root",
+                "Must Not Follow Nested Symlink"
+            )
+            .await
+            .expect("query nested symlink artifact")
+            .is_none()
+        );
+    }
 }

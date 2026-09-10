@@ -4,8 +4,9 @@ Agent execution engine. Converts runtime stream events to gateway events, manage
 
 ## Build & Test
 
-```bash
-cargo test -p gateway-execution    # 370 tests
+```
+bash
+cargo test -p gateway-execution --features test-stubs    # 544+ tests
 ```
 
 For hot-path safety (runner.rs, delegation/spawn.rs), unit tests aren't enough on their own — run the Mode Full E2E after any change to `ExecutionRunner::spawn_execution_task`, `create_executor`, `invoke_continuation`, or the delegation spawn path:
@@ -21,7 +22,8 @@ Real zbotd + mock-llm + real UI build + scripted browser. Drift report confirms 
 
 | Type | Purpose |
 |------|---------|
-| `ExecutionRunner` | Main execution orchestrator |
+| `ExecutionRunner` | Main execution orchestrator (holds `Arc<ExecCtx>` + `bootstrap`) |
+| `ExecCtx` | The shared context type — services, control, late-binding state |
 | `ExecutionRunnerConfig` | Construction-time input bundle for `ExecutionRunner::with_config` |
 | `ExecutionHandle` | Control handle (stop, pause, resume, cancel) |
 | `ExecutionConfig` | Execution configuration |
@@ -62,19 +64,40 @@ gateway-execution/src/
 ├── ward_wiki.rs
 ├── session_state.rs        # SessionState, SessionStateBuilder
 ├── runner/                 # Decomposed ExecutionRunner (see runner/AGENTS.md)
-│   ├── core.rs             # ExecutionRunner struct + lifecycle methods
+│   ├── core.rs             # ExecutionRunner struct + wiring
+│   ├── exec_ctx.rs         # ExecCtx — the one shared context type
+│   ├── initial_execution.rs # Initial root invocation dispatch
 │   ├── session_invoker.rs  # Narrow traits for handler DI
 │   ├── invoke_bootstrap.rs # Pre-execution two-phase setup
-│   ├── execution_stream.rs # Per-execution event loop
+│   ├── execution_stream.rs # Shared root/continuation observation
+│   ├── continuation_execution.rs # Continuation preparation
+│   ├── continuation_watcher.rs  # SessionContinuationReady listener
 │   ├── delegation_dispatcher.rs # Long-lived subagent queue
-│   └── continuation_watcher.rs  # SessionContinuationReady listener
+│   ├── session_control.rs  # Live stop/pause/resume/cancel
+│   ├── subagent_recovery.rs # Persisted subagent re-spawn
+│   ├── recovery.rs         # Checkpoint write/restore
+│   └── integrations.rs     # Late-wired shared handles
 ├── delegation/             # Agent delegation subsystem
 │   ├── spawn.rs, context.rs, registry.rs, callback.rs
-├── invoke/                 # Executor building + ingest adapter
+├── invoke/                 # Executor building + tool catalog + intent agent
+│   ├── executor.rs         # build_execution_engine entry point
+│   ├── builder.rs          # ExecutorBuilder + build paths
+│   ├── builder_tests.rs    # Builder tests
+│   ├── tool_catalog.rs     # ToolSpec const table + lookups
+│   ├── policy.rs           # Actor gating, RuntimeActorKind
+│   └── setup.rs            # AgentLoader, provider resolution
 ├── ingest/                 # Ingest queue (chunker, extractor, etc.)
 ├── recall/                 # Memory recall (MemoryRecall, format_scored_items)
 ├── indexer/                # Ward artifact indexer
-├── middleware/             # Working memory middleware
+├── middleware/             # Intent agent + resource index + working memory
+│   ├── intent/             # Intent agent (search-driven, JSON output)
+│   │   ├── agent.rs        # Agent with MemorySearchTool
+│   │   ├── contract.rs     # IntentAnalysis typed decision
+│   │   ├── inject.rs       # Analysis rendering for orchestrator
+│   │   ├── prompt.rs       # Agent-friendly rubric
+│   │   └── router.rs       # Trivial check + procedure match + call agent
+│   ├── resource_index.rs   # Catalog write path (skills/agents/wards/MCPs)
+│   └── recovery.rs         # Checkpoint cursor + represented-output IDs
 ├── session_ctx/            # Session context helpers
 └── sleep/                  # Execution sleep/wake
 ```

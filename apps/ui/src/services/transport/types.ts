@@ -686,6 +686,20 @@ export interface WorkSurface {
   data: Record<string, unknown>;
 }
 
+/** Saved surface paired with the execution that produced it — the research
+ * timeline interleaves surfaces under their turn (execution id). */
+export interface SavedSurface {
+  execution_id: string;
+  /** Session the surface was persisted under (the creating agent's
+   * session — child session for subagent-created surfaces). */
+  session_id?: string;
+  /** ISO timestamp of creation. Root executions span multiple user turns,
+   * so the timeline places surfaces by time window, falling back to the id
+   * keys for legacy rows without it. */
+  created_at?: string;
+  surface: WorkSurface;
+}
+
 export interface SurfaceCreatedEvent extends StreamEvent {
   type: "surface_created";
   session_id: string;

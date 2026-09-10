@@ -1,5 +1,6 @@
 //! HTTP lifecycle surface for durable decision threads.
 
+use super::ErrorResponse;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -57,11 +58,6 @@ pub struct AutonomyDetailResponse {
     pub evidence: Vec<AutonomyEvidence>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 /// A resume result deliberately contains no packet or copied source content.
 #[derive(Debug, Serialize)]
 pub struct AutonomyResumeResponse {
@@ -93,7 +89,7 @@ pub async fn list_items(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AutonomyItem>>, (StatusCode, Json<ErrorResponse>)> {
     state
-        .autonomy
+        .autonomy()
         .list_open(100)
         .map(Json)
         .map_err(internal_error)
@@ -104,11 +100,11 @@ pub async fn get_item(
     Path(id): Path<String>,
 ) -> Result<Json<AutonomyDetailResponse>, (StatusCode, Json<ErrorResponse>)> {
     let item = state
-        .autonomy
+        .autonomy()
         .get(&id)
         .map_err(internal_error)?
         .ok_or_else(|| not_found(&id))?;
-    let evidence = state.autonomy.evidence(&id).map_err(internal_error)?;
+    let evidence = state.autonomy().evidence(&id).map_err(internal_error)?;
     Ok(Json(AutonomyDetailResponse { item, evidence }))
 }
 
@@ -179,7 +175,7 @@ pub async fn create_item(
             created_at: now.clone(),
         })
         .collect::<Vec<_>>();
-    state.autonomy.create(&item, &evidence).map_err(|error| {
+    state.autonomy().create(&item, &evidence).map_err(|error| {
         if error.to_string().contains("UNIQUE constraint failed") {
             bad_request("an item already has this dedupe key")
         } else {
@@ -207,7 +203,7 @@ pub async fn resume_item(
         return Err(bad_request("invalid autonomy item id"));
     }
     let item = state
-        .autonomy
+        .autonomy()
         .get(&id)
         .map_err(internal_error)?
         .ok_or_else(|| not_found(&id))?;
@@ -221,7 +217,7 @@ pub async fn resume_item(
         .filter(|session_id| !session_id.trim().is_empty())
         .ok_or_else(|| conflict("decision thread has no source session"))?;
     let source_session = state
-        .state_service
+        .state_service()
         .get_session(&source_session_id)
         .map_err(internal_error)?
         .ok_or_else(|| conflict("decision thread source session is unavailable"))?;
@@ -232,7 +228,7 @@ pub async fn resume_item(
     // This performs a second approved-state check in one SQLite transaction,
     // validates all packet bounds, and commits `resume_requested` before any
     // runner call. Every failure above and here leaves execution untouched.
-    let packet = state.autonomy.prepare_resume(&id).map_err(|error| {
+    let packet = state.autonomy().prepare_resume(&id).map_err(|error| {
         let message = error.to_string();
         if message.contains("not found") {
             not_found(&id)
@@ -244,7 +240,7 @@ pub async fn resume_item(
     })?;
     let conversation_id = format!("autonomy-{}", Uuid::now_v7());
     let (_handle, session_id) = state
-        .runtime
+        .runtime()
         .invoke_ledger_resume(&source_session.root_agent_id, &conversation_id, packet)
         .await
         .map_err(internal_error)?;
@@ -268,7 +264,7 @@ pub async fn eligibility(
         return Err(bad_request("only timer eligibility is supported"));
     }
     let item = state
-        .autonomy
+        .autonomy()
         .get(&id)
         .map_err(internal_error)?
         .ok_or_else(|| not_found(&id))?;
@@ -316,7 +312,7 @@ pub async fn transition_item(
         ));
     }
     let item = state
-        .autonomy
+        .autonomy()
         .transition(&id, request.state, outcome)
         .map_err(|error| {
             if error.to_string().contains("not found") {
@@ -327,34 +323,28 @@ pub async fn transition_item(
                 internal_error(error)
             }
         })?;
-    let evidence = state.autonomy.evidence(&id).map_err(internal_error)?;
+    let evidence = state.autonomy().evidence(&id).map_err(internal_error)?;
     Ok(Json(AutonomyDetailResponse { item, evidence }))
 }
 
 fn bad_request(message: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::BAD_REQUEST,
-        Json(ErrorResponse {
-            error: message.to_string(),
-        }),
+        Json(ErrorResponse::new(message.to_string())),
     )
 }
 
 fn not_found(id: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorResponse {
-            error: format!("autonomy item not found: {id}"),
-        }),
+        Json(ErrorResponse::new(format!("autonomy item not found: {id}"))),
     )
 }
 
 fn conflict(message: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::CONFLICT,
-        Json(ErrorResponse {
-            error: message.to_string(),
-        }),
+        Json(ErrorResponse::new(message.to_string())),
     )
 }
 
@@ -362,8 +352,8 @@ fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<ErrorRespo
     tracing::error!(error = %error, "autonomy ledger request failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: "internal autonomy ledger error".to_string(),
-        }),
+        Json(ErrorResponse::new(
+            "internal autonomy ledger error".to_string(),
+        )),
     )
 }

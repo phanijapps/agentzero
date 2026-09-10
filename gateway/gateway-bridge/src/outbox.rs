@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use zbot_stores_traits::{StoreError, StoreResult};
 
 /// An outbox item persisted in SQLite.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,23 +294,24 @@ impl zbot_stores_traits::OutboxStore for OutboxRepository {
         session_id: Option<&str>,
         thread_id: Option<&str>,
         agent_id: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> StoreResult<String> {
         self.insert(
             adapter_id, capability, payload, session_id, thread_id, agent_id,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
-    fn mark_inflight(&self, id: &str) -> Result<(), String> {
-        OutboxRepository::mark_inflight(self, id).map_err(|e| e.to_string())
+    fn mark_inflight(&self, id: &str) -> StoreResult<()> {
+        OutboxRepository::mark_inflight(self, id).map_err(|e| StoreError::Backend(e.to_string()))
     }
 
-    fn mark_sent(&self, id: &str) -> Result<(), String> {
-        OutboxRepository::mark_sent(self, id).map_err(|e| e.to_string())
+    fn mark_sent(&self, id: &str) -> StoreResult<()> {
+        OutboxRepository::mark_sent(self, id).map_err(|e| StoreError::Backend(e.to_string()))
     }
 
-    fn reset_inflight(&self, adapter_id: &str) -> Result<usize, String> {
-        OutboxRepository::reset_inflight(self, adapter_id).map_err(|e| e.to_string())
+    fn reset_inflight(&self, adapter_id: &str) -> StoreResult<usize> {
+        OutboxRepository::reset_inflight(self, adapter_id)
+            .map_err(|e| StoreError::Backend(e.to_string()))
     }
 }
 
@@ -337,7 +339,7 @@ mod tests {
     use super::*;
 
     fn setup_db() -> Arc<zbot_runtime_sqlite::DatabaseManager> {
-        use gateway_services::VaultPaths;
+        use agent_primitives::vault_paths::VaultPaths;
 
         let dir = tempfile::TempDir::new().unwrap();
         let paths = Arc::new(VaultPaths::new(dir.path().to_path_buf()));

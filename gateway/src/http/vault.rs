@@ -303,11 +303,11 @@ fn resolve_ward_root(state: &AppState, ward_id: &str) -> Result<(PathBuf, PathBu
         return Err(error(StatusCode::FORBIDDEN, "Ward is not available"));
     }
     let wards_dir = state
-        .paths
+        .paths()
         .wards_dir()
         .canonicalize()
         .map_err(|_| error(StatusCode::NOT_FOUND, "Wards directory not found"))?;
-    let root = state.paths.wards_dir().join(ward_id);
+    let root = state.paths().wards_dir().join(ward_id);
     if root
         .symlink_metadata()
         .map(|metadata| metadata.file_type().is_symlink())
@@ -452,7 +452,7 @@ pub async fn list_vault_wards(
     connect_info: Option<ConnectInfo<SocketAddr>>,
 ) -> Result<Json<VaultWardsResponse>, HandlerError> {
     require_local(&config, connect_info.map(|info| info.0))?;
-    let wards_dir = state.paths.wards_dir();
+    let wards_dir = state.paths().wards_dir();
     let mut wards = Vec::new();
     let entries = fs::read_dir(&wards_dir)
         .map_err(|_| error(StatusCode::NOT_FOUND, "Wards directory not found"))?;

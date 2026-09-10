@@ -18,28 +18,46 @@ use zbot_conversation::AutonomyState;
 
 use crate::state::AppState;
 
-use super::autonomy::{AutonomyDetailResponse, ErrorResponse};
+use super::autonomy::AutonomyDetailResponse;
+use super::ErrorResponse;
 use super::{HttpErrorResponse, SameOrigin};
+
+/// Saved surface with the execution that produced it — the UI interleaves
+/// surfaces into the chat timeline under their turn (execution id).
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct SavedSurfaceResponse {
+    pub execution_id: String,
+    /// Session the surface was persisted under — the ward-agent's child
+    /// session for subagent-created surfaces. The UI matches subagent turns
+    /// by session id (snapshot) or execution id (live), so both keys ride.
+    pub session_id: String,
+    /// When the surface was created. Root executions span multiple user
+    /// turns with continuations, so execution ids cannot attribute a
+    /// surface to its turn — the UI places surfaces by time window and
+    /// falls back to the id keys for legacy rows.
+    pub created_at: String,
+    pub surface: WorkSurface,
+}
 
 pub async fn list_saved_session_surfaces(
     State(state): State<AppState>,
     _origin: SameOrigin,
     Path(session_id): Path<String>,
-) -> Result<Json<Vec<WorkSurface>>, (StatusCode, Json<HttpErrorResponse>)> {
+) -> Result<Json<Vec<SavedSurfaceResponse>>, (StatusCode, Json<HttpErrorResponse>)> {
     if session_id.is_empty() || session_id.len() > 128 {
         return Err(bad_request("invalid session id"));
     }
-    if !state.state_service.surface_persistence_enabled() {
+    if !state.state_service().surface_persistence_enabled() {
         return Ok(Json(Vec::new()));
     }
     let records = state
-        .state_service
+        .state_service()
         .list_session_surfaces(&session_id)
         .map_err(|_| internal_surface_error())?;
     Ok(Json(decode_saved_surfaces(records)))
 }
 
-fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<WorkSurface> {
+fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<SavedSurfaceResponse> {
     let mut surfaces = Vec::with_capacity(records.len());
     for record in records {
         if record.surface_json.len() > MAX_SURFACE_BYTES {
@@ -58,7 +76,12 @@ fn decode_saved_surfaces(records: Vec<SessionSurfaceRecord>) -> Vec<WorkSurface>
                     && ZbotWorkSurfaceCatalog.validate(&surface).is_ok()
                     && is_persistable_surface(&surface) =>
             {
-                surfaces.push(surface);
+                surfaces.push(SavedSurfaceResponse {
+                    execution_id: record.execution_id,
+                    session_id: record.session_id,
+                    created_at: record.created_at,
+                    surface,
+                });
             }
             _ => tracing::warn!(
                 event = "saved_surface_rejected",
@@ -92,7 +115,7 @@ pub async fn clear_saved_surfaces(
         return Err(bad_request("invalid confirmation"));
     }
     let deleted_count = state
-        .state_service
+        .state_service()
         .clear_session_surfaces()
         .map_err(|_| internal_surface_error())?;
     Ok(Json(ClearSavedSurfacesResponse { deleted_count }))
@@ -133,7 +156,7 @@ pub async fn invoke_action(
     };
 
     let current = state
-        .autonomy
+        .autonomy()
         .get(&request.target)
         .map_err(internal_error)?
         .ok_or_else(|| rejected("surface target does not exist"))?;
@@ -147,12 +170,12 @@ pub async fn invoke_action(
     }
 
     let item = state
-        .autonomy
+        .autonomy()
         .transition(&request.target, next_state, None)
         .map_err(internal_error)?;
     tracing::info!(action_id = ?request.action_id, target = %request.target, resulting_state = %item.state, "surface action audited by autonomy ledger");
     let evidence = state
-        .autonomy
+        .autonomy()
         .evidence(&request.target)
         .map_err(internal_error)?;
     Ok(Json(AutonomyDetailResponse { item, evidence }))
@@ -161,9 +184,7 @@ pub async fn invoke_action(
 fn rejected(message: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::FORBIDDEN,
-        Json(ErrorResponse {
-            error: message.to_owned(),
-        }),
+        Json(ErrorResponse::new(message.to_owned())),
     )
 }
 
@@ -171,9 +192,7 @@ fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<ErrorRespo
     tracing::error!(error = %error, "surface action rejected by gateway");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: "surface action failed".to_owned(),
-        }),
+        Json(ErrorResponse::new("surface action failed".to_owned())),
     )
 }
 
@@ -260,6 +279,16 @@ mod tests {
             oversized,
         ]);
 
-        assert_eq!(decoded, vec![display]);
+        // Pair shape: the persisted execution id rides with the surface so
+        // the UI can interleave surfaces under their producing turn.
+        assert_eq!(
+            decoded,
+            vec![SavedSurfaceResponse {
+                execution_id: "exec-1".to_owned(),
+                session_id: "sess-1".to_owned(),
+                created_at: "2026-07-28T00:00:00Z".to_owned(),
+                surface: display
+            }]
+        );
     }
 }

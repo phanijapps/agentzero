@@ -8,11 +8,12 @@
 //! and `source_ref = tool_call_id`, enabling drill-down from graph to
 //! the exact tool invocation that produced it.
 
+use crate::errors::ExecutionError;
 use agent_tools::{EvidenceRecord, IngestionAccess};
+use knowledge_graph::kg_trait::{ExtractedKnowledge, KnowledgeGraphStore};
 use knowledge_graph::{Entity, EntityType};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use zbot_stores::{ExtractedKnowledge, KnowledgeGraphStore};
 use zbot_stores_domain::EpisodeSource;
 use zbot_stores_traits::KgEpisodeStore;
 
@@ -242,7 +243,7 @@ async fn ensure_episode(
     content: &str,
     session_id: &str,
     agent_id: &str,
-) -> Result<String, String> {
+) -> Result<String, ExecutionError> {
     let content_hash = hash_content(content);
     // Dedup: if we've seen this exact tool output before, reuse the episode.
     if let Ok(Some(existing)) = store
@@ -261,10 +262,14 @@ async fn ensure_episode(
             Some(session_id),
             agent_id,
         )
-        .await?;
+        .await
+        .map_err(|e| ExecutionError::Store(e.to_string()))?;
     // Tool-result extraction is synchronous w.r.t. the episode — once the
     // entities are about to be stored, the extraction is "done."
-    store.mark_done(&id).await?;
+    store
+        .mark_done(&id)
+        .await
+        .map_err(|e| ExecutionError::Store(e.to_string()))?;
     Ok(id)
 }
 

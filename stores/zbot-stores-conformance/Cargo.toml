@@ -5,8 +5,8 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-zbot-stores = { path = "../zbot-stores" }
 zbot-stores-traits = { path = "../zbot-stores-traits" }
+zbot-stores-domain = { path = "../zbot-stores-domain" }
 knowledge-graph = { path = "../../services/knowledge-graph" }
 async-trait = { workspace = true }
 chrono = { workspace = true }

@@ -57,7 +57,7 @@ pub async fn health_check() -> Json<HealthResponse> {
 
 /// GET /api/status - Detailed status.
 pub async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
-    let agent_count = state.agents.list().await.map(|a| a.len()).unwrap_or(0);
+    let agent_count = state.agents().list().await.map(|a| a.len()).unwrap_or(0);
 
     Json(StatusResponse {
         status: "ok".to_string(),

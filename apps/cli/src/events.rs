@@ -1,6 +1,3 @@
-// `invoke()` is scaffolded ahead of the Phase 3 chat REPL that calls it.
-#![allow(dead_code)]
-
 //! WebSocket event stream client.
 //!
 //! Connects to the daemon's `/ws` endpoint and bridges it to two channels:

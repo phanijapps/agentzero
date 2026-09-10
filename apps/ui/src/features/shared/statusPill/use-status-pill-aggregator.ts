@@ -20,6 +20,7 @@ export type PillEvent =
   | { kind: "agent_started"; agent_id: string }
   | { kind: "agent_completed"; agent_id: string; is_final: boolean }
   | { kind: "tool_call"; tool: string; args: Record<string, unknown> }
+  | { kind: "tool_ok"; tool: string }
   | { kind: "respond" }
   | { kind: "error"; message: string; source: "llm" | "tool"; tool?: string };
 
@@ -107,15 +108,26 @@ function handleRespond(state: PillState): PillState {
 }
 
 export function reducePillState(state: PillState, ev: PillEvent): PillState {
-  // Sticky error: once the pill is in "error" category, keep it until the next
-  // `agent_started` or `reset`. tool_call / respond / agent_completed must not
-  // overwrite the error — the whole point is to give the user a chance to see
-  // why something failed without chasing logs.
-  if (
-    state.category === "error" &&
-    (ev.kind === "tool_call" || ev.kind === "respond" || ev.kind === "agent_completed")
-  ) {
-    return state;
+  // Sticky error: once the pill is in "error" category, keep it until the
+  // model recovers, the next `agent_started`, or `reset`. tool_call /
+  // respond / agent_completed must not overwrite the error — the whole
+  // point is to give the user a chance to see why something failed without
+  // chasing logs. A SUCCESSFUL tool result is the recovery signal: it
+  // clears the error so a retried-and-fixed call doesn't leave the pill
+  // stuck on "Tool error" for the rest of the session.
+  if (state.category === "error") {
+    if (ev.kind === "tool_ok") {
+      return {
+        ...state,
+        narration: "Recovered — continuing",
+        suffix: "",
+        category: "neutral",
+        swapCounter: state.swapCounter + 1,
+      };
+    }
+    if (ev.kind === "tool_call" || ev.kind === "respond" || ev.kind === "agent_completed") {
+      return state;
+    }
   }
   switch (ev.kind) {
     case "idle":
@@ -128,6 +140,11 @@ export function reducePillState(state: PillState, ev: PillEvent): PillState {
       return handleAgentCompleted(state, ev);
     case "tool_call":
       return handleToolCall(state, ev.tool, ev.args);
+    case "tool_ok":
+      // Successes are invisible outside the error state — the pill's normal
+      // narration is driven by tool_call, and a "done" flicker after every
+      // call would be noise.
+      return state;
     case "respond":
       return handleRespond(state);
     case "error":

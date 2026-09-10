@@ -8,6 +8,7 @@
 //! 3. Parent receives a callback when subagent completes
 
 use agent_primitives::{Tool, ToolContext};
+use agent_tools::guards::planning_gate_awaits_ward;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -205,13 +206,13 @@ impl Tool for DelegateTool {
                 skills: skills.clone(),
                 mcps,
             });
-        let planning_capability_catalog = (target_agent_id == "planner-agent"
-            || target_agent_id.starts_with("ward:"))
-        .then(|| {
-            ctx.get_state(super::PLANNER_CAPABILITY_CATALOG_STATE)
-                .or_else(|| ctx.get_state(super::PLANNING_CAPABILITY_CATALOG_STATE))
-        })
-        .flatten();
+        // Keep the host-owned snapshot on the action for final-resolution
+        // provenance even when the child is an ordinary step executor. The
+        // gateway decides separately whether a child is a real planning
+        // transition allowed to receive lookup state.
+        let planning_capability_catalog = ctx
+            .get_state(super::PLANNER_CAPABILITY_CATALOG_STATE)
+            .or_else(|| ctx.get_state(super::PLANNING_CAPABILITY_CATALOG_STATE));
 
         let parallel = args
             .get("parallel")
@@ -248,6 +249,13 @@ impl Tool for DelegateTool {
             ));
         }
 
+        if planning_gate_awaits_ward(ctx.as_ref()) {
+            return Ok(json!({
+                "status": "redirect",
+                "message": "This graph request is awaiting ward(create/use). Do not delegate to a worker or planner manually; entering the ward will automatically start planner-agent."
+            }));
+        }
+
         // Guard: Only one sequential delegation at a time per session.
         // Parallel delegations bypass this — the global semaphore (max_parallel_agents in
         // settings.json) controls concurrency; excess parallel requests queue in the dispatcher
@@ -276,10 +284,9 @@ impl Tool for DelegateTool {
                 || task_lower.contains("plan, not execute")
                 || task_lower.contains("fill") && task_lower.contains("spec");
             if !is_planning_task {
-                return Ok(json!({
-                    "status": "redirect",
-                    "message": "Placeholder specs exist in the ward. Delegate to a planning subagent (code-agent) to fill them first. Do not delegate ad-hoc tasks."
-                }));
+                return Ok(agent_tools::guards::placeholder_specs_redirect(
+                    "Delegate to a planning subagent to fill them; do not run ad-hoc tasks.",
+                ));
             }
         }
 
@@ -308,8 +315,7 @@ impl Tool for DelegateTool {
                 "\n\n[PLATFORM: Windows / PowerShell. Do NOT use bash syntax (head, &&, cat, heredocs). Use Get-Content, ';', python.]"
             }
             "macos" => "\n\n[PLATFORM: macOS / zsh.]",
-            _ => "\n\n[PLATFORM: Linux / bash.]",
-        };
+            _ => "\n\n[PLATFORM: Linux / bash.]" };
         let enriched_task = format!("{task}{platform_hint}");
 
         // Set delegation action for the executor to pick up
@@ -354,8 +360,7 @@ impl Tool for DelegateTool {
                     "Task delegated to {} (fire-and-forget). Use execution_id with wait_agent to block until it completes and get its result, steer_agent to send mid-run instructions, or kill_agent to stop it.",
                     target_agent_id
                 )
-            },
-        });
+            } });
         if let Some(warning) = task_warning {
             if let Some(obj) = result.as_object_mut() {
                 obj.insert("warning".to_string(), json!(warning));
@@ -364,8 +369,7 @@ impl Tool for DelegateTool {
                     "recommended_task_chars".to_string(),
                     json!({
                         "preferred": PREFERRED_TASK_CHARS,
-                        "upper": RECOMMENDED_TASK_CHARS,
-                    }),
+                        "upper": RECOMMENDED_TASK_CHARS }),
                 );
             }
         }
@@ -522,6 +526,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_graph_gate_redirects_direct_worker_delegation() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("root");
+        ctx.set_state(
+            "app:planning_gate".to_string(),
+            json!({"task": "Plan the research request", "phase": "awaiting_ward"}),
+        );
+
+        let result = tool
+            .execute(
+                ctx.clone(),
+                json!({ "agent_id": "builder-agent", "task": "skip planning" }),
+            )
+            .await
+            .expect("planning gate returns a redirect");
+
+        assert_eq!(
+            result.get("status").and_then(Value::as_str),
+            Some("redirect")
+        );
+        assert!(
+            ctx.actions().delegate.is_none(),
+            "a cold graph gate must not emit a worker delegation"
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_delegation_mode_is_rejected() {
         let tool = DelegateTool::new();
         let ctx = ctx_for("root");
@@ -654,8 +685,7 @@ mod tests {
                     "task": "compose summary",
                     "skills": ["html-report"],
                     "mcps": ["renderer"],
-                    "parallel": false,
-                }),
+                    "parallel": false }),
             )
             .await
             .expect("delegate must succeed");
@@ -705,6 +735,34 @@ mod tests {
         )
         .await
         .expect("planner delegation succeeds");
+
+        let action = ctx.actions().delegate.expect("delegate action set");
+        assert_eq!(
+            action.planning_capability_catalog,
+            Some(json!({"skills": [], "mcps": [{"id": "blender"}]}))
+        );
+    }
+
+    #[tokio::test]
+    async fn step_delegate_carries_host_catalog_only_as_resolution_provenance() {
+        let tool = DelegateTool::new();
+        let ctx = ctx_for("planner-agent");
+        ctx.set_state(
+            crate::tools::PLANNER_CAPABILITY_CATALOG_STATE.to_string(),
+            json!({"skills": [], "mcps": [{"id": "blender"}]}),
+        );
+
+        tool.execute(
+            ctx.clone(),
+            json!({
+                "agent_id": "builder-agent",
+                "task": "build the scene",
+                "mode": "step_executor",
+                "mcps": ["blender"]
+            }),
+        )
+        .await
+        .expect("step delegation succeeds");
 
         let action = ctx.actions().delegate.expect("delegate action set");
         assert_eq!(

@@ -38,7 +38,6 @@ pub struct MessageResponse {
 
 /// Create conversation request.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct CreateConversationRequest {
     #[serde(rename = "agentId")]
     pub agent_id: String,
@@ -56,9 +55,10 @@ pub async fn list_conversations(State(_state): State<AppState>) -> Json<Vec<Conv
 /// POST /api/conversations - Create a new conversation.
 pub async fn create_conversation(
     State(_state): State<AppState>,
-    Json(_request): Json<CreateConversationRequest>,
+    Json(request): Json<CreateConversationRequest>,
 ) -> Result<Json<ConversationResponse>, StatusCode> {
     // TODO: Connect to daily_sessions in Phase 3b
+    let _ = (&request.agent_id, request.title.as_deref());
     Err(StatusCode::NOT_IMPLEMENTED)
 }
 
@@ -85,7 +85,7 @@ pub async fn list_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<MessageResponse>>, StatusCode> {
-    match state.messages.replay(&id, None, 500) {
+    match state.messages().replay(&id, None, 500) {
         Ok(messages) => {
             let responses: Vec<MessageResponse> = messages
                 .into_iter()

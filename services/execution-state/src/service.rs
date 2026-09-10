@@ -32,6 +32,12 @@ impl<D: StateDbProvider> StateService<D> {
     }
 
     /// Update the live mirror of the durable presentation setting.
+    /// Shared database handle — for callers that must write alongside
+    /// state transitions on the same connection pool (e.g. seeding in tests).
+    pub fn db_handle(&self) -> Arc<D> {
+        self.db.clone()
+    }
+
     pub fn set_surface_persistence_enabled(&self, enabled: bool) {
         self.persist_surfaces.store(enabled, Ordering::Release);
     }

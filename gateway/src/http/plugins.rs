@@ -82,7 +82,7 @@ pub struct SecretsListResponse {
 pub async fn list_plugins(
     State(state): State<AppState>,
 ) -> Result<Json<PluginListResponse>, StatusCode> {
-    let plugins = state.plugin_manager.list().await;
+    let plugins = state.plugin_manager().list().await;
     let total = plugins.len();
 
     Ok(Json(PluginListResponse { plugins, total }))
@@ -95,7 +95,7 @@ pub async fn get_plugin(
     State(state): State<AppState>,
     Path(plugin_id): Path<String>,
 ) -> Result<Json<PluginSummary>, StatusCode> {
-    match state.plugin_manager.get(&plugin_id).await {
+    match state.plugin_manager().get(&plugin_id).await {
         Some(plugin) => Ok(Json(plugin)),
         None => Err(StatusCode::NOT_FOUND),
     }
@@ -108,9 +108,9 @@ pub async fn start_plugin(
     State(state): State<AppState>,
     Path(plugin_id): Path<String>,
 ) -> Result<Json<PluginActionResponse>, StatusCode> {
-    match state.plugin_manager.start(&plugin_id).await {
+    match state.plugin_manager().start(&plugin_id).await {
         Ok(()) => {
-            let plugin = state.plugin_manager.get(&plugin_id).await;
+            let plugin = state.plugin_manager().get(&plugin_id).await;
             Ok(Json(PluginActionResponse {
                 success: true,
                 message: format!("Plugin '{}' started", plugin_id),
@@ -136,9 +136,9 @@ pub async fn stop_plugin(
     State(state): State<AppState>,
     Path(plugin_id): Path<String>,
 ) -> Result<Json<PluginActionResponse>, StatusCode> {
-    match state.plugin_manager.stop(&plugin_id).await {
+    match state.plugin_manager().stop(&plugin_id).await {
         Ok(()) => {
-            let plugin = state.plugin_manager.get(&plugin_id).await;
+            let plugin = state.plugin_manager().get(&plugin_id).await;
             Ok(Json(PluginActionResponse {
                 success: true,
                 message: format!("Plugin '{}' stopped", plugin_id),
@@ -163,9 +163,9 @@ pub async fn restart_plugin(
     State(state): State<AppState>,
     Path(plugin_id): Path<String>,
 ) -> Result<Json<PluginActionResponse>, StatusCode> {
-    match state.plugin_manager.restart(&plugin_id).await {
+    match state.plugin_manager().restart(&plugin_id).await {
         Ok(()) => {
-            let plugin = state.plugin_manager.get(&plugin_id).await;
+            let plugin = state.plugin_manager().get(&plugin_id).await;
             Ok(Json(PluginActionResponse {
                 success: true,
                 message: format!("Plugin '{}' restarted", plugin_id),
@@ -189,7 +189,7 @@ pub async fn restart_plugin(
 pub async fn discover_plugins(
     State(state): State<AppState>,
 ) -> Result<Json<PluginActionResponse>, StatusCode> {
-    match state.plugin_manager.discover().await {
+    match state.plugin_manager().discover().await {
         Ok(discovered) => {
             let message = if discovered.is_empty() {
                 "No new plugins discovered".to_string()
@@ -226,11 +226,11 @@ pub async fn get_plugin_config(
     Path(plugin_id): Path<String>,
 ) -> Result<Json<PluginConfigResponse>, StatusCode> {
     // Check if plugin exists
-    if !state.plugin_manager.exists(&plugin_id).await {
+    if !state.plugin_manager().exists(&plugin_id).await {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let service = PluginService::new(state.paths.plugins_dir());
+    let service = PluginService::new(state.paths().plugins_dir());
     let config = service.load_config(&plugin_id);
 
     let secrets = config.secret_keys();
@@ -254,11 +254,11 @@ pub async fn update_plugin_config(
     Json(body): Json<UpdateConfigRequest>,
 ) -> Result<Json<PluginConfigResponse>, StatusCode> {
     // Check if plugin exists
-    if !state.plugin_manager.exists(&plugin_id).await {
+    if !state.plugin_manager().exists(&plugin_id).await {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let service = PluginService::new(state.paths.plugins_dir());
+    let service = PluginService::new(state.paths().plugins_dir());
     let mut config = service.load_config(&plugin_id);
 
     // Update enabled if provided
@@ -297,11 +297,11 @@ pub async fn list_plugin_secrets(
     Path(plugin_id): Path<String>,
 ) -> Result<Json<SecretsListResponse>, StatusCode> {
     // Check if plugin exists
-    if !state.plugin_manager.exists(&plugin_id).await {
+    if !state.plugin_manager().exists(&plugin_id).await {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let service = PluginService::new(state.paths.plugins_dir());
+    let service = PluginService::new(state.paths().plugins_dir());
     let secrets = service.list_secret_keys(&plugin_id);
 
     Ok(Json(SecretsListResponse {
@@ -319,11 +319,11 @@ pub async fn set_plugin_secret(
     Json(body): Json<SetSecretRequest>,
 ) -> Result<Json<SecretsListResponse>, StatusCode> {
     // Check if plugin exists
-    if !state.plugin_manager.exists(&plugin_id).await {
+    if !state.plugin_manager().exists(&plugin_id).await {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let service = PluginService::new(state.paths.plugins_dir());
+    let service = PluginService::new(state.paths().plugins_dir());
 
     if let Err(e) = service.set_secret(&plugin_id, key, body.value) {
         tracing::error!("Failed to set plugin secret: {}", e);
@@ -346,11 +346,11 @@ pub async fn delete_plugin_secret(
     Path((plugin_id, key)): Path<(String, String)>,
 ) -> Result<Json<SecretsListResponse>, StatusCode> {
     // Check if plugin exists
-    if !state.plugin_manager.exists(&plugin_id).await {
+    if !state.plugin_manager().exists(&plugin_id).await {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let service = PluginService::new(state.paths.plugins_dir());
+    let service = PluginService::new(state.paths().plugins_dir());
 
     match service.delete_secret(&plugin_id, &key) {
         Ok(_) => {

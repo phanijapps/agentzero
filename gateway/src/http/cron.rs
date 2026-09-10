@@ -39,7 +39,8 @@ fn err_internal(msg: &str) -> ErrorResponse {
 
 /// GET /api/cron - List all cron jobs.
 pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
@@ -68,7 +69,8 @@ pub async fn create_cron_job(
     State(state): State<AppState>,
     Json(request): Json<CreateCronJobRequest>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
@@ -113,7 +115,8 @@ pub async fn get_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
@@ -151,7 +154,8 @@ pub async fn update_cron_job(
     Path(id): Path<String>,
     Json(request): Json<UpdateCronJobRequest>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
@@ -193,7 +197,8 @@ pub async fn delete_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
@@ -232,7 +237,8 @@ pub async fn trigger_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
@@ -278,7 +284,8 @@ pub async fn enable_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (
@@ -317,7 +324,8 @@ pub async fn disable_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scheduler = match &state.cron_scheduler {
+    let scheduler_slot = state.cron_scheduler();
+    let scheduler = match scheduler_slot.as_deref() {
         Some(s) => s,
         None => {
             return (

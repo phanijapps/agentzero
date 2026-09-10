@@ -120,7 +120,7 @@ pub async fn upload_file(
     };
 
     // Build the attachments directory under the vault temp dir.
-    let uploads_dir: PathBuf = state.paths.vault_dir().join("temp").join("attachments");
+    let uploads_dir: PathBuf = state.paths().vault_dir().join("temp").join("attachments");
     if let Err(e) = std::fs::create_dir_all(&uploads_dir) {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,

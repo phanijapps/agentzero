@@ -379,7 +379,7 @@ pub async fn search_entities(
 fn require_kg_store(
     state: &AppState,
 ) -> Result<Arc<dyn KnowledgeGraphStore>, (StatusCode, Json<ErrorResponse>)> {
-    state.kg_store.clone().ok_or_else(|| {
+    state.kg_store().clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new(
@@ -475,7 +475,8 @@ pub struct AggregateGraphStats {
 pub async fn distillation_status(
     State(state): State<AppState>,
 ) -> Result<Json<DistillationStats>, (StatusCode, Json<ErrorResponse>)> {
-    let repo = match &state.distillation_repo {
+    let repo_slot = state.distillation_repo();
+    let repo = match repo_slot.as_deref() {
         Some(repo) => repo,
         None => return Ok(Json(DistillationStats::default())),
     };
@@ -499,7 +500,8 @@ pub async fn distillation_status(
 pub async fn undistilled_sessions(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UndistilledSession>>, (StatusCode, Json<ErrorResponse>)> {
-    let repo = match &state.distillation_repo {
+    let repo_slot = state.distillation_repo();
+    let repo = match repo_slot.as_deref() {
         Some(repo) => repo,
         None => return Ok(Json(Vec::new())),
     };
@@ -531,7 +533,7 @@ pub async fn trigger_distillation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<TriggerDistillationResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let distiller = match &state.distiller {
+    let distiller = match &state.distiller() {
         Some(d) => d.clone(),
         None => {
             return Err((
@@ -544,7 +546,7 @@ pub async fn trigger_distillation(
     };
 
     // Look up the root_agent_id for this session from the database
-    let agent_id = match state.session_meta.session_agent_id(&session_id) {
+    let agent_id = match state.session_meta().session_agent_id(&session_id) {
         Ok(Some(aid)) => aid,
         Ok(None) => {
             return Err((
@@ -597,7 +599,7 @@ pub async fn graph_stats(
     State(state): State<AppState>,
 ) -> Result<Json<AggregateGraphStats>, (StatusCode, Json<ErrorResponse>)> {
     // Entity + relationship counts from kg_store.
-    let (entities, relationships) = match &state.kg_store {
+    let (entities, relationships) = match &state.kg_store() {
         Some(store) => {
             let e = store.count_all_entities().await.unwrap_or(0);
             let r = store.count_all_relationships().await.unwrap_or(0);
@@ -607,7 +609,7 @@ pub async fn graph_stats(
     };
 
     // Fact count from memory_store.
-    let facts = match &state.memory_store {
+    let facts = match &state.memory_store() {
         Some(store) => store
             .count_all_facts(None)
             .await
@@ -617,13 +619,13 @@ pub async fn graph_stats(
         None => 0,
     };
 
-    let episodes = match &state.episode_store {
+    let episodes = match &state.episode_store() {
         Some(store) => store.episode_stats().await.map(|s| s.total).unwrap_or(0),
         None => 0,
     };
 
     // Distillation stats
-    let distillation = match &state.distillation_repo {
+    let distillation = match state.distillation_repo().as_deref() {
         Some(repo) => repo.get_stats().ok(),
         None => None,
     };
@@ -634,7 +636,7 @@ pub async fn graph_stats(
         facts,
         episodes,
         distillation,
-        governance: state.governance_health.clone(),
+        governance: state.governance_health().clone(),
     }))
 }
 
@@ -706,16 +708,16 @@ pub async fn reindex_all_wards(
     State(state): State<AppState>,
 ) -> Result<Json<ReindexResponse>, StatusCode> {
     let episode_store = state
-        .kg_episode_store
+        .kg_episode_store()
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let kg_store = state
-        .kg_store
+        .kg_store()
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let response =
-        reindex_ward_directories(&state.paths.wards_dir(), &episode_store, &kg_store).await;
+        reindex_ward_directories(&state.paths().wards_dir(), &episode_store, &kg_store).await;
     Ok(Json(response))
 }
 

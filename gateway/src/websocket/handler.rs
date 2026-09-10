@@ -1416,7 +1416,7 @@ mod tests {
         // before a worker bootstraps session/execution/message rows.
         assert!(server
             .state()
-            .state_service
+            .state_service()
             .get_session(&session_id)
             .unwrap()
             .is_none());

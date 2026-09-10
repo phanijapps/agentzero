@@ -18,7 +18,7 @@ pub struct NetworkInfoResponse {
 pub async fn get_network_info(
     State(state): State<AppState>,
 ) -> Result<Json<NetworkInfoResponse>, (StatusCode, Json<NetworkInfoResponse>)> {
-    let settings = state.settings.load().map_err(|e| {
+    let settings = state.settings().load().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(NetworkInfoResponse {
@@ -31,7 +31,7 @@ pub async fn get_network_info(
     let network_cfg = settings.network;
 
     let mdns_active = state
-        .advertise_handle
+        .advertise_handle()
         .lock()
         .ok()
         .map(|guard| guard.is_some())
@@ -40,7 +40,7 @@ pub async fn get_network_info(
     let alias_claimed = if mdns_active {
         // Pull from handle if available; otherwise optimistic true.
         state
-            .advertise_handle
+            .advertise_handle()
             .lock()
             .ok()
             .and_then(|g| g.as_ref().map(|h| h.alias_claimed))

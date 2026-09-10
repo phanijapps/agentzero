@@ -47,11 +47,11 @@ pub async fn list_saved_session_surfaces(
     if session_id.is_empty() || session_id.len() > 128 {
         return Err(bad_request("invalid session id"));
     }
-    if !state.state_service.surface_persistence_enabled() {
+    if !state.state_service().surface_persistence_enabled() {
         return Ok(Json(Vec::new()));
     }
     let records = state
-        .state_service
+        .state_service()
         .list_session_surfaces(&session_id)
         .map_err(|_| internal_surface_error())?;
     Ok(Json(decode_saved_surfaces(records)))
@@ -115,7 +115,7 @@ pub async fn clear_saved_surfaces(
         return Err(bad_request("invalid confirmation"));
     }
     let deleted_count = state
-        .state_service
+        .state_service()
         .clear_session_surfaces()
         .map_err(|_| internal_surface_error())?;
     Ok(Json(ClearSavedSurfacesResponse { deleted_count }))
@@ -156,7 +156,7 @@ pub async fn invoke_action(
     };
 
     let current = state
-        .autonomy
+        .autonomy()
         .get(&request.target)
         .map_err(internal_error)?
         .ok_or_else(|| rejected("surface target does not exist"))?;
@@ -170,12 +170,12 @@ pub async fn invoke_action(
     }
 
     let item = state
-        .autonomy
+        .autonomy()
         .transition(&request.target, next_state, None)
         .map_err(internal_error)?;
     tracing::info!(action_id = ?request.action_id, target = %request.target, resulting_state = %item.state, "surface action audited by autonomy ledger");
     let evidence = state
-        .autonomy
+        .autonomy()
         .evidence(&request.target)
         .map_err(internal_error)?;
     Ok(Json(AutonomyDetailResponse { item, evidence }))

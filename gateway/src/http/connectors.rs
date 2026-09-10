@@ -43,7 +43,7 @@ fn err_internal(msg: &str) -> ErrorResponse {
 
 /// GET /api/connectors - List all connectors.
 pub async fn list_connectors(State(state): State<AppState>) -> impl IntoResponse {
-    match state.connector_registry.list().await {
+    match state.connector_registry().list().await {
         Ok(connectors) => Json(connectors).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to list connectors");
@@ -63,7 +63,7 @@ pub async fn create_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %request.id, "Creating connector");
 
-    match state.connector_registry.create(request).await {
+    match state.connector_registry().create(request).await {
         Ok(connector) => (StatusCode::CREATED, Json(connector)).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
@@ -92,7 +92,7 @@ pub async fn get_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.connector_registry.get(&id).await {
+    match state.connector_registry().get(&id).await {
         Ok(connector) => Json(connector).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
@@ -121,7 +121,7 @@ pub async fn update_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %id, "Updating connector");
 
-    match state.connector_registry.update(&id, request).await {
+    match state.connector_registry().update(&id, request).await {
         Ok(connector) => Json(connector).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
@@ -149,7 +149,7 @@ pub async fn delete_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %id, "Deleting connector");
 
-    match state.connector_registry.delete(&id).await {
+    match state.connector_registry().delete(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
@@ -175,7 +175,7 @@ pub async fn get_connector_metadata(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.connector_registry.get(&id).await {
+    match state.connector_registry().get(&id).await {
         Ok(connector) => Json(connector.metadata).into_response(),
         Err(e) => {
             use crate::connectors::ConnectorServiceError;
@@ -203,7 +203,7 @@ pub async fn test_connector(
 ) -> impl IntoResponse {
     info!(connector_id = %id, "Testing connector connectivity");
 
-    match state.connector_registry.test(&id).await {
+    match state.connector_registry().test(&id).await {
         Ok(result) => {
             let status = if result.success {
                 StatusCode::OK
@@ -239,7 +239,7 @@ pub async fn enable_connector(
     info!(connector_id = %id, "Enabling connector");
 
     match state
-        .connector_registry
+        .connector_registry()
         .update(
             &id,
             UpdateConnectorRequest {
@@ -277,7 +277,7 @@ pub async fn disable_connector(
     info!(connector_id = %id, "Disabling connector");
 
     match state
-        .connector_registry
+        .connector_registry()
         .update(
             &id,
             UpdateConnectorRequest {
@@ -316,7 +316,7 @@ pub async fn inbound(
     info!(connector_id = %id, "Inbound message from connector");
 
     // Look up connector
-    let connector = match state.connector_registry.get(&id).await {
+    let connector = match state.connector_registry().get(&id).await {
         Ok(c) => c,
         Err(e) => {
             return match &e {
@@ -356,7 +356,8 @@ pub async fn inbound(
     }
 
     // Get the runner
-    let runner = match state.runtime.runner() {
+    let runtime = state.runtime();
+    let runner = match runtime.runner() {
         Some(r) => r,
         None => {
             return (
@@ -408,8 +409,8 @@ pub async fn inbound(
     // Submit via bus
     let bus = HttpGatewayBus::new(
         runner.clone(),
-        state.state_service.clone(),
-        state.vault_dir.clone(),
+        state.state_service().clone(),
+        state.vault_dir().clone(),
     );
 
     match bus.submit(request).await {
@@ -422,7 +423,7 @@ pub async fn inbound(
 
             // Log the inbound message
             state
-                .connector_registry
+                .connector_registry()
                 .log_inbound(InboundLogEntry {
                     connector_id: id.clone(),
                     message: payload.message,
@@ -471,7 +472,7 @@ pub async fn get_inbound_log(
     Query(query): Query<InboundLogQuery>,
 ) -> impl IntoResponse {
     // Verify connector exists
-    match state.connector_registry.get(&id).await {
+    match state.connector_registry().get(&id).await {
         Ok(_) => {}
         Err(e) => {
             return match &e {
@@ -488,6 +489,6 @@ pub async fn get_inbound_log(
     }
 
     let limit = query.limit.min(500);
-    let entries = state.connector_registry.get_inbound_log(&id, limit).await;
+    let entries = state.connector_registry().get_inbound_log(&id, limit).await;
     Json(entries).into_response()
 }

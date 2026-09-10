@@ -28,171 +28,10 @@ use zbot_runtime_sqlite::{DatabaseManager, DistillationRepository};
 /// Shared application state for the gateway.
 #[derive(Clone)]
 pub struct AppState {
-    /// Agent service for managing agent configurations.
-    pub agents: Arc<AgentService>,
-
-    /// Skill service for managing skill configurations.
-    pub skills: Arc<SkillService>,
-
-    /// Provider service for managing LLM providers.
-    pub provider_service: Arc<ProviderService>,
-
-    /// MCP service for managing MCP server configurations.
-    pub mcp_service: Arc<McpService>,
-
-    /// Runtime service for agent execution.
-    pub runtime: Arc<RuntimeService>,
-
-    /// Event bus for broadcasting events.
-    pub event_bus: Arc<EventBus>,
-
-    /// Hook registry for managing inbound triggers.
-    pub hook_registry: Option<Arc<HookRegistry>>,
-
-    /// Delegation registry for tracking agent delegations.
-    pub delegation_registry: Arc<DelegationRegistry>,
-
-    /// Message store (append-only conversation log).
-    pub messages: Arc<dyn zbot_conversation::MessageStore>,
-    /// Narrow session metadata reads used while retiring the old repository.
-    pub session_meta: Arc<dyn zbot_conversation::SessionMetaStore>,
-    /// Versioned agent-state checkpoints — `session_state` reads here (T12).
-    pub checkpoints: Arc<dyn zbot_conversation::CheckpointStore>,
-    /// Durable operational decision threads. Semantic memory remains in Engram.
-    pub autonomy: Arc<dyn zbot_conversation::AutonomyStore>,
-    /// Slim (payload-free) `execution_logs` — the live `/api/logs` UI source.
-    pub slim_logs: Arc<dyn zbot_trace::SlimLogStore>,
-    /// Cross-session trace analytics over `traces/*.jsonl.gz` (DuckDB).
-    pub trace_analytics: Arc<zbot_trace::TraceAnalytics>,
-
-    /// Settings service for application configuration.
-    pub settings: Arc<SettingsService>,
-
-    /// Log service for execution tracing.
-    pub log_service: Arc<LogService<DatabaseManager>>,
-
-    /// State service for execution state management.
-    pub state_service: Arc<StateService<DatabaseManager>>,
-
-    /// Durable executable-work store backed by the conversation database.
-    pub durable_work_store: Arc<dyn WorkStore>,
-
-    /// Shared in-process wake path for durable executable work.
-    pub durable_work_transport: Arc<gateway_bus::LocalWorkTransport>,
-
-    /// Connector registry for external bridge management.
-    pub connector_registry: Arc<ConnectorRegistry>,
-
-    /// Bridge registry for WebSocket worker connections.
-    pub bridge_registry: Arc<gateway_bridge::BridgeRegistry>,
-
-    /// Bridge outbox for reliable message delivery to workers.
-    pub bridge_outbox: Arc<gateway_bridge::OutboxRepository>,
-
-    /// Gateway bus for bridge inbound message routing (set during server start).
-    pub bridge_bus: Option<Arc<dyn gateway_bus::GatewayBus>>,
-
-    /// Trait-routed memory-fact store. The single read/write surface for
-    /// memory facts.
-    pub memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
-
-    /// Backend-neutral active goals used for intent boost and the goal tool.
-    pub goal_store: Option<Arc<dyn zbot_stores_traits::GoalStore>>,
-
-    /// Distillation repository for tracking distillation run outcomes.
-    pub distillation_repo: Option<Arc<DistillationRepository>>,
-
-    /// Session distiller for triggering on-demand distillation (e.g., backfill).
-    pub distiller: Option<Arc<distillation::SessionDistiller>>,
-
-    /// Backend-neutral session episode store.
-    pub episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>>,
-
-    /// Trait-routed wiki store (Phase D3). The handler-side migrations
-    /// route through this; legacy callers still build a
-    /// `WardWikiRepository` directly. `None` in minimal AppStates.
-    pub wiki_store: Option<Arc<dyn zbot_stores_traits::WikiStore>>,
-
-    /// Trait-routed procedure store (Phase D4).
-    pub procedure_store: Option<Arc<dyn zbot_stores_traits::ProcedureStore>>,
-
-    /// Backend-neutral kg-ingestion-episode store.
-    pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
-
-    /// Trait-based knowledge-graph store.
-    pub kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
-
-    /// Additive path-free governance health for Observatory/read-model routes.
-    pub governance_health: Option<GovernanceCapabilityHealth>,
-
-    /// Streaming ingestion queue (Phase 2) — None when graph is unavailable.
-    pub ingestion_queue: Option<Arc<gateway_execution::ingest::IngestionQueue>>,
-
-    /// Per-source + global backpressure gate for `/api/graph/ingest`.
-    pub ingestion_backpressure: Option<Arc<gateway_execution::ingest::Backpressure>>,
-
-    /// Cron scheduler for scheduled agent triggers.
-    /// Optional because it requires async initialization with GatewayBus.
-    pub cron_scheduler: Option<Arc<CronScheduler>>,
-
-    /// Plugin manager for STDIO plugin lifecycle.
-    pub plugin_manager: Arc<gateway_bridge::PluginManager>,
-
-    /// Session archiver for offloading old transcripts to compressed files.
-    pub session_archiver: Option<Arc<SessionArchiver>>,
-
-    /// Sleep-time worker — triggers graph compaction/consolidation cycles.
-    /// Set by server.start() in Phase 4 Task 10; `None` until then.
-    pub sleep_time_worker: Option<Arc<gateway_memory::sleep::SleepTimeWorker>>,
-
-    /// Trait-routed compaction audit store. Wired in both
-    /// SQLite and SurrealDB modes — the maintenance worker writes
-    /// merge/prune/synthesis events here for Observatory display.
-    /// Backend-agnostic: the trait has default no-op impls so any
-    /// backend that doesn't care can inherit them.
-    pub compaction_store: Option<Arc<dyn zbot_stores_traits::CompactionStore>>,
-
-    /// Trait-routed belief store (Belief Network Phase B-5 HTTP surface).
-    /// `Some(...)` only when `execution.memory.beliefNetwork.enabled = true`
-    /// AND the knowledge DB is wired. The HTTP handlers in
-    /// `http::beliefs` and `http::belief_network` use this for 503-vs-200
-    /// disambiguation: a `None` here means the Belief Network is disabled,
-    /// not that the data is missing.
-    pub belief_store: Option<Arc<dyn zbot_stores_traits::BeliefStore>>,
-
-    /// Trait-routed belief-contradiction store (Belief Network Phase B-5
-    /// HTTP surface). Same opt-in gating as `belief_store`.
-    pub belief_contradiction_store: Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>>,
-
-    /// In-memory recorder of recent Belief Network worker stats (Phase
-    /// B-6). Always wired when the sleep-time worker is wired so the
-    /// HTTP layer can render the Observatory belief panel even when the
-    /// network itself is disabled (empty history + `enabled: false`).
-    pub belief_network_activity: Option<Arc<gateway_memory::RecentBeliefNetworkActivity>>,
-
-    /// Fallback-only model metadata registry.
-    pub model_registry: Arc<ModelRegistry>,
-
-    /// Embedding service — owns live EmbeddingClient, supports backend swap.
-    pub embedding_service: Arc<EmbeddingService>,
-
-    /// Vault paths for accessing configuration and data directories.
-    pub paths: SharedVaultPaths,
-
-    /// Vault root path. Prefer `paths` for child locations.
-    pub vault_dir: PathBuf,
-
-    /// LAN service advertiser. NoopAdvertiser when discovery is disabled.
-    pub advertiser: std::sync::Arc<dyn discovery::Advertiser>,
-
-    /// Active mDNS advertise handle. None until `start()` runs and only
-    /// populated when `network.exposeToLan = true`.
-    pub advertise_handle: std::sync::Arc<std::sync::Mutex<Option<discovery::AdvertiseHandle>>>,
-
     // --- W2 state groups (see state/groups.rs) ---------------------------
-    // Same Arcs as the flat fields; populated by `from_flat` at every
-    // construction site. Consumers migrate to these accessors in W4; the
-    // flat surface is deleted in W5.
+    // The single source of truth. Legacy flat access lives on as
+    // name-identical accessor methods (below) so call sites stay
+    // mechanical: `state.memory_store` -> `state.memory_store()`.
     pub stores: groups::StoresState,
     pub services: groups::ServicesState,
     pub execution: groups::ExecutionState,
@@ -452,124 +291,288 @@ impl AppState {
             advertiser,
             advertise_handle,
         } = flat;
-        let stores = groups::StoresState {
-            memory_store: memory_store.clone(),
-            goal_store: goal_store.clone(),
-            distillation_repo: distillation_repo.clone(),
-            episode_store: episode_store.clone(),
-            wiki_store: wiki_store.clone(),
-            procedure_store: procedure_store.clone(),
-            kg_episode_store: kg_episode_store.clone(),
-            kg_store: kg_store.clone(),
-            governance_health: governance_health.clone(),
-            compaction_store: compaction_store.clone(),
-            belief_store: belief_store.clone(),
-            belief_contradiction_store: belief_contradiction_store.clone(),
-            belief_network_activity: belief_network_activity.clone(),
-            messages: messages.clone(),
-            session_meta: session_meta.clone(),
-            checkpoints: checkpoints.clone(),
-            slim_logs: slim_logs.clone(),
-        };
-        let services = groups::ServicesState {
-            agents: agents.clone(),
-            skills: skills.clone(),
-            provider_service: provider_service.clone(),
-            mcp_service: mcp_service.clone(),
-            settings: settings.clone(),
-            log_service: log_service.clone(),
-            state_service: state_service.clone(),
-            model_registry: model_registry.clone(),
-            embedding_service: embedding_service.clone(),
-        };
-        let execution = groups::ExecutionState {
-            runtime: runtime.clone(),
-            event_bus: event_bus.clone(),
-            hook_registry: hook_registry.clone(),
-            delegation_registry: delegation_registry.clone(),
-            autonomy: autonomy.clone(),
-            trace_analytics: trace_analytics.clone(),
-            ingestion_queue: ingestion_queue.clone(),
-            ingestion_backpressure: ingestion_backpressure.clone(),
-        };
-        let transport = groups::TransportState {
-            durable_work_transport: durable_work_transport.clone(),
-            connector_registry: connector_registry.clone(),
-            bridge_registry: bridge_registry.clone(),
-            bridge_outbox: bridge_outbox.clone(),
-            bridge_bus: bridge_bus.clone(),
-            plugin_manager: plugin_manager.clone(),
-            advertiser: advertiser.clone(),
-            advertise_handle: advertise_handle.clone(),
-        };
-        let workers = groups::WorkersState {
-            durable_work_store: durable_work_store.clone(),
-            distiller: distiller.clone(),
-            cron_scheduler: cron_scheduler.clone(),
-            session_archiver: session_archiver.clone(),
-            sleep_time_worker: sleep_time_worker.clone(),
-        };
-        let vault = groups::VaultState {
-            paths: paths.clone(),
-            vault_dir: vault_dir.clone(),
-        };
         Self {
-            agents,
-            skills,
-            provider_service,
-            mcp_service,
-            runtime,
-            event_bus,
-            hook_registry,
-            delegation_registry,
-            messages,
-            session_meta,
-            checkpoints,
-            autonomy,
-            slim_logs,
-            trace_analytics,
-            settings,
-            log_service,
-            state_service,
-            durable_work_store,
-            durable_work_transport,
-            connector_registry,
-            bridge_registry,
-            bridge_outbox,
-            bridge_bus,
-            memory_store,
-            goal_store,
-            distillation_repo,
-            distiller,
-            episode_store,
-            wiki_store,
-            procedure_store,
-            kg_episode_store,
-            kg_store,
-            governance_health,
-            ingestion_queue,
-            ingestion_backpressure,
-            cron_scheduler,
-            plugin_manager,
-            session_archiver,
-            sleep_time_worker,
-            compaction_store,
-            belief_store,
-            belief_contradiction_store,
-            belief_network_activity,
-            model_registry,
-            embedding_service,
-            paths,
-            vault_dir,
-            advertiser,
-            advertise_handle,
-            stores,
-            services,
-            execution,
-            transport,
-            workers,
-            vault,
+            stores: groups::StoresState {
+                memory_store,
+                goal_store,
+                distillation_repo,
+                episode_store,
+                wiki_store,
+                procedure_store,
+                kg_episode_store,
+                kg_store,
+                governance_health,
+                compaction_store,
+                belief_store,
+                belief_contradiction_store,
+                belief_network_activity,
+                messages,
+                session_meta,
+                checkpoints,
+                slim_logs,
+            },
+            services: groups::ServicesState {
+                agents,
+                skills,
+                provider_service,
+                mcp_service,
+                settings,
+                log_service,
+                state_service,
+                model_registry,
+                embedding_service,
+            },
+            execution: groups::ExecutionState {
+                runtime,
+                event_bus,
+                hook_registry,
+                delegation_registry,
+                autonomy,
+                trace_analytics,
+                ingestion_queue,
+                ingestion_backpressure,
+            },
+            transport: groups::TransportState {
+                durable_work_transport,
+                connector_registry,
+                bridge_registry,
+                bridge_outbox,
+                bridge_bus,
+                plugin_manager,
+                advertiser,
+                advertise_handle,
+            },
+            workers: groups::WorkersState {
+                durable_work_store,
+                distiller,
+                cron_scheduler,
+                session_archiver,
+                sleep_time_worker,
+            },
+            vault: groups::VaultState { paths, vault_dir },
         }
+    }
+}
+
+// ===========================================================================
+// Legacy flat-surface accessors (W3)
+//
+// The 49 former public fields now read through the six groups. Method
+// names match the old field names exactly, so the call-site migration is
+// purely mechanical: `state.memory_store` -> `state.memory_store()`.
+// New code should depend on the group it needs (`state.stores`, ...).
+// ===========================================================================
+impl AppState {
+    // --- stores -------------------------------------------------------------
+    /// Memory-fact store — the single read/write surface for memory facts.
+    pub fn memory_store(&self) -> Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> {
+        self.stores.memory_store.clone()
+    }
+    /// Backend-neutral active goals (intent boost, goal tool).
+    pub fn goal_store(&self) -> Option<Arc<dyn zbot_stores_traits::GoalStore>> {
+        self.stores.goal_store.clone()
+    }
+    /// Distillation run bookkeeping repository.
+    pub fn distillation_repo(&self) -> Option<Arc<DistillationRepository>> {
+        self.stores.distillation_repo.clone()
+    }
+    /// Session episode store.
+    pub fn episode_store(&self) -> Option<Arc<dyn zbot_stores_traits::EpisodeStore>> {
+        self.stores.episode_store.clone()
+    }
+    /// Wiki store.
+    pub fn wiki_store(&self) -> Option<Arc<dyn zbot_stores_traits::WikiStore>> {
+        self.stores.wiki_store.clone()
+    }
+    /// Procedure store.
+    pub fn procedure_store(&self) -> Option<Arc<dyn zbot_stores_traits::ProcedureStore>> {
+        self.stores.procedure_store.clone()
+    }
+    /// kg-ingestion-episode store.
+    pub fn kg_episode_store(&self) -> Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>> {
+        self.stores.kg_episode_store.clone()
+    }
+    /// Knowledge-graph store.
+    pub fn kg_store(&self) -> Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>> {
+        self.stores.kg_store.clone()
+    }
+    /// Governance health snapshot for Observatory routes.
+    pub fn governance_health(&self) -> Option<GovernanceCapabilityHealth> {
+        self.stores.governance_health.clone()
+    }
+    /// Compaction audit store.
+    pub fn compaction_store(&self) -> Option<Arc<dyn zbot_stores_traits::CompactionStore>> {
+        self.stores.compaction_store.clone()
+    }
+    /// Belief store (Belief Network opt-in).
+    pub fn belief_store(&self) -> Option<Arc<dyn zbot_stores_traits::BeliefStore>> {
+        self.stores.belief_store.clone()
+    }
+    /// Belief-contradiction store (Belief Network opt-in).
+    pub fn belief_contradiction_store(
+        &self,
+    ) -> Option<Arc<dyn zbot_stores_traits::BeliefContradictionStore>> {
+        self.stores.belief_contradiction_store.clone()
+    }
+    /// Recent Belief Network worker activity recorder.
+    pub fn belief_network_activity(
+        &self,
+    ) -> Option<Arc<gateway_memory::RecentBeliefNetworkActivity>> {
+        self.stores.belief_network_activity.clone()
+    }
+    /// Append-only conversation log.
+    pub fn messages(&self) -> Arc<dyn zbot_conversation::MessageStore> {
+        self.stores.messages.clone()
+    }
+    /// Narrow session metadata reads.
+    pub fn session_meta(&self) -> Arc<dyn zbot_conversation::SessionMetaStore> {
+        self.stores.session_meta.clone()
+    }
+    /// Versioned agent-state checkpoints.
+    pub fn checkpoints(&self) -> Arc<dyn zbot_conversation::CheckpointStore> {
+        self.stores.checkpoints.clone()
+    }
+    /// Slim `execution_logs` (the `/api/logs` UI source).
+    pub fn slim_logs(&self) -> Arc<dyn zbot_trace::SlimLogStore> {
+        self.stores.slim_logs.clone()
+    }
+
+    // --- services -----------------------------------------------------------
+    /// Agent configuration service.
+    pub fn agents(&self) -> Arc<AgentService> {
+        self.services.agents.clone()
+    }
+    /// Skill service.
+    pub fn skills(&self) -> Arc<SkillService> {
+        self.services.skills.clone()
+    }
+    /// LLM provider service.
+    pub fn provider_service(&self) -> Arc<ProviderService> {
+        self.services.provider_service.clone()
+    }
+    /// MCP service.
+    pub fn mcp_service(&self) -> Arc<McpService> {
+        self.services.mcp_service.clone()
+    }
+    /// Settings service.
+    pub fn settings(&self) -> Arc<SettingsService> {
+        self.services.settings.clone()
+    }
+    /// Execution log service.
+    pub fn log_service(&self) -> Arc<LogService<DatabaseManager>> {
+        self.services.log_service.clone()
+    }
+    /// Execution state service.
+    pub fn state_service(&self) -> Arc<StateService<DatabaseManager>> {
+        self.services.state_service.clone()
+    }
+    /// Fallback model metadata registry.
+    pub fn model_registry(&self) -> Arc<ModelRegistry> {
+        self.services.model_registry.clone()
+    }
+    /// Embedding service (live client, backend swap).
+    pub fn embedding_service(&self) -> Arc<EmbeddingService> {
+        self.services.embedding_service.clone()
+    }
+
+    // --- execution ----------------------------------------------------------
+    /// Runtime service for agent execution.
+    pub fn runtime(&self) -> Arc<RuntimeService> {
+        self.execution.runtime.clone()
+    }
+    /// Event bus for broadcasting events.
+    pub fn event_bus(&self) -> Arc<EventBus> {
+        self.execution.event_bus.clone()
+    }
+    /// Inbound trigger hook registry.
+    pub fn hook_registry(&self) -> Option<Arc<HookRegistry>> {
+        self.execution.hook_registry.clone()
+    }
+    /// Delegation registry.
+    pub fn delegation_registry(&self) -> Arc<DelegationRegistry> {
+        self.execution.delegation_registry.clone()
+    }
+    /// Durable autonomy threads.
+    pub fn autonomy(&self) -> Arc<dyn zbot_conversation::AutonomyStore> {
+        self.execution.autonomy.clone()
+    }
+    /// Cross-session trace analytics.
+    pub fn trace_analytics(&self) -> Arc<zbot_trace::TraceAnalytics> {
+        self.execution.trace_analytics.clone()
+    }
+    /// Streaming ingestion queue.
+    pub fn ingestion_queue(&self) -> Option<Arc<gateway_execution::ingest::IngestionQueue>> {
+        self.execution.ingestion_queue.clone()
+    }
+    /// Ingestion backpressure gate.
+    pub fn ingestion_backpressure(&self) -> Option<Arc<gateway_execution::ingest::Backpressure>> {
+        self.execution.ingestion_backpressure.clone()
+    }
+
+    // --- transport ----------------------------------------------------------
+    /// Durable work wake path.
+    pub fn durable_work_transport(&self) -> Arc<gateway_bus::LocalWorkTransport> {
+        self.transport.durable_work_transport.clone()
+    }
+    /// External connector registry.
+    pub fn connector_registry(&self) -> Arc<ConnectorRegistry> {
+        self.transport.connector_registry.clone()
+    }
+    /// Worker WebSocket bridge registry.
+    pub fn bridge_registry(&self) -> Arc<gateway_bridge::BridgeRegistry> {
+        self.transport.bridge_registry.clone()
+    }
+    /// Bridge outbox.
+    pub fn bridge_outbox(&self) -> Arc<gateway_bridge::OutboxRepository> {
+        self.transport.bridge_outbox.clone()
+    }
+    /// Gateway bus (set during server start).
+    pub fn bridge_bus(&self) -> Option<Arc<dyn gateway_bus::GatewayBus>> {
+        self.transport.bridge_bus.clone()
+    }
+    /// STDIO plugin lifecycle manager.
+    pub fn plugin_manager(&self) -> Arc<gateway_bridge::PluginManager> {
+        self.transport.plugin_manager.clone()
+    }
+    /// LAN service advertiser.
+    pub fn advertiser(&self) -> Arc<dyn discovery::Advertiser> {
+        self.transport.advertiser.clone()
+    }
+    /// Active mDNS advertise handle.
+    pub fn advertise_handle(&self) -> Arc<std::sync::Mutex<Option<discovery::AdvertiseHandle>>> {
+        self.transport.advertise_handle.clone()
+    }
+
+    // --- workers ------------------------------------------------------------
+    /// Durable executable-work store.
+    pub fn durable_work_store(&self) -> Arc<dyn WorkStore> {
+        self.workers.durable_work_store.clone()
+    }
+    /// Session distiller.
+    pub fn distiller(&self) -> Option<Arc<distillation::SessionDistiller>> {
+        self.workers.distiller.clone()
+    }
+    /// Cron scheduler.
+    pub fn cron_scheduler(&self) -> Option<Arc<CronScheduler>> {
+        self.workers.cron_scheduler.clone()
+    }
+    /// Session archiver.
+    pub fn session_archiver(&self) -> Option<Arc<SessionArchiver>> {
+        self.workers.session_archiver.clone()
+    }
+    /// Sleep-time worker.
+    pub fn sleep_time_worker(&self) -> Option<Arc<gateway_memory::sleep::SleepTimeWorker>> {
+        self.workers.sleep_time_worker.clone()
+    }
+
+    // --- vault --------------------------------------------------------------
+    /// Vault paths.
+    pub fn paths(&self) -> SharedVaultPaths {
+        self.vault.paths.clone()
+    }
+    /// Vault root path.
+    pub fn vault_dir(&self) -> std::path::PathBuf {
+        self.vault.vault_dir.clone()
     }
 }
 
@@ -1455,9 +1458,9 @@ impl AppState {
         session_id: Option<String>,
         agent_id: Option<String>,
     ) -> agent_runtime::ContextCapabilityCatalog {
-        let tool_settings = self.settings.get_tool_settings().unwrap_or_default();
+        let tool_settings = self.settings().get_tool_settings().unwrap_or_default();
 
-        if let Some(runner) = self.runtime.runner() {
+        if let Some(runner) = self.runtime().runner() {
             return runner.context_capability_catalog(
                 actor_kind,
                 tool_settings,
@@ -1467,16 +1470,16 @@ impl AppState {
         }
 
         capability_catalog::ToolCatalog {
-            paths: self.paths.clone(),
-            state_service: self.state_service.clone(),
-            messages: self.messages.clone(),
-            model_registry: self.model_registry.clone(),
-            memory_store: self.memory_store.clone(),
-            kg_store: self.kg_store.clone(),
-            ingestion_queue: self.ingestion_queue.clone(),
-            kg_episode_store: self.kg_episode_store.clone(),
-            goal_store: self.goal_store.clone(),
-            procedure_store: self.procedure_store.clone(),
+            paths: self.paths().clone(),
+            state_service: self.state_service().clone(),
+            messages: self.messages().clone(),
+            model_registry: self.model_registry().clone(),
+            memory_store: self.memory_store().clone(),
+            kg_store: self.kg_store().clone(),
+            ingestion_queue: self.ingestion_queue().clone(),
+            kg_episode_store: self.kg_episode_store().clone(),
+            goal_store: self.goal_store().clone(),
+            procedure_store: self.procedure_store().clone(),
             connector_provider: self.connector_resource_provider(),
         }
         .build(actor_kind, tool_settings, session_id, agent_id)
@@ -1494,13 +1497,13 @@ impl AppState {
         let catalog = self.context_capability_catalog(actor_kind, session_id, agent_id);
         capability_catalog::ResourceCatalog {
             local: capability_catalog::LocalProviderStatus {
-                memory_store: self.memory_store.is_some(),
-                kg_store: self.kg_store.is_some(),
-                ingestion_queue: self.ingestion_queue.is_some(),
-                compaction_store: self.compaction_store.is_some(),
-                belief_store: self.belief_store.is_some(),
+                memory_store: self.memory_store().is_some(),
+                kg_store: self.kg_store().is_some(),
+                ingestion_queue: self.ingestion_queue().is_some(),
+                compaction_store: self.compaction_store().is_some(),
+                belief_store: self.belief_store().is_some(),
             },
-            mcp_service: self.mcp_service.clone(),
+            mcp_service: self.mcp_service().clone(),
             connector_provider: self.connector_resource_provider(),
         }
         .enrich(catalog)
@@ -1512,12 +1515,12 @@ impl AppState {
     ) -> Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> {
         let http_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> =
             Some(Arc::new(gateway_execution::GatewayResourceProvider::new(
-                self.connector_registry.clone(),
+                self.connector_registry().clone(),
             )));
         let bridge_provider: Option<Arc<dyn agent_primitives::ConnectorResourceProvider>> =
             Some(Arc::new(gateway_bridge::BridgeResourceProvider::new(
-                self.bridge_registry.clone(),
-                self.bridge_outbox.clone(),
+                self.bridge_registry().clone(),
+                self.bridge_outbox().clone(),
             )));
 
         Some(Arc::new(gateway_execution::CompositeResourceProvider::new(
@@ -1648,7 +1651,7 @@ impl AppState {
 
     /// Create with hook registry.
     pub fn with_hook_registry(mut self, hook_registry: Arc<HookRegistry>) -> Self {
-        self.hook_registry = Some(hook_registry);
+        self.execution.hook_registry = Some(hook_registry);
         self
     }
 
@@ -1663,11 +1666,11 @@ impl AppState {
     /// Semantic memory/knowledge indexing lives behind Engram. The old SQLite
     /// vec-index rebuild path is intentionally not a production fallback.
     pub async fn reconcile_embeddings_at_boot(&self) {
-        self.embedding_service.preflight().await;
+        self.embedding_service().preflight().await;
 
-        if self.embedding_service.needs_reindex() {
-            let current_dim = self.embedding_service.dimensions();
-            if let Err(e) = self.embedding_service.mark_indexed(current_dim) {
+        if self.embedding_service().needs_reindex() {
+            let current_dim = self.embedding_service().dimensions();
+            if let Err(e) = self.embedding_service().mark_indexed(current_dim) {
                 tracing::warn!("mark_indexed failed after embedding preflight: {e}");
             } else {
                 tracing::info!(
@@ -1677,7 +1680,7 @@ impl AppState {
             }
         }
 
-        let _handle = self.embedding_service.clone().start_health_loop();
+        let _handle = self.embedding_service().clone().start_health_loop();
         // JoinHandle intentionally dropped — loop lives for the process
         // lifetime; daemon shutdown drops the runtime.
     }
@@ -1688,7 +1691,7 @@ impl AppState {
     /// that can be delegated to.
     pub async fn seed_defaults(&self) {
         // Get default provider ID
-        let providers = self.provider_service.list().unwrap_or_default();
+        let providers = self.provider_service().list().unwrap_or_default();
         let selected = gateway_services::select_provider(&providers, None);
         let default_provider_id = selected
             .and_then(|p| p.id.clone())
@@ -1703,7 +1706,7 @@ impl AppState {
         let agent_template =
             gateway_templates::Templates::get("default_agents.json").map(|f| f.data.to_vec());
         if let Err(e) = self
-            .agents
+            .agents()
             .seed_default_agents(
                 &default_provider_id,
                 &default_model,
@@ -1730,7 +1733,7 @@ impl AppState {
         self.seed_default_policies().await;
 
         // Preload skills into cache
-        if let Err(e) = self.skills.preload().await {
+        if let Err(e) = self.skills().preload().await {
             tracing::warn!("Failed to preload skills: {}", e);
         }
 
@@ -1746,7 +1749,7 @@ impl AppState {
     async fn discover_and_start_plugins(&self) {
         tracing::info!("Discovering plugins...");
 
-        match self.plugin_manager.discover().await {
+        match self.plugin_manager().discover().await {
             Ok(discovered) => {
                 if discovered.is_empty() {
                     tracing::info!("No plugins discovered");
@@ -1758,7 +1761,7 @@ impl AppState {
                     );
 
                     // Start all enabled plugins
-                    self.plugin_manager.start_all().await;
+                    self.plugin_manager().start_all().await;
                 }
             }
             Err(e) => {
@@ -1769,7 +1772,7 @@ impl AppState {
 
     /// Seed default skills from bundled templates if skills directory is empty.
     fn seed_default_skills(&self) {
-        let skills_dir = self.paths.vault_dir().join("skills");
+        let skills_dir = self.paths().vault_dir().join("skills");
 
         // Only seed if skills dir is empty or doesn't exist
         let has_skills = skills_dir.exists()
@@ -1793,7 +1796,7 @@ impl AppState {
             }
 
             // path_str is like "skills/coding/SKILL.md" or "skills/yfinance-market-analysis/scripts/run.py"
-            let dest = self.paths.vault_dir().join(path_str);
+            let dest = self.paths().vault_dir().join(path_str);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
@@ -1843,9 +1846,9 @@ impl AppState {
             return;
         }
 
-        let cron_service = gateway_cron::CronService::new(self.paths.clone());
+        let cron_service = gateway_cron::CronService::new(self.paths().clone());
         let seeded =
-            seeded_defaults::seed_cron_with_registry(&self.paths, &cron_service, requests).await;
+            seeded_defaults::seed_cron_with_registry(&self.paths(), &cron_service, requests).await;
 
         if seeded > 0 {
             tracing::info!(seeded, "seed_default_cron: completed");
@@ -1856,7 +1859,8 @@ impl AppState {
     async fn seed_default_policies(&self) {
         // Route through the trait surface so Engram receives the same
         // default policy seed data as the rest of the runtime.
-        let memory_store = match &self.memory_store {
+        let memory_store_slot = self.memory_store();
+        let memory_store = match memory_store_slot.as_deref() {
             Some(s) => s,
             None => {
                 tracing::warn!(
@@ -1984,7 +1988,7 @@ impl AppState {
     /// Ensure the wards root exists. Its catalog is created safely by the
     /// ward tool on first use.
     fn ensure_wards_dir(&self) {
-        let wards_dir = self.vault_dir.join("wards");
+        let wards_dir = self.vault_dir().join("wards");
         if let Err(error) = agent_tools::ensure_ward_catalog(&wards_dir) {
             tracing::error!(%error, root = %wards_dir.display(), "failed to initialize wards root");
         }
@@ -2009,16 +2013,16 @@ mod tests {
     #[test]
     fn minimal_app_state_wires_required_components() {
         let (_dir, state) = make_temp_state();
-        assert!(state.hook_registry.is_none());
-        assert!(state.cron_scheduler.is_none());
-        assert!(state.session_archiver.is_none());
-        assert!(state.bridge_bus.is_none());
-        assert!(state.memory_store.is_some());
-        assert!(state.episode_store.is_some());
-        assert!(state.wiki_store.is_some());
-        assert!(state.procedure_store.is_some());
-        assert!(state.kg_store.is_some());
-        assert!(state.kg_episode_store.is_some());
+        assert!(state.hook_registry().is_none());
+        assert!(state.cron_scheduler().is_none());
+        assert!(state.session_archiver().is_none());
+        assert!(state.bridge_bus().is_none());
+        assert!(state.memory_store().is_some());
+        assert!(state.episode_store().is_some());
+        assert!(state.wiki_store().is_some());
+        assert!(state.procedure_store().is_some());
+        assert!(state.kg_store().is_some());
+        assert!(state.kg_episode_store().is_some());
     }
 
     #[test]
@@ -2057,14 +2061,14 @@ mod tests {
         let event_bus = Arc::new(EventBus::new());
         let registry = Arc::new(HookRegistry::new(event_bus));
         let state = state.with_hook_registry(registry);
-        assert!(state.hook_registry.is_some());
+        assert!(state.hook_registry().is_some());
     }
 
     #[test]
     fn ensure_wards_dir_creates_only_plain_root_catalog() {
         let (_dir, state) = make_temp_state();
         state.ensure_wards_dir();
-        let wards = state.vault_dir.join("wards");
+        let wards = state.vault_dir().join("wards");
         assert_eq!(std::fs::read_dir(&wards).unwrap().count(), 1);
         assert_eq!(
             std::fs::read_to_string(wards.join("index.md")).unwrap(),
@@ -2076,7 +2080,7 @@ mod tests {
     fn ensure_wards_dir_is_idempotent_and_preserves_root_index() {
         let (_dir, state) = make_temp_state();
         state.ensure_wards_dir();
-        let index = state.vault_dir.join("wards").join("index.md");
+        let index = state.vault_dir().join("wards").join("index.md");
 
         std::fs::write(&index, "# My catalog\n").unwrap();
         state.ensure_wards_dir();
@@ -2088,14 +2092,14 @@ mod tests {
         let (_dir, state) = make_temp_state();
         state.ensure_wards_dir();
         state.ensure_wards_dir();
-        assert!(!state.vault_dir.join("wards/scratch").exists());
-        assert!(!state.vault_dir.join("wards/wiki").exists());
+        assert!(!state.vault_dir().join("wards/scratch").exists());
+        assert!(!state.vault_dir().join("wards/wiki").exists());
     }
 
     #[test]
     fn seed_default_skills_is_no_op_when_skills_dir_has_content() {
         let (_dir, state) = make_temp_state();
-        let skills_dir = state.paths.vault_dir().join("skills");
+        let skills_dir = state.paths().vault_dir().join("skills");
         std::fs::create_dir_all(&skills_dir).unwrap();
         std::fs::write(skills_dir.join("sentinel.md"), "user").unwrap();
 
@@ -2106,7 +2110,7 @@ mod tests {
     #[test]
     fn seed_default_skills_populates_empty_dir_from_templates() {
         let (_dir, state) = make_temp_state();
-        let skills_dir = state.paths.vault_dir().join("skills");
+        let skills_dir = state.paths().vault_dir().join("skills");
         if skills_dir.exists() {
             std::fs::remove_dir_all(&skills_dir).unwrap();
         }
@@ -2119,7 +2123,7 @@ mod tests {
         let (_dir, state) = make_temp_state();
         state.seed_default_cron().await;
 
-        let registry_path = state.paths.seeded_defaults();
+        let registry_path = state.paths().seeded_defaults();
         assert!(registry_path.exists());
     }
 
@@ -2148,9 +2152,9 @@ mod tests {
         let (_dir, state) = make_temp_state();
         state.ensure_runtime_environments().await;
 
-        assert!(state.vault_dir.join("wards").join("index.md").is_file());
-        assert!(!state.vault_dir.join("wards").join("scratch").exists());
-        assert!(!state.vault_dir.join("wards").join(".node_env").exists());
+        assert!(state.vault_dir().join("wards").join("index.md").is_file());
+        assert!(!state.vault_dir().join("wards").join("scratch").exists());
+        assert!(!state.vault_dir().join("wards").join(".node_env").exists());
     }
 
     #[tokio::test]
@@ -2163,15 +2167,15 @@ mod tests {
     async fn new_app_state_initialises_full_constructor_path() {
         let dir = TempDir::new().unwrap();
         let state = AppState::new(dir.path().to_path_buf());
-        assert!(state.memory_store.is_some());
-        assert!(state.kg_store.is_some());
-        assert!(state.distillation_repo.is_some());
-        assert!(state.distiller.is_some());
-        assert!(state.session_archiver.is_some());
-        assert!(state.episode_store.is_some());
-        assert!(state.kg_episode_store.is_some());
-        assert!(state.cron_scheduler.is_none());
-        assert!(state.bridge_bus.is_none());
+        assert!(state.memory_store().is_some());
+        assert!(state.kg_store().is_some());
+        assert!(state.distillation_repo().is_some());
+        assert!(state.distiller().is_some());
+        assert!(state.session_archiver().is_some());
+        assert!(state.episode_store().is_some());
+        assert!(state.kg_episode_store().is_some());
+        assert!(state.cron_scheduler().is_none());
+        assert!(state.bridge_bus().is_none());
     }
 
     #[tokio::test]
@@ -2197,11 +2201,11 @@ mod tests {
 
         let state = AppState::new(dir.path().to_path_buf());
 
-        assert!(state.memory_store.is_some());
-        assert!(state.kg_store.is_some());
-        assert!(state.episode_store.is_some());
-        assert!(state.wiki_store.is_some());
-        assert!(state.procedure_store.is_some());
+        assert!(state.memory_store().is_some());
+        assert!(state.kg_store().is_some());
+        assert!(state.episode_store().is_some());
+        assert!(state.wiki_store().is_some());
+        assert!(state.procedure_store().is_some());
         assert!(!dir.path().join("data").join("knowledge.db").exists());
         assert!(dir.path().join("data").join("engram").exists());
     }
@@ -2236,10 +2240,10 @@ mod tests {
             paths.clone(),
         );
 
-        assert_eq!(state.vault_dir, *paths.vault_dir());
-        assert!(state.memory_store.is_some());
-        assert!(state.episode_store.is_some());
-        assert!(state.wiki_store.is_some());
-        assert!(state.procedure_store.is_some());
+        assert_eq!(state.vault_dir(), *paths.vault_dir());
+        assert!(state.memory_store().is_some());
+        assert!(state.episode_store().is_some());
+        assert!(state.wiki_store().is_some());
+        assert!(state.procedure_store().is_some());
     }
 }

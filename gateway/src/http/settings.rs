@@ -22,7 +22,7 @@ pub struct SettingsResponse<T> {
 pub async fn get_tool_settings(
     State(state): State<AppState>,
 ) -> Result<Json<SettingsResponse<ToolSettings>>, (StatusCode, Json<SettingsResponse<()>>)> {
-    match state.settings.get_tool_settings() {
+    match state.settings().get_tool_settings() {
         Ok(settings) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(settings),
@@ -72,7 +72,7 @@ pub async fn update_tool_settings(
 ) -> Result<Json<SettingsResponse<ToolSettings>>, (StatusCode, Json<SettingsResponse<()>>)> {
     let settings: ToolSettings = request.into();
 
-    match state.settings.update_tool_settings(settings.clone()) {
+    match state.settings().update_tool_settings(settings.clone()) {
         Ok(()) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(settings),
@@ -111,7 +111,7 @@ pub async fn get_presentation_settings(
     (StatusCode, Json<SettingsResponse<()>>),
 > {
     state
-        .settings
+        .settings()
         .get_presentation_settings()
         .map(|settings| {
             Json(SettingsResponse {
@@ -138,11 +138,11 @@ pub async fn update_presentation_settings(
         persist_surfaces: request.persist_surfaces,
     };
     state
-        .settings
+        .settings()
         .update_presentation_settings(settings)
         .map_err(internal_settings_error)?;
     state
-        .state_service
+        .state_service()
         .set_surface_persistence_enabled(settings.persist_surfaces);
     Ok(Json(SettingsResponse {
         success: true,
@@ -186,7 +186,7 @@ pub struct LogSettingsResponse {
 pub async fn get_log_settings(
     State(state): State<AppState>,
 ) -> Result<Json<SettingsResponse<LogSettingsResponse>>, (StatusCode, Json<SettingsResponse<()>>)> {
-    match state.settings.get_log_settings() {
+    match state.settings().get_log_settings() {
         Ok(settings) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(LogSettingsResponse {
@@ -269,7 +269,7 @@ pub async fn update_log_settings(
 ) -> Result<Json<SettingsResponse<LogSettingsResponse>>, (StatusCode, Json<SettingsResponse<()>>)> {
     let settings: LogSettings = request.into();
 
-    match state.settings.update_log_settings(settings.clone()) {
+    match state.settings().update_log_settings(settings.clone()) {
         Ok(()) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(LogSettingsResponse {
@@ -310,7 +310,7 @@ pub async fn get_execution_settings(
     Json<SettingsResponse<ExecutionSettingsResponse>>,
     (StatusCode, Json<SettingsResponse<()>>),
 > {
-    match state.settings.get_execution_settings() {
+    match state.settings().get_execution_settings() {
         Ok(settings) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(ExecutionSettingsResponse {
@@ -433,12 +433,15 @@ pub async fn update_execution_settings(
     // state (e.g. the persistent chat session IDs). If no settings exist yet,
     // merge into defaults — the fresh chat config will remain empty and
     // `/api/chat/init` will lazily populate it.
-    let existing = state.settings.get_execution_settings().unwrap_or_default();
+    let existing = state
+        .settings()
+        .get_execution_settings()
+        .unwrap_or_default();
     let settings: ExecutionSettings = request.merge_into(&existing);
 
     // Update SOUL.md if agent_name is provided
     if let Some(ref name) = settings.agent_name {
-        let soul_path = state.paths.soul();
+        let soul_path = state.paths().soul();
         let current = std::fs::read_to_string(&soul_path).unwrap_or_default();
         // Replace the first line "You are **OldName**" with the new name
         let updated = if let Some(rest) = current.strip_prefix("You are **") {
@@ -455,7 +458,7 @@ pub async fn update_execution_settings(
         }
     }
 
-    match state.settings.update_execution_settings(settings.clone()) {
+    match state.settings().update_execution_settings(settings.clone()) {
         Ok(()) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(ExecutionSettingsResponse {
@@ -486,7 +489,7 @@ pub async fn get_network_settings(
     Json<SettingsResponse<discovery::DiscoveryConfig>>,
     (StatusCode, Json<SettingsResponse<()>>),
 > {
-    match state.settings.load() {
+    match state.settings().load() {
         Ok(settings) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(settings.network),
@@ -514,7 +517,7 @@ pub async fn update_network_settings(
     Json<SettingsResponse<discovery::DiscoveryConfig>>,
     (StatusCode, Json<SettingsResponse<()>>),
 > {
-    let mut current = match state.settings.load() {
+    let mut current = match state.settings().load() {
         Ok(s) => s,
         Err(e) => {
             return Err((
@@ -528,7 +531,7 @@ pub async fn update_network_settings(
         }
     };
     current.network = new_cfg.clone();
-    match state.settings.save(&current) {
+    match state.settings().save(&current) {
         Ok(()) => Ok(Json(SettingsResponse {
             success: true,
             data: Some(new_cfg),

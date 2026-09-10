@@ -46,7 +46,7 @@ pub async fn query_traces(
                     .into_response();
             };
 
-            match state.trace_analytics.sessions_with_failed_tool(tool) {
+            match state.trace_analytics().sessions_with_failed_tool(tool) {
                 Ok(sessions) => Json(TraceQueryResponse {
                     rows: sessions
                         .into_iter()

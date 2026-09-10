@@ -87,12 +87,12 @@ pub async fn list_session_artifacts(
     }
 
     let artifacts = if query.goal_artifacts_only {
-        state.state_service.list_goal_artifacts_by_session(
+        state.state_service().list_goal_artifacts_by_session(
             &session_id,
             query.limit.unwrap_or(MAX_GOAL_ARTIFACTS_PER_SESSION),
         )
     } else {
-        state.state_service.list_artifacts_by_session(&session_id)
+        state.state_service().list_artifacts_by_session(&session_id)
     }
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
@@ -128,7 +128,7 @@ pub async fn serve_artifact_content(
         })?;
 
     let artifact = state
-        .state_service
+        .state_service()
         .get_artifact(&artifact_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found".to_string()))?;
@@ -142,7 +142,7 @@ pub async fn serve_artifact_content(
         .as_deref()
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found".to_string()))?;
     let validated = gateway_execution::artifacts::open_persisted_artifact(
-        &state.vault_dir,
+        &state.vault_dir(),
         ward_id,
         FsPath::new(&artifact.file_path),
     )
@@ -233,7 +233,7 @@ mod tests {
 
     fn create_session(state: &AppState) -> execution_state::Session {
         state
-            .state_service
+            .state_service()
             .create_session("root")
             .expect("create session")
             .0
@@ -260,7 +260,7 @@ mod tests {
         artifact.file_type = Some("txt".to_string());
         artifact.is_goal_artifact = goal;
         state
-            .state_service
+            .state_service()
             .create_artifact(&artifact)
             .expect("store artifact");
         artifact

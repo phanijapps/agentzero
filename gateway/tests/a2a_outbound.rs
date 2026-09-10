@@ -78,8 +78,11 @@ async fn durable_outbound_dispatch_returns_immediately_and_delivers_attributed_r
         })
         .unwrap();
 
-    let (session, execution) = state.state_service.create_session("root").unwrap();
-    state.state_service.start_execution(&execution.id).unwrap();
+    let (session, execution) = state.state_service().create_session("root").unwrap();
+    state
+        .state_service()
+        .start_execution(&execution.id)
+        .unwrap();
     let context = A2aDelegationContext {
         actor_kind: LocalA2aActorKind::Root,
         agent_id: "root".to_owned(),
@@ -90,9 +93,9 @@ async fn durable_outbound_dispatch_returns_immediately_and_delivers_attributed_r
     };
     let service = GatewayA2aDelegationService::new(
         dir.path(),
-        state.durable_work_store.clone(),
-        state.durable_work_transport.clone(),
-        state.state_service.clone(),
+        state.durable_work_store().clone(),
+        state.durable_work_transport().clone(),
+        state.state_service().clone(),
     );
 
     let receipt = service
@@ -106,7 +109,7 @@ async fn durable_outbound_dispatch_returns_immediately_and_delivers_attributed_r
     assert_eq!(receipt, duplicate);
     assert_eq!(
         state
-            .durable_work_store
+            .durable_work_store()
             .get(&receipt.task_id)
             .unwrap()
             .unwrap()
@@ -121,23 +124,23 @@ async fn durable_outbound_dispatch_returns_immediately_and_delivers_attributed_r
     let handlers: Vec<Arc<dyn WorkHandler>> = vec![
         Arc::new(A2aOutboundDispatchHandler::new(
             dir.path(),
-            state.durable_work_store.clone(),
-            state.durable_work_transport.clone(),
+            state.durable_work_store().clone(),
+            state.durable_work_transport().clone(),
             remote.clone(),
         )),
         Arc::new(A2aOutboundPollHandler::new(
             dir.path(),
             remote.clone(),
             steering,
-            state.state_service.clone(),
-            state.messages.clone(),
-            state.event_bus.clone(),
+            state.state_service().clone(),
+            state.messages().clone(),
+            state.event_bus().clone(),
         )),
     ];
     let registry = WorkHandlerRegistry::from_handlers(handlers).unwrap();
     let worker = DurableWorkWorker::new(
-        state.durable_work_store.clone(),
-        state.durable_work_transport.clone(),
+        state.durable_work_store().clone(),
+        state.durable_work_transport().clone(),
         registry,
         WorkWorkerConfig::new(
             gateway::tasks::durable_agent::AGENT_TASK_TARGET,
@@ -177,7 +180,7 @@ async fn durable_outbound_dispatch_returns_immediately_and_delivers_attributed_r
     timeout(Duration::from_secs(3), async {
         loop {
             if state
-                .durable_work_store
+                .durable_work_store()
                 .get(&receipt.task_id)
                 .unwrap()
                 .is_some_and(|item| item.status() == WorkStatus::Completed)
@@ -208,13 +211,16 @@ async fn completed_origin_persists_result_and_schedules_safe_continuation() {
         })
         .unwrap();
 
-    let (session, execution) = state.state_service.create_session("root").unwrap();
-    state.state_service.start_execution(&execution.id).unwrap();
+    let (session, execution) = state.state_service().create_session("root").unwrap();
+    state
+        .state_service()
+        .start_execution(&execution.id)
+        .unwrap();
     let service = GatewayA2aDelegationService::new(
         dir.path(),
-        state.durable_work_store.clone(),
-        state.durable_work_transport.clone(),
-        state.state_service.clone(),
+        state.durable_work_store().clone(),
+        state.durable_work_transport().clone(),
+        state.state_service().clone(),
     );
     let receipt = service
         .delegate(
@@ -232,33 +238,33 @@ async fn completed_origin_persists_result_and_schedules_safe_continuation() {
         .await
         .unwrap();
     state
-        .state_service
+        .state_service()
         .complete_execution(&execution.id)
         .unwrap();
 
     let remote = Arc::new(FakeTransport::default());
     let steering = Arc::new(agent_runtime::SteeringRegistry::new());
-    let mut events = state.event_bus.subscribe_all();
+    let mut events = state.event_bus().subscribe_all();
     let handlers: Vec<Arc<dyn WorkHandler>> = vec![
         Arc::new(A2aOutboundDispatchHandler::new(
             dir.path(),
-            state.durable_work_store.clone(),
-            state.durable_work_transport.clone(),
+            state.durable_work_store().clone(),
+            state.durable_work_transport().clone(),
             remote.clone(),
         )),
         Arc::new(A2aOutboundPollHandler::new(
             dir.path(),
             remote,
             steering,
-            state.state_service.clone(),
-            state.messages.clone(),
-            state.event_bus.clone(),
+            state.state_service().clone(),
+            state.messages().clone(),
+            state.event_bus().clone(),
         )),
     ];
     let registry = WorkHandlerRegistry::from_handlers(handlers).unwrap();
     let worker = DurableWorkWorker::new(
-        state.durable_work_store.clone(),
-        state.durable_work_transport.clone(),
+        state.durable_work_store().clone(),
+        state.durable_work_transport().clone(),
         registry,
         WorkWorkerConfig::new(
             gateway::tasks::durable_agent::AGENT_TASK_TARGET,
@@ -292,7 +298,7 @@ async fn completed_origin_persists_result_and_schedules_safe_continuation() {
     .await
     .expect("continuation event timeout");
     assert_eq!(continuation, (session.id.clone(), execution.id.clone()));
-    let persisted = state.messages.replay(&session.id, None, 50).unwrap();
+    let persisted = state.messages().replay(&session.id, None, 50).unwrap();
     assert!(persisted.iter().any(|message| {
         message.role == "system"
             && message.content.contains("REMOTE ZBOT RESULT")
@@ -300,7 +306,7 @@ async fn completed_origin_persists_result_and_schedules_safe_continuation() {
     }));
     assert!(
         state
-            .state_service
+            .state_service()
             .get_session(&session.id)
             .unwrap()
             .unwrap()

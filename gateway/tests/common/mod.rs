@@ -42,8 +42,8 @@ pub fn make_state() -> (TempDir, AppState) {
 pub fn setup() -> (TestServer, TempDir, AppState) {
     let (dir, state) = make_state();
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let router = create_http_router(GatewayConfig::default(), state.clone(), ws_handler);
     let server = TestServer::new(router).expect("test server");
@@ -54,10 +54,10 @@ pub fn setup() -> (TestServer, TempDir, AppState) {
 /// insert execution rows before calling the API).
 pub fn setup_with_state_service() -> (TestServer, Arc<StateService<DatabaseManager>>, TempDir) {
     let (dir, state) = make_state();
-    let state_service = state.state_service.clone();
+    let state_service = state.state_service().clone();
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let router = create_http_router(GatewayConfig::default(), state, ws_handler);
     let server = TestServer::new(router).expect("test server");
@@ -71,7 +71,7 @@ pub fn setup_with_state_service() -> (TestServer, Arc<StateService<DatabaseManag
 pub fn upsert_wiki_article(state: &AppState, article: &WikiArticle) {
     futures::executor::block_on(
         state
-            .wiki_store
+            .wiki_store()
             .as_ref()
             .expect("wiki_store")
             .upsert_article(article.clone(), None),
@@ -82,7 +82,7 @@ pub fn upsert_wiki_article(state: &AppState, article: &WikiArticle) {
 pub fn upsert_procedure(state: &AppState, procedure: &Procedure) {
     futures::executor::block_on(
         state
-            .procedure_store
+            .procedure_store()
             .as_ref()
             .expect("procedure_store")
             .upsert_procedure(procedure.clone(), None),
@@ -93,7 +93,7 @@ pub fn upsert_procedure(state: &AppState, procedure: &Procedure) {
 pub fn insert_episode(state: &AppState, episode: &SessionEpisode) {
     futures::executor::block_on(
         state
-            .episode_store
+            .episode_store()
             .as_ref()
             .expect("episode_store")
             .insert_episode(episode.clone(), None),

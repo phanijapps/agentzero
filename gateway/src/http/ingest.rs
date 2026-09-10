@@ -43,18 +43,18 @@ pub async fn ingest(
     State(state): State<AppState>,
     Json(req): Json<IngestRequest>,
 ) -> Result<(StatusCode, Json<IngestResponse>), (StatusCode, String)> {
-    let queue = state.ingestion_queue.clone().ok_or((
+    let queue = state.ingestion_queue().clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "ingestion queue not initialized".into(),
     ))?;
     // Phase B: prefer the trait-routed kg_episode_store (wired in both
     // backends). Falls back to the concrete kg_episode_repo only when
     // only that is available (legacy / minimal AppStates).
-    let episode_store = state.kg_episode_store.clone().ok_or((
+    let episode_store = state.kg_episode_store().clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "kg episode store missing".into(),
     ))?;
-    let backpressure = state.ingestion_backpressure.clone().ok_or((
+    let backpressure = state.ingestion_backpressure().clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "backpressure not initialized".into(),
     ))?;
@@ -128,7 +128,7 @@ pub async fn progress(
     Path(source_id): Path<String>,
 ) -> Result<Json<ProgressResponse>, (StatusCode, String)> {
     // Phase B: trait-routed (works on both backends).
-    let store = state.kg_episode_store.clone().ok_or((
+    let store = state.kg_episode_store().clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "kg episode store missing".into(),
     ))?;

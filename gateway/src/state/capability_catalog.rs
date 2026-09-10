@@ -542,6 +542,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = crate::state::AppState::minimal(dir.path().to_path_buf());
         let goals = state
+            .stores
             .goal_store
             .take()
             .expect("minimal state wires Engram goals");
@@ -549,11 +550,11 @@ mod tests {
         assert!(!has_goal(
             &state.context_capability_catalog(actor, None, None)
         ));
-        state.goal_store = Some(goals);
+        state.stores.goal_store = Some(goals);
         assert!(has_goal(
             &state.context_capability_catalog(actor, None, None)
         ));
-        state.goal_store = None;
+        state.stores.goal_store = None;
         assert!(!has_goal(
             &state.context_capability_catalog(actor, None, None)
         ));
@@ -563,24 +564,24 @@ mod tests {
     async fn catalog_prefers_installed_runner_over_fallback_stores() {
         let dir = tempfile::tempdir().unwrap();
         let mut state = crate::state::AppState::minimal(dir.path().to_path_buf());
-        assert!(state.goal_store.is_some());
+        assert!(state.goal_store().is_some());
         let actor = gateway_execution::invoke::RuntimeActorKind::Root;
         assert!(has_goal(
             &state.context_capability_catalog(actor, None, None)
         ));
         // The runner has no goal adapter; only the fallback AppState has one.
-        state.runtime = Arc::new(crate::services::RuntimeService::with_runner(
-            state.event_bus.clone(),
-            state.agents.clone(),
-            state.provider_service.clone(),
-            state.paths.clone(),
-            state.messages.clone(),
-            state.session_meta.clone(),
-            state.checkpoints.clone(),
-            state.mcp_service.clone(),
-            state.skills.clone(),
-            state.log_service.clone(),
-            state.state_service.clone(),
+        state.execution.runtime = Arc::new(crate::services::RuntimeService::with_runner(
+            state.event_bus().clone(),
+            state.agents().clone(),
+            state.provider_service().clone(),
+            state.paths().clone(),
+            state.messages().clone(),
+            state.session_meta().clone(),
+            state.checkpoints().clone(),
+            state.mcp_service().clone(),
+            state.skills().clone(),
+            state.log_service().clone(),
+            state.state_service().clone(),
         ));
         let catalog =
             state.context_capability_catalog(actor, Some("session".into()), Some("root".into()));
@@ -663,7 +664,7 @@ mod tests {
                     compaction_store: false,
                     belief_store: false,
                 },
-                mcp_service: state.mcp_service.clone(),
+                mcp_service: state.mcp_service().clone(),
                 connector_provider: Some(provider.clone()),
             }
             .enrich(base)

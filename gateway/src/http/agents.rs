@@ -154,7 +154,7 @@ fn resolve_updated_max_input_tokens(
 
 /// GET /api/agents - List all agents.
 pub async fn list_agents(State(state): State<AppState>) -> Json<Vec<AgentResponse>> {
-    match state.agents.list().await {
+    match state.agents().list().await {
         Ok(agents) => Json(agents.into_iter().map(AgentResponse::from).collect()),
         Err(e) => {
             tracing::error!("Failed to list agents: {}", e);
@@ -201,7 +201,7 @@ pub async fn create_agent(
         created_at: None,
     };
 
-    match state.agents.create(agent).await {
+    match state.agents().create(agent).await {
         Ok(created) => Ok(Json(AgentResponse::from(created))),
         Err(e) => {
             tracing::error!("Failed to create agent: {}", e);
@@ -215,7 +215,7 @@ pub async fn get_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<AgentResponse>, StatusCode> {
-    match state.agents.get(&id).await {
+    match state.agents().get(&id).await {
         Ok(agent) => Ok(Json(AgentResponse::from(agent))),
         Err(e) => {
             tracing::warn!("Agent not found: {} - {}", id, e);
@@ -231,7 +231,7 @@ pub async fn update_agent(
     Json(request): Json<UpdateAgentRequest>,
 ) -> Result<Json<AgentResponse>, StatusCode> {
     // Get existing agent
-    let existing = match state.agents.get(&id).await {
+    let existing = match state.agents().get(&id).await {
         Ok(a) => a,
         Err(_) => return Err(StatusCode::NOT_FOUND),
     };
@@ -270,7 +270,7 @@ pub async fn update_agent(
         created_at: existing.created_at,
     };
 
-    match state.agents.update(&id, updated).await {
+    match state.agents().update(&id, updated).await {
         Ok(agent) => Ok(Json(AgentResponse::from(agent))),
         Err(e) => {
             tracing::error!("Failed to update agent: {}", e);
@@ -281,7 +281,7 @@ pub async fn update_agent(
 
 /// DELETE /api/agents/:id - Delete an agent.
 pub async fn delete_agent(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
-    match state.agents.delete(&id).await {
+    match state.agents().delete(&id).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::warn!("Failed to delete agent: {} - {}", id, e);

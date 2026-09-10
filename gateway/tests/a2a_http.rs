@@ -53,8 +53,8 @@ fn setup_enabled() -> (TestServer, tempfile::TempDir, String, String, AppState) 
         .exposed()
         .to_string();
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let router = create_http_router(
         GatewayConfig {
@@ -73,8 +73,8 @@ fn setup_enabled() -> (TestServer, tempfile::TempDir, String, String, AppState) 
 async fn a2a_is_default_off_and_agent_card_is_public_when_enabled() {
     let (dir, state) = make_state();
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state.event_bus.clone(),
-        state.runtime.clone(),
+        state.event_bus().clone(),
+        state.runtime().clone(),
     ));
     let disabled = TestServer::new(create_http_router(
         GatewayConfig::default(),
@@ -191,8 +191,8 @@ async fn hardened_http_client_interoperates_with_the_real_a2a_router() {
         .exposed()
         .to_owned();
     let ws_handler = Arc::new(WebSocketHandler::new(
-        state_b.event_bus.clone(),
-        state_b.runtime.clone(),
+        state_b.event_bus().clone(),
+        state_b.runtime().clone(),
     ));
     let router = create_http_router(
         GatewayConfig {
@@ -388,7 +388,7 @@ async fn completed_task_projects_the_canonical_assistant_artifact() {
     let task_id = accepted_value["task"]["id"].as_str().unwrap();
 
     let leased = state
-        .durable_work_store
+        .durable_work_store()
         .claim_next(
             gateway::tasks::durable_agent::AGENT_TASK_TARGET,
             "test-worker",
@@ -405,16 +405,16 @@ async fn completed_task_projects_the_canonical_assistant_artifact() {
         execution_state::TriggerSource::Web,
     )
     .unwrap();
-    state.state_service.create_session_from(&session).unwrap();
+    state.state_service().create_session_from(&session).unwrap();
     let execution = execution_state::AgentExecution::new_root_with_id(
         &payload.execution_id,
         &payload.session_id,
         &payload.target_agent_id,
     )
     .unwrap();
-    state.state_service.create_execution(&execution).unwrap();
+    state.state_service().create_execution(&execution).unwrap();
     state
-        .messages
+        .messages()
         .append(&zbot_conversation::Message {
             id: format!("msg-assistant-{}", uuid::Uuid::new_v4()),
             execution_id: Some(payload.execution_id.clone()),
@@ -429,7 +429,7 @@ async fn completed_task_projects_the_canonical_assistant_artifact() {
         })
         .unwrap();
     state
-        .durable_work_store
+        .durable_work_store()
         .complete(
             leased.envelope().id(),
             "test-worker",

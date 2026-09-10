@@ -245,7 +245,7 @@ pub async fn get_belief_detail(
 
     // Pull contradictions involving this belief. Best-effort: if the
     // contradiction store is missing the detail view still renders.
-    let contradictions = match &state.belief_contradiction_store {
+    let contradictions = match &state.belief_contradiction_store() {
         Some(cs) => cs
             .for_belief(&belief.id)
             .await
@@ -316,18 +316,28 @@ pub async fn resolve_contradiction(
 
 fn require_belief_store(
     state: &AppState,
-) -> Result<&std::sync::Arc<dyn zbot_stores_traits::BeliefStore>, (StatusCode, Json<ErrorResponse>)>
+) -> Result<std::sync::Arc<dyn zbot_stores_traits::BeliefStore>, (StatusCode, Json<ErrorResponse>)>
 {
-    super::require(&state.belief_store, BELIEF_DISABLED_MSG)
+    state.belief_store().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(BELIEF_DISABLED_MSG)),
+        )
+    })
 }
 
 fn require_contradiction_store(
     state: &AppState,
 ) -> Result<
-    &std::sync::Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
+    std::sync::Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
     (StatusCode, Json<ErrorResponse>),
 > {
-    super::require(&state.belief_contradiction_store, BELIEF_DISABLED_MSG)
+    state.belief_contradiction_store().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(BELIEF_DISABLED_MSG)),
+        )
+    })
 }
 
 fn internal(e: impl std::fmt::Display) -> (StatusCode, Json<ErrorResponse>) {
@@ -364,7 +374,7 @@ fn parse_resolution(s: &str) -> Result<Resolution, (StatusCode, Json<ErrorRespon
 /// fact is fetched independently; failures are swallowed so the detail
 /// view still renders for callers when one fact has been deleted.
 async fn resolve_source_facts(state: &AppState, fact_ids: &[String]) -> Vec<SourceFactSummary> {
-    let Some(memory_store) = state.memory_store.as_ref() else {
+    let Some(memory_store) = state.memory_store() else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(fact_ids.len());
@@ -602,7 +612,7 @@ mod tests {
     fn state_with_stub_beliefs(beliefs: Vec<Belief>) -> (TempDir, AppState) {
         let (dir, mut state) = make_state();
         let store: Arc<dyn BeliefStore> = Arc::new(StubBeliefStore { beliefs });
-        state.belief_store = Some(store);
+        state.stores.belief_store = Some(store);
         (dir, state)
     }
 

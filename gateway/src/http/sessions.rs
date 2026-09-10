@@ -61,7 +61,8 @@ pub async fn archive_sessions(
     State(state): State<AppState>,
     Json(body): Json<ArchiveRequest>,
 ) -> Result<Json<ArchiveResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let archiver = match &state.session_archiver {
+    let archiver_slot = state.session_archiver();
+    let archiver = match archiver_slot.as_deref() {
         Some(a) => a,
         None => {
             return Err((
@@ -103,7 +104,8 @@ pub async fn restore_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<RestoreResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let archiver = match &state.session_archiver {
+    let archiver_slot = state.session_archiver();
+    let archiver = match archiver_slot.as_deref() {
         Some(a) => a,
         None => {
             return Err((
@@ -133,9 +135,9 @@ pub async fn get_session_state(
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionState>, (StatusCode, Json<ErrorResponse>)> {
     let builder = SessionStateBuilder::new(
-        state.log_service.clone(),
-        state.messages.clone(),
-        state.state_service.clone(),
+        state.log_service().clone(),
+        state.messages().clone(),
+        state.state_service().clone(),
     );
 
     match builder.build(&session_id) {
@@ -177,7 +179,7 @@ pub async fn delete_session(
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     match state
-        .state_service
+        .state_service()
         .delete_session_recursive_cascade(&session_id)
     {
         Ok(rows) => {

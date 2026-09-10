@@ -45,7 +45,7 @@ fn seed_all_four_types(state: &AppState) {
     };
     futures::executor::block_on(
         state
-            .memory_store
+            .memory_store()
             .as_ref()
             .expect("memory_store")
             .upsert_typed_fact(fact.clone(), None),
@@ -212,7 +212,7 @@ async fn facts_lane_filters_internal_reserved_categories() {
         };
         futures::executor::block_on(
             state
-                .memory_store
+                .memory_store()
                 .as_ref()
                 .expect("memory_store")
                 .upsert_typed_fact(fact.clone(), None),

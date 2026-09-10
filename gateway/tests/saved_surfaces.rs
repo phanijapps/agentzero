@@ -22,10 +22,10 @@ fn saved_surface() -> WorkSurface {
 #[tokio::test]
 async fn persistence_settings_restore_and_clear_are_live_and_bounded() {
     let (server, _dir, state) = setup();
-    let (session, execution) = state.state_service.create_session("root").unwrap();
+    let (session, execution) = state.state_service().create_session("root").unwrap();
     let surface = saved_surface();
     state
-        .state_service
+        .state_service()
         .save_session_surface(
             &session.id,
             &execution.id,
@@ -46,14 +46,14 @@ async fn persistence_settings_restore_and_clear_are_live_and_bounded() {
         .json(&json!({ "persistSurfaces": true }))
         .await;
     rejected.assert_status(StatusCode::FORBIDDEN);
-    assert!(!state.state_service.surface_persistence_enabled());
+    assert!(!state.state_service().surface_persistence_enabled());
 
     let enabled = server
         .put("/api/settings/presentation")
         .json(&json!({ "persistSurfaces": true }))
         .await;
     enabled.assert_status_ok();
-    assert!(state.state_service.surface_persistence_enabled());
+    assert!(state.state_service().surface_persistence_enabled());
     assert_eq!(
         enabled.json::<Value>()["data"],
         json!({ "persistSurfaces": true, "restartRequired": false })
@@ -72,7 +72,7 @@ async fn persistence_settings_restore_and_clear_are_live_and_bounded() {
     bad_clear.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(
         state
-            .state_service
+            .state_service()
             .list_session_surfaces(&session.id)
             .unwrap()
             .len(),
@@ -86,7 +86,7 @@ async fn persistence_settings_restore_and_clear_are_live_and_bounded() {
     cleared.assert_status_ok();
     assert_eq!(cleared.json::<Value>(), json!({ "deletedCount": 1 }));
     assert!(state
-        .state_service
+        .state_service()
         .get_session(&session.id)
         .unwrap()
         .is_some());

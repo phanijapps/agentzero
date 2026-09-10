@@ -40,17 +40,17 @@ impl GatewayServer {
     pub fn new(config: GatewayConfig, vault_dir: PathBuf) -> Self {
         let state = AppState::new_with_a2a(vault_dir, config.a2a_enabled);
         let agent_tasks = Arc::new(DurableAgentTaskService::new(
-            state.durable_work_store.clone(),
-            state.durable_work_transport.clone(),
-            state.state_service.clone(),
-            state.agents.clone(),
-            state.messages.clone(),
+            state.durable_work_store().clone(),
+            state.durable_work_transport().clone(),
+            state.state_service().clone(),
+            state.agents().clone(),
+            state.messages().clone(),
             AGENT_TASK_TARGET,
         ));
         let ws_handler = Arc::new(
             WebSocketHandler::new_with_surfaces(
-                state.event_bus.clone(),
-                state.runtime.clone(),
+                state.event_bus().clone(),
+                state.runtime().clone(),
                 config.agent_surfaces_enabled,
             )
             .with_agent_tasks(agent_tasks),
@@ -86,7 +86,7 @@ impl GatewayServer {
 
     /// Get the event bus for broadcasting events.
     pub fn event_bus(&self) -> Arc<EventBus> {
-        self.state.event_bus.clone()
+        self.state.event_bus().clone()
     }
 
     /// Get the WebSocket handler.
@@ -96,12 +96,12 @@ impl GatewayServer {
 
     /// Get the agent service.
     pub fn agents(&self) -> Arc<AgentService> {
-        self.state.agents.clone()
+        self.state.agents().clone()
     }
 
     /// Get the runtime service.
     pub fn runtime(&self) -> Arc<RuntimeService> {
-        self.state.runtime.clone()
+        self.state.runtime().clone()
     }
 
     /// Start the gateway server.
@@ -114,21 +114,21 @@ impl GatewayServer {
         self.recover_crashed_sessions();
 
         // Reset any bridge outbox items left inflight from crash
-        if let Err(e) = self.state.bridge_outbox.reset_all_inflight() {
+        if let Err(e) = self.state.bridge_outbox().reset_all_inflight() {
             warn!("Failed to reset bridge inflight items: {}", e);
         }
 
         // Create gateway bus for bridge inbound messages (MUST be before seed_defaults
         // which starts plugins, so plugins have the bus available for inbound messages)
-        if let Some(runner) = self.state.runtime.runner() {
+        if let Some(runner) = self.state.runtime().runner() {
             let bus: Arc<dyn gateway_bus::GatewayBus> = Arc::new(HttpGatewayBus::new(
                 runner.clone(),
-                self.state.state_service.clone(),
-                self.state.paths.vault_dir().clone(),
+                self.state.state_service().clone(),
+                self.state.paths().vault_dir().clone(),
             ));
             // Set bus on plugin manager so plugins can trigger agent sessions
-            self.state.plugin_manager.set_bus(bus.clone()).await;
-            self.state.bridge_bus = Some(bus);
+            self.state.plugin_manager().set_bus(bus.clone()).await;
+            self.state.transport.bridge_bus = Some(bus);
         }
 
         // Reconcile embedding backend: preflight Ollama, reindex on
@@ -139,7 +139,7 @@ impl GatewayServer {
         self.state.seed_defaults().await;
 
         // Initialize connector registry
-        if let Err(e) = self.state.connector_registry.init().await {
+        if let Err(e) = self.state.connector_registry().init().await {
             warn!("Failed to initialize connector registry: {}", e);
         }
 
@@ -151,8 +151,8 @@ impl GatewayServer {
 
         // Spawn bridge outbox retry loop
         self.bridge_retry_handle = Some(gateway_bridge::spawn_retry_loop(
-            self.state.bridge_registry.clone(),
-            self.state.bridge_outbox.clone(),
+            self.state.bridge_registry().clone(),
+            self.state.bridge_outbox().clone(),
         ));
 
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -170,7 +170,7 @@ impl GatewayServer {
         // Read network settings from AppSettings (cached in SettingsService).
         // If exposeToLan changed since startup, the user must restart — this
         // read happens at boot so a stale toggle from a prior run is fine.
-        let network_cfg = match self.state.settings.load() {
+        let network_cfg = match self.state.settings().load() {
             Ok(s) => s.network,
             Err(e) => {
                 warn!(
@@ -244,7 +244,7 @@ impl GatewayServer {
                 Some(id) => id,
                 None => {
                     let new_id = uuid::Uuid::new_v4().to_string();
-                    if let Err(e) = persist_instance_id(&self.state.settings, &new_id) {
+                    if let Err(e) = persist_instance_id(&self.state.settings(), &new_id) {
                         warn!("failed to persist generated instance_id: {}", e);
                     }
                     new_id
@@ -308,7 +308,7 @@ impl GatewayServer {
 
             match advertiser.advertise(info) {
                 Ok(handle) => {
-                    if let Ok(mut guard) = self.state.advertise_handle.lock() {
+                    if let Ok(mut guard) = self.state.advertise_handle().lock() {
                         *guard = Some(handle);
                     }
                     info!("mDNS advertising started for {}", instance_name);
@@ -358,7 +358,7 @@ impl GatewayServer {
         self.a2a_browse_handle.take();
 
         // Withdraw mDNS advertisement before tearing down the listener.
-        if let Ok(mut guard) = self.state.advertise_handle.lock() {
+        if let Ok(mut guard) = self.state.advertise_handle().lock() {
             if let Some(handle) = guard.take() {
                 drop(handle); // Drop impl sends goodbye, blocks ~100ms
                 info!("mDNS advertisement withdrawn");
@@ -374,7 +374,7 @@ impl GatewayServer {
         }
 
         // Disconnect all bridge workers and abort retry loop
-        self.state.bridge_registry.disconnect_all().await;
+        self.state.bridge_registry().disconnect_all().await;
         if let Some(handle) = self.bridge_retry_handle.take() {
             handle.abort();
         }
@@ -396,10 +396,10 @@ impl GatewayServer {
 
     fn start_durable_work_worker(&mut self) -> Result<()> {
         let runtime = Arc::new(GatewayAgentTaskRuntime::new(
-            self.state.runtime.clone(),
-            self.state.state_service.clone(),
-            self.state.messages.clone(),
-            self.state.agents.clone(),
+            self.state.runtime().clone(),
+            self.state.state_service().clone(),
+            self.state.messages().clone(),
+            self.state.agents().clone(),
         ));
         self.start_durable_work_worker_with_runtime(runtime)
     }
@@ -432,7 +432,7 @@ impl GatewayServer {
         })?;
         let handler: Arc<dyn gateway_bus::WorkHandler> =
             Arc::new(AgentTaskHandler::new(runtime, AGENT_TASK_TARGET));
-        let peer_handler = self.state.runtime.peer_message_handler().ok_or_else(|| {
+        let peer_handler = self.state.runtime().peer_message_handler().ok_or_else(|| {
             GatewayError::Internal("durable peer-message handler unavailable".to_owned())
         })?;
         let mut handlers = vec![handler, peer_handler];
@@ -440,40 +440,40 @@ impl GatewayServer {
             let remote_transport: Arc<dyn gateway_a2a::client::A2aTransport> =
                 Arc::new(gateway_a2a::client::HttpA2aTransport::default());
             handlers.push(Arc::new(crate::tasks::a2a::A2aInboundHandler::new(
-                self.state.paths.vault_dir(),
-                self.state.durable_work_store.clone(),
-                self.state.runtime.clone(),
-                self.state.state_service.clone(),
-                self.state.messages.clone(),
-                self.state.agents.clone(),
+                self.state.paths().vault_dir(),
+                self.state.durable_work_store().clone(),
+                self.state.runtime().clone(),
+                self.state.state_service().clone(),
+                self.state.messages().clone(),
+                self.state.agents().clone(),
             )) as Arc<dyn gateway_bus::WorkHandler>);
             handlers.push(Arc::new(crate::tasks::a2a::A2aOutboundDispatchHandler::new(
-                self.state.paths.vault_dir(),
-                self.state.durable_work_store.clone(),
-                self.state.durable_work_transport.clone(),
+                self.state.paths().vault_dir(),
+                self.state.durable_work_store().clone(),
+                self.state.durable_work_transport().clone(),
                 remote_transport.clone(),
             )) as Arc<dyn gateway_bus::WorkHandler>);
             let steering = self
                 .state
-                .runtime
+                .runtime()
                 .runner()
                 .ok_or_else(|| GatewayError::Internal("execution runner unavailable".to_owned()))?
                 .steering_registry();
             handlers.push(Arc::new(crate::tasks::a2a::A2aOutboundPollHandler::new(
-                self.state.paths.vault_dir(),
+                self.state.paths().vault_dir(),
                 remote_transport,
                 steering,
-                self.state.state_service.clone(),
-                self.state.messages.clone(),
-                self.state.event_bus.clone(),
+                self.state.state_service().clone(),
+                self.state.messages().clone(),
+                self.state.event_bus().clone(),
             )) as Arc<dyn gateway_bus::WorkHandler>);
         }
         let registry = gateway_bus::WorkHandlerRegistry::from_handlers(handlers).map_err(|_| {
             GatewayError::Internal("durable work handler registry invalid".to_owned())
         })?;
         let worker = gateway_bus::DurableWorkWorker::new(
-            self.state.durable_work_store.clone(),
-            self.state.durable_work_transport.clone(),
+            self.state.durable_work_store().clone(),
+            self.state.durable_work_transport().clone(),
             registry,
             config,
         );
@@ -485,7 +485,7 @@ impl GatewayServer {
     ///
     /// This marks running sessions as paused so they can be resumed when the server restarts.
     fn pause_running_sessions(&self) {
-        match self.state.state_service.mark_running_as_paused() {
+        match self.state.state_service().mark_running_as_paused() {
             Ok(count) if count > 0 => {
                 info!("Paused {} running session(s) for graceful shutdown", count);
             }
@@ -503,7 +503,7 @@ impl GatewayServer {
     /// Sessions in RUNNING state at startup indicate an unexpected crash
     /// (graceful shutdown would have paused them). Mark them as CRASHED.
     fn recover_crashed_sessions(&self) {
-        match self.state.state_service.mark_running_as_crashed() {
+        match self.state.state_service().mark_running_as_crashed() {
             Ok(count) if count > 0 => {
                 warn!(
                     "Found {} session(s) still in RUNNING state - marked as CRASHED (unexpected shutdown)",
@@ -527,8 +527,8 @@ impl GatewayServer {
     fn start_file_watchers(&mut self) {
         let mut watcher = FileWatcher::new(WatchConfig::default());
 
-        let skills = self.state.skills.clone();
-        watcher.add_watch(self.state.paths.skills_dir(), "skills", move |path| {
+        let skills = self.state.skills().clone();
+        watcher.add_watch(self.state.paths().skills_dir(), "skills", move |path| {
             tracing::info!("Skills changed: {:?}, invalidating cache", path);
             let skills = skills.clone();
             tokio::spawn(async move {
@@ -536,8 +536,8 @@ impl GatewayServer {
             });
         });
 
-        let agents = self.state.agents.clone();
-        watcher.add_watch(self.state.paths.agents_dir(), "agents", move |path| {
+        let agents = self.state.agents().clone();
+        watcher.add_watch(self.state.paths().agents_dir(), "agents", move |path| {
             tracing::info!("Agents changed: {:?}, invalidating cache", path);
             let agents = agents.clone();
             tokio::spawn(async move {
@@ -545,8 +545,8 @@ impl GatewayServer {
             });
         });
 
-        let event_bus = self.state.event_bus.clone();
-        let config_dir = self.state.paths.config_dir();
+        let event_bus = self.state.event_bus().clone();
+        let config_dir = self.state.paths().config_dir();
         let config_dir_for_filter = config_dir.clone();
         watcher.add_watch(config_dir.clone(), "customization", move |path| {
             // Compute relative path; reject anything outside the customization allow-list.
@@ -584,7 +584,7 @@ impl GatewayServer {
     /// Initialize the cron scheduler.
     async fn init_cron_scheduler(&mut self) {
         // Get the execution runner from the runtime service
-        let runner = match self.state.runtime.runner() {
+        let runner = match self.state.runtime().runner() {
             Some(r) => r.clone(),
             None => {
                 warn!("Cannot initialize cron scheduler: execution runner not available");
@@ -595,12 +595,12 @@ impl GatewayServer {
         // Create the gateway bus for cron to submit sessions
         let gateway_bus = Arc::new(HttpGatewayBus::new(
             runner,
-            self.state.state_service.clone(),
-            self.state.paths.vault_dir().clone(),
+            self.state.state_service().clone(),
+            self.state.paths().vault_dir().clone(),
         ));
 
         // Create cron service and scheduler
-        let cron_service = CronService::new(self.state.paths.clone());
+        let cron_service = CronService::new(self.state.paths().clone());
 
         match CronScheduler::new(cron_service, gateway_bus).await {
             Ok(scheduler) => {
@@ -611,7 +611,7 @@ impl GatewayServer {
                 }
 
                 // Store in state
-                self.state.cron_scheduler = Some(Arc::new(scheduler));
+                self.state.workers.cron_scheduler = Some(Arc::new(scheduler));
 
                 info!("Cron scheduler initialized and started");
             }
@@ -789,16 +789,25 @@ mod tests {
             chrono::Utc::now(),
         )
         .unwrap();
-        server.state.durable_work_store.enqueue(&envelope).unwrap();
         server
             .state
-            .durable_work_transport
+            .durable_work_store()
+            .enqueue(&envelope)
+            .unwrap();
+        server
+            .state
+            .durable_work_transport()
             .publish(&envelope)
             .await
             .unwrap();
         let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                if let Some(item) = server.state.durable_work_store.get(envelope.id()).unwrap() {
+                if let Some(item) = server
+                    .state
+                    .durable_work_store()
+                    .get(envelope.id())
+                    .unwrap()
+                {
                     if item.status() == WorkStatus::DeadLetter {
                         return item;
                     }
@@ -823,16 +832,16 @@ mod tests {
             chrono::Utc::now(),
         )
         .unwrap();
-        server.state.durable_work_store.enqueue(&routed).unwrap();
+        server.state.durable_work_store().enqueue(&routed).unwrap();
         server
             .state
-            .durable_work_transport
+            .durable_work_transport()
             .publish(&routed)
             .await
             .unwrap();
         let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                if let Some(item) = server.state.durable_work_store.get(routed.id()).unwrap() {
+                if let Some(item) = server.state.durable_work_store().get(routed.id()).unwrap() {
                     if item.status() == WorkStatus::DeadLetter {
                         return item;
                     }
@@ -859,12 +868,12 @@ mod tests {
         .unwrap();
         server
             .state
-            .durable_work_store
+            .durable_work_store()
             .enqueue(&peer_routed)
             .unwrap();
         server
             .state
-            .durable_work_transport
+            .durable_work_transport()
             .publish(&peer_routed)
             .await
             .unwrap();
@@ -872,7 +881,7 @@ mod tests {
             loop {
                 if let Some(item) = server
                     .state
-                    .durable_work_store
+                    .durable_work_store()
                     .get(peer_routed.id())
                     .unwrap()
                 {
@@ -976,7 +985,7 @@ mod tests {
         .unwrap();
         server
             .state
-            .state_service
+            .state_service()
             .create_session_from(&session)
             .unwrap();
         let execution = execution_state::AgentExecution::new_root_with_id(
@@ -987,12 +996,12 @@ mod tests {
         .unwrap();
         server
             .state
-            .state_service
+            .state_service()
             .create_execution(&execution)
             .unwrap();
         server
             .state
-            .messages
+            .messages()
             .append(&zbot_conversation::Message {
                 id: task.message_id.clone(),
                 execution_id: Some(task.execution_id.clone()),
@@ -1018,7 +1027,11 @@ mod tests {
             chrono::Utc::now(),
         )
         .unwrap();
-        server.state.durable_work_store.enqueue(&persisted).unwrap();
+        server
+            .state
+            .durable_work_store()
+            .enqueue(&persisted)
+            .unwrap();
 
         let runtime = Arc::new(RestartRuntime::new());
         server
@@ -1038,7 +1051,7 @@ mod tests {
         assert_eq!(
             server
                 .state
-                .durable_work_store
+                .durable_work_store()
                 .get(persisted.id())
                 .unwrap()
                 .unwrap()
@@ -1048,7 +1061,7 @@ mod tests {
         );
         let messages = server
             .state
-            .messages
+            .messages()
             .replay(&task.session_id, None, 10)
             .unwrap();
         assert_eq!(
@@ -1061,7 +1074,12 @@ mod tests {
         runtime.terminal.store(true, Ordering::SeqCst);
         let stored = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                if let Some(item) = server.state.durable_work_store.get(persisted.id()).unwrap() {
+                if let Some(item) = server
+                    .state
+                    .durable_work_store()
+                    .get(persisted.id())
+                    .unwrap()
+                {
                     if item.status() == WorkStatus::Completed {
                         return item;
                     }

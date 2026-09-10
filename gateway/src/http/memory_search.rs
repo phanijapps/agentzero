@@ -226,22 +226,22 @@ pub async fn memory_search(
     Json(req): Json<SearchBody>,
 ) -> Result<Json<UnifiedResponse>, HandlerError> {
     let memory_store = state
-        .memory_store
+        .memory_store()
         .as_ref()
         .ok_or_else(|| err(StatusCode::SERVICE_UNAVAILABLE, "memory store unavailable"))?
         .clone();
     let wiki_store = state
-        .wiki_store
+        .wiki_store()
         .as_ref()
         .ok_or_else(store_unavailable)?
         .clone();
     let proc_store = state
-        .procedure_store
+        .procedure_store()
         .as_ref()
         .ok_or_else(store_unavailable)?
         .clone();
     let episode_store = state
-        .episode_store
+        .episode_store()
         .as_ref()
         .ok_or_else(store_unavailable)?
         .clone();
@@ -251,7 +251,7 @@ pub async fn memory_search(
 
     // Optional caller-scoped agent. `None` → no agent/scope gate (admin/debug).
     let agent: Option<String> = req.agent_id.clone();
-    let embedding_client = state.embedding_service.client();
+    let embedding_client = state.embedding_service().client();
     let mode = validate_mode(req.mode.as_str())?;
 
     // Single embedding attempt, mode-dependent.

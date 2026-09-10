@@ -66,7 +66,7 @@ fn build_response(paths: &VaultPaths, home: Option<&Path>) -> PathsResponse {
 /// `GET /api/paths` — vault path snapshot for the UI.
 pub async fn get_paths(State(state): State<AppState>) -> Json<PathsResponse> {
     let home = dirs::home_dir();
-    Json(build_response(&state.paths, home.as_deref()))
+    Json(build_response(&state.paths(), home.as_deref()))
 }
 
 #[cfg(test)]

@@ -49,7 +49,7 @@ async fn returns_four_content_types_with_age_buckets() {
     };
     futures::executor::block_on(
         state
-            .memory_store
+            .memory_store()
             .as_ref()
             .expect("memory_store")
             .upsert_typed_fact(fact.clone(), None),
@@ -219,7 +219,7 @@ async fn ward_content_filters_internal_reserved_memory_facts() {
         };
         futures::executor::block_on(
             state
-                .memory_store
+                .memory_store()
                 .as_ref()
                 .expect("memory_store")
                 .upsert_typed_fact(fact.clone(), None),
@@ -274,7 +274,7 @@ async fn ward_list_ignores_reserved_only_wards() {
         };
         futures::executor::block_on(
             state
-                .memory_store
+                .memory_store()
                 .as_ref()
                 .expect("memory_store")
                 .upsert_typed_fact(fact.clone(), None),

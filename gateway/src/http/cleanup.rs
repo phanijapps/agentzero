@@ -45,7 +45,7 @@ pub async fn cleanup_vault_temp(
     body: Option<Json<CleanupTempRequest>>,
 ) -> Json<CleanupTempResponse> {
     let request = body.map(|Json(b)| b).unwrap_or_default();
-    let temp_dir = state.paths.temp_dir();
+    let temp_dir = state.paths().temp_dir();
     let threshold = request
         .older_than_hours
         .map(|h| SystemTime::now() - Duration::from_secs(h.saturating_mul(3600)));

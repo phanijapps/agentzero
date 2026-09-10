@@ -38,8 +38,13 @@ const CTX_CATEGORY: &str = "ctx";
 const PRIMITIVE_AGENT_SENTINEL: &str = "__ward__";
 const PRIMITIVE_SCOPE: &str = "global";
 const PRIMITIVE_CATEGORY: &str = "primitive";
-const RRF_K: f64 = 60.0;
 const MIN_SEMANTIC_SCORE: f64 = 0.20;
+/// Lexical evidence strong enough to admit without semantic support.
+/// Any real token or stem hit (weakest is a stem at 0.8) admits — parity
+/// with the previous sqlite-backed production path, which had no lexical
+/// admission filter at all: ranking handles quality, admission only
+/// filters zero-evidence semantic noise.
+const LEXICAL_ADMIT_SCORE: f64 = 0.5;
 const MAX_RECALL_QUERY_CHARS: usize = 500;
 const MAX_SEARCH_LIMIT: usize = 50;
 
@@ -368,10 +373,30 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 epistemic_class: Some("current".to_string()),
                 source_episode_id: None,
                 source_ref: request.source_ref.clone(),
+                last_accessed: None,
             }
         };
 
-        self.upsert_fact_record(fact, None).await?;
+        // Embed on write when a client is wired — same contract as the
+        // sqlite backend. Without this, save_fact-written facts are only
+        // lexically retrievable (the semantic lane stores no vector).
+        let embedding = match self.embedding_client.as_ref() {
+            Some(client) => match client.embed(&[&fact.content]).await {
+                Ok(mut embeddings) if embeddings.len() == 1 => Some(embeddings.remove(0)),
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        key = %fact.key,
+                        "save_fact embedding failed — storing without vector"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        self.upsert_fact_record(fact, embedding).await?;
 
         Ok(json!({
             "success": true,
@@ -486,6 +511,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 epistemic_class: Some("current".to_string()),
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             });
 
         fact.session_id = Some(session_id.to_string());
@@ -578,6 +604,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 epistemic_class: Some("current".to_string()),
                 source_episode_id: None,
                 source_ref: None,
+                last_accessed: None,
             });
 
         fact.content = content;
@@ -725,6 +752,40 @@ impl MemoryFactStore for EngramMemoryFactStore {
         // round-trip, so keep honoring only the explicit argument here.
         fact.embedding = embedding.clone();
         self.upsert_fact_record(fact, embedding).await
+    }
+
+    async fn touch_facts(&self, fact_ids: &[String]) -> StoreResult<()> {
+        if fact_ids.is_empty() {
+            return Ok(());
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let connection = self.sidecar.connection()?;
+        for id in fact_ids {
+            let fact_json: Option<String> = connection
+                .query_row(
+                    "SELECT fact_json FROM memory_facts WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| storage_error(error).into_trait_error())?;
+            let Some(fact_json) = fact_json else {
+                continue;
+            };
+            let Ok(mut fact) = serde_json::from_str::<MemoryFact>(&fact_json) else {
+                continue;
+            };
+            fact.mention_count = fact.mention_count.saturating_add(1);
+            fact.last_accessed = Some(now.clone());
+            let updated = serde_json::to_string(&fact)
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
+            connection
+                .execute(
+                    "UPDATE memory_facts SET mention_count = ?2, fact_json = ?3 WHERE id = ?1",
+                    rusqlite::params![id, fact.mention_count, updated],
+                )
+                .map_err(|error| storage_error(error).into_trait_error())?;
+        }
+        Ok(())
     }
 
     async fn supersede_fact(
@@ -961,6 +1022,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             epistemic_class: Some("convention".to_string()),
             source_episode_id: req.source_episode_id,
             source_ref: None,
+            last_accessed: None,
         };
         let embedding = fact.embedding.clone();
         self.upsert_fact_record(fact, embedding).await?;
@@ -1886,16 +1948,6 @@ struct SparseMatch {
     high_specificity: bool,
 }
 
-#[derive(Default)]
-struct HybridSignal {
-    fact: Option<MemoryFact>,
-    score: f64,
-    semantic: bool,
-    sparse: bool,
-    high_specificity: bool,
-    semantic_score: f64,
-}
-
 struct SearchRequest<'a> {
     agent_id: Option<&'a str>,
     query: &'a str,
@@ -2075,74 +2127,79 @@ fn rank_hybrid_entries(
         }
     }
 
-    semantic_ranked.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    sparse_ranked.sort_by(|left, right| {
-        right
-            .1
-            .score
-            .partial_cmp(&left.1.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Engram-composed fusion: semantic + lexical lanes plus a recency
+    // lane derived from the matched set, fused by engram's weighted
+    // ReciprocalRankFusion (see retrieval_composition). Recency reorders
+    // the matched set; it never widens it.
+    let semantic_specificity: HashMap<String, f64> = semantic_ranked
+        .iter()
+        .map(|(id, score, _)| (id.clone(), *score))
+        .collect();
+    let lexical_specificity: HashMap<String, bool> = sparse_ranked
+        .iter()
+        .map(|(id, sparse, _)| (id.clone(), sparse.high_specificity))
+        .collect();
+    let lexical_strength: HashMap<String, f64> = sparse_ranked
+        .iter()
+        .map(|(id, sparse, _)| (id.clone(), sparse.score))
+        .collect();
 
-    let mut fused = HashMap::<String, HybridSignal>::new();
-    for (rank_zero, (id, score, fact)) in semantic_ranked.into_iter().enumerate() {
-        let rank = (rank_zero as f64) + 1.0;
-        let signal = fused.entry(id).or_default();
-        signal.fact.get_or_insert(fact);
-        signal.score += 1.0 / (RRF_K + rank);
-        signal.semantic = true;
-        signal.semantic_score = signal.semantic_score.max(score);
-    }
-    for (rank_zero, (id, sparse, fact)) in sparse_ranked.into_iter().enumerate() {
-        let rank = (rank_zero as f64) + 1.0;
-        let signal = fused.entry(id).or_default();
-        signal.fact.get_or_insert(fact);
-        signal.score += 1.0 / (RRF_K + rank);
-        signal.sparse = true;
-        signal.high_specificity |= sparse.high_specificity;
-    }
-
-    let mut hits = fused
-        .into_values()
-        .filter(|signal| signal.semantic_score >= MIN_SEMANTIC_SCORE || signal.high_specificity)
-        .filter_map(|signal| {
-            let fact = signal.fact?;
-            Some(SearchHit {
-                fact,
-                score: normalize_rrf_score(signal.score),
-                match_source: match (signal.semantic, signal.sparse) {
-                    (true, true) => "hybrid",
-                    (true, false) => "vec",
-                    (false, true) => "fts",
-                    (false, false) => return None,
-                }
-                .to_string(),
-                degraded_reason: None,
-            })
-        })
+    let semantic_lane = semantic_ranked
+        .into_iter()
+        .map(|(_id, score, fact)| super::retrieval_composition::LaneCandidate { fact, score })
         .collect::<Vec<_>>();
-    hits.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    hits
+    let lexical_lane = sparse_ranked
+        .into_iter()
+        .map(
+            |(_id, sparse, fact)| super::retrieval_composition::LaneCandidate {
+                fact,
+                score: sparse.score,
+            },
+        )
+        .collect::<Vec<_>>();
+
+    super::retrieval_composition::fuse_fact_lanes(
+        semantic_lane,
+        lexical_lane,
+        50,
+        chrono::Utc::now(),
+    )
+    .into_iter()
+    .filter(|fused| {
+        // Admission guard: weak semantic matches survive only with
+        // lexical evidence — a high-specificity hit (identifier/key
+        // token) OR a strong lexical score (stem or multi-token match
+        // ≥ 1.5). Pure weak-semantic noise still drops.
+        let semantic_score = semantic_specificity.get(&fused.fact.id).copied();
+        let high_specificity = lexical_specificity
+            .get(&fused.fact.id)
+            .copied()
+            .unwrap_or(false);
+        let lexical_score = lexical_strength.get(&fused.fact.id).copied().unwrap_or(0.0);
+        semantic_score.is_none_or(|score| score >= MIN_SEMANTIC_SCORE)
+            || high_specificity
+            || lexical_score >= LEXICAL_ADMIT_SCORE
+    })
+    .map(|fused| SearchHit {
+        score: normalize_fused_score(fused.score),
+        match_source: match (fused.semantic, fused.sparse) {
+            (true, true) => "hybrid",
+            (true, false) => "vec",
+            (false, true) => "fts",
+            (false, false) => "fts",
+        }
+        .to_string(),
+        fact: fused.fact,
+        degraded_reason: None,
+    })
+    .collect::<Vec<_>>()
 }
 
-fn normalize_rrf_score(score: f64) -> f64 {
-    // RRF scores are small (roughly 1 / (k + rank)). Multiplying by `k`
-    // then clamping made every hit present in both sparse and semantic lists
-    // exactly 1.0, destroying the ranking before unified recall could use it.
-    // This monotonic transform keeps the adapter's [0, 1) score contract
-    // without collapsing distinct fused scores.
-    let scaled = (score * RRF_K).max(0.0);
-    scaled / (1.0 + scaled)
+/// Monotonic transform of the fused RRF score onto the adapter's [0, 1)
+/// contract (same shape as the previous normalize_rrf_score).
+fn normalize_fused_score(score: f64) -> f64 {
+    let score = score.max(0.0);
+    score / (1.0 + score)
 }
 
 fn embedding_compatible(
@@ -2196,6 +2253,15 @@ fn sparse_match(
             let weight = sparse_token_weight(token);
             score += weight;
             high_specificity |= is_high_specificity_token(fact, token);
+        } else if token.len() >= 5 && contains_stem(&haystack, token) {
+            // Stem approximation: a 5+ char query token whose stem
+            // ("scrap" from "scrape") prefixes a 6+ char word in the
+            // haystack ("scraping") is the same lexeme. Without this,
+            // "scrape" never matches facts that say "scraping" and the
+            // admission guard drops the exact correction the user needs.
+            let weight = sparse_token_weight(token) * 0.8;
+            score += weight;
+            high_specificity |= is_high_specificity_token(fact, token);
         }
     }
 
@@ -2203,6 +2269,39 @@ fn sparse_match(
         score,
         high_specificity,
     })
+}
+
+/// True when `token`'s stem (token minus its last character, a crude
+/// suffix-stripping approximation) prefixes a word-boundary-delimited word
+/// of length ≥ 6 inside `haystack`. Case-insensitive.
+fn contains_stem(haystack: &str, token: &str) -> bool {
+    let stem = &token[..token.len() - 1];
+    if stem.len() < 4 {
+        return false;
+    }
+    let lowered = haystack.to_lowercase();
+    let mut start = 0;
+    while let Some(position) = lowered[start..].find(stem) {
+        let at = start + position;
+        let before_ok = at == 0
+            || !lowered[..at]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+        let end = at + stem.len();
+        let after = lowered[end..].chars().next();
+        let after_ok = match after {
+            None => false, // stem alone isn't a longer word
+            Some(character) => {
+                character.is_alphanumeric() && lowered[end..].chars().take(2).count() == 2
+            }
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+        start = at + stem.len();
+    }
+    false
 }
 
 fn exact_identifier_or_key_match(fact: &MemoryFact, tokens: &[String]) -> Option<SparseMatch> {
@@ -2386,8 +2485,8 @@ mod tests {
 
     #[test]
     fn hybrid_rrf_normalization_preserves_distinct_scores() {
-        let top = normalize_rrf_score((1.0 / 61.0) + (1.0 / 61.0));
-        let next = normalize_rrf_score((1.0 / 62.0) + (1.0 / 62.0));
+        let top = normalize_fused_score((1.0 / 61.0) + (1.0 / 61.0));
+        let next = normalize_fused_score((1.0 / 62.0) + (1.0 / 62.0));
 
         assert!(
             top > next,

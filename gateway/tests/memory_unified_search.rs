@@ -41,6 +41,7 @@ fn seed_all_four_types(state: &AppState) {
         epistemic_class: Some("current".to_string()),
         source_episode_id: None,
         source_ref: None,
+        last_accessed: None,
     };
     futures::executor::block_on(
         state
@@ -207,6 +208,7 @@ async fn facts_lane_filters_internal_reserved_categories() {
             epistemic_class: Some("current".to_string()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         futures::executor::block_on(
             state

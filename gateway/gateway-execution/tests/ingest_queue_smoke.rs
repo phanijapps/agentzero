@@ -5,29 +5,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
-use agent_primitives::vault_paths::VaultPaths;
+mod common;
+
 use gateway_execution::ingest::{IngestionQueue, NoopExtractor};
-use zbot_stores::KnowledgeGraphStore;
-use zbot_stores_sqlite::kg::storage::GraphStorage;
-use zbot_stores_sqlite::{
-    GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase, SqliteKgStore,
-};
-use zbot_stores_traits::KgEpisodeStore;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn queue_drains_pending_episodes() {
     let tmp = tempdir().unwrap();
-    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-    std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-    let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
-    let repo = Arc::new(KgEpisodeRepository::new(db.clone()));
-    let graph_storage = Arc::new(GraphStorage::new(db.clone()).unwrap());
-    let episode_store: Arc<dyn KgEpisodeStore> = Arc::new(GatewayKgEpisodeStore::new(repo.clone()));
-    let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(graph_storage));
+    let (kg_store, episode_store) = common::engram_stores::kg_and_episode_stores(&tmp);
 
     // Enqueue 5 episodes with payloads.
     for i in 0..5 {
-        let id = repo
+        let id = episode_store
             .upsert_pending(
                 "test",
                 &format!("src#{i}"),
@@ -35,8 +24,12 @@ async fn queue_drains_pending_episodes() {
                 None,
                 "root",
             )
+            .await
             .unwrap();
-        repo.set_payload(&id, &format!("chunk {i} text")).unwrap();
+        episode_store
+            .set_payload(&id, &format!("chunk {i} text"))
+            .await
+            .unwrap();
     }
 
     let extractor = Arc::new(NoopExtractor::new());
@@ -46,7 +39,10 @@ async fn queue_drains_pending_episodes() {
     // Poll until all 5 are done or timeout.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let counts = repo.status_counts_for_source("src#").unwrap();
+        let counts = episode_store
+            .status_counts_for_source("src#")
+            .await
+            .unwrap();
         if counts.done == 5 {
             break;
         }

@@ -20,8 +20,8 @@ use axum::{
     extract::{Query, State},
     Json,
 };
+use knowledge_graph::kg_trait::HierarchySummary;
 use serde::{Deserialize, Serialize};
-use zbot_stores::HierarchySummary;
 
 /// `agent_id` queried by the stats endpoint. Mirrors the root-agent
 /// convention used everywhere else in the gateway (see also

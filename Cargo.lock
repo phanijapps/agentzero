@@ -220,7 +220,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -231,7 +231,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1767,7 +1767,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1831,9 +1831,8 @@ dependencies = [
  "tracing",
  "uuid",
  "zbot-conversation",
- "zbot-stores",
+ "zbot-engram-adapter",
  "zbot-stores-domain",
- "zbot-stores-sqlite",
  "zbot-stores-traits",
 ]
 
@@ -1900,7 +1899,7 @@ dependencies = [
 [[package]]
 name = "engram-belief"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1908,9 +1907,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "engram-code"
+version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
+dependencies = [
+ "chrono",
+ "engram-domain",
+ "engram-runtime",
+ "serde",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
+ "tree-sitter-java",
+ "tree-sitter-kotlin-ng",
+ "tree-sitter-perl",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-scala",
+ "tree-sitter-sfapex",
+ "tree-sitter-swift",
+ "tree-sitter-typescript",
+]
+
+[[package]]
 name = "engram-consolidation"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1920,24 +1947,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "engram-core"
-version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
-dependencies = [
- "engram-belief",
- "engram-consolidation",
- "engram-eval",
- "engram-hierarchy",
- "engram-knowledge",
- "engram-memory",
- "engram-retrieval",
- "engram-runtime",
-]
-
-[[package]]
 name = "engram-decay"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1949,7 +1961,7 @@ dependencies = [
 [[package]]
 name = "engram-domain"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "chrono",
  "serde",
@@ -1960,7 +1972,7 @@ dependencies = [
 [[package]]
 name = "engram-eval"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1973,12 +1985,12 @@ dependencies = [
 [[package]]
 name = "engram-graph-analytics"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 
 [[package]]
 name = "engram-hierarchy"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -1988,10 +2000,11 @@ dependencies = [
 [[package]]
 name = "engram-ingest"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "chrono",
+ "engram-code",
  "engram-domain",
  "engram-knowledge",
  "futures",
@@ -2001,38 +2014,29 @@ dependencies = [
  "serde_json",
  "serde_yml",
  "sha2 0.11.0",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-c-sharp",
- "tree-sitter-cpp",
- "tree-sitter-java",
- "tree-sitter-kotlin-ng",
- "tree-sitter-perl",
- "tree-sitter-php",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-sfapex",
- "tree-sitter-typescript",
 ]
 
 [[package]]
 name = "engram-integration"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "chrono",
  "engram-belief",
+ "engram-code",
  "engram-consolidation",
  "engram-decay",
  "engram-domain",
  "engram-eval",
+ "engram-graph-analytics",
  "engram-hierarchy",
  "engram-ingest",
  "engram-knowledge",
  "engram-memory",
+ "engram-procedures",
  "engram-reflection",
+ "engram-rerank-mmr",
  "engram-retrieval",
  "engram-runtime",
  "engram-store-associative-graph",
@@ -2049,7 +2053,7 @@ dependencies = [
 [[package]]
 name = "engram-knowledge"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -2059,7 +2063,17 @@ dependencies = [
 [[package]]
 name = "engram-memory"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
+dependencies = [
+ "async-trait",
+ "engram-domain",
+ "engram-runtime",
+]
+
+[[package]]
+name = "engram-procedures"
+version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -2069,30 +2083,43 @@ dependencies = [
 [[package]]
 name = "engram-reflection"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
+ "chrono",
  "engram-belief",
  "engram-consolidation",
  "engram-domain",
+ "engram-memory",
+ "engram-runtime",
+]
+
+[[package]]
+name = "engram-rerank-mmr"
+version = "0.1.0"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
+dependencies = [
+ "engram-domain",
+ "engram-retrieval",
  "engram-runtime",
 ]
 
 [[package]]
 name = "engram-retrieval"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
  "engram-runtime",
  "serde",
+ "tokio",
 ]
 
 [[package]]
 name = "engram-runtime"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "engram-domain",
  "regex",
@@ -2102,7 +2129,7 @@ dependencies = [
 [[package]]
 name = "engram-store-associative-graph"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -2116,7 +2143,7 @@ dependencies = [
 [[package]]
 name = "engram-store-community-summary"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -2130,7 +2157,7 @@ dependencies = [
 [[package]]
 name = "engram-store-lexical"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "engram-domain",
@@ -2142,15 +2169,16 @@ dependencies = [
 [[package]]
 name = "engram-store-sqlite"
 version = "0.1.0"
-source = "git+https://github.com/phanijapps/engram?branch=main#0149f9d3f72a2f89ae781e142edee7ca70d2dcbb"
+source = "git+https://github.com/phanijapps/engram?branch=main#fbab01665045a5796e3261cad6663f52313a668d"
 dependencies = [
  "async-trait",
  "chrono",
- "engram-core",
+ "engram-belief",
  "engram-domain",
  "engram-hierarchy",
  "engram-knowledge",
  "engram-memory",
+ "engram-procedures",
  "engram-retrieval",
  "engram-runtime",
  "futures",
@@ -2193,7 +2221,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2661,9 +2689,7 @@ dependencies = [
  "zbot-conversation",
  "zbot-engram-adapter",
  "zbot-runtime-sqlite",
- "zbot-stores",
  "zbot-stores-domain",
- "zbot-stores-sqlite",
  "zbot-stores-traits",
  "zbot-trace",
 ]
@@ -2828,9 +2854,7 @@ dependencies = [
  "zbot-conversation",
  "zbot-engram-adapter",
  "zbot-runtime-sqlite",
- "zbot-stores",
  "zbot-stores-domain",
- "zbot-stores-sqlite",
  "zbot-stores-traits",
  "zbot-trace",
 ]
@@ -2854,6 +2878,14 @@ dependencies = [
  "agent-runtime",
  "async-trait",
  "chrono",
+ "engram-belief",
+ "engram-consolidation",
+ "engram-domain",
+ "engram-hierarchy",
+ "engram-reflection",
+ "engram-rerank-mmr",
+ "engram-retrieval",
+ "engram-runtime",
  "gateway-events",
  "gateway-services",
  "knowledge-graph",
@@ -2866,9 +2898,8 @@ dependencies = [
  "tracing",
  "uuid",
  "zbot-conversation",
- "zbot-stores",
+ "zbot-engram-adapter",
  "zbot-stores-domain",
- "zbot-stores-sqlite",
  "zbot-stores-traits",
 ]
 
@@ -3734,6 +3765,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zbot-stores-domain",
+ "zbot-stores-traits",
 ]
 
 [[package]]
@@ -4355,7 +4388,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5593,7 +5626,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5651,7 +5684,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6079,7 +6112,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6415,7 +6448,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7025,6 +7058,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-go"
+version = "0.23.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b13d476345220dbe600147dd444165c5791bf85ef53e28acbedd46112ee18431"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-java"
 version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7082,6 +7125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-ruby"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be0484ea4ef6bb9c575b4fdabde7e31340a8d2dbc7d52b321ac83da703249f95"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-rust"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7092,10 +7145,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-scala"
+version = "0.23.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efde5e68b4736e9eac17bfa296c6f104a26bffab363b365eb898c40a63c15d2f"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-sfapex"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ac630633dad003566212db2adc29a2a75c3e581a7288713dde28f42a428b016"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-swift"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe36052155b9dd69ca82b3b8f1b4ccfb2d867125ac1a4db1dd7331829242668c"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -7507,7 +7580,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -7971,6 +8044,7 @@ dependencies = [
  "engram-integration",
  "engram-knowledge",
  "engram-memory",
+ "engram-retrieval",
  "knowledge-graph",
  "rusqlite",
  "serde",
@@ -7980,7 +8054,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "zbot-stores",
  "zbot-stores-conformance",
  "zbot-stores-domain",
  "zbot-stores-traits",
@@ -8010,18 +8083,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zbot-stores"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "knowledge-graph",
- "serde",
- "thiserror 2.0.18",
- "zbot-stores-domain",
- "zbot-stores-traits",
-]
-
-[[package]]
 name = "zbot-stores-conformance"
 version = "0.1.0"
 dependencies = [
@@ -8029,7 +8090,6 @@ dependencies = [
  "chrono",
  "knowledge-graph",
  "serde_json",
- "zbot-stores",
  "zbot-stores-domain",
  "zbot-stores-traits",
 ]
@@ -8041,34 +8101,6 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "zbot-stores-sqlite"
-version = "0.1.0"
-dependencies = [
- "agent-primitives",
- "agent-runtime",
- "api-logs",
- "async-trait",
- "chrono",
- "execution-state",
- "knowledge-graph",
- "r2d2",
- "r2d2_sqlite",
- "rusqlite",
- "serde",
- "serde_json",
- "sqlite-vec",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
- "zbot-runtime-sqlite",
- "zbot-stores",
- "zbot-stores-conformance",
- "zbot-stores-domain",
- "zbot-stores-traits",
 ]
 
 [[package]]

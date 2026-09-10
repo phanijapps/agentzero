@@ -322,13 +322,8 @@ impl ConflictJudgeLlm for LlmConflictJudge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_primitives::vault_paths::VaultPaths;
+    use crate::sleep::test_support;
     use std::sync::Mutex;
-    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zbot_stores_sqlite::{
-        CompactionRepository, GatewayCompactionStore, GatewayMemoryFactStore, KnowledgeDatabase,
-        MemoryRepository,
-    };
 
     struct MockJudge {
         response: Mutex<ConflictResponse>,
@@ -353,25 +348,16 @@ mod tests {
         _tmp: tempfile::TempDir,
         memory_store: Arc<dyn MemoryFactStore>,
         compaction_store: Arc<dyn CompactionStore>,
-        knowledge_db: Arc<KnowledgeDatabase>,
     }
 
     fn setup() -> Harness {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("db"));
-        let vec_index: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(db.clone(), vec_index));
-        let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
+        let memory_store = test_support::fact_store(&tmp);
+        let compaction_store = test_support::compaction_store(&tmp);
         Harness {
             _tmp: tmp,
-            memory_store: Arc::new(GatewayMemoryFactStore::new(memory_repo, None)),
-            compaction_store: Arc::new(GatewayCompactionStore::new(compaction_repo)),
-            knowledge_db: db,
+            memory_store,
+            compaction_store,
         }
     }
 
@@ -464,6 +450,7 @@ mod tests {
             epistemic_class: Some("current".into()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         };
         let mut low = high.clone();
         low.id = "lo".into();
@@ -580,9 +567,7 @@ mod tests {
     /// marked stale.
     #[tokio::test]
     async fn supersession_fires_belief_propagation() {
-        use zbot_stores_sqlite::SqliteBeliefStore;
         use zbot_stores_traits::Belief;
-        use zbot_stores_traits::BeliefStore;
 
         let h = setup();
         seed_two_schemas(
@@ -616,8 +601,7 @@ mod tests {
 
         // Wire a real SqliteBeliefStore against the same KnowledgeDatabase
         // the memory store uses.
-        let knowledge_db = h.knowledge_db.clone();
-        let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(knowledge_db));
+        let (belief_store, _contradictions) = test_support::belief_stores(&h._tmp);
         let now = chrono::Utc::now();
         let sole_belief = Belief {
             id: "belief-sole".into(),

@@ -1,3 +1,4 @@
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::types::{Entity, EntityType, Relationship, RelationshipType};
 use rusqlite::Connection;
 use serde_json::json;
@@ -7,7 +8,6 @@ use zbot_engram_adapter::{
     GovernanceSelection, MigrationInput, MigrationMode, MigrationSource, SkosExpansionPolicy,
     ValidationMode, ZBOT_BASE_ONTOLOGY_ID, ZBOT_GENERAL_SCHEME_ID,
 };
-use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_traits::{RecallTaxonomyExpander, RecallTaxonomyExpansionRequest};
 
 fn governed_config(root: &tempfile::TempDir, mode: MigrationMode) -> AdapterConfig {

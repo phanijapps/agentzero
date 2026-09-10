@@ -11,11 +11,13 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::sleep::hierarchy_builder::HierarchyBuilder;
+use crate::sleep::extraction_engram::{
+    MemorySynthesisConsolidation, ProcedureExtractionConsolidation,
+};
+use crate::sleep::hierarchy_engram::HierarchyConsolidation;
 use crate::sleep::{
-    BeliefContradictionDetector, BeliefSynthesizer, Compactor, ConflictResolver,
-    CorrectionsAbstractor, DecayEngine, OrphanArchiver, PatternExtractor, Pruner,
-    RecentBeliefNetworkActivity, Synthesizer,
+    BeliefConsolidation, Compactor, ConflictResolver, DecayEngine, OrphanArchiver, Pruner,
+    RecentBeliefNetworkActivity,
 };
 
 /// Bundle of optional sleep-time ops passed to [`SleepTimeWorker::start`].
@@ -23,31 +25,28 @@ use crate::sleep::{
 /// grows. All fields are optional so tests/partial setups still work.
 #[derive(Clone, Default)]
 pub struct SleepOps {
-    pub synthesizer: Option<Arc<Synthesizer>>,
-    pub pattern_extractor: Option<Arc<PatternExtractor>>,
+    pub synthesizer: Option<Arc<MemorySynthesisConsolidation>>,
+    pub pattern_extractor: Option<Arc<ProcedureExtractionConsolidation>>,
     pub orphan_archiver: Option<Arc<OrphanArchiver>>,
-    pub corrections_abstractor: Option<Arc<CorrectionsAbstractor>>,
     pub conflict_resolver: Option<Arc<ConflictResolver>>,
-    /// Belief Network synthesizer (Phase B-1). When `None`, the cycle
-    /// skips the belief step entirely — beliefs are opt-in via
-    /// `MemorySettings.belief_network.enabled`.
-    pub belief_synthesizer: Option<Arc<BeliefSynthesizer>>,
-    /// Belief contradiction detector (Phase B-2). Runs strictly AFTER
-    /// `belief_synthesizer` so freshly-synthesized beliefs are visible
-    /// to the pairwise judge. When `None`, the cycle skips the detection
-    /// step entirely — same opt-in flag as B-1.
-    pub belief_contradiction_detector: Option<Arc<BeliefContradictionDetector>>,
+    /// Belief Network consolidation (Phases B-1 + B-2 as one engram
+    /// consolidation cycle: synthesis then contradiction detection). When
+    /// `None`, the cycle skips the belief step entirely — beliefs are
+    /// opt-in via `MemorySettings.belief_network.enabled`.
+    pub belief_consolidation: Option<Arc<BeliefConsolidation>>,
     /// Recorder for recent Belief Network worker stats (Phase B-6). When
     /// `Some`, every successful synthesizer / detector cycle writes a
     /// timestamped snapshot here for the Observatory UI to read. `None`
     /// is the legacy code path — recording is skipped entirely.
     pub belief_network_activity: Option<Arc<RecentBeliefNetworkActivity>>,
-    /// Hierarchical-memory builder (Phase H-3). When `Some`, runs after
-    /// the Compactor each cycle: clusters layer-N entities, synthesises
-    /// layer-N+1 aggregates, and writes inter-cluster relations gated
-    /// by connectivity strength λ. When `None`, the cycle is unchanged
-    /// — hierarchy is opt-in via `MemorySettings.hierarchy.enabled`.
-    pub hierarchy_builder: Option<Arc<HierarchyBuilder>>,
+    /// Hierarchical-memory build (Phase H-3) as an engram
+    /// consolidation cycle (`HierarchyBuild` task kind; see
+    /// `hierarchy_engram.rs`). When `Some`, runs after the Compactor each
+    /// cycle: clusters layer-N entities, synthesises layer-N+1 aggregates,
+    /// and writes inter-cluster relations gated by connectivity strength λ.
+    /// When `None`, the cycle is unchanged — hierarchy is opt-in via
+    /// `MemorySettings.hierarchy.enabled`.
+    pub hierarchy_builder: Option<Arc<HierarchyConsolidation>>,
 }
 
 /// Background worker that orchestrates the full sleep-time pipeline.
@@ -146,7 +145,6 @@ pub struct CycleStats {
     pub synthesis_facts_inserted: u64,
     pub synthesis_facts_bumped: u64,
     pub patterns_inserted: u64,
-    pub schemas_abstracted: u64,
     pub conflicts_resolved: u64,
     pub prune_candidates: u64,
     pub pruned: u64,
@@ -194,9 +192,11 @@ async fn run_cycle(
     // Hierarchical memory (Phase H-3) — runs immediately after the
     // Compactor so it doesn't cluster near-duplicate noise. Opt-in;
     // a `None` field leaves the cycle byte-for-byte unchanged.
-    if let Some(hb) = ops.hierarchy_builder.as_ref() {
-        let h_stats = hb.run_for_agent(agent_id).await;
-        stats.hierarchy_aggregates_created = h_stats.aggregates_created;
+    // Dispatched through an engram ConsolidationRequest (HierarchyBuild).
+    if let Some(hc) = ops.hierarchy_builder.as_ref() {
+        let h_stats = hc.execute(&run_id, agent_id).await;
+        stats.hierarchy_aggregates_created =
+            h_stats.aggregates_created + h_stats.singletons_promoted;
         stats.hierarchy_inter_cluster_relations = h_stats.inter_cluster_relations_created;
         // Always emit an info-level summary so operators can confirm
         // the builder actually ran and see why it stopped — without
@@ -223,28 +223,30 @@ async fn run_cycle(
         }
     }
 
-    // Synthesis — operates on post-compaction state. Conservative: failure is
-    // logged and the cycle continues.
+    // Synthesis (MemorySynthesis task kind) — operates on
+    // post-compaction state. Conservative: failure is logged and the
+    // cycle continues.
     if let Some(synth) = ops.synthesizer.as_ref() {
-        match synth.run_cycle(&run_id).await {
+        match synth.execute(&run_id).await {
             Ok(s) => {
                 stats.synthesis_facts_inserted = s.facts_inserted;
                 stats.synthesis_facts_bumped = s.facts_bumped;
             }
             Err(e) => {
-                tracing::warn!(%run_id, error = %e, "synthesizer cycle failed");
+                tracing::warn!(%run_id, error = %e, "memory-synthesis cycle failed");
             }
         }
     }
 
-    // Pattern extraction — same conservative handling as synthesis.
+    // Pattern extraction (ProcedureExtraction task kind) — same
+    // conservative handling.
     if let Some(px) = ops.pattern_extractor.as_ref() {
-        match px.run_cycle(&run_id).await {
+        match px.execute(&run_id).await {
             Ok(s) => {
                 stats.patterns_inserted = s.procedures_inserted;
             }
             Err(e) => {
-                tracing::warn!(%run_id, error = %e, "pattern extractor cycle failed");
+                tracing::warn!(%run_id, error = %e, "procedure-extraction cycle failed");
             }
         }
     }
@@ -300,18 +302,6 @@ async fn run_cycle(
         }
     }
 
-    // Corrections abstraction — promotes repeated correction facts to schema facts.
-    if let Some(ca) = ops.corrections_abstractor.as_ref() {
-        match ca.run_cycle(&run_id, agent_id).await {
-            Ok(s) => {
-                stats.schemas_abstracted = s.schemas_abstracted;
-            }
-            Err(e) => {
-                tracing::warn!(%run_id, error = %e, "corrections abstractor cycle failed");
-            }
-        }
-    }
-
     // Conflict resolution — supersedes contradicting schema facts. Runs after
     // corrections abstraction so newly-promoted schemas are also considered.
     if let Some(cr) = ops.conflict_resolver.as_ref() {
@@ -325,37 +315,23 @@ async fn run_cycle(
         }
     }
 
-    // Belief synthesis — opt-in. Runs after conflict resolution so the
-    // active fact set is stable. No-op when the synthesizer is None.
-    if let Some(bs) = ops.belief_synthesizer.as_ref() {
-        match bs.run_cycle(&run_id, agent_id).await {
-            Ok(s) => {
-                stats.beliefs_synthesized = s.beliefs_synthesized;
-                if let Some(act) = ops.belief_network_activity.as_ref() {
-                    act.record_synthesis(s);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%run_id, error = %e, "belief synthesizer cycle failed");
-            }
-        }
-    }
-
-    // Belief contradiction detection — opt-in. Runs strictly AFTER
-    // synthesis so the fresh belief set is visible to the pair-wise
-    // judge. Same opt-in flag as B-1 (the detector is only Some when
-    // both the contradiction store and the network are enabled).
-    if let Some(detector) = ops.belief_contradiction_detector.as_ref() {
-        match detector.run_cycle(&run_id, agent_id).await {
-            Ok(s) => {
+    // Belief consolidation — opt-in. One engram consolidation cycle:
+    // synthesis first (so the fresh belief set exists), then
+    // contradiction detection over it. Runs after conflict resolution
+    // so the active fact set is stable.
+    if let Some(bc) = ops.belief_consolidation.as_ref() {
+        match bc.execute(&run_id, agent_id).await {
+            Ok((synthesis, contradiction)) => {
+                stats.beliefs_synthesized = synthesis.beliefs_synthesized;
                 stats.belief_contradictions_detected =
-                    s.contradictions_logical + s.contradictions_tension;
+                    contradiction.contradictions_logical + contradiction.contradictions_tension;
                 if let Some(act) = ops.belief_network_activity.as_ref() {
-                    act.record_contradiction(s);
+                    act.record_synthesis(synthesis);
+                    act.record_contradiction(contradiction);
                 }
             }
             Err(e) => {
-                tracing::warn!(%run_id, error = %e, "belief contradiction detector cycle failed");
+                tracing::warn!(%run_id, error = %e, "belief consolidation cycle failed");
             }
         }
     }
@@ -369,7 +345,6 @@ async fn run_cycle(
         synthesis_inserted = stats.synthesis_facts_inserted,
         synthesis_bumped = stats.synthesis_facts_bumped,
         patterns_inserted = stats.patterns_inserted,
-        schemas_abstracted = stats.schemas_abstracted,
         conflicts_resolved = stats.conflicts_resolved,
         prune_candidates = stats.prune_candidates,
         pruned = stats.pruned,
@@ -402,25 +377,19 @@ mod tests {
     use super::*;
     use crate::sleep::pattern_extractor::{PatternExtractLlm, PatternInput, PatternResponse};
     use crate::sleep::synthesizer::{SynthesisInput, SynthesisLlm, SynthesisResponse};
+    use crate::sleep::test_support;
     use agent_primitives::vault_paths::VaultPaths;
     use async_trait::async_trait;
+    use knowledge_graph::kg_trait::KnowledgeGraphStore;
     use std::sync::Mutex;
     use tempfile::tempdir;
-    use zbot_stores::KnowledgeGraphStore;
-    use zbot_stores_sqlite::kg::storage::GraphStorage;
-    use zbot_stores_sqlite::vector_index::{SqliteVecIndex, VectorIndex};
-    use zbot_stores_sqlite::SqliteKgStore;
-    use zbot_stores_sqlite::{
-        CompactionRepository, KnowledgeDatabase, MemoryRepository, ProcedureRepository,
-    };
 
     struct Harness {
-        _tmp: tempfile::TempDir,
-        db: Arc<KnowledgeDatabase>,
-        graph: Arc<GraphStorage>,
-        compaction_repo: Arc<CompactionRepository>,
-        memory_repo: Arc<MemoryRepository>,
-        procedure_repo: Arc<ProcedureRepository>,
+        tmp: tempfile::TempDir,
+        kg_store: Arc<dyn KnowledgeGraphStore>,
+        compaction_store: Arc<dyn zbot_stores_traits::CompactionStore>,
+        memory_store: Arc<dyn zbot_stores_traits::MemoryFactStore>,
+        procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore>,
         message_store: Arc<dyn zbot_conversation::MessageStore>,
     }
 
@@ -430,47 +399,32 @@ mod tests {
         std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
         let conversation_pool =
             zbot_conversation::open_conversation_pool(&paths.conversations_db()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths.clone()).unwrap());
-        let graph = Arc::new(GraphStorage::new(db.clone()).unwrap());
-        let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
-        let mem_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "memory_facts_index", "fact_id")
-                .expect("vec index init"),
-        );
-        let memory_repo = Arc::new(MemoryRepository::new(db.clone(), mem_vec));
-        let proc_vec: Arc<dyn VectorIndex> = Arc::new(
-            SqliteVecIndex::new(db.clone(), "procedures_index", "procedure_id")
-                .expect("vec index init"),
-        );
-        let procedure_repo = Arc::new(ProcedureRepository::new(db.clone(), proc_vec));
         let message_store: Arc<dyn zbot_conversation::MessageStore> = Arc::new(
             zbot_conversation::SqliteMessageStore::new(conversation_pool),
         );
+        let memory_store = test_support::fact_store(&tmp);
+        let procedure_store = test_support::procedure_store(&tmp);
+        let kg_store = test_support::kg_store(&tmp);
+        let compaction_store = test_support::compaction_store(&tmp);
         Harness {
-            _tmp: tmp,
-            db,
-            graph,
-            compaction_repo,
-            memory_repo,
-            procedure_repo,
+            tmp,
+            kg_store,
+            compaction_store,
+            memory_store,
+            procedure_store,
             message_store,
         }
     }
 
     fn build_core(h: &Harness) -> (Arc<Compactor>, Arc<DecayEngine>, Arc<Pruner>) {
         use crate::sleep::{DecayConfig, Pruner as Pr};
-        use zbot_stores_sqlite::GatewayCompactionStore;
-        use zbot_stores_traits::CompactionStore;
-        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let compaction_store: Arc<dyn CompactionStore> =
-            Arc::new(GatewayCompactionStore::new(h.compaction_repo.clone()));
         let compactor = Arc::new(Compactor::new(
-            kg_store.clone(),
-            compaction_store.clone(),
+            h.kg_store.clone(),
+            h.compaction_store.clone(),
             None,
         ));
-        let decay = Arc::new(DecayEngine::new(kg_store.clone(), DecayConfig::default()));
-        let pruner = Arc::new(Pr::new(kg_store, compaction_store));
+        let decay = Arc::new(DecayEngine::new(h.kg_store.clone(), DecayConfig::default()));
+        let pruner = Arc::new(Pr::new(h.kg_store.clone(), h.compaction_store.clone()));
         (compactor, decay, pruner)
     }
 
@@ -529,55 +483,41 @@ mod tests {
         // verify they were invoked (no panic, stats all zero, cycle completes).
         let h = harness();
         let (c, d, p) = build_core(&h);
-        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let episode_vec: Arc<dyn zbot_stores_sqlite::vector_index::VectorIndex> = Arc::new(
-            zbot_stores_sqlite::vector_index::SqliteVecIndex::new(
-                h.db.clone(),
-                "session_episodes_index",
-                "episode_id",
-            )
-            .expect("vec idx"),
-        );
-        let episode_repo = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
-            h.db.clone(),
-            episode_vec,
-        ));
+        let kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
         let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
-            Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
-        let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(
-            zbot_stores_sqlite::GatewayMemoryFactStore::new(h.memory_repo.clone(), None),
-        );
-        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
-            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
-        );
-        let synth = Arc::new(Synthesizer::new(
-            kg_store.clone(),
-            episode_store.clone(),
-            memory_store.clone(),
-            compaction_store.clone(),
-            Arc::new(RecordingSynthLlm {
-                calls: Mutex::new(0),
-                fail: false,
-            }),
-            None,
-        ));
-        let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(
-            zbot_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
-        );
-        let px = Arc::new(PatternExtractor::new(
-            episode_store.clone(),
-            h.message_store.clone(),
-            procedure_store,
-            compaction_store.clone(),
-            Arc::new(RecordingPatternLlm),
-            None,
-            Vec::new(),
-        ));
-        let archiver_kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let archiver_compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
-            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
-        );
+            test_support::episode_store(&h.tmp);
+        let memory_store: Arc<dyn zbot_stores_traits::MemoryFactStore> = h.memory_store.clone();
+        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
+            h.compaction_store.clone();
+        let synth = Arc::new(MemorySynthesisConsolidation::new(Arc::new(
+            crate::sleep::Synthesizer::new(
+                kg_store.clone(),
+                episode_store.clone(),
+                memory_store.clone(),
+                compaction_store.clone(),
+                Arc::new(RecordingSynthLlm {
+                    calls: Mutex::new(0),
+                    fail: false,
+                }),
+                None,
+            ),
+        )));
+        let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> =
+            h.procedure_store.clone();
+        let px = Arc::new(ProcedureExtractionConsolidation::new(Arc::new(
+            crate::sleep::PatternExtractor::new(
+                episode_store.clone(),
+                h.message_store.clone(),
+                procedure_store,
+                compaction_store.clone(),
+                Arc::new(RecordingPatternLlm),
+                None,
+                Vec::new(),
+            ),
+        )));
+        let archiver_kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
+        let archiver_compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
+            h.compaction_store.clone();
         let archiver = Arc::new(crate::sleep::OrphanArchiver::new(
             archiver_kg_store,
             archiver_compaction_store,
@@ -586,10 +526,8 @@ mod tests {
             synthesizer: Some(synth),
             pattern_extractor: Some(px),
             orphan_archiver: Some(archiver),
-            corrections_abstractor: None,
             conflict_resolver: None,
-            belief_synthesizer: None,
-            belief_contradiction_detector: None,
+            belief_consolidation: None,
             belief_network_activity: None,
             hierarchy_builder: None,
         };
@@ -640,61 +578,47 @@ mod tests {
         // counter is reachable (no panic) and cycle returns stats.
         let h = harness();
         let (c, d, p) = build_core(&h);
-        let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(h.graph.clone()));
-        let episode_vec: Arc<dyn zbot_stores_sqlite::vector_index::VectorIndex> = Arc::new(
-            zbot_stores_sqlite::vector_index::SqliteVecIndex::new(
-                h.db.clone(),
-                "session_episodes_index",
-                "episode_id",
-            )
-            .expect("vec idx"),
-        );
-        let episode_repo = Arc::new(zbot_stores_sqlite::EpisodeRepository::new(
-            h.db.clone(),
-            episode_vec,
-        ));
+        let kg_store: Arc<dyn KnowledgeGraphStore> = h.kg_store.clone();
         let episode_store: Arc<dyn zbot_stores_traits::EpisodeStore> =
-            Arc::new(zbot_stores_sqlite::GatewayEpisodeStore::new(episode_repo));
-        let memory_store: Arc<dyn zbot_stores::MemoryFactStore> = Arc::new(
-            zbot_stores_sqlite::GatewayMemoryFactStore::new(h.memory_repo.clone(), None),
-        );
-        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> = Arc::new(
-            zbot_stores_sqlite::GatewayCompactionStore::new(h.compaction_repo.clone()),
-        );
-        let synth = Arc::new(Synthesizer::new(
-            kg_store,
-            episode_store.clone(),
-            memory_store,
-            compaction_store.clone(),
-            Arc::new(RecordingSynthLlm {
-                calls: Mutex::new(0),
-                fail: true,
-            }),
-            None,
-        ));
+            test_support::episode_store(&h.tmp);
+        let memory_store: Arc<dyn zbot_stores_traits::MemoryFactStore> = h.memory_store.clone();
+        let compaction_store: Arc<dyn zbot_stores_traits::CompactionStore> =
+            h.compaction_store.clone();
+        let synth = Arc::new(MemorySynthesisConsolidation::new(Arc::new(
+            crate::sleep::Synthesizer::new(
+                kg_store,
+                episode_store.clone(),
+                memory_store,
+                compaction_store.clone(),
+                Arc::new(RecordingSynthLlm {
+                    calls: Mutex::new(0),
+                    fail: true,
+                }),
+                None,
+            ),
+        )));
         let counter = Arc::new(CountingPatternLlm {
             calls: Mutex::new(0),
         });
-        let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> = Arc::new(
-            zbot_stores_sqlite::GatewayProcedureStore::new(h.procedure_repo.clone()),
-        );
-        let px = Arc::new(PatternExtractor::new(
-            episode_store.clone(),
-            h.message_store.clone(),
-            procedure_store,
-            compaction_store.clone(),
-            counter.clone(),
-            None,
-            Vec::new(),
-        ));
+        let procedure_store: Arc<dyn zbot_stores_traits::ProcedureStore> =
+            h.procedure_store.clone();
+        let px = Arc::new(ProcedureExtractionConsolidation::new(Arc::new(
+            crate::sleep::PatternExtractor::new(
+                episode_store.clone(),
+                h.message_store.clone(),
+                procedure_store,
+                compaction_store.clone(),
+                counter.clone(),
+                None,
+                Vec::new(),
+            ),
+        )));
         let ops = SleepOps {
             synthesizer: Some(synth),
             pattern_extractor: Some(px),
             orphan_archiver: None,
-            corrections_abstractor: None,
             conflict_resolver: None,
-            belief_synthesizer: None,
-            belief_contradiction_detector: None,
+            belief_consolidation: None,
             belief_network_activity: None,
             hierarchy_builder: None,
         };

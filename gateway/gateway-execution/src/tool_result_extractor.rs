@@ -10,10 +10,10 @@
 
 use crate::errors::ExecutionError;
 use agent_tools::{EvidenceRecord, IngestionAccess};
+use knowledge_graph::kg_trait::{ExtractedKnowledge, KnowledgeGraphStore};
 use knowledge_graph::{Entity, EntityType};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use zbot_stores::{ExtractedKnowledge, KnowledgeGraphStore};
 use zbot_stores_domain::EpisodeSource;
 use zbot_stores_traits::KgEpisodeStore;
 

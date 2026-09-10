@@ -105,7 +105,7 @@ async fn build_continuation_message(
     session_id: &str,
     ward_id: Option<&str>,
     session_plan: Option<&SessionPlanSnapshot>,
-    fact_store: Option<&Arc<dyn zbot_stores::MemoryFactStore>>,
+    fact_store: Option<&Arc<dyn zbot_stores_traits::MemoryFactStore>>,
 ) -> String {
     let plan_hint = session_plan
         .map(render_session_plan_for_continuation)
@@ -352,7 +352,7 @@ pub(super) async fn invoke_continuation(
 
     // Trait-routed fact store used for save_fact and ctx writes during
     // continuation. Wired via AppState.
-    let fact_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> = memory_store.clone();
+    let fact_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> = memory_store.clone();
     // Clone for session-ctx plan_snapshot below — the builder moves the
     // primary Arc, so we keep a separate handle to write plan text to
     // ctx.<sid>.plan on continuations that load a plan.md.

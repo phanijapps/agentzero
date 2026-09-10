@@ -3,8 +3,8 @@
 //!
 //! Each row tracks one extraction event (a chunk of source text staged
 //! for ingest) with status `pending` → `running` → `done` | `failed`.
-//! The `KgEpisode` JSON shape (see `zbot_stores_sqlite::KgEpisode` /
-//! the Surreal `kg_ingestion_episode` table) is used as the canonical
+//! The `KgEpisode` JSON shape (see the Surreal
+//! `kg_ingestion_episode` table) is used as the canonical
 //! over-the-wire format.
 //!
 //! Consumers:

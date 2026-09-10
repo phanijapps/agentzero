@@ -17,6 +17,7 @@
 
 pub mod error;
 pub mod extractor;
+pub mod kg_trait;
 pub mod resolver;
 pub mod types;
 

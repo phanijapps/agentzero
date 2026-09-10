@@ -716,7 +716,8 @@ pub async fn spawn_delegated_agent(
     // The post-execution state_handoff hook reuses the same trait store
     // the executor was wired with. Cloning is cheap (Arc) and lets the
     // handoff fire after the executor has consumed its own copy.
-    let fact_store_for_ctx: Option<Arc<dyn zbot_stores::MemoryFactStore>> = memory_store.clone();
+    let fact_store_for_ctx: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> =
+        memory_store.clone();
 
     // Phase 7: pass the memory_store handle through so spawn_execution_task
     // can query ctx.state.* rows when building the ward_snapshot preamble.
@@ -1024,8 +1025,8 @@ struct SpawnContext {
     paths: SharedVaultPaths,
 
     // --- Optional memory wiring (Phase 4b + 7 ward_snapshot preamble) ---
-    fact_store_for_ctx: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
-    memory_store_for_snapshot: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    fact_store_for_ctx: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
+    memory_store_for_snapshot: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
     /// Distiller for the subagent's child session — fired after
     /// `complete_session(child_session_id)`.
     distiller: Option<Arc<distillation::SessionDistiller>>,
@@ -1418,7 +1419,7 @@ struct HandleExecutionSuccess<'a> {
     response: &'a str,
     parent_agent: &'a str,
     parent_execution_id: &'a str,
-    fact_store_for_ctx: Option<&'a Arc<dyn zbot_stores::MemoryFactStore>>,
+    fact_store_for_ctx: Option<&'a Arc<dyn zbot_stores_traits::MemoryFactStore>>,
 }
 
 async fn handle_execution_success(ctx: HandleExecutionSuccess<'_>) {
@@ -1941,7 +1942,7 @@ mod tests {
         delegation_tx: tokio::sync::mpsc::UnboundedSender<DelegationRequest>,
         log_service: Arc<LogService<DatabaseManager>>,
         state_service: Arc<StateService<DatabaseManager>>,
-        memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+        memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
         distiller: Option<Arc<distillation::SessionDistiller>>,
         memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
         peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,
@@ -1951,7 +1952,7 @@ mod tests {
                 std::collections::HashMap<String, Arc<agent_runtime::ProviderRateLimiter>>,
             >,
         >,
-        _kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+        _kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
         _ingestion_adapter: Option<Arc<dyn agent_tools::IngestionAccess>>,
         _goal_adapter: Option<Arc<dyn agent_tools::GoalAccess>>,
         steering_registry: Arc<agent_runtime::SteeringRegistry>,

@@ -413,6 +413,14 @@ pub trait MemoryFactStore: Send + Sync {
         ))
     }
 
+    /// Access reinforcement: bump `mention_count` and set `last_accessed`
+    /// on facts that made a final recall packet. Each retrieval slows the
+    /// fact's recency decay (ACT-R base-level activation). Default is a
+    /// no-op so backends that don't track access degrade silently.
+    async fn touch_facts(&self, _fact_ids: &[String]) -> StoreResult<()> {
+        Ok(())
+    }
+
     /// Mark a fact as superseded by a newer fact. Both ids should already
     /// exist. `transition_time` is the moment at which the old fact stops
     /// being valid — typically `Utc::now()` for distillation paths, or the

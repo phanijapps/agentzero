@@ -26,7 +26,7 @@ use agent_runtime::llm::ChatMessage;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::sleep::hierarchy_builder::{
+use crate::sleep::hierarchy_engram::{
     AggregateEntityLlm, AggregateMemberContext, AggregateResponse,
 };
 use crate::util::parse_llm_json;
@@ -221,7 +221,7 @@ impl AggregateEntityLlm for LlmAggregateEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zbot_stores::types::EntityId;
+    use knowledge_graph::kg_trait::kg_types::EntityId;
 
     fn member(name: &str, description: Option<&str>) -> AggregateMemberContext {
         AggregateMemberContext {

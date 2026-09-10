@@ -15,12 +15,12 @@
 use crate::errors::ExecutionError;
 use crate::indexer::relationship_rules;
 use agent_primitives::vault_paths::SharedVaultPaths;
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use knowledge_graph::{Entity, EntityType, Relationship};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_domain::EpisodeSource;
 use zbot_stores_traits::KgEpisodeStore;
 
@@ -226,7 +226,7 @@ async fn index_one_file(
     let count = all_entities.len();
     if count > 0 {
         apply_trusted_ward_scope(&mut all_entities, &mut all_rels, ward_id);
-        let knowledge = zbot_stores::ExtractedKnowledge {
+        let knowledge = knowledge_graph::kg_trait::ExtractedKnowledge {
             entities: all_entities,
             relationships: all_rels,
         };
@@ -666,7 +666,7 @@ pub(crate) async fn run_session_index(
     session_id: &str,
     agent_id: &str,
     kg_episode_store: Option<&Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
-    kg_store: Option<&Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    kg_store: Option<&Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
     paths: &SharedVaultPaths,
 ) {
     let (Some(wid), Some(ep_store), Some(kg)) = (ward_id, kg_episode_store, kg_store) else {
@@ -691,9 +691,7 @@ pub(crate) async fn run_session_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_primitives::vault_paths::VaultPaths;
-    use zbot_engram_adapter::{AdapterConfig, EngramKnowledgeGraphStore};
-    use zbot_stores_sqlite::{GatewayKgEpisodeStore, KgEpisodeRepository, KnowledgeDatabase};
+    use crate::test_stores;
 
     #[test]
     fn detect_named_object_array() {
@@ -927,19 +925,8 @@ mod tests {
         )
         .expect("write artifact");
 
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("knowledge db"));
-        let episode_repo = Arc::new(KgEpisodeRepository::new(db.clone()));
-        let episode_store: Arc<dyn KgEpisodeStore> =
-            Arc::new(GatewayKgEpisodeStore::new(episode_repo));
-        let engram = Arc::new(
-            EngramKnowledgeGraphStore::open(AdapterConfig::engram_for_data_root(
-                tmp.path(),
-                "engram-artifact-test.db",
-            ))
-            .expect("Engram graph"),
-        );
-        let kg_store: Arc<dyn KnowledgeGraphStore> = engram.clone();
+        let episode_store = test_stores::kg_episode_store(&tmp);
+        let kg_store = test_stores::kg_store(&tmp);
 
         let created = index_ward_with_options(
             &ward_path,
@@ -953,11 +940,14 @@ mod tests {
         .await;
 
         assert!(created >= 2, "primary and related organization are indexed");
-        let ada = engram
-            .get_entity_by_name("root", "Ada Lovelace")
-            .await
-            .expect("query entity")
-            .expect("Ada persisted");
+        let ada = knowledge_graph::kg_trait::KnowledgeGraphStore::get_entity_by_name(
+            kg_store.as_ref(),
+            "root",
+            "Ada Lovelace",
+        )
+        .await
+        .expect("query entity")
+        .expect("Ada persisted");
         assert_eq!(
             ada.properties.get("ward_id"),
             Some(&Value::String("trusted-ward".to_string()))
@@ -969,10 +959,15 @@ mod tests {
         assert!(!ada.properties.contains_key("governance_ontology_ids"));
         assert!(!ada.properties.contains_key("governance_record_kind"));
 
-        let relationships = engram
-            .list_relationships("root", None, 10, 0)
-            .await
-            .expect("relationships");
+        let relationships = knowledge_graph::kg_trait::KnowledgeGraphStore::list_relationships(
+            kg_store.as_ref(),
+            "root",
+            None,
+            10,
+            0,
+        )
+        .await
+        .expect("relationships");
         assert_eq!(relationships.len(), 2);
         for relationship in relationships {
             assert_eq!(

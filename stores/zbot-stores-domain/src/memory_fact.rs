@@ -61,6 +61,14 @@ pub struct MemoryFact {
     /// Human-readable pointer to source (e.g., `"research_notes.pdf:page_42"`).
     #[serde(default)]
     pub source_ref: Option<String>,
+
+    /// When the agent last retrieved this fact into a final recall packet.
+    /// Access-based reinforcement (ACT-R base-level activation): each
+    /// retrieval slows the fact's recency decay. Distinct from
+    /// `updated_at` (content change) — touch updates only this field
+    /// plus `mention_count`. Absent on pre-reinforcement records.
+    #[serde(default)]
+    pub last_accessed: Option<String>,
 }
 
 /// A memory fact with a computed relevance score from hybrid search.

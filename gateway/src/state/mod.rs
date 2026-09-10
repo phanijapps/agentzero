@@ -93,7 +93,7 @@ pub struct AppState {
 
     /// Trait-routed memory-fact store. The single read/write surface for
     /// memory facts.
-    pub memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>>,
+    pub memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
 
     /// Backend-neutral active goals used for intent boost and the goal tool.
     pub goal_store: Option<Arc<dyn zbot_stores_traits::GoalStore>>,
@@ -119,7 +119,7 @@ pub struct AppState {
     pub kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>>,
 
     /// Trait-based knowledge-graph store.
-    pub kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>>,
+    pub kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>>,
 
     /// Additive path-free governance health for Observatory/read-model routes.
     pub governance_health: Option<GovernanceCapabilityHealth>,
@@ -371,9 +371,10 @@ impl AppState {
 
         // Build the trait-routed memory_store eagerly (before MemoryRecall +
         // distillation::SessionDistiller construction, so they can be wired with it).
-        let early_memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> = engram_store_bundle
-            .as_ref()
-            .map(|bundle| bundle.memory_store.clone());
+        let early_memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> =
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.memory_store.clone());
 
         // Create memory recall. Builds whenever the Engram memory store is
         // wired. Graph enrichment routes through the trait store; the old
@@ -479,9 +480,10 @@ impl AppState {
 
         // Build the trait-routed kg_store early enough to wire it on
         // MemoryRecall before that struct is moved into Arc::new below.
-        let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> = engram_store_bundle
-            .as_ref()
-            .map(|bundle| bundle.kg_store.clone());
+        let kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>> =
+            engram_store_bundle
+                .as_ref()
+                .map(|bundle| bundle.kg_store.clone());
         if let (Some(recall), Some(ks)) = (memory_recall_inner.as_mut(), kg_store.as_ref()) {
             recall.set_kg_store(ks.clone());
         }
@@ -516,40 +518,11 @@ impl AppState {
             tracing::debug!("Belief Network recall: disabled (default)");
         }
 
-        // Self-RAG retrieval gate (opt-in via `memory.queryGate.enabled` in
-        // settings.json). Reads settings eagerly here so the gate is attached
-        // before MemoryRecall is sealed in Arc below. When the block is
-        // missing, disabled, or unreadable, the gate stays None and recall
-        // behaves identically to pre-gate behavior.
-        let query_gate_cfg: gateway_memory::QueryGateConfig =
-            gateway_services::SettingsService::new(paths.clone())
-                .load()
-                .map(|s| s.execution.memory.query_gate.clone())
-                .unwrap_or_default();
-        if query_gate_cfg.enabled {
-            let llm = Arc::new(gateway_memory::LlmQueryGate::new(
-                memory_llm_factory.clone(),
-            ));
-            let gate = Arc::new(gateway_memory::QueryGate::new(llm, query_gate_cfg.clone()));
-            if let Some(recall) = memory_recall_inner.as_mut() {
-                recall.set_query_gate(gate);
-            }
-            tracing::info!(
-                "Memory query gate: enabled (model={:?}, max_subqueries={}, timeout_ms={})",
-                query_gate_cfg.model_id,
-                query_gate_cfg.max_subqueries,
-                query_gate_cfg.timeout_ms,
-            );
-        } else {
-            tracing::info!("Memory query gate: disabled");
-        }
-
-        // MMR diversity reranking (opt-in via `memory.mmr.enabled` in
-        // settings.json). Default-disabled: when the block is missing or
-        // `enabled = false`, recall is byte-for-byte identical to pre-MMR.
-        // The config block is attached unconditionally so the runtime can
-        // read the current values; only `enabled = true` triggers the
-        // rerank step inside `recall_unified`.
+        // MMR diversity reranking (default-on; disable via `memory.mmr.enabled` in
+        // settings.json). Default-enabled: diversity reranking is part of
+        // the production recall pipeline (P2). The config block is attached
+        // unconditionally so the runtime can read current values; only
+        // `enabled = true` triggers the rerank step inside `recall_unified`.
         let mmr_cfg: gateway_memory::MmrConfig =
             gateway_services::SettingsService::new(paths.clone())
                 .load()
@@ -732,13 +705,15 @@ impl AppState {
             .get_execution_settings()
             .map(|s| s.memory.belief_network.clone())
             .unwrap_or_default();
-        let belief_store_raw: Option<Arc<dyn zbot_stores::BeliefStore>> = engram_store_bundle
-            .as_ref()
-            .map(|bundle| bundle.belief_store.clone());
-        let belief_contradiction_store_raw: Option<Arc<dyn zbot_stores::BeliefContradictionStore>> =
+        let belief_store_raw: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
             engram_store_bundle
                 .as_ref()
-                .map(|bundle| bundle.belief_contradiction_store.clone());
+                .map(|bundle| bundle.belief_store.clone());
+        let belief_contradiction_store_raw: Option<
+            Arc<dyn zbot_stores_traits::BeliefContradictionStore>,
+        > = engram_store_bundle
+            .as_ref()
+            .map(|bundle| bundle.belief_contradiction_store.clone());
         let belief_store_for_http: Option<Arc<dyn zbot_stores_traits::BeliefStore>> =
             if belief_network_cfg.enabled {
                 belief_store_raw.clone()
@@ -833,10 +808,6 @@ impl AppState {
             compaction_store.as_ref(),
         ) {
             (Some(kgs), Some(eps), Some(mems), Some(prs), Some(compstore)) => {
-                let abstractions_interval_hours = settings
-                    .get_execution_settings()
-                    .map(|s| s.memory.corrections_abstractor_interval_hours)
-                    .unwrap_or(24);
                 let conflict_interval_hours = settings
                     .get_execution_settings()
                     .map(|s| s.memory.conflict_resolver_interval_hours)
@@ -856,9 +827,6 @@ impl AppState {
                         message_store: messages.clone(),
                         embedding_client: embedding_client.clone(),
                         kg_decay_config: recall_config.kg_decay.clone(),
-                        corrections_abstractor_interval: std::time::Duration::from_secs(
-                            abstractions_interval_hours as u64 * 3600,
-                        ),
                         conflict_resolver_interval: std::time::Duration::from_secs(
                             conflict_interval_hours as u64 * 3600,
                         ),
@@ -1048,7 +1016,7 @@ impl AppState {
             None, // bus is set later by server.start()
         ));
 
-        let memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
+        let memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> =
             Some(engram_store_bundle.memory_store.clone());
         let episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> =
             Some(engram_store_bundle.episode_store.clone());
@@ -1058,7 +1026,7 @@ impl AppState {
             Some(engram_store_bundle.procedure_store.clone());
         let kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>> =
             Some(engram_store_bundle.kg_episode_store.clone());
-        let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
+        let kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>> =
             Some(engram_store_bundle.kg_store.clone());
 
         let (messages, session_meta, checkpoints, autonomy, slim_logs, trace_analytics) =
@@ -1230,7 +1198,7 @@ impl AppState {
             None,
         )
         .expect("Failed to initialize Engram memory provider for component state");
-        let memory_store: Option<Arc<dyn zbot_stores::MemoryFactStore>> =
+        let memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>> =
             Some(engram_store_bundle.memory_store.clone());
         let episode_store: Option<Arc<dyn zbot_stores_traits::EpisodeStore>> =
             Some(engram_store_bundle.episode_store.clone());
@@ -1240,7 +1208,7 @@ impl AppState {
             Some(engram_store_bundle.procedure_store.clone());
         let kg_episode_store: Option<Arc<dyn zbot_stores_traits::KgEpisodeStore>> =
             Some(engram_store_bundle.kg_episode_store.clone());
-        let kg_store: Option<Arc<dyn zbot_stores::KnowledgeGraphStore>> =
+        let kg_store: Option<Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore>> =
             Some(engram_store_bundle.kg_store.clone());
 
         // Create bridge registry and outbox
@@ -1626,6 +1594,7 @@ impl AppState {
                 source_episode_id: None,
                 source_ref: None,
                 embedding: None,
+                last_accessed: None,
             };
 
             match memory_store.upsert_typed_fact(fact_value, None).await {

@@ -8,12 +8,12 @@ use super::working_memory::WorkingMemory;
 use agent_runtime::{
     ContextActorKind, ContextAtom, ContextPacketDelta, ContextRenderPolicy, ContextTrace,
 };
+use knowledge_graph::kg_trait::KnowledgeGraphStore;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use tracing::debug;
-use zbot_stores::KnowledgeGraphStore;
 use zbot_stores_traits::MemoryFact;
 use zbot_stores_traits::MemoryFactStore;
 

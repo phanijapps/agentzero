@@ -11,21 +11,22 @@ use async_trait::async_trait;
 use chrono::Utc;
 use engram_hierarchy::HierarchyRepository;
 use engram_knowledge::KnowledgeRepository;
+use knowledge_graph::kg_trait::kg_types::{
+    EntityId, Neighbor, RelationshipId, ResolveOutcome, TraversalHit,
+};
+use knowledge_graph::kg_trait::{
+    ArchivableEntity, EntityNameEmbeddingHit, EntityWithEmbedding, ExtractedKnowledge,
+    GraphStoreError, GraphStoreResult, GraphView, HierarchySummary, InterClusterRelationHit,
+    KgStats, KnowledgeGraphStore, LcaPath, ReindexReport, StoreOutcome, VecIndexHealth,
+};
+use knowledge_graph::types::Direction;
 use knowledge_graph::types::{
     Entity, EntityType, GraphStats, NeighborInfo, Relationship, RelationshipType, Subgraph,
 };
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde_json::{json, Value};
 use uuid::Uuid;
-use zbot_stores::types::{
-    Direction, EntityId, Neighbor, RelationshipId, ResolveOutcome, TraversalHit,
-};
-use zbot_stores::{
-    ArchivableEntity, EmbeddingQueryIdentity, EntityNameEmbeddingHit, EntityWithEmbedding,
-    ExtractedKnowledge, GraphStoreError, GraphStoreResult, GraphView, HierarchySummary,
-    InterClusterRelationHit, KgStats, KnowledgeGraphStore, LcaPath, ReindexReport, StoreOutcome,
-    VecIndexHealth,
-};
+use zbot_stores_traits::EmbeddingQueryIdentity;
 
 use crate::{
     bootstrap::EngramProvider,
@@ -651,6 +652,110 @@ impl KnowledgeGraphStore for EngramKnowledgeGraphStore {
         self.sidecar.mark_entity_archival(id, reason)
     }
 
+    async fn decay_entity_confidence(
+        &self,
+        agent_id: &str,
+        half_life_days: f64,
+        min_confidence: f64,
+        skip_recent_hours: i64,
+    ) -> GraphStoreResult<u64> {
+        self.sidecar.decay_entity_confidence(
+            agent_id,
+            half_life_days,
+            min_confidence,
+            skip_recent_hours,
+        )
+    }
+
+    async fn decay_relationship_confidence(
+        &self,
+        agent_id: &str,
+        half_life_days: f64,
+        min_confidence: f64,
+        skip_recent_hours: i64,
+    ) -> GraphStoreResult<u64> {
+        self.sidecar.decay_relationship_confidence(
+            agent_id,
+            half_life_days,
+            min_confidence,
+            skip_recent_hours,
+        )
+    }
+
+    async fn find_duplicate_candidates(
+        &self,
+        agent_id: &str,
+        entity_type: &knowledge_graph::types::EntityType,
+        threshold: f32,
+        limit: usize,
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::DuplicateCandidate>> {
+        Ok(self
+            .sidecar
+            .find_duplicate_candidates(agent_id, entity_type.as_str(), threshold, limit)?
+            .into_iter()
+            .map(
+                |(loser, winner, cosine)| knowledge_graph::kg_trait::DuplicateCandidate {
+                    loser_entity_id: loser,
+                    winner_entity_id: winner,
+                    cosine_similarity: cosine,
+                },
+            )
+            .collect())
+    }
+
+    async fn merge_entity_into(&self, loser: &EntityId, winner: &EntityId) -> GraphStoreResult<()> {
+        self.sidecar.merge_entity_into(&loser.0, &winner.0)
+    }
+
+    async fn list_orphan_old_candidates(
+        &self,
+        agent_id: &str,
+        min_age_days: i64,
+        limit: usize,
+    ) -> GraphStoreResult<Vec<knowledge_graph::kg_trait::DecayCandidate>> {
+        Ok(self
+            .sidecar
+            .list_orphan_old_candidates(agent_id, min_age_days, limit)?
+            .into_iter()
+            .map(|row| knowledge_graph::kg_trait::DecayCandidate {
+                id: row.id,
+                name: row.name,
+                entity_type: row.entity_type,
+                mention_count: row.mention_count,
+            })
+            .collect())
+    }
+
+    async fn mark_entity_pruned(&self, id: &EntityId) -> GraphStoreResult<()> {
+        self.sidecar.mark_entity_pruned(&id.0)
+    }
+
+    async fn apply_entity_confidence_multiplier(
+        &self,
+        agent_id: &str,
+        entity_ids: &[EntityId],
+        factor: f64,
+        min_floor: f64,
+    ) -> GraphStoreResult<u64> {
+        self.sidecar
+            .apply_entity_confidence_multiplier(agent_id, entity_ids, factor, min_floor)
+    }
+
+    async fn apply_relationship_confidence_multiplier(
+        &self,
+        agent_id: &str,
+        relationship_ids: &[RelationshipId],
+        factor: f64,
+        min_floor: f64,
+    ) -> GraphStoreResult<u64> {
+        self.sidecar.apply_relationship_confidence_multiplier(
+            agent_id,
+            relationship_ids,
+            factor,
+            min_floor,
+        )
+    }
+
     async fn graph_stats(&self, agent_id: &str) -> GraphStoreResult<GraphStats> {
         self.sidecar.graph_stats(agent_id)
     }
@@ -932,6 +1037,9 @@ struct EntityEntry {
 #[derive(Debug, Clone)]
 struct RelationshipEntry {
     relationship: Relationship,
+    /// Denormalized `kg_relationships.confidence` column, kept in sync by
+    /// the store + maintenance write paths.
+    confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -942,6 +1050,17 @@ struct RelationshipDedupKey {
     normalized_predicate: String,
     ward_id: String,
     visibility: String,
+}
+
+/// Sidecar-local shape of a prune candidate (sqlite `OrphanCandidate`
+/// parity; the trait-level projection drops `last_seen_at`).
+#[derive(Debug, Clone)]
+struct DecayCandidateRow {
+    id: String,
+    name: String,
+    entity_type: String,
+    mention_count: i64,
+    last_seen_at: chrono::DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -1463,7 +1582,7 @@ impl KnowledgeGraphSidecar {
     ) -> GraphStoreResult<Option<RelationshipEntry>> {
         self.lock()?
             .query_row(
-                "SELECT relationship_json FROM kg_relationships WHERE id = ?1 AND archived = 0",
+                "SELECT relationship_json, confidence FROM kg_relationships WHERE id = ?1 AND archived = 0",
                 params![id.0],
                 decode_relationship_entry,
             )
@@ -1660,7 +1779,14 @@ impl KnowledgeGraphSidecar {
         let mut param_values: Vec<Box<dyn ToSql>> = Vec::new();
 
         if let Some(agent_id) = agent_id {
-            conditions.push(format!("agent_id = ?{}", param_values.len() + 1));
+            // Contract parity with the retired sqlite listing: a per-agent
+            // list includes that agent's entities AND explicitly global
+            // (`__global__`) entities — shared concepts must stay visible
+            // in per-agent views. Conformance: list_entities_respects_agent.
+            conditions.push(format!(
+                "(agent_id = ?{} OR agent_id = '__global__')",
+                param_values.len() + 1
+            ));
             param_values.push(Box::new(agent_id.to_string()));
         }
         if let Some(entity_type) = entity_type {
@@ -1713,7 +1839,7 @@ impl KnowledgeGraphSidecar {
 
         let candidate_limit = offset.saturating_add(limit.max(1).saturating_mul(4));
         let mut sql = format!(
-            "SELECT relationship_json FROM kg_relationships
+            "SELECT relationship_json, confidence FROM kg_relationships
              WHERE {}
              ORDER BY mention_count DESC, id",
             conditions.join(" AND ")
@@ -1774,7 +1900,7 @@ impl KnowledgeGraphSidecar {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT relationship_json FROM kg_relationships
+                "SELECT relationship_json, confidence FROM kg_relationships
                  WHERE archived = 0 ORDER BY mention_count DESC, id",
             )
             .map_err(to_backend)?;
@@ -1927,7 +2053,11 @@ impl KnowledgeGraphSidecar {
                 name: entry.entity.name,
             })
             .collect::<Vec<_>>();
-        rows.truncate(limit.max(1));
+        // Limit 0 means unbounded (matches the sqlite contract the
+        // hierarchy builder relies on when pooling layer-0 candidates).
+        if limit > 0 {
+            rows.truncate(limit);
+        }
         Ok(rows)
     }
 
@@ -1944,6 +2074,439 @@ impl KnowledgeGraphSidecar {
             .properties
             .insert("compressed_into".to_string(), json!(reason));
         self.replace_entity(&entry.entity, entry.embedding.as_deref())
+    }
+
+    // ---- KG maintenance (ported from the sqlite reference; same
+    // semantics, adapter storage) -----------------------------------------
+
+    /// Temporal confidence decay over `kg_entities` for one agent.
+    /// `new = max(min_confidence, conf * 0.5^(age_days / half_life))`;
+    /// skips rows seen within `skip_recent_hours` and archival rows.
+    /// Counting matches the sqlite bulk-UPDATE contract: every row that
+    /// matched the filter counts, whether or not the value moved.
+    ///
+    /// Divergence (documented): entities whose `confidence` property was
+    /// never stamped decay from the adapter's effective default of `1.0`
+    /// (the same number recall's embedding hits use), not sqlite's
+    /// write-time column default of `0.8` — one effective definition per
+    /// concept.
+    fn decay_entity_confidence(
+        &self,
+        agent_id: &str,
+        half_life_days: f64,
+        min_confidence: f64,
+        skip_recent_hours: i64,
+    ) -> GraphStoreResult<u64> {
+        if half_life_days <= 0.0 {
+            return Err(GraphStoreError::Invalid(
+                "half_life_days must be > 0".to_string(),
+            ));
+        }
+        let cutoff = Utc::now() - chrono::Duration::hours(skip_recent_hours);
+        let decay_constant = std::f64::consts::LN_2 / half_life_days;
+        let mut updated = 0u64;
+        for entry in self.load_entities_for_agent_strict(agent_id)? {
+            if property_string(&entry.entity, "epistemic_class").as_deref() == Some("archival") {
+                continue;
+            }
+            if entry.entity.last_seen_at >= cutoff {
+                continue;
+            }
+            let age_days = (Utc::now() - entry.entity.last_seen_at).num_days().max(0) as f64;
+            let current = confidence_for(&entry.entity);
+            let next = (current * (-decay_constant * age_days).exp()).max(min_confidence);
+            let mut entity = entry.entity.clone();
+            entity
+                .properties
+                .insert("confidence".to_string(), serde_json::json!(next));
+            self.write_entity_properties(&entity)?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    /// Temporal confidence decay over `kg_relationships` for one agent.
+    /// Same formula and filters as the entity variant; the adapter's
+    /// active-row equivalent of sqlite's `epistemic_class != 'archival'`
+    /// is `archived = 0`.
+    fn decay_relationship_confidence(
+        &self,
+        agent_id: &str,
+        half_life_days: f64,
+        min_confidence: f64,
+        skip_recent_hours: i64,
+    ) -> GraphStoreResult<u64> {
+        if half_life_days <= 0.0 {
+            return Err(GraphStoreError::Invalid(
+                "half_life_days must be > 0".to_string(),
+            ));
+        }
+        let cutoff = Utc::now() - chrono::Duration::hours(skip_recent_hours);
+        let decay_constant = std::f64::consts::LN_2 / half_life_days;
+        let mut updated = 0u64;
+        for entry in self.list_relationship_entries(Some(agent_id), None, usize::MAX, 0)? {
+            // Archived rows are pre-filtered by the loader (archived = 0),
+            // mirroring sqlite's `epistemic_class != 'archival'` guard.
+            if entry.relationship.last_seen_at >= cutoff {
+                continue;
+            }
+            let elapsed = Utc::now() - entry.relationship.last_seen_at;
+            let age_days = elapsed.num_days().max(0) as f64;
+            let current = entry
+                .relationship
+                .properties
+                .get("confidence")
+                .and_then(serde_json::Value::as_f64)
+                .or(entry.confidence)
+                .unwrap_or(0.8);
+            let next = (current * (-decay_constant * age_days).exp()).max(min_confidence);
+            self.write_relationship_confidence(&entry.relationship, next)?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    /// Same-type near-duplicate pairs by name-embedding cosine.
+    /// Candidate pool mirrors the sqlite contract: agent + `__global__`
+    /// rows of the type, non-archival, not compressed, ordered by
+    /// mention_count DESC, capped at `3 × limit`, embeddings required.
+    /// Unordered-pair dedup, cosine-descending order, truncated to
+    /// `limit`. The sqlite version approximated full pairwise with a
+    /// top-5 ANN pass per entity; bounded in-memory pairwise over the
+    /// same pool is the same goal without that artifact.
+    fn find_duplicate_candidates(
+        &self,
+        agent_id: &str,
+        entity_type: &str,
+        threshold: f32,
+        limit: usize,
+    ) -> GraphStoreResult<Vec<(String, String, f32)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let pool: Vec<EntityEntry> = self
+            .load_all_entities()?
+            .into_iter()
+            .filter(|entry| {
+                (entry.entity.agent_id == agent_id || entry.entity.agent_id == DEFAULT_WARD_ID)
+                    && entry.entity.entity_type.as_str() == entity_type
+                    && property_string(&entry.entity, "epistemic_class").as_deref()
+                        != Some("archival")
+                    && !self.is_compressed(&entry.entity)
+                    && entry.embedding.is_some()
+            })
+            .take(limit.saturating_mul(3))
+            .collect();
+        let mut pairs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (i, left) in pool.iter().enumerate() {
+            for right in pool.iter().skip(i + 1) {
+                let (Some(left_embedding), Some(right_embedding)) =
+                    (left.embedding.as_deref(), right.embedding.as_deref())
+                else {
+                    continue;
+                };
+                let Some(score) = cosine_f64_opt(left_embedding, right_embedding) else {
+                    continue;
+                };
+                let score = score as f32;
+                if score < threshold {
+                    continue;
+                }
+                let key = if left.entity.id < right.entity.id {
+                    (left.entity.id.clone(), right.entity.id.clone())
+                } else {
+                    (right.entity.id.clone(), left.entity.id.clone())
+                };
+                if seen.insert(key.clone()) {
+                    pairs.push((key.0, key.1, score));
+                }
+            }
+        }
+        pairs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        pairs.truncate(limit);
+        Ok(pairs)
+    }
+
+    /// Transactionally merge `loser` into `winner`: drop loser edges that
+    /// would duplicate a winner edge, re-point the rest, transfer aliases,
+    /// mark the loser `compressed_into = winner`, and drop its embedding
+    /// so embedding search stops surfacing it. Mirrors the sqlite
+    /// reference step-for-step against the sidecar tables.
+    fn merge_entity_into(&self, loser: &str, winner: &str) -> GraphStoreResult<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        transaction
+            .execute(
+                "DELETE FROM kg_relationships \
+                 WHERE source_entity_id = ?1 \
+                   AND EXISTS ( \
+                     SELECT 1 FROM kg_relationships w \
+                     WHERE w.source_entity_id = ?2 \
+                       AND w.target_entity_id = kg_relationships.target_entity_id \
+                       AND w.relationship_type = kg_relationships.relationship_type \
+                   )",
+                params![loser, winner],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                "DELETE FROM kg_relationships \
+                 WHERE target_entity_id = ?1 \
+                   AND EXISTS ( \
+                     SELECT 1 FROM kg_relationships w \
+                     WHERE w.target_entity_id = ?2 \
+                       AND w.source_entity_id = kg_relationships.source_entity_id \
+                       AND w.relationship_type = kg_relationships.relationship_type \
+                   )",
+                params![loser, winner],
+            )
+            .map_err(to_backend)?;
+        // The adapter's read path deserializes `relationship_json`, so the
+        // re-point must rewrite both the column and the embedded payload.
+        transaction
+            .execute(
+                "UPDATE kg_relationships \
+                 SET source_entity_id = ?1, \
+                     relationship_json = json_set(relationship_json, '$.source_entity_id', ?1) \
+                 WHERE source_entity_id = ?2",
+                params![winner, loser],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                "UPDATE kg_relationships \
+                 SET target_entity_id = ?1, \
+                     relationship_json = json_set(relationship_json, '$.target_entity_id', ?1) \
+                 WHERE target_entity_id = ?2",
+                params![winner, loser],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                "UPDATE OR IGNORE entity_aliases SET entity_id = ?1 WHERE entity_id = ?2",
+                params![winner, loser],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                "DELETE FROM entity_aliases WHERE entity_id = ?1",
+                params![loser],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                "UPDATE kg_entities SET compressed_into = ?1, embedding_json = NULL \
+                 WHERE id = ?2",
+                params![winner, loser],
+            )
+            .map_err(to_backend)?;
+        transaction.commit().map_err(to_backend)
+    }
+
+    /// Orphan + age prune candidates: agent + `__global__` rows,
+    /// non-archival, not compressed, `last_seen_at` older than
+    /// `min_age_days`, zero in/out edges; `mention_count ASC,
+    /// last_seen_at ASC`; capped at `limit`.
+    fn list_orphan_old_candidates(
+        &self,
+        agent_id: &str,
+        min_age_days: i64,
+        limit: usize,
+    ) -> GraphStoreResult<Vec<DecayCandidateRow>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let cutoff = Utc::now() - chrono::Duration::days(min_age_days);
+        let connected = self.connected_entity_ids()?;
+        let mut rows: Vec<DecayCandidateRow> = self
+            .load_all_entities()?
+            .into_iter()
+            .filter(|entry| {
+                (entry.entity.agent_id == agent_id || entry.entity.agent_id == DEFAULT_WARD_ID)
+                    && property_string(&entry.entity, "epistemic_class").as_deref()
+                        != Some("archival")
+                    && !self.is_compressed(&entry.entity)
+                    && entry.entity.last_seen_at < cutoff
+                    && !connected.contains(&entry.entity.id)
+            })
+            .map(|entry| DecayCandidateRow {
+                id: entry.entity.id,
+                name: entry.entity.name,
+                entity_type: entry.entity.entity_type.as_str().to_string(),
+                mention_count: entry.entity.mention_count,
+                last_seen_at: entry.entity.last_seen_at,
+            })
+            .collect();
+        rows.sort_by(|left, right| {
+            left.mention_count
+                .cmp(&right.mention_count)
+                .then_with(|| left.last_seen_at.cmp(&right.last_seen_at))
+        });
+        rows.truncate(limit);
+        Ok(rows)
+    }
+
+    /// Soft-delete: `pruned = 1`, `compressed_into = '__pruned__'`,
+    /// embedding dropped. No relationship re-pointing (sqlite parity).
+    fn mark_entity_pruned(&self, entity_id: &str) -> GraphStoreResult<()> {
+        self.lock()?
+            .execute(
+                "UPDATE kg_entities \
+                 SET pruned = 1, compressed_into = '__pruned__', embedding_json = NULL \
+                 WHERE id = ?1",
+                params![entity_id],
+            )
+            .map_err(to_backend)?;
+        Ok(())
+    }
+
+    /// Multiplicative confidence decay for specific entities, floored at
+    /// `min_floor`, scoped to one agent. Count = matched rows (sqlite
+    /// bulk-UPDATE parity). Effective confidence for unstamped entities
+    /// follows `confidence_for` (default `1.0`).
+    fn apply_entity_confidence_multiplier(
+        &self,
+        agent_id: &str,
+        entity_ids: &[EntityId],
+        factor: f64,
+        min_floor: f64,
+    ) -> GraphStoreResult<u64> {
+        if entity_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut updated = 0u64;
+        for id in entity_ids {
+            let Some(mut entry) = self.get_entity_entry(id)? else {
+                continue;
+            };
+            if entry.entity.agent_id != agent_id {
+                continue;
+            }
+            let next = (confidence_for(&entry.entity) * factor).max(min_floor);
+            entry
+                .entity
+                .properties
+                .insert("confidence".to_string(), serde_json::json!(next));
+            self.write_entity_properties(&entry.entity)?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    /// Multiplicative confidence decay for specific relationships, floored
+    /// at `min_floor`, scoped to one agent. Count = matched rows.
+    fn apply_relationship_confidence_multiplier(
+        &self,
+        agent_id: &str,
+        relationship_ids: &[RelationshipId],
+        factor: f64,
+        min_floor: f64,
+    ) -> GraphStoreResult<u64> {
+        if relationship_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut updated = 0u64;
+        for id in relationship_ids {
+            let Some(relationship) = self.get_relationship_entry(id)? else {
+                continue;
+            };
+            if relationship.relationship.agent_id != agent_id {
+                continue;
+            }
+            let current = relationship
+                .relationship
+                .properties
+                .get("confidence")
+                .and_then(serde_json::Value::as_f64)
+                .or(relationship.confidence)
+                .unwrap_or(0.8);
+            let next = (current * factor).max(min_floor);
+            self.write_relationship_confidence(&relationship.relationship, next)?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    // ---- maintenance helpers ---------------------------------------------
+
+    /// Entities for exactly one agent (no `__global__` inclusion — decay
+    /// is per-agent in the sqlite contract, unlike listing views).
+    fn load_entities_for_agent_strict(&self, agent_id: &str) -> GraphStoreResult<Vec<EntityEntry>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT entity_json, embedding_json, embedding_identity_json FROM kg_entities \
+                 WHERE pruned = 0 AND agent_id = ?1 ORDER BY mention_count DESC, name",
+            )
+            .map_err(to_backend)?;
+        let rows = statement
+            .query_map(params![agent_id], decode_entity_entry)
+            .map_err(to_backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(to_backend)
+    }
+
+    /// `true` when the entity is marked merged/pruned via either the
+    /// `compressed_into` column or its properties projection.
+    fn is_compressed(&self, entity: &Entity) -> bool {
+        let column = self.compressed_into_of(&entity.id);
+        let property = property_string(entity, "compressed_into");
+        matches!(column.as_deref(), Some(value) if !value.is_empty())
+            || matches!(property.as_deref(), Some(value) if !value.is_empty())
+    }
+
+    fn compressed_into_of(&self, entity_id: &str) -> Option<String> {
+        let connection = self.lock().ok()?;
+        connection
+            .query_row(
+                "SELECT compressed_into FROM kg_entities WHERE id = ?1",
+                params![entity_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Persist an entity's current properties + serialized form without
+    /// touching mention counts or embeddings (maintenance writes must not
+    /// have store-path side effects).
+    fn write_entity_properties(&self, entity: &Entity) -> GraphStoreResult<()> {
+        let mut stored = entity.clone();
+        stored.name_embedding = None;
+        let entity_json = serde_json::to_string(&stored).map_err(to_backend)?;
+        let properties_json = serde_json::to_string(&stored.properties).map_err(to_backend)?;
+        self.lock()?
+            .execute(
+                "UPDATE kg_entities SET entity_json = ?1, properties_json = ?2 WHERE id = ?3",
+                params![entity_json, properties_json, stored.id],
+            )
+            .map_err(to_backend)?;
+        Ok(())
+    }
+
+    /// Persist a relationship's confidence to both the column and the
+    /// properties projection (the column feeds traversal weighting; the
+    /// projection round-trips through the store path).
+    fn write_relationship_confidence(
+        &self,
+        relationship: &Relationship,
+        confidence: f64,
+    ) -> GraphStoreResult<()> {
+        let mut stored = relationship.clone();
+        stored
+            .properties
+            .insert("confidence".to_string(), serde_json::json!(confidence));
+        let relationship_json = serde_json::to_string(&stored).map_err(to_backend)?;
+        let properties_json = serde_json::to_string(&stored.properties).map_err(to_backend)?;
+        self.lock()?
+            .execute(
+                "UPDATE kg_relationships \
+                 SET confidence = ?1, properties_json = ?2, relationship_json = ?3 \
+                 WHERE id = ?4",
+                params![confidence, properties_json, relationship_json, stored.id],
+            )
+            .map_err(to_backend)?;
+        Ok(())
     }
 
     fn graph_stats(&self, agent_id: &str) -> GraphStoreResult<GraphStats> {
@@ -2130,7 +2693,11 @@ impl KnowledgeGraphSidecar {
                 embedding: entry.embedding.unwrap_or_default(),
             })
             .collect::<Vec<_>>();
-        rows.truncate(limit.max(1));
+        // Limit 0 means unbounded (matches the sqlite contract the
+        // hierarchy builder relies on when pooling layer-0 candidates).
+        if limit > 0 {
+            rows.truncate(limit);
+        }
         Ok(rows)
     }
 
@@ -2314,7 +2881,7 @@ impl KnowledgeGraphSidecar {
             .map_err(to_backend)?;
         let top_aggregates = aggregate_statement
             .query_map(params![agent_id, top_n as i64], |row| {
-                Ok(zbot_stores::AggregateSummary {
+                Ok(knowledge_graph::kg_trait::AggregateSummary {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     layer: row.get(2)?,
@@ -2393,7 +2960,11 @@ fn decode_relationship_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Relati
     let relationship_json: String = row.get(0)?;
     let relationship =
         serde_json::from_str::<Relationship>(&relationship_json).map_err(json_sql_error(0))?;
-    Ok(RelationshipEntry { relationship })
+    let confidence = row.get::<_, Option<f64>>(1)?;
+    Ok(RelationshipEntry {
+        relationship,
+        confidence,
+    })
 }
 
 fn decode_governance_finding(

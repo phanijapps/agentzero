@@ -555,6 +555,7 @@ mod helpers_tests {
             epistemic_class: Some("convention".into()),
             source_episode_id: None,
             source_ref: None,
+            last_accessed: None,
         }
     }
 

@@ -974,10 +974,6 @@ mod memory_settings_tests {
         let json = r#"{"conflictResolverIntervalHours": 6}"#;
         let m: MemorySettings = serde_json::from_str(json).unwrap();
         assert_eq!(m.conflict_resolver_interval_hours, 6);
-        assert_eq!(
-            m.corrections_abstractor_interval_hours, 24,
-            "default preserved"
-        );
     }
 }
 

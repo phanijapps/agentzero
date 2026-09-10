@@ -60,7 +60,6 @@ tempfile = "3"
 # (previous_episodes uses VaultPaths/KnowledgeDatabase/EpisodeRepository).
 gateway-services = { path = "../gateway-services" }
 rusqlite = { version = "0.32", features = ["bundled"] }
-zbot-stores-sqlite = { path = "../../stores/zbot-stores-sqlite" }
 zbot-engram-adapter = { path = "../../stores/zbot-engram-adapter" }
 
 [lints]

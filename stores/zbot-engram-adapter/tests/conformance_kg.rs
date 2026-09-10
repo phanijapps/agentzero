@@ -59,3 +59,39 @@ kg_conformance!(
     list_entities_respects_agent,
     conf::list_entities_respects_agent
 );
+
+// ---- KG-maintenance (KG-lane port) ----------------------------------------
+
+#[tokio::test]
+async fn kg_decay_entity_confidence() {
+    let root = tempfile::tempdir().expect("root");
+    let config = AdapterConfig::engram_for_data_root(root.path(), "engram.db");
+    let identity = zbot_stores_traits::EmbeddingQueryIdentity {
+        provider_type: config.embedding_provider.provider_type.clone(),
+        model: config.embedding_provider.model.clone(),
+        dimensions: config.embedding_provider.dimensions,
+        prompt_profile: config.embedding_provider.prompt_profile.clone(),
+        normalization: config.embedding_provider.normalization.clone(),
+    };
+    conf::kg_decay_entity_confidence(&kg_store(&root), &identity).await;
+}
+kg_conformance!(
+    kg_find_duplicate_candidates,
+    conf::kg_find_duplicate_candidates
+);
+kg_conformance!(kg_orphan_candidates, conf::kg_orphan_candidates);
+kg_conformance!(kg_merge_entity_into, conf::kg_merge_entity_into);
+kg_conformance!(kg_mark_entity_pruned, conf::kg_mark_entity_pruned);
+#[tokio::test]
+async fn kg_confidence_multiplier() {
+    let root = tempfile::tempdir().expect("root");
+    let config = AdapterConfig::engram_for_data_root(root.path(), "engram.db");
+    let identity = zbot_stores_traits::EmbeddingQueryIdentity {
+        provider_type: config.embedding_provider.provider_type.clone(),
+        model: config.embedding_provider.model.clone(),
+        dimensions: config.embedding_provider.dimensions,
+        prompt_profile: config.embedding_provider.prompt_profile.clone(),
+        normalization: config.embedding_provider.normalization.clone(),
+    };
+    conf::kg_confidence_multiplier(&kg_store(&root), &identity).await;
+}

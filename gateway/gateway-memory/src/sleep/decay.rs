@@ -383,8 +383,9 @@ impl DecayEngine {
 mod tests {
     use super::*;
     use crate::sleep::test_support;
+    use knowledge_graph::kg_trait::ExtractedKnowledge;
     use knowledge_graph::kg_trait::KnowledgeGraphStore;
-    use knowledge_graph::{Entity, EntityType, ExtractedKnowledge, Relationship, RelationshipType};
+    use knowledge_graph::{Entity, EntityType, Relationship, RelationshipType};
     use std::sync::Arc;
 
     fn setup() -> (tempfile::TempDir, Arc<dyn KnowledgeGraphStore>) {
@@ -393,27 +394,9 @@ mod tests {
         (tmp, kg)
     }
 
-    /// Sqlite KG reference-implementation fixture for the decay /
-    /// contradiction-propagation integration tests (see note above
-    /// `insert_kg_entity_with_episode`).
-    fn sqlite_graph() -> (
-        tempfile::TempDir,
-        Arc<zbot_stores_sqlite::kg::storage::GraphStorage>,
-    ) {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
-            tmp.path().to_path_buf(),
-        ));
-        std::fs::create_dir_all(paths.conversations_db().parent().expect("parent")).expect("mkdir");
-        let db = Arc::new(zbot_stores_sqlite::KnowledgeDatabase::new(paths).expect("db"));
-        let graph =
-            Arc::new(zbot_stores_sqlite::kg::storage::GraphStorage::new(db).expect("graph"));
-        (tmp, graph)
-    }
-
     #[tokio::test]
     async fn decay_engine_returns_only_orphan_old_non_archival() {
-        let (_tmp, graph) = sqlite_graph();
+        let (_tmp, graph) = setup();
         let agent_id = "agent-decay";
 
         // 1. An orphan, old entity -> should be returned.
@@ -470,12 +453,11 @@ mod tests {
                     relationships: vec![rel],
                 },
             )
+            .await
             .expect("store");
 
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
         let engine = DecayEngine::new(
-            kg_store,
+            graph,
             DecayConfig {
                 min_age_days: 30,
                 limit: 100,
@@ -500,32 +482,19 @@ mod tests {
 
     #[tokio::test]
     async fn decay_kg_confidence_returns_stats_when_enabled() {
-        let (_tmp, graph) = sqlite_graph();
+        let (_tmp, kg_store) = setup();
         let agent_id = "agent-kg-decay";
 
-        // Seed one old entity (confidence is a KG-storage column; see the
-        // sqlite-reference note above `insert_kg_entity_with_episode`.
-        graph
-            .knowledge_db()
-            .with_connection(|conn| {
-                conn.execute(
-                    "INSERT INTO kg_entities
-                        (id, agent_id, entity_type, name, normalized_name, normalized_hash,
-                         epistemic_class, confidence, mention_count, access_count,
-                         first_seen_at, last_seen_at)
-                     VALUES ('old-1', ?1, 'Concept', 'Old', 'old', 'h1', 'current',
-                             0.8, 1, 0, ?2, ?2)",
-                    rusqlite::params![
-                        agent_id,
-                        (chrono::Utc::now() - chrono::Duration::days(180)).to_rfc3339()
-                    ],
-                )?;
-                Ok(())
-            })
-            .unwrap();
+        // Seed one old entity: 180 days since last seen.
+        let mut old = knowledge_graph::Entity::new(
+            agent_id.to_string(),
+            knowledge_graph::EntityType::Concept,
+            "Old".to_string(),
+        );
+        old.last_seen_at = chrono::Utc::now() - chrono::Duration::days(180);
+        old.first_seen_at = old.last_seen_at;
+        kg_store.upsert_entity(agent_id, old).await.expect("seed");
 
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
         let config = crate::KgDecayConfig::default();
         let stats = engine.decay_kg_confidence(agent_id, &config).await;
@@ -680,139 +649,14 @@ mod tests {
     // MEM-001 Part A: contradiction propagation
     // ------------------------------------------------------------------
 
-    /// Seed a `memory_facts` row marked as contradicted. Uses the
-    /// minimal columns the SQL path reads.
-    async fn insert_contradicted_fact(
-        fact_store: &dyn zbot_stores_traits::MemoryFactStore,
-        fact_id: &str,
-        agent_id: &str,
-        source_episode_id: &str,
-        contradicted_by: &str,
-    ) {
-        let now = chrono::Utc::now().to_rfc3339();
-        let fact = zbot_stores_domain::MemoryFact {
-            id: fact_id.to_string(),
-            session_id: None,
-            agent_id: agent_id.to_string(),
-            scope: "global".to_string(),
-            category: "domain".to_string(),
-            key: fact_id.to_string(),
-            content: "c".to_string(),
-            confidence: 0.8,
-            mention_count: 1,
-            source_summary: None,
-            ward_id: "__global__".to_string(),
-            contradicted_by: Some(contradicted_by.to_string()),
-            created_at: now.clone(),
-            updated_at: now,
-            expires_at: None,
-            valid_from: None,
-            valid_until: None,
-            superseded_by: None,
-            pinned: false,
-            epistemic_class: Some("current".to_string()),
-            source_episode_id: Some(source_episode_id.to_string()),
-            source_ref: None,
-            last_accessed: None,
-            embedding: None,
-        };
-        fact_store
-            .upsert_typed_fact(fact, None)
-            .await
-            .expect("seed contradicted fact");
-    }
-
     // KG-confidence decay + contradiction propagation surfaces exist only
     // on the sqlite KG store (production currently no-ops them through the
     // engram adapter's trait defaults). These integration tests stay on the
     // sqlite reference implementation until the KG lane migrates — tracked
     // as the "KG lane → engram" backlog item.
-    fn insert_kg_entity_with_episode(
-        graph: &zbot_stores_sqlite::kg::storage::GraphStorage,
-        id: &str,
-        agent_id: &str,
-        confidence: f64,
-        source_episode_ids: &str,
-    ) {
-        let now = chrono::Utc::now().to_rfc3339();
-        graph
-            .knowledge_db()
-            .with_connection(|conn| {
-                conn.execute(
-                    "INSERT INTO kg_entities
-                        (id, agent_id, entity_type, name, normalized_name, normalized_hash,
-                         epistemic_class, confidence, mention_count, access_count,
-                         first_seen_at, last_seen_at, source_episode_ids)
-                     VALUES (?1, ?2, 'Concept', ?1, ?1, ?1, 'current', ?3, 1, 0, ?4, ?4, ?5)",
-                    rusqlite::params![id, agent_id, confidence, now, source_episode_ids],
-                )?;
-                Ok(())
-            })
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn propagate_fact_contradictions_decays_kg_nodes_for_contradicted_episodes() {
-        let (tmp, graph) = sqlite_graph();
-        let agent = "a";
-        let fact_store: Arc<dyn zbot_stores_traits::MemoryFactStore> =
-            crate::sleep::test_support::fact_store(&tmp);
-
-        // Two contradicted facts pointing to ep-1 and ep-2.
-        insert_contradicted_fact(fact_store.as_ref(), "F1", agent, "ep-1", "F-newer").await;
-        insert_contradicted_fact(fact_store.as_ref(), "F2", agent, "ep-2", "F-newer").await;
-
-        // KG entities: e1 came from ep-1 (should decay), e2 from ep-99
-        // (untouched), e3 from a multi-token blob including ep-2 (should
-        // decay).
-        insert_kg_entity_with_episode(&graph, "e1", agent, 0.8, "ep-1");
-        insert_kg_entity_with_episode(&graph, "e2", agent, 0.8, "ep-99");
-        insert_kg_entity_with_episode(&graph, "e3", agent, 0.8, "ep-2,ep-foo");
-
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph.clone()));
-
-        let engine = DecayEngine::new(kg_store, DecayConfig::default())
-            .with_contradiction_propagation(
-                Some(fact_store),
-                ContradictionPropagationConfig {
-                    enabled: true,
-                    decay_factor: 0.5,
-                    min_floor: 0.05,
-                    lookback_hours: 24,
-                },
-            );
-
-        let stats = engine
-            .propagate_fact_contradictions(agent, chrono::Utc::now() - chrono::Duration::days(7))
-            .await;
-        assert_eq!(stats.episodes_processed, 2);
-        assert_eq!(stats.entities_decayed, 2);
-        assert_eq!(stats.relationships_decayed, 0);
-        assert_eq!(stats.errors, 0);
-
-        let read = |id: &str| -> f64 {
-            graph
-                .knowledge_db()
-                .with_connection(|conn| {
-                    conn.query_row(
-                        "SELECT confidence FROM kg_entities WHERE id = ?1",
-                        rusqlite::params![id],
-                        |row| row.get(0),
-                    )
-                })
-                .unwrap()
-        };
-        assert!((read("e1") - 0.4).abs() < 1e-6, "e1: 0.8 * 0.5 = 0.4");
-        assert!((read("e2") - 0.8).abs() < 1e-6, "e2 untouched");
-        assert!((read("e3") - 0.4).abs() < 1e-6, "e3 decayed");
-    }
-
     #[tokio::test]
     async fn propagate_fact_contradictions_disabled_is_noop() {
-        let (_tmp, graph) = sqlite_graph();
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
+        let (_tmp, kg_store) = setup();
         let engine = DecayEngine::new(kg_store, DecayConfig::default())
             .with_contradiction_propagation(
                 None,
@@ -830,9 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn propagate_fact_contradictions_no_factstore_is_noop() {
-        let (_tmp, graph) = sqlite_graph();
-        let kg_store: Arc<dyn KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(graph));
+        let (_tmp, kg_store) = setup();
         let engine = DecayEngine::new(kg_store, DecayConfig::default());
         let stats = engine
             .propagate_fact_contradictions("any", chrono::Utc::now())

@@ -2622,16 +2622,18 @@ mod tests {
                 .expect("vault database parent"),
         )
         .expect("create vault database parent");
-        // Stays on the sqlite KG reference implementation: this test
-        // asserts normalized-name lookup ("EXISTING" finds "Existing"),
-        // which the engram adapter does not yet implement — a KG-lane
-        // parity gap (the deferred migration; see E1-b notes).
-        let db = Arc::new(zbot_stores_sqlite::KnowledgeDatabase::new(paths).expect("database"));
-        let storage = Arc::new(
-            zbot_stores_sqlite::kg::storage::GraphStorage::new(db).expect("graph storage"),
+        // Production (engram) store: normalized lookup goes through
+        // `get_entity_by_normalized_name` (case-insensitive + trimmed),
+        // which the adapter implements.
+        let config = zbot_engram_adapter::AdapterConfig::engram_for_data_root(
+            paths.knowledge_db().parent().expect("engram root"),
+            "engram.db",
         );
-        let store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> =
-            Arc::new(zbot_stores_sqlite::SqliteKgStore::new(storage));
+        let provider = zbot_engram_adapter::EngramProvider::open(config.clone()).expect("provider");
+        let store: Arc<dyn knowledge_graph::kg_trait::KnowledgeGraphStore> = Arc::new(
+            zbot_engram_adapter::EngramKnowledgeGraphStore::from_provider(config, &provider)
+                .expect("engram kg store"),
+        );
         let agent_id = "distillation-governance";
 
         store
@@ -2665,7 +2667,7 @@ mod tests {
         assert_eq!(outcome.relationships_dropped_unresolved, 1);
         assert_eq!(outcome.relationships_dropped_ungoverned, 1);
         let existing = store
-            .get_entity_by_name(agent_id, "EXISTING")
+            .get_entity_by_normalized_name(agent_id, "EXISTING")
             .await
             .expect("lookup existing")
             .expect("existing entity retained");
@@ -2675,7 +2677,7 @@ mod tests {
         );
         assert!(
             store
-                .get_entity_by_name(agent_id, "Rejected")
+                .get_entity_by_normalized_name(agent_id, "Rejected")
                 .await
                 .expect("lookup rejected")
                 .is_none(),
@@ -2683,7 +2685,7 @@ mod tests {
         );
         assert!(
             store
-                .get_entity_by_name(agent_id, "Missing")
+                .get_entity_by_normalized_name(agent_id, "Missing")
                 .await
                 .expect("lookup unresolved endpoint")
                 .is_none(),

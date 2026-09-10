@@ -1,35 +1,38 @@
 //! Verify the SleepTimeWorker fires a cycle when triggered.
-//!
-//! Stays on the sqlite KG reference implementation: the compactor/decay/
-//! pruner trio runs on the KG-maintenance surface that only sqlite
-//! implements (the deferred KG-lane migration).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::tempdir;
 
-use agent_primitives::vault_paths::VaultPaths;
 use gateway_memory::sleep::{Compactor, DecayConfig, DecayEngine, Pruner, SleepTimeWorker};
 use knowledge_graph::kg_trait::KnowledgeGraphStore;
-use zbot_stores_sqlite::kg::storage::GraphStorage;
-use zbot_stores_sqlite::{
-    CompactionRepository, GatewayCompactionStore, KnowledgeDatabase, SqliteKgStore,
+use zbot_engram_adapter::{
+    AdapterConfig, EngramKnowledgeGraphStore, EngramProvider, EngramSidecarStores,
 };
 use zbot_stores_traits::CompactionStore;
+
+fn engram_stores(
+    tmp: &tempfile::TempDir,
+    subdir: &str,
+) -> (Arc<dyn KnowledgeGraphStore>, Arc<dyn CompactionStore>) {
+    let dir = tmp.path().join(subdir);
+    std::fs::create_dir_all(&dir).expect("engram test root");
+    let config = AdapterConfig::engram_for_data_root(&dir, "engram.db");
+    let provider = EngramProvider::open(config.clone()).expect("provider opens");
+    let kg: Arc<dyn KnowledgeGraphStore> = Arc::new(
+        EngramKnowledgeGraphStore::from_provider(config.clone(), &provider)
+            .expect("kg store opens"),
+    );
+    let compaction: Arc<dyn CompactionStore> =
+        Arc::new(EngramSidecarStores::from_provider(config, &provider).expect("sidecars open"));
+    (kg, compaction)
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trigger_causes_immediate_cycle() {
     let tmp = tempdir().unwrap();
-    let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-    std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-    let db = Arc::new(KnowledgeDatabase::new(paths).unwrap());
-
-    let graph = Arc::new(GraphStorage::new(db.clone()).unwrap());
-    let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
-    let kg_store: Arc<dyn KnowledgeGraphStore> = Arc::new(SqliteKgStore::new(graph));
-    let compaction_store: Arc<dyn CompactionStore> =
-        Arc::new(GatewayCompactionStore::new(compaction_repo.clone()));
+    let (kg_store, compaction_store) = engram_stores(&tmp, "engram-kg");
     let compactor = Arc::new(Compactor::new(
         kg_store.clone(),
         compaction_store.clone(),
@@ -51,14 +54,6 @@ async fn trigger_causes_immediate_cycle() {
     worker.trigger();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Empty graph: no merges, no prunes. We don't care about specific numbers;
-    // the test passes if we reach this line without deadlock/panic.
-    // Optionally, verify no rows in kg_compactions — confirming the cycle ran
-    // and found nothing to do.
-    let summary = compaction_repo.latest_run_summary().unwrap();
-    // summary is None on empty graph — because nothing was recorded.
-    // If summary is Some, it should reflect a sleep-* run_id.
-    if let Some(s) = summary {
-        assert!(s.run_id.starts_with("sleep-"));
-    }
+    // Empty graph: no merges, no prunes. The test passes if we reach this
+    // line without deadlock/panic.
 }

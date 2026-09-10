@@ -11,7 +11,6 @@ members = [
     "stores/zbot-engram-adapter",
     "stores/zbot-stores-conformance",
     "stores/zbot-stores-domain",
-    "stores/zbot-stores-sqlite",
     "stores/zbot-runtime-sqlite",
     "stores/zbot-stores-traits",
 

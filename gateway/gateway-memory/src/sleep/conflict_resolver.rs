@@ -323,9 +323,7 @@ impl ConflictJudgeLlm for LlmConflictJudge {
 mod tests {
     use super::*;
     use crate::sleep::test_support;
-    use agent_primitives::vault_paths::VaultPaths;
     use std::sync::Mutex;
-    use zbot_stores_sqlite::{CompactionRepository, GatewayCompactionStore, KnowledgeDatabase};
 
     struct MockJudge {
         response: Mutex<ConflictResponse>,
@@ -350,20 +348,16 @@ mod tests {
         _tmp: tempfile::TempDir,
         memory_store: Arc<dyn MemoryFactStore>,
         compaction_store: Arc<dyn CompactionStore>,
-        knowledge_db: Arc<KnowledgeDatabase>,
     }
 
     fn setup() -> Harness {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = Arc::new(VaultPaths::new(tmp.path().to_path_buf()));
-        std::fs::create_dir_all(paths.conversations_db().parent().unwrap()).unwrap();
-        let db = Arc::new(KnowledgeDatabase::new(paths).expect("db"));
-        let compaction_repo = Arc::new(CompactionRepository::new(db.clone()));
+        let memory_store = test_support::fact_store(&tmp);
+        let compaction_store = test_support::compaction_store(&tmp);
         Harness {
-            memory_store: test_support::fact_store(&tmp),
-            compaction_store: Arc::new(GatewayCompactionStore::new(compaction_repo)),
-            knowledge_db: db,
             _tmp: tmp,
+            memory_store,
+            compaction_store,
         }
     }
 
@@ -573,9 +567,7 @@ mod tests {
     /// marked stale.
     #[tokio::test]
     async fn supersession_fires_belief_propagation() {
-        use zbot_stores_sqlite::SqliteBeliefStore;
         use zbot_stores_traits::Belief;
-        use zbot_stores_traits::BeliefStore;
 
         let h = setup();
         seed_two_schemas(
@@ -609,8 +601,7 @@ mod tests {
 
         // Wire a real SqliteBeliefStore against the same KnowledgeDatabase
         // the memory store uses.
-        let knowledge_db = h.knowledge_db.clone();
-        let belief_store: Arc<dyn BeliefStore> = Arc::new(SqliteBeliefStore::new(knowledge_db));
+        let (belief_store, _contradictions) = test_support::belief_stores(&h._tmp);
         let now = chrono::Utc::now();
         let sole_belief = Belief {
             id: "belief-sole".into(),

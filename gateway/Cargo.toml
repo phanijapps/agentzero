@@ -89,14 +89,10 @@ sha2 = "0.10"
 tokio-cron-scheduler = "0.13"
 
 # Database — D9: gateway no longer depends on rusqlite/r2d2 directly.
-# All SQLite-coupled types come through `zbot-stores-sqlite` (the trait
-# implementation) and `zbot-stores-traits` (the abstract surface). New
-# backends drop in by implementing the same traits in their own crate.
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
-zbot-stores-sqlite = { path = "../stores/zbot-stores-sqlite" }
 # Used only by the `query_session` debug example. The lib + bin do not
 # depend on rusqlite directly — production SQLite access flows through
 # `zbot-runtime-sqlite`; legacy semantic SQLite is test-only.

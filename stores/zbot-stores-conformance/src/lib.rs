@@ -1042,3 +1042,474 @@ pub async fn goal_round_trip<S: GoalStore>(store: &S) {
         "state transition must persist"
     );
 }
+
+// ===========================================================================
+// KG-maintenance scenarios (KG-lane port conformance). Verified against the
+// sqlite reference as oracle before its deletion; the production (engram)
+// store must hold the same behavior.
+//
+// Readbacks use behavioral surfaces only (embedding-search hits, resolver,
+// candidate lists): the sqlite reference keeps confidence/compression in
+// columns while the engram adapter projects them through entity
+// properties, so internal representations are deliberately not asserted.
+//
+// The resolver merges same-agent entities at cosine >= 0.87, so duplicate
+// scenarios seed embeddings in the 0.80-0.86 band — similar enough for the
+// compactor's threshold, distinct enough to remain separate rows.
+// ===========================================================================
+
+/// One-hot 384-dim unit vector at `index`.
+fn kg_one_hot(index: usize) -> Vec<f32> {
+    let mut v = vec![0.0_f32; 384];
+    v[index] = 1.0;
+    v
+}
+
+/// Unit vector at cosine `c` to the one-hot at `i` (rotated toward `j`).
+fn kg_rotated(i: usize, j: usize, c: f32) -> Vec<f32> {
+    let mut v = vec![0.0_f32; 384];
+    v[i] = c;
+    v[j] = (1.0 - c * c).sqrt();
+    v
+}
+
+/// Entity with controllable `last_seen_at`/`first_seen_at` (days ago).
+fn kg_entity(
+    agent: &str,
+    ty: EntityType,
+    name: &str,
+    days_ago: i64,
+    embedding: Option<Vec<f32>>,
+) -> Entity {
+    let mut entity = Entity::new(agent.to_string(), ty, name.to_string());
+    let seen = chrono::Utc::now() - chrono::Duration::days(days_ago);
+    entity.first_seen_at = seen;
+    entity.last_seen_at = seen;
+    entity.name_embedding = embedding;
+    entity
+}
+
+/// Confidence of `name`'s embedding-search hit under `agent`. The identity
+/// is harness-supplied: embedding lanes are identity-gated by design, and
+/// each backend harness constructs the identity its store expects.
+async fn kg_hit_confidence<S: KnowledgeGraphStore>(
+    store: &S,
+    agent: &str,
+    identity: &zbot_stores_traits::EmbeddingQueryIdentity,
+    query: &[f32],
+    name: &str,
+) -> Option<f64> {
+    let hits = store
+        .search_entities_by_name_embedding_with_identity(agent, query, Some(identity), 10)
+        .await
+        .expect("embedding search");
+    hits.iter()
+        .find(|hit| hit.name == name)
+        .map(|hit| hit.confidence)
+}
+
+/// Decay floors old rows at `min_confidence`, leaves recent rows above the
+/// floor, and skips archival rows. The two decay calls cover both storage
+/// schemes: backends that stamp fresh entities under the requested agent
+/// and backends that stamp them `__global__` — a row matches exactly one.
+pub async fn kg_decay_entity_confidence<S: KnowledgeGraphStore>(
+    store: &S,
+    identity: &zbot_stores_traits::EmbeddingQueryIdentity,
+) {
+    let agent = "kg-decay-agent";
+    let old_emb = kg_one_hot(1);
+    store
+        .upsert_entity(
+            agent,
+            kg_entity(
+                agent,
+                EntityType::Person,
+                "Old Hand",
+                30,
+                Some(old_emb.clone()),
+            ),
+        )
+        .await
+        .expect("seed old");
+    let recent_emb = kg_one_hot(2);
+    store
+        .upsert_entity(
+            agent,
+            kg_entity(
+                agent,
+                EntityType::Person,
+                "Recent Visit",
+                0,
+                Some(recent_emb.clone()),
+            ),
+        )
+        .await
+        .expect("seed recent");
+    let mut archival_entity = kg_entity(
+        agent,
+        EntityType::Person,
+        "Archive Case",
+        30,
+        Some(kg_one_hot(3)),
+    );
+    archival_entity
+        .properties
+        .insert("epistemic_class".to_string(), serde_json::json!("archival"));
+    store
+        .upsert_entity(agent, archival_entity)
+        .await
+        .expect("seed archival");
+
+    // 30 days at a 1-day half-life decays past any floor; skip-recent keeps
+    // the fresh row untouched.
+    let mut touched = 0;
+    for scope in [agent, "__global__"] {
+        touched += store
+            .decay_entity_confidence(scope, 1.0, 0.25, 12)
+            .await
+            .expect("decay");
+    }
+    assert!(touched >= 1, "the old row must be matched under one scope");
+
+    let old_confidence = kg_hit_confidence(store, agent, identity, &old_emb, "Old Hand").await;
+    let recent_confidence =
+        kg_hit_confidence(store, agent, identity, &recent_emb, "Recent Visit").await;
+    assert_eq!(
+        old_confidence,
+        Some(0.25),
+        "old row pinned to the floor: got {old_confidence:?}"
+    );
+    let recent_confidence = recent_confidence.unwrap_or(0.0);
+    assert!(
+        recent_confidence > 0.5,
+        "recent row keeps its default (0.8/1.0 per backend): got {recent_confidence}"
+    );
+}
+
+/// Duplicate candidates: same type, embedding-backed, cosine at or above
+/// the supplied threshold; limit respected.
+pub async fn kg_find_duplicate_candidates<S: KnowledgeGraphStore>(store: &S) {
+    let agent = "kg-dup-agent";
+    // cosine(base, rotated) == 0.84 — above the scenario threshold 0.80,
+    // below the resolver's 0.87 merge band.
+    let base = kg_one_hot(1);
+    let rotated = kg_rotated(1, 2, 0.84);
+    let far = kg_one_hot(3);
+    store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Near One", 1, Some(base)),
+        )
+        .await
+        .expect("seed near one");
+    store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Near Two", 1, Some(rotated)),
+        )
+        .await
+        .expect("seed near two");
+    store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Far Away", 1, Some(far)),
+        )
+        .await
+        .expect("seed far");
+
+    // Threshold 0.70 with the 0.84 pair satisfies both backends: the
+    // cosine-correct comparison, and the sqlite reference's
+    // euclidean-vs-L2-squared threshold conversion (its ANN returns
+    // euclidean distance while the threshold is 2·(1−cos)) — see the
+    // KG-lane port report for the sqlite-side bug note.
+    let mut all_pairs = Vec::new();
+    for scope in [agent, "__global__"] {
+        all_pairs.extend(
+            store
+                .find_duplicate_candidates(scope, &EntityType::Person, 0.70, 10)
+                .await
+                .expect("find duplicates"),
+        );
+    }
+    assert!(
+        all_pairs
+            .iter()
+            .any(|p| p.cosine_similarity >= 0.70 && p.cosine_similarity <= 0.90),
+        "the seeded near-pair must surface: got {all_pairs:?}"
+    );
+    assert!(
+        all_pairs.iter().all(|p| p.cosine_similarity >= 0.70),
+        "every returned pair must clear the threshold"
+    );
+
+    let none = store
+        .find_duplicate_candidates(agent, &EntityType::Person, 0.70, 0)
+        .await
+        .expect("limit zero");
+    assert!(none.is_empty(), "limit 0 yields no pairs");
+}
+
+/// Orphan candidates: old + zero edges only; connected and recent rows
+/// excluded.
+pub async fn kg_orphan_candidates<S: KnowledgeGraphStore>(store: &S) {
+    let agent = "kg-orphan-agent";
+    let orphan_id = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Lonely Old", 40, None),
+        )
+        .await
+        .expect("seed orphan");
+    let connected_id = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Linked Old", 40, None),
+        )
+        .await
+        .expect("seed connected");
+    let fresh_id = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Lonely Fresh", 0, None),
+        )
+        .await
+        .expect("seed fresh");
+
+    let other = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Anchor", 0, None),
+        )
+        .await
+        .expect("seed anchor");
+    let rel = Relationship::new(
+        agent.to_string(),
+        connected_id.0.clone(),
+        other.0.clone(),
+        RelationshipType::Uses,
+    );
+    store
+        .upsert_relationship(agent, rel)
+        .await
+        .expect("seed relationship");
+
+    let candidates = store
+        .list_orphan_old_candidates(agent, 30, 10)
+        .await
+        .expect("list orphans");
+    let ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+    assert!(ids.contains(&orphan_id.0.as_str()), "old orphan listed");
+    assert!(
+        !ids.contains(&connected_id.0.as_str()),
+        "connected entity excluded"
+    );
+    assert!(
+        !ids.contains(&fresh_id.0.as_str()),
+        "recent orphan excluded"
+    );
+}
+
+/// Merge re-points relationships, drops colliding duplicates, transfers
+/// aliases, and takes the loser out of prune candidacy.
+pub async fn kg_merge_entity_into<S: KnowledgeGraphStore>(store: &S) {
+    let agent = "kg-merge-agent";
+    let loser = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Loser Co", 5, None),
+        )
+        .await
+        .expect("seed loser");
+    let winner = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Winner Co", 5, None),
+        )
+        .await
+        .expect("seed winner");
+    let outside = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Outside", 5, None),
+        )
+        .await
+        .expect("seed outside");
+
+    let unique_rel = Relationship::new(
+        agent.to_string(),
+        loser.0.clone(),
+        outside.0.clone(),
+        RelationshipType::Uses,
+    );
+    let unique_id = store
+        .upsert_relationship(agent, unique_rel)
+        .await
+        .expect("seed unique");
+    let winner_edge = Relationship::new(
+        agent.to_string(),
+        winner.0.clone(),
+        outside.0.clone(),
+        RelationshipType::RelatedTo,
+    );
+    store
+        .upsert_relationship(agent, winner_edge)
+        .await
+        .expect("seed winner edge");
+    let loser_dup = Relationship::new(
+        agent.to_string(),
+        loser.0.clone(),
+        outside.0.clone(),
+        RelationshipType::RelatedTo,
+    );
+    store
+        .upsert_relationship(agent, loser_dup)
+        .await
+        .expect("seed loser dup");
+
+    store
+        .add_alias(&loser, "Loser Alias")
+        .await
+        .expect("seed alias");
+
+    store
+        .merge_entity_into(&loser, &winner)
+        .await
+        .expect("merge");
+
+    let rels = store
+        .list_relationships(agent, None, 100, 0)
+        .await
+        .expect("list relationships");
+    assert!(
+        rels.iter().any(|r| r.id == unique_id.0),
+        "unique relationship survives re-pointing"
+    );
+    assert!(
+        rels.iter().any(
+            |r| r.source_entity_id == winner.0 && r.relationship_type == RelationshipType::Uses
+        ),
+        "unique edge re-pointed to winner"
+    );
+    let competes: Vec<&Relationship> = rels
+        .iter()
+        .filter(|r| r.relationship_type == RelationshipType::RelatedTo)
+        .collect();
+    assert_eq!(
+        competes.len(),
+        1,
+        "colliding loser edge dropped, winner edge kept"
+    );
+
+    // The loser leaves prune candidacy (compressed rows are excluded from
+    // orphan listings on both backends).
+    let candidates = store
+        .list_orphan_old_candidates(agent, 1, 100)
+        .await
+        .expect("orphans after merge");
+    assert!(
+        candidates.iter().all(|c| c.id != loser.0),
+        "merged loser is not a prune candidate"
+    );
+
+    let resolved = store
+        .resolve_entity(agent, &EntityType::Person, "Loser Alias", None)
+        .await
+        .expect("resolve alias");
+    match resolved {
+        knowledge_graph::kg_trait::ResolveOutcome::Match(id) => assert_eq!(
+            id, winner,
+            "alias must resolve to the winner, not the compressed loser"
+        ),
+        knowledge_graph::kg_trait::ResolveOutcome::NoMatch => {}
+    }
+}
+
+/// Prune removes the entity from resolution and prune candidacy.
+pub async fn kg_mark_entity_pruned<S: KnowledgeGraphStore>(store: &S) {
+    let agent = "kg-prune-agent";
+    let victim = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Prune Me", 40, None),
+        )
+        .await
+        .expect("seed victim");
+    store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Keep Me", 40, None),
+        )
+        .await
+        .expect("seed keeper");
+
+    store.mark_entity_pruned(&victim).await.expect("prune");
+
+    // Note: resolution-after-prune is backend-divergent (the sqlite
+    // resolver lacks a compressed filter; the adapter excludes pruned
+    // rows entirely) and is deliberately not asserted.
+    let resolved_keep = store
+        .resolve_entity(agent, &EntityType::Person, "Keep Me", None)
+        .await
+        .expect("resolve keeper");
+    assert!(
+        matches!(
+            resolved_keep,
+            knowledge_graph::kg_trait::ResolveOutcome::Match(_)
+        ),
+        "keeper still resolves"
+    );
+    let candidates = store
+        .list_orphan_old_candidates(agent, 1, 100)
+        .await
+        .expect("orphans");
+    assert!(
+        candidates.iter().all(|c| c.id != victim.0),
+        "pruned entity is not a prune candidate"
+    );
+}
+
+/// Confidence multipliers floor correctly; the count covers the matched
+/// rows under whichever scope owns them.
+pub async fn kg_confidence_multiplier<S: KnowledgeGraphStore>(
+    store: &S,
+    identity: &zbot_stores_traits::EmbeddingQueryIdentity,
+) {
+    let agent = "kg-mult-agent";
+    let emb = kg_one_hot(1);
+    let mine = store
+        .upsert_entity(
+            agent,
+            kg_entity(agent, EntityType::Person, "Mine", 1, Some(emb.clone())),
+        )
+        .await
+        .expect("seed mine");
+
+    let mut touched = 0;
+    for scope in [agent, "__global__"] {
+        touched += store
+            .apply_entity_confidence_multiplier(scope, std::slice::from_ref(&mine), 0.5, 0.4)
+            .await
+            .expect("apply multiplier");
+    }
+    assert_eq!(touched, 1, "the row is matched exactly once across scopes");
+
+    let confidence = kg_hit_confidence(store, agent, identity, &emb, "Mine").await;
+    assert!(
+        matches!(confidence, Some(c) if (0.35..=0.65).contains(&c)),
+        "0.5 x default lands mid-band above the 0.4 floor: got {confidence:?}"
+    );
+
+    let mut floored = 0;
+    for scope in [agent, "__global__"] {
+        floored += store
+            .apply_entity_confidence_multiplier(scope, std::slice::from_ref(&mine), 0.1, 0.45)
+            .await
+            .expect("apply below floor");
+    }
+    assert_eq!(floored, 1);
+    let confidence = kg_hit_confidence(store, agent, identity, &emb, "Mine").await;
+    assert!(
+        matches!(confidence, Some(c) if (c - 0.45).abs() < 1e-6),
+        "floor clamps: got {confidence:?}"
+    );
+}

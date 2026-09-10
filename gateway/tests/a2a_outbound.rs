@@ -3,7 +3,7 @@ mod common;
 use async_trait::async_trait;
 use chrono::Utc;
 use execution_state::WorkStatus;
-use gateway::a2a_tasks::{
+use gateway::tasks::a2a::{
     A2aOutboundDispatchHandler, A2aOutboundPollHandler, GatewayA2aDelegationService,
 };
 use gateway_a2a::client::{A2aClientError, A2aTransport};
@@ -140,7 +140,7 @@ async fn durable_outbound_dispatch_returns_immediately_and_delivers_attributed_r
         state.durable_work_transport.clone(),
         registry,
         WorkWorkerConfig::new(
-            gateway::durable_agent_tasks::AGENT_TASK_TARGET,
+            gateway::tasks::durable_agent::AGENT_TASK_TARGET,
             "a2a-outbound-test",
             WorkWorkerLimits::new(
                 2,
@@ -261,7 +261,7 @@ async fn completed_origin_persists_result_and_schedules_safe_continuation() {
         state.durable_work_transport.clone(),
         registry,
         WorkWorkerConfig::new(
-            gateway::durable_agent_tasks::AGENT_TASK_TARGET,
+            gateway::tasks::durable_agent::AGENT_TASK_TARGET,
             "a2a-outbound-continuation-test",
             WorkWorkerLimits::new(
                 2,

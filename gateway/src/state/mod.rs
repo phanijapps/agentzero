@@ -627,7 +627,7 @@ impl AppState {
             ),
         );
         let a2a_delegation = a2a_enabled.then(|| {
-            Arc::new(crate::a2a_tasks::GatewayA2aDelegationService::new(
+            Arc::new(crate::tasks::a2a::GatewayA2aDelegationService::new(
                 paths.vault_dir(),
                 durable_work_store.clone(),
                 durable_work_transport.clone(),

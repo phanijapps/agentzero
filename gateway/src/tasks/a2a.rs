@@ -145,7 +145,7 @@ impl A2aTaskService {
         {
             return Err(A2aTaskError::CapacityExceeded);
         }
-        let target = crate::durable_agent_tasks::AGENT_TASK_TARGET;
+        let target = super::durable_agent::AGENT_TASK_TARGET;
         let draft = WorkDraft::new(
             A2A_INBOUND_KIND,
             target,
@@ -411,7 +411,7 @@ impl A2aInboundHandler {
     }
 
     async fn validate_agent(&self, agent_id: &str) -> Result<(), WorkHandlerOutcome> {
-        crate::durable_agent_tasks::validate_invocation_agent_id(agent_id).map_err(|_| {
+        super::durable_agent::validate_invocation_agent_id(agent_id).map_err(|_| {
             WorkHandlerOutcome::Permanent(execution_state::WorkFailureCode::IntegrityViolation)
         })?;
         if agent_id != "root" {
@@ -640,7 +640,7 @@ enum InboundRunState {
 #[async_trait::async_trait]
 impl WorkHandler for A2aInboundHandler {
     fn target(&self) -> &'static str {
-        crate::durable_agent_tasks::AGENT_TASK_TARGET
+        super::durable_agent::AGENT_TASK_TARGET
     }
 
     fn kind(&self) -> &'static str {
@@ -900,7 +900,7 @@ impl gateway_execution::a2a::A2aDelegationService for GatewayA2aDelegationServic
         };
         let draft = WorkDraft::new(
             A2A_OUTBOUND_DISPATCH_KIND,
-            crate::durable_agent_tasks::AGENT_TASK_TARGET,
+            super::durable_agent::AGENT_TASK_TARGET,
             serde_json::to_value(&payload).map_err(|_| A2aDelegationError::InvalidRequest)?,
         )
         .with_max_attempts(8)
@@ -956,7 +956,7 @@ impl<'a> OutboundPolicy<'a> {
 impl WorkPolicy for OutboundPolicy<'_> {
     fn authorize(&self, draft: &WorkDraft) -> Result<WorkAuthorization, WorkPolicyError> {
         if draft.kind() != self.expected_kind
-            || draft.target() != crate::durable_agent_tasks::AGENT_TASK_TARGET
+            || draft.target() != super::durable_agent::AGENT_TASK_TARGET
         {
             return Err(WorkPolicyError::TargetNotAllowed);
         }
@@ -996,7 +996,7 @@ impl A2aOutboundDispatchHandler {
 #[async_trait::async_trait]
 impl WorkHandler for A2aOutboundDispatchHandler {
     fn target(&self) -> &'static str {
-        crate::durable_agent_tasks::AGENT_TASK_TARGET
+        super::durable_agent::AGENT_TASK_TARGET
     }
 
     fn kind(&self) -> &'static str {
@@ -1074,7 +1074,7 @@ impl WorkHandler for A2aOutboundDispatchHandler {
         };
         let draft = WorkDraft::new(
             A2A_OUTBOUND_POLL_KIND,
-            crate::durable_agent_tasks::AGENT_TASK_TARGET,
+            super::durable_agent::AGENT_TASK_TARGET,
             match serde_json::to_value(&poll) {
                 Ok(value) => value,
                 Err(_) => return integrity_outcome(),
@@ -1198,7 +1198,7 @@ impl A2aOutboundPollHandler {
 #[async_trait::async_trait]
 impl WorkHandler for A2aOutboundPollHandler {
     fn target(&self) -> &'static str {
-        crate::durable_agent_tasks::AGENT_TASK_TARGET
+        super::durable_agent::AGENT_TASK_TARGET
     }
 
     fn kind(&self) -> &'static str {

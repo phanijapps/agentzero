@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum_test::{TestServer, TestServerConfig, Transport};
 use common::make_state;
 use gateway::{
-    a2a_tasks::A2aInboundPayload, http::create_http_router, websocket::WebSocketHandler, AppState,
+    http::create_http_router, tasks::a2a::A2aInboundPayload, websocket::WebSocketHandler, AppState,
     GatewayConfig,
 };
 use gateway_a2a::client::{A2aTransport, HttpA2aTransport};
@@ -390,7 +390,7 @@ async fn completed_task_projects_the_canonical_assistant_artifact() {
     let leased = state
         .durable_work_store
         .claim_next(
-            gateway::durable_agent_tasks::AGENT_TASK_TARGET,
+            gateway::tasks::durable_agent::AGENT_TASK_TARGET,
             "test-worker",
             chrono::Utc::now(),
             std::time::Duration::from_secs(30),

@@ -1,7 +1,7 @@
 //! A2A 1.0 HTTP+JSON routes for explicitly paired zBots.
 
-use crate::a2a_tasks::{A2aPeerIdentity, A2aTaskError, A2aTaskService};
 use crate::config::GatewayConfig;
+use crate::tasks::a2a::{A2aPeerIdentity, A2aTaskError, A2aTaskService};
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode};

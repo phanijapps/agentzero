@@ -5,15 +5,15 @@
 use crate::bus::HttpGatewayBus;
 use crate::config::GatewayConfig;
 use crate::cron::{CronScheduler, CronService};
-use crate::durable_agent_tasks::{
-    AgentTaskHandler, AgentTaskRuntime, DurableAgentTaskService, GatewayAgentTaskRuntime,
-    AGENT_TASK_TARGET,
-};
 use crate::error::{GatewayError, Result};
 use crate::events::EventBus;
 use crate::http::create_http_router;
 use crate::services::{AgentService, RuntimeService};
 use crate::state::AppState;
+use crate::tasks::durable_agent::{
+    AgentTaskHandler, AgentTaskRuntime, DurableAgentTaskService, GatewayAgentTaskRuntime,
+    AGENT_TASK_TARGET,
+};
 use crate::websocket::WebSocketHandler;
 use discovery::InterfaceEnumerator;
 use gateway_services::{FileWatcher, WatchConfig};
@@ -439,7 +439,7 @@ impl GatewayServer {
         if self.config.a2a_enabled {
             let remote_transport: Arc<dyn gateway_a2a::client::A2aTransport> =
                 Arc::new(gateway_a2a::client::HttpA2aTransport::default());
-            handlers.push(Arc::new(crate::a2a_tasks::A2aInboundHandler::new(
+            handlers.push(Arc::new(crate::tasks::a2a::A2aInboundHandler::new(
                 self.state.paths.vault_dir(),
                 self.state.durable_work_store.clone(),
                 self.state.runtime.clone(),
@@ -447,7 +447,7 @@ impl GatewayServer {
                 self.state.messages.clone(),
                 self.state.agents.clone(),
             )) as Arc<dyn gateway_bus::WorkHandler>);
-            handlers.push(Arc::new(crate::a2a_tasks::A2aOutboundDispatchHandler::new(
+            handlers.push(Arc::new(crate::tasks::a2a::A2aOutboundDispatchHandler::new(
                 self.state.paths.vault_dir(),
                 self.state.durable_work_store.clone(),
                 self.state.durable_work_transport.clone(),
@@ -459,7 +459,7 @@ impl GatewayServer {
                 .runner()
                 .ok_or_else(|| GatewayError::Internal("execution runner unavailable".to_owned()))?
                 .steering_registry();
-            handlers.push(Arc::new(crate::a2a_tasks::A2aOutboundPollHandler::new(
+            handlers.push(Arc::new(crate::tasks::a2a::A2aOutboundPollHandler::new(
                 self.state.paths.vault_dir(),
                 remote_transport,
                 steering,
@@ -670,7 +670,7 @@ mod tests {
     }
 
     struct PersistedAgentTaskPolicy {
-        task: crate::durable_agent_tasks::AgentTaskV1,
+        task: crate::tasks::durable_agent::AgentTaskV1,
     }
 
     impl WorkPolicy for PersistedAgentTaskPolicy {
@@ -679,8 +679,8 @@ mod tests {
             _draft: &WorkDraft,
         ) -> std::result::Result<WorkAuthorization, WorkPolicyError> {
             Ok(WorkAuthorization::new(
-                crate::durable_agent_tasks::AGENT_TASK_SOURCE,
-                crate::durable_agent_tasks::AGENT_TASK_TARGET,
+                crate::tasks::durable_agent::AGENT_TASK_SOURCE,
+                crate::tasks::durable_agent::AGENT_TASK_TARGET,
                 "connection-restart",
                 &self.task.session_id,
                 &self.task.execution_id,
@@ -705,38 +705,38 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::durable_agent_tasks::AgentTaskRuntime for RestartRuntime {
+    impl crate::tasks::durable_agent::AgentTaskRuntime for RestartRuntime {
         async fn inspect(
             &self,
-            _task: &crate::durable_agent_tasks::AgentTaskV1,
+            _task: &crate::tasks::durable_agent::AgentTaskV1,
         ) -> std::result::Result<
-            crate::durable_agent_tasks::AgentTaskRunState,
-            crate::durable_agent_tasks::AgentTaskRuntimeError,
+            crate::tasks::durable_agent::AgentTaskRunState,
+            crate::tasks::durable_agent::AgentTaskRuntimeError,
         > {
             if self.resumes.load(Ordering::SeqCst) == 0 {
-                return Ok(crate::durable_agent_tasks::AgentTaskRunState::Resume);
+                return Ok(crate::tasks::durable_agent::AgentTaskRunState::Resume);
             }
             if self.terminal.load(Ordering::SeqCst) {
-                Ok(crate::durable_agent_tasks::AgentTaskRunState::Completed)
+                Ok(crate::tasks::durable_agent::AgentTaskRunState::Completed)
             } else {
-                Ok(crate::durable_agent_tasks::AgentTaskRunState::Running)
+                Ok(crate::tasks::durable_agent::AgentTaskRunState::Running)
             }
         }
 
         async fn start(
             &self,
-            _task: &crate::durable_agent_tasks::AgentTaskV1,
+            _task: &crate::tasks::durable_agent::AgentTaskV1,
             _actor_id: &str,
-        ) -> std::result::Result<(), crate::durable_agent_tasks::AgentTaskRuntimeError> {
+        ) -> std::result::Result<(), crate::tasks::durable_agent::AgentTaskRuntimeError> {
             self.starts.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
         async fn resume(
             &self,
-            _task: &crate::durable_agent_tasks::AgentTaskV1,
+            _task: &crate::tasks::durable_agent::AgentTaskV1,
             _actor_id: &str,
-        ) -> std::result::Result<(), crate::durable_agent_tasks::AgentTaskRuntimeError> {
+        ) -> std::result::Result<(), crate::tasks::durable_agent::AgentTaskRuntimeError> {
             self.resumes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -815,8 +815,8 @@ mod tests {
 
         let routed = WorkEnvelope::authorize(
             WorkDraft::new(
-                crate::durable_agent_tasks::AGENT_TASK_KIND,
-                crate::durable_agent_tasks::AGENT_TASK_TARGET,
+                crate::tasks::durable_agent::AGENT_TASK_KIND,
+                crate::tasks::durable_agent::AGENT_TASK_TARGET,
                 serde_json::json!({"not": "an agent task"}),
             ),
             &GatewayWorkPolicy,
@@ -916,11 +916,11 @@ mod tests {
         assert!(first.inserted);
         assert_eq!(
             first.session_id,
-            crate::durable_agent_tasks::reserved_session_id(message_id)
+            crate::tasks::durable_agent::reserved_session_id(message_id)
         );
         assert_eq!(
             first.execution_id,
-            crate::durable_agent_tasks::reserved_execution_id(message_id)
+            crate::tasks::durable_agent::reserved_execution_id(message_id)
         );
         assert_ne!(first.session_id[5..], message_id[4..]);
 
@@ -949,7 +949,7 @@ mod tests {
                     Some(message_id),
                 )
                 .await,
-            Err(crate::durable_agent_tasks::AgentTaskEnqueueError::Conflict)
+            Err(crate::tasks::durable_agent::AgentTaskEnqueueError::Conflict)
         );
     }
 
@@ -959,13 +959,13 @@ mod tests {
         let mut server =
             GatewayServer::new(GatewayConfig::default(), temp_dir.path().to_path_buf());
         let message_id = "msg-550e8400-e29b-41d4-a716-446655440010";
-        let task = crate::durable_agent_tasks::AgentTaskV1 {
+        let task = crate::tasks::durable_agent::AgentTaskV1 {
             agent_id: "root".to_owned(),
             conversation_id: "research-restart".to_owned(),
             message: "Resume the durable research task".to_owned(),
-            mode: crate::durable_agent_tasks::AgentTaskMode::Research,
-            session_id: crate::durable_agent_tasks::reserved_session_id(message_id),
-            execution_id: crate::durable_agent_tasks::reserved_execution_id(message_id),
+            mode: crate::tasks::durable_agent::AgentTaskMode::Research,
+            session_id: crate::tasks::durable_agent::reserved_session_id(message_id),
+            execution_id: crate::tasks::durable_agent::reserved_execution_id(message_id),
             message_id: message_id.to_owned(),
         };
         let session = execution_state::Session::new_with_id(
@@ -1008,8 +1008,8 @@ mod tests {
             .unwrap();
         let persisted = WorkEnvelope::authorize(
             WorkDraft::new(
-                crate::durable_agent_tasks::AGENT_TASK_KIND,
-                crate::durable_agent_tasks::AGENT_TASK_TARGET,
+                crate::tasks::durable_agent::AGENT_TASK_KIND,
+                crate::tasks::durable_agent::AGENT_TASK_TARGET,
                 serde_json::to_value(&task).unwrap(),
             )
             .with_correlation_id(&task.conversation_id)

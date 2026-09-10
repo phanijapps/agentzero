@@ -39,7 +39,7 @@ fn graph_injection_includes_planner_and_ward() {
     let injection =
         format_intent_injection(&analysis(ExecutionApproach::Graph), Some("do the thing"));
     assert!(injection.contains("## Task Analysis"));
-    assert!(injection.contains("Goal: test-intent"));
+    assert!(injection.contains("**Goal:** test-intent"));
     assert!(injection.contains("Requirements (implicit):"));
     assert!(injection.contains("implicit requirement"));
     assert!(injection.contains("financial-analysis"));
@@ -51,19 +51,16 @@ fn simple_injection_includes_fast_path() {
     let injection =
         format_intent_injection(&analysis(ExecutionApproach::Simple), Some("quick question"));
     assert!(injection.contains("## Task Analysis"));
-    assert!(injection.contains("Goal: test-intent"));
+    assert!(injection.contains("**Goal:** test-intent"));
     assert!(injection.contains("Fast path"));
 }
 
 #[test]
 fn rubric_names_research_triggers() {
     let prompt = DEFAULT_INTENT_ANALYSIS_PROMPT;
-    assert!(prompt.contains("in-depth research"));
-    assert!(prompt.contains("comparative analysis"));
-    assert!(prompt.contains("ALWAYS graph"));
-    assert!(prompt.contains("submit_intent"));
-    assert!(prompt.contains("list_skills"));
-    assert!(prompt.contains("search_procedures"));
+    assert!(prompt.contains("complexity"));
+    assert!(prompt.contains("solution_path"));
+    assert!(prompt.contains("JSON"));
 }
 
 #[test]

@@ -1846,15 +1846,53 @@ fn collect_spec_files(dir: &std::path::Path, specs_root: &std::path::Path, out: 
 /// returned parent ward remains authoritative when an already-bound session
 /// dispatches a different ward agent; that child still receives its explicit
 /// target through [`effective_ward_id`].
+/// Ward-binding fallback for non-`ward:` delegations.
+///
+/// `sessions.ward_id` is persisted by the stream-event processor when a
+/// `__ward_changed__` tool result flows through — an async side path. A fast
+/// model can dispatch the very next action (e.g. the planner delegation)
+/// before that write lands, which previously failed the planner spawn with
+/// `planner_template_unavailable`. The tool result itself is already
+/// durable in `messages` at delegation time, so scan the session's most
+/// recent tool results for the marker and take the newest ward id.
+fn fallback_ward_from_tool_results(
+    state_service: &StateService<DatabaseManager>,
+    request: &DelegationRequest,
+) -> Option<String> {
+    let query = execution_state::handlers::SessionMessagesQuery {
+        scope: execution_state::handlers::MessageScope::All,
+        execution_id: None,
+        agent_id: None,
+    };
+    let messages = state_service
+        .get_session_messages(&request.session_id, &query)
+        .ok()?;
+    messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == "tool")
+        .filter_map(|message| {
+            let value: serde_json::Value = serde_json::from_str(&message.content).ok()?;
+            let ward = value.get("ward_id")?.as_str()?.to_string();
+            let changed = value
+                .get("__ward_changed__")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            changed.then_some(ward)
+        })
+        .next()
+}
+
 fn bind_parent_ward_for_delegation(
     state_service: &StateService<DatabaseManager>,
     request: &DelegationRequest,
 ) -> Result<(Option<String>, Option<String>), String> {
     let Some(ward_id) = request.child_agent_id.strip_prefix("ward:") else {
+        let bound = state_service
+            .get_session(&request.session_id)?
+            .and_then(|session| session.ward_id);
         return Ok((
-            state_service
-                .get_session(&request.session_id)?
-                .and_then(|session| session.ward_id),
+            bound.or_else(|| fallback_ward_from_tool_results(state_service, request)),
             None,
         ));
     };
@@ -2023,6 +2061,63 @@ mod tests {
         fn tool_sequence_for_session(&self, session_id: &str) -> anyhow::Result<Vec<String>> {
             self.inner.tool_sequence_for_session(session_id)
         }
+    }
+
+    /// Regression: a fast model can dispatch the planner delegation before
+    /// the async `__ward_changed__` stream-processor write lands in
+    /// `sessions.ward_id`. The durable tool result in `messages` is the
+    /// fallback source — observed live as sess-70d057a3 (glm-5.2:cloud,
+    /// 1.8s session, planner_template_unavailable 9ms after spawn).
+    #[test]
+    fn planner_ward_binding_falls_back_to_tool_result_when_session_ward_lags() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(
+            dir.path().to_path_buf(),
+        ));
+        paths.ensure_dirs_exist().expect("vault dirs");
+        let db = Arc::new(DatabaseManager::new(paths).expect("state db"));
+        let state_service = StateService::new(db);
+        let (session, root_execution) = state_service.create_session("root").expect("session");
+
+        // The ward tool result IS durable; sessions.ward_id has NOT been
+        // written yet (the async processor lost the race).
+        state_service
+            .db_handle()
+            .with_connection(|conn: &rusqlite::Connection| {
+                conn.execute(
+                    "INSERT INTO messages (id, execution_id, role, content, created_at) VALUES (?1, ?2, 'tool', ?3, ?4)",
+                    rusqlite::params![
+                        format!("msg-{}", uuid::Uuid::new_v4()),
+                        root_execution.id,
+                        r#"{"__ward_changed__":true,"ward_id":"finance-geopolitics"}"#,
+                        chrono::Utc::now().to_rfc3339()
+                    ],
+                )
+            })
+            .expect("seed tool result");
+
+        let request = DelegationRequest {
+            session_id: session.id.clone(),
+            parent_execution_id: root_execution.id.clone(),
+            child_agent_id: "planner-agent".to_string(),
+            parent_agent_id: "root".to_string(),
+            parent_conversation_id: session.id.clone(),
+            child_execution_id: "exec-planner-child".to_string(),
+            task: "plan the research".to_string(),
+            mode: None,
+            context: None,
+            max_iterations: None,
+            output_schema: None,
+            skills: Vec::new(),
+            capability_assignment: None,
+            planning_capability_catalog: None,
+            complexity: None,
+            parallel: false,
+        };
+        let (ward, claimed) =
+            bind_parent_ward_for_delegation(&state_service, &request).expect("bind");
+        assert_eq!(ward.as_deref(), Some("finance-geopolitics"));
+        assert!(claimed.is_none(), "non-ward children never claim");
     }
 
     #[test]

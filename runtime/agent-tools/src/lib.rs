@@ -25,7 +25,6 @@ pub use tools::{
     EntityInfo,
     // Ingestion tool (enqueue text for background extraction + bulk structured)
     EvidenceRecord,
-    GlobTool,
     // Goal tool (agent intent lifecycle)
     GoalAccess,
     GoalSummary,
@@ -36,7 +35,6 @@ pub use tools::{
     IngestionAccess,
     LoadSkillTool,
     MemorySearchTool,
-    MemoryTool,
     MemoryWriteTool,
     // Multimodal vision fallback
     MultimodalAnalyzeTool,

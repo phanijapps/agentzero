@@ -663,6 +663,46 @@ impl RecallTool {
         }
     }
 
+    /// Exact ctx-session-state lookup with session-ownership guard
+    /// (semantics preserved verbatim from the retired memory.get_fact).
+    async fn exact_ctx_lookup(&self, ctx: &dyn ToolContext, key: &str) -> Result<Value> {
+        if !key.starts_with("ctx.") {
+            return Err(AgentError::Tool(format!(
+                "recall key lookup only retrieves ctx-namespaced keys. Got '{key}' — use a semantic query for non-ctx facts."
+            )));
+        }
+        let Some(rest) = key.strip_prefix("ctx.") else {
+            unreachable!("prefix checked above");
+        };
+        let Some((sid, _sub)) = rest.split_once('.') else {
+            return Err(AgentError::Tool(format!(
+                "ctx key '{key}' must include session_id: ctx.<sid>.<sub_key>"
+            )));
+        };
+        if sid != ctx.session_id() {
+            return Err(AgentError::Tool(format!(
+                "key lookup can only read ctx facts for the current session '{}'. Got key for session '{}'.",
+                ctx.session_id(),
+                sid
+            )));
+        }
+        let ward_id = ctx
+            .get_state("ward_id")
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "__global__".to_string());
+        let Some(store) = &self.fact_store else {
+            return Err(AgentError::Tool(
+                "Ctx facts require a DB-backed fact store (not available in this runtime)"
+                    .to_string(),
+            ));
+        };
+        match store.get_ctx_fact(&ward_id, key).await {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => Ok(serde_json::json!({ "found": false, "key": key })),
+            Err(error) => Err(AgentError::Tool(error.to_string())),
+        }
+    }
+
     /// Wire the fact store that backs `mode="facts"` and `as_of` lookups.
     #[must_use]
     pub fn with_fact_store(
@@ -696,12 +736,25 @@ impl Tool for RecallTool {
         let object = args
             .as_object()
             .ok_or_else(|| AgentError::Tool("recall arguments must be an object".to_string()))?;
+        if object.contains_key("key") {
+            if object.keys().any(|k| k != "key") {
+                return Err(AgentError::Tool(
+                    "recall 'key' (exact ctx lookup) cannot be combined with other parameters"
+                        .to_string(),
+                ));
+            }
+            let key = object.get("key").and_then(Value::as_str).unwrap_or("");
+            if key.trim().is_empty() {
+                return Err(AgentError::Tool("recall key must be non-empty".to_string()));
+            }
+            return Ok(());
+        }
         if object
             .keys()
             .any(|key| key != "query" && key != "limit" && key != "mode" && key != "as_of")
         {
             return Err(AgentError::Tool(
-                "recall accepts only query, limit, mode, and as_of".to_string(),
+                "recall accepts only query, limit, mode, as_of, and key".to_string(),
             ));
         }
         let query = object
@@ -755,6 +808,14 @@ impl Tool for RecallTool {
 
     async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
         self.validate(&args)?;
+
+        // Exact-key ctx lookup (folded from the retired `memory` tool's
+        // get_fact action): guarded by session ownership — a key may only
+        // read ctx state for the CURRENT session.
+        if let Some(key) = args.get("key").and_then(Value::as_str) {
+            return self.exact_ctx_lookup(ctx.as_ref(), key).await;
+        }
+
         let query = args
             .get("query")
             .and_then(Value::as_str)

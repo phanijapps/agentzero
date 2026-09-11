@@ -7,7 +7,6 @@ use crate::agent_pool::AgentResultBus;
 use crate::config::GatewayFileSystem;
 use crate::invoke::executor::build_execution_engine;
 use crate::invoke::policy::RuntimeActorKind;
-use crate::invoke::tool_catalog::{default_visible, split_target, visibility_policy};
 use agent_primitives::connectors::{CapabilityInfo, ConnectorInfo, ResourceInfo};
 use agent_primitives::vault_paths::SharedVaultPaths;
 use agent_primitives::FileSystemContext;
@@ -1128,20 +1127,17 @@ async fn builder_hides_broad_context_pull_tools_from_model_schema() {
         .await
         .expect("executor build");
 
-    assert!(executor.tool_registry().contains("memory"));
     assert!(executor.tool_registry().contains("memory_write"));
-    assert!(executor.config().model_hidden_tools.contains("memory"));
-    assert!(executor.config().model_hidden_tools.contains("graph_query"));
-    assert!(executor
-        .config()
-        .model_hidden_tools
-        .contains("query_resource"));
+    assert!(executor.tool_registry().contains("memory_write"));
+
+    // graph_query and query_resource are deleted (0 usage, hidden, dead surface).
+
     let visible_names = executor
         .model_visible_tools()
         .into_iter()
         .map(|tool| tool.name().to_string())
         .collect::<BTreeSet<_>>();
-    assert!(!visible_names.contains("memory"));
+
     assert!(visible_names.contains("memory_write"));
     assert!(visible_names.contains("shell"));
     assert!(visible_names.contains("ward"));
@@ -1190,9 +1186,10 @@ async fn builder_exposes_narrow_recall_when_memory_recall_is_configured() {
         .map(|tool| tool.name().to_string())
         .collect::<BTreeSet<_>>();
     assert!(visible_names.contains("recall"));
-    assert!(!visible_names.contains("memory"));
+
     assert!(!visible_names.contains("graph_query"));
     assert!(!visible_names.contains("query_resource"));
+    // agent-control cluster hidden per wait_agent precedent (0 usage)
 }
 
 #[tokio::test]
@@ -1224,7 +1221,7 @@ async fn builder_exposes_connector_split_and_hides_query_resource_from_model_sch
         .await
         .expect("executor build");
 
-    assert!(executor.tool_registry().contains("query_resource"));
+    assert!(!executor.tool_registry().contains("query_resource"));
     assert!(executor.tool_registry().contains("connector_resource"));
     assert!(executor.tool_registry().contains("connector_invoke"));
 
@@ -1357,7 +1354,6 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
             let expected_names: &[&str] = match (actor_kind, file_tools) {
                 (RuntimeActorKind::Root, false) => &[
                     "delegate_to_agent",
-                    "memory",
                     "memory_write",
                     "multimodal_analyze",
                     "present_surface",
@@ -1369,8 +1365,6 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
                 ],
                 (RuntimeActorKind::Root, true) => &[
                     "delegate_to_agent",
-                    "glob",
-                    "memory",
                     "memory_write",
                     "multimodal_analyze",
                     "present_surface",
@@ -1383,7 +1377,6 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
                 (RuntimeActorKind::DelegatedExecutor, false) => &[
                     "edit_file",
                     "load_skill",
-                    "memory",
                     "memory_write",
                     "multimodal_analyze",
                     "read",
@@ -1394,9 +1387,7 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
                 ],
                 (RuntimeActorKind::DelegatedExecutor, true) => &[
                     "edit_file",
-                    "glob",
                     "load_skill",
-                    "memory",
                     "memory_write",
                     "multimodal_analyze",
                     "read",
@@ -1405,19 +1396,13 @@ fn built_in_registry_raw_name_frequencies_match_characterized_actor_inventories(
                     "ward",
                     "write_file",
                 ],
-                (RuntimeActorKind::DelegatedReviewer, _) => &[
-                    "glob",
-                    "load_skill",
-                    "multimodal_analyze",
-                    "read",
-                    "respond",
-                ],
+                (RuntimeActorKind::DelegatedReviewer, _) => {
+                    &["load_skill", "multimodal_analyze", "read", "respond"]
+                }
                 (RuntimeActorKind::WardAgent, _) => &[
                     "delegate_to_agent",
                     "edit_file",
-                    "glob",
                     "load_skill",
-                    "memory",
                     "memory_write",
                     "multimodal_analyze",
                     "present_surface",
@@ -1784,7 +1769,7 @@ fn session_scoped_registry_exposes_recall_but_keeps_memory_hidden() {
             }),
         );
     assert!(registry.contains("recall"));
-    assert!(registry.contains("memory"));
+    assert!(registry.contains("memory_write"));
 }
 
 #[test]
@@ -1888,21 +1873,6 @@ fn catalog_for_actor(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
     )
 }
 
-fn catalog_for_actor_with_connector(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let fs_context = Arc::new(GatewayFileSystem::new(dir.path().to_path_buf()));
-    let registry = ExecutorBuilder::new(dir.path().to_path_buf(), ToolSettings::default())
-        .with_actor_kind(actor_kind)
-        .with_connector_provider(Arc::new(MockConnectorProvider))
-        .build_tool_registry(fs_context);
-
-    build_context_capability_catalog(
-        actor_kind,
-        registry.as_ref(),
-        Some("session-1".to_string()),
-        Some("agent-1".to_string()),
-    )
-}
 
 fn catalog_for_actor_with_join_deps(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1973,7 +1943,6 @@ fn root_context_catalog_reflects_current_actor_policy() {
         &ids,
         &[
             "shell",
-            "memory",
             "memory_write",
             "ward",
             "respond",
@@ -2018,7 +1987,7 @@ fn delegated_reviewer_catalog_is_read_only_and_review_safe() {
     let ids = catalog_ids(&catalog);
 
     assert_eq!(catalog.actor_kind, ContextActorKind::DelegatedReviewer);
-    assert_has(&ids, &["read", "glob", "respond", "load_skill"]);
+    assert_has(&ids, &["read", "respond", "load_skill"]);
     assert_missing(
         &ids,
         &[
@@ -2027,7 +1996,6 @@ fn delegated_reviewer_catalog_is_read_only_and_review_safe() {
             "write_file",
             "edit_file",
             "ward",
-            "memory",
             "memory_write",
             "delegate_to_agent",
             "wait_agent",
@@ -2099,7 +2067,6 @@ fn delegated_executor_keeps_implementation_tools_without_orchestration() {
             "edit_file",
             "read",
             "ward",
-            "memory",
             "memory_write",
             "respond",
             "load_skill",
@@ -2125,7 +2092,7 @@ fn delegated_executor_keeps_implementation_tools_without_orchestration() {
 fn delegated_reviewer_is_read_only_and_non_orchestrating() {
     let names = registry_names(RuntimeActorKind::DelegatedReviewer);
 
-    assert_has(&names, &["read", "glob", "respond", "load_skill"]);
+    assert_has(&names, &["read", "respond", "load_skill"]);
     assert_missing(
         &names,
         &[
@@ -2134,7 +2101,6 @@ fn delegated_reviewer_is_read_only_and_non_orchestrating() {
             "write_file",
             "edit_file",
             "ward",
-            "memory",
             "memory_write",
             "delegate_to_agent",
             "wait_agent",
@@ -2156,7 +2122,6 @@ fn root_keeps_orchestration_without_implementation_file_writes() {
         &names,
         &[
             "shell",
-            "memory",
             "memory_write",
             "ward",
             "update_plan",
@@ -2190,9 +2155,7 @@ fn ward_agent_gets_root_and_executor_first_party_tools() {
             "write_file",
             "edit_file",
             "read",
-            "glob",
             "ward",
-            "memory",
             "memory_write",
             "update_plan",
             "respond",
@@ -2209,105 +2172,16 @@ fn ward_agent_gets_root_and_executor_first_party_tools() {
 #[test]
 fn broad_tools_expose_split_target_metadata() {
     let catalog = catalog_for_actor(RuntimeActorKind::Root);
-    let name = "memory";
-    let capability = catalog_capability(&catalog, name);
+    // The broad `memory` tool is retired; `memory_write` is the single
+    // durable-fact writer and `recall` owns retrieval.
+    let capability = catalog_capability(&catalog, "memory_write");
     assert!(
-        !capability.default_visible,
-        "{name} should move behind resource/context packet lanes"
+        capability.default_visible,
+        "memory_write is the single visible durable-fact writer"
     );
     assert!(
         capability.split_target.is_some(),
-        "{name} must name its split target"
-    );
-    assert_eq!(
-        capability.visibility_policy,
-        "hidden_from_model_use_context_resources"
-    );
-
-    let memory_write = catalog_capability(&catalog, "memory_write");
-    assert!(memory_write.default_visible);
-    assert_eq!(
-        memory_write.visibility_policy,
-        "default_visible_memory_write_action"
-    );
-    assert_eq!(
-        memory_write.split_target.as_deref(),
-        Some("action:memory_write")
-    );
-
-    let name = "graph_query";
-    assert!(
-        !default_visible(name),
-        "{name} should move behind resource/context packet lanes"
-    );
-    assert_eq!(
-        visibility_policy(name),
-        "hidden_from_model_use_context_resources"
-    );
-    assert!(split_target(name).is_some());
-
-    assert!(!default_visible("query_resource"));
-    assert_eq!(
-        visibility_policy("query_resource"),
-        "hidden_from_model_use_connector_split"
-    );
-    assert!(split_target("query_resource").is_some());
-
-    let connector_catalog = catalog_for_actor_with_connector(RuntimeActorKind::Root);
-    let query_resource = catalog_capability(&connector_catalog, "query_resource");
-    assert!(!query_resource.default_visible);
-    assert_eq!(
-        query_resource.visibility_policy,
-        "hidden_from_model_use_connector_split"
-    );
-    assert_eq!(
-        query_resource.split_target.as_deref(),
-        Some("action:connector_invoke; resources:connector_resource")
-    );
-    let connector_resource = catalog_capability(&connector_catalog, "connector_resource");
-    assert!(connector_resource.default_visible);
-    assert_eq!(
-        connector_resource.visibility_policy,
-        "default_visible_connector_resource_read"
-    );
-    assert_eq!(
-        connector_resource.side_effects,
-        ContextSideEffects::ReadExternal
-    );
-    let connector_invoke = catalog_capability(&connector_catalog, "connector_invoke");
-    assert!(connector_invoke.default_visible);
-    assert_eq!(
-        connector_invoke.visibility_policy,
-        "default_visible_connector_invoke_action"
-    );
-    assert_eq!(
-        connector_invoke.side_effects,
-        ContextSideEffects::WriteExternal
-    );
-
-    for name in ["shell", "ward"] {
-        let capability = catalog_capability(&catalog, name);
-        assert!(
-            capability.default_visible,
-            "{name} remains a default-visible action tool"
-        );
-        assert!(
-            capability.split_target.is_some(),
-            "{name} must name its split target"
-        );
-        assert_eq!(capability.visibility_policy, "default_visible_action_tool");
-    }
-
-    let ward_catalog = catalog_for_actor(RuntimeActorKind::WardAgent);
-    let load_skill = catalog_capability(&ward_catalog, "load_skill");
-    assert!(load_skill.default_visible);
-    assert_eq!(
-        load_skill.split_target.as_deref(),
-        Some("resources:skill_packet/skill_section_handles")
-    );
-    assert_eq!(
-        load_skill.visibility_policy,
-        "default_visible_bounded_packet"
+        "memory_write should describe its split-target migration"
     );
 }
 

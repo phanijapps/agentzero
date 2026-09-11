@@ -15,9 +15,9 @@ use agent_runtime::{
     SummarizationConfig, SummarizationMiddleware, ToolRegistry, TriggerCondition,
 };
 use agent_tools::{
-    ConnectorInvokeTool, ConnectorResourceTool, EditFileTool, GlobTool, GraphQueryTool,
-    LoadSkillTool, MemoryTool, MultimodalAnalyzeTool, QueryResourceTool, ReadTool,
-    RecallAuthorizationContext, ShellTool, ToolSettings, UpdatePlanTool, WardTool, WriteFileTool,
+    ConnectorInvokeTool, ConnectorResourceTool, EditFileTool, LoadSkillTool, MultimodalAnalyzeTool,
+    ReadTool, RecallAuthorizationContext, ShellTool, ToolSettings, UpdatePlanTool, WardTool,
+    WriteFileTool,
 };
 use api_logs::{ExecutionLog, LogCategory, LogLevel, LogService};
 use execution_state::StateService;
@@ -949,15 +949,6 @@ impl ExecutorBuilder {
                 }
             }),
         );
-        register_if_allowed(
-            &mut tool_registry,
-            actor,
-            &[ToolCapability::MemoryRead, ToolCapability::MemoryWrite],
-            Arc::new(
-                MemoryTool::new(self.fact_store.clone())
-                    .with_optional_evidence_intake(self.ingestion_adapter.clone()),
-            ),
-        );
         if let Some((recall, authorization)) = unified_recall_binding {
             let mut tool = crate::invoke::unified_recall_adapter::unified_recall_tool_with_goals(
                 recall,
@@ -1097,13 +1088,6 @@ impl ExecutorBuilder {
             }
         }
 
-        if actor_allows(actor, ToolCapability::GraphRead) {
-            if let Some(ref ks) = self.kg_store {
-                let adapter = Arc::new(super::kg_store_adapter::KgStoreAdapter::new(ks.clone()));
-                tool_registry.register(Arc::new(GraphQueryTool::new(adapter)));
-            }
-        }
-
         if actor_allows(actor, ToolCapability::IngestWrite) {
             if let Some(ref a) = self.ingestion_adapter {
                 tool_registry.register(Arc::new(agent_tools::IngestTool::new(a.clone())));
@@ -1116,30 +1100,7 @@ impl ExecutorBuilder {
             }
         }
 
-        if self.tool_settings.file_tools
-            || matches!(
-                actor,
-                RuntimeActorKind::DelegatedReviewer | RuntimeActorKind::WardAgent
-            )
-        {
-            register_if_allowed(
-                &mut tool_registry,
-                actor,
-                &[ToolCapability::FileRead],
-                Arc::new(GlobTool),
-            );
-        }
-
         if let Some(provider) = &self.connector_provider {
-            register_if_allowed(
-                &mut tool_registry,
-                actor,
-                &[ToolCapability::ConnectorQuery],
-                Arc::new(
-                    QueryResourceTool::new(provider.clone())
-                        .with_optional_evidence_intake(self.ingestion_adapter.clone()),
-                ),
-            );
             register_if_allowed(
                 &mut tool_registry,
                 actor,

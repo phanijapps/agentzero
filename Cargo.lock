@@ -99,7 +99,6 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fs2",
- "glob",
  "libc",
  "regex",
  "reqwest 0.12.28",

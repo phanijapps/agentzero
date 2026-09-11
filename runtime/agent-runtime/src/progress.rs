@@ -381,7 +381,7 @@ mod progress_tracker_tests {
             "write",
             "shell",
             "edit",
-            "glob",
+            "graph_query",
             "memory",
             "update_plan",
             "ward",

@@ -143,8 +143,22 @@ pub fn procedure_to_item(proc: &Procedure, score: f64) -> ScoredItem {
         kind: ItemKind::Procedure,
         id: proc.id.clone(),
         content: format!(
-            "Procedure: {}\n{}\nSteps: {}",
-            proc.name, proc.description, proc.steps
+            "Procedure: {}\n{}\nParameters: {}\nTrack record: {} ok / {} failed{}\nSteps: {}",
+            proc.name,
+            proc.description,
+            // The declared call contract — without it the model discovers
+            // the procedure via recall but calls it bare and burns a turn
+            // on the arg-validation error (observed: intimacy_status_analysis).
+            proc.parameters
+                .as_deref()
+                .unwrap_or("(none declared — inspect before calling)"),
+            proc.success_count,
+            proc.failure_count,
+            proc.last_used
+                .as_deref()
+                .map(|used| format!(", last used {used}"))
+                .unwrap_or_default(),
+            proc.steps
         ),
         score,
         provenance: Provenance {
@@ -266,7 +280,7 @@ mod tests {
             description: "Deploy to production.".to_string(),
             trigger_pattern: None,
             steps: "1. Build\n2. Push\n3. Restart".to_string(),
-            parameters: None,
+            parameters: Some(r#"["user_id","journal_path"]"#.to_string()),
             success_count: 5,
             failure_count: 0,
             avg_duration_ms: None,

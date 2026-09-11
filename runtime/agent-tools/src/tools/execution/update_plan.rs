@@ -34,6 +34,29 @@ impl Default for UpdatePlanTool {
     }
 }
 
+/// Canonical coercion for the unambiguous plan fumble: a single
+/// `{step, status}` object instead of the array of steps. Exactly one
+/// sane interpretation — wrap it. Anything else falls through to the
+/// existing error path.
+static UPDATE_PLAN_DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "Track task progress with a lightweight checklist. Each step has a status: \
+         pending, in_progress, completed, or failed. Use for complex tasks (5+ steps). \
+         Skip for simple tasks. Example: {} — statuses: pending/in_progress/completed/blocked.",
+        crate::tools::examples::UPDATE_PLAN_EXAMPLE_CALL
+    )
+});
+
+fn coerce_plan_object_to_array(args: &mut Value) {
+    let Some(plan) = args.get("plan") else { return };
+    if let serde_json::Value::Object(map) = plan
+        && map.contains_key("step")
+    {
+        tracing::debug!("coerced update_plan plan object→array");
+        args["plan"] = json!([plan.clone()]);
+    }
+}
+
 #[async_trait]
 impl Tool for UpdatePlanTool {
     fn name(&self) -> &str {
@@ -41,7 +64,7 @@ impl Tool for UpdatePlanTool {
     }
 
     fn description(&self) -> &str {
-        "Track task progress with a lightweight checklist. Each step has a status: pending, in_progress, completed, or failed. Use for complex tasks (5+ steps). Skip for simple tasks. Example: {\"plan\": [{\"step\": \"fetch data\", \"status\": \"pending\"}]} — statuses: pending/in_progress/completed/blocked."
+        UPDATE_PLAN_DESC.as_str()
     }
 
     fn parameters_schema(&self) -> Option<Value> {
@@ -76,7 +99,8 @@ impl Tool for UpdatePlanTool {
         }))
     }
 
-    async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+    async fn execute(&self, ctx: Arc<dyn ToolContext>, mut args: Value) -> Result<Value> {
+        coerce_plan_object_to_array(&mut args);
         if planning_gate_awaits_ward(ctx.as_ref()) {
             return Ok(json!({
                 "status": "redirect",
@@ -187,6 +211,36 @@ impl Tool for UpdatePlanTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- canonical coercion (remediation #3) ----
+
+    #[test]
+    fn coerce_single_plan_object_wraps_in_array() {
+        let mut args = serde_json::json!({ "plan": { "step": "fetch data", "status": "pending" } });
+        coerce_plan_object_to_array(&mut args);
+        assert_eq!(
+            args["plan"],
+            serde_json::json!([{ "step": "fetch data", "status": "pending" }])
+        );
+    }
+
+    #[test]
+    fn coerce_leaves_array_untouched() {
+        let mut args = serde_json::json!({ "plan": [{ "step": "a", "status": "pending" }] });
+        let before = args["plan"].clone();
+        coerce_plan_object_to_array(&mut args);
+        assert_eq!(args["plan"], before);
+    }
+
+    #[test]
+    fn coerce_ignores_non_step_objects() {
+        // An object without a `step` key is not a plan-step fumble — leave it
+        // for the existing error path.
+        let mut args = serde_json::json!({ "plan": { "steps": [] } });
+        coerce_plan_object_to_array(&mut args);
+        assert!(args["plan"].is_object());
+    }
+
     use agent_primitives::event::EventActions;
     use agent_primitives::types::Content;
     use agent_primitives::{CallbackContext, ReadonlyContext};

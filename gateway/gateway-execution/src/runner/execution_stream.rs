@@ -83,6 +83,10 @@ pub struct ExecutionContext {
     pub authored_prompt_id: Option<String>,
     pub history: Vec<ChatMessage>,
     pub recommended_skills: Vec<String>,
+    /// (provider, model) the executor runs on — stamped on tool trace
+    /// events so error rates are attributable per model. None for engines
+    /// constructed without a provider identity (tests).
+    pub model_info: Option<(String, String)>,
 }
 
 /// The two callers share persistence and lifecycle ordering, but not routing,
@@ -279,6 +283,7 @@ impl ExecutionStream {
             authored_prompt_id,
             mut history,
             recommended_skills,
+            model_info,
         } = ctx;
 
         // Create batch writer for non-blocking DB writes.
@@ -313,7 +318,8 @@ impl ExecutionStream {
             self.paths.vault_dir().clone(),
         )
         .with_batch_writer(batch_writer.clone())
-        .with_recommended_skills(recommended_skills.clone());
+        .with_recommended_skills(recommended_skills.clone())
+        .with_model_info(model_info);
 
         let mut response_acc = ResponseAccumulator::new();
         let settings_service = gateway_services::SettingsService::new(self.paths.clone());

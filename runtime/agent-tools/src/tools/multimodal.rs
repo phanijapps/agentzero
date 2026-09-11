@@ -43,6 +43,47 @@ impl MultimodalAnalyzeTool {
     }
 }
 
+/// Canonical server-side coercion for unambiguous `content` fumbles.
+///
+/// Exactly one sane interpretation each, so the model's shape mistake is
+/// repaired instead of errored (weak-schema local models bind to examples,
+/// not JSON Schema — the array wrap was the top observed fumble):
+/// - a plain string (a path/URL) → `[{type: "image", source: <string>}]`
+/// - a single `{type, source}` object → wrapped in an array
+///
+/// Anything else (missing, null, non-image scalar) is left for the
+/// shape-teaching error path.
+static MULTIMODAL_DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "Analyze images using a vision-capable model. Example: {} \
+         Send one or more image content items (file path, URL, or data: URI) with a prompt, \
+         get structured analysis back. Use when you need to understand visual content \
+         but your current model doesn't support vision.",
+        crate::tools::examples::MULTIMODAL_EXAMPLE_CALL
+    )
+});
+
+fn coerce_multimodal_content(args: &mut serde_json::Value) {
+    let Some(content) = args.get("content") else {
+        return;
+    };
+    match content {
+        serde_json::Value::String(source) => {
+            tracing::debug!("coerced multimodal content string→array");
+            args["content"] = serde_json::json!([{ "type": "image", "source": source }]);
+        }
+        serde_json::Value::Object(map) => {
+            if map.contains_key("source")
+                && map.get("type").and_then(serde_json::Value::as_str) == Some("image")
+            {
+                tracing::debug!("coerced multimodal content object→array");
+                args["content"] = serde_json::json!([content.clone()]);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn truncate_for_error(text: &str) -> String {
     if text.chars().count() > 60 {
         let head: String = text.chars().take(57).collect();
@@ -74,10 +115,7 @@ impl Tool for MultimodalAnalyzeTool {
     }
 
     fn description(&self) -> &str {
-        "Analyze images using a vision-capable model. Example: {\"content\": [{\"type\": \"image\", \"source\": \"/path/img.png\"}], \"prompt\": \"describe\"} \
-         Send one or more image content items (file path, URL, or data: URI) with a prompt, \
-         get structured analysis back. Use when you need to understand visual content \
-         but your current model doesn't support vision."
+        MULTIMODAL_DESC.as_str()
     }
 
     fn parameters_schema(&self) -> Option<Value> {
@@ -108,7 +146,8 @@ impl Tool for MultimodalAnalyzeTool {
         ToolPermissions::moderate(vec!["network:http".to_string()])
     }
 
-    async fn execute(&self, ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+    async fn execute(&self, ctx: Arc<dyn ToolContext>, mut args: Value) -> Result<Value> {
+        coerce_multimodal_content(&mut args);
         let content_items = args
             .get("content")
             .and_then(|v| v.as_array())
@@ -443,6 +482,62 @@ fn infer_image_mime(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- canonical coercion (remediation #3) ----
+
+    #[test]
+    fn coerce_string_content_wraps_as_image_array() {
+        let mut args = serde_json::json!({ "content": "/tmp/cat.png" });
+        coerce_multimodal_content(&mut args);
+        assert_eq!(
+            args["content"],
+            serde_json::json!([{ "type": "image", "source": "/tmp/cat.png" }])
+        );
+    }
+
+    #[test]
+    fn coerce_url_string_content_wraps_as_image_array() {
+        let mut args = serde_json::json!({ "content": "https://example.com/a.png" });
+        coerce_multimodal_content(&mut args);
+        assert_eq!(
+            args["content"][0]["source"],
+            serde_json::json!("https://example.com/a.png")
+        );
+    }
+
+    #[test]
+    fn coerce_single_image_object_wraps_in_array() {
+        let mut args = serde_json::json!(
+            { "content": { "type": "image", "source": "/tmp/x.jpg" } }
+        );
+        coerce_multimodal_content(&mut args);
+        assert!(args["content"].is_array());
+        assert_eq!(args["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn coerce_leaves_correct_array_untouched() {
+        let mut args = serde_json::json!(
+            { "content": [{ "type": "image", "source": "/a.png" }, { "type": "image", "source": "/b.png" }] }
+        );
+        let before = args["content"].clone();
+        coerce_multimodal_content(&mut args);
+        assert_eq!(args["content"], before);
+    }
+
+    #[test]
+    fn coerce_leaves_garbage_for_the_error_path() {
+        // null / numbers / non-image objects must NOT be coerced — they fall
+        // through to the shape-teaching error.
+        let mut args = serde_json::json!({ "content": serde_json::Value::Null });
+        coerce_multimodal_content(&mut args);
+        assert!(args["content"].is_null());
+
+        let mut args = serde_json::json!({ "content": { "type": "file", "source": "/doc.pdf" } });
+        coerce_multimodal_content(&mut args);
+        assert!(args["content"].is_object());
+    }
+
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;

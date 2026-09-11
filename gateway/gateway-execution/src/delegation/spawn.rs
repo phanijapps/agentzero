@@ -755,6 +755,7 @@ pub async fn spawn_delegated_agent(
         executor,
         handle: handle_clone,
         request: request.clone(),
+        model_info: Some((provider.name.clone(), agent.model.clone())),
         execution_id: execution_id.clone(),
         session_id,
         child_session_id,
@@ -1002,6 +1003,8 @@ struct SpawnContext {
     executor: BoxedAgentEngine,
     handle: ExecutionHandle,
     request: DelegationRequest,
+    /// (provider, model) for trace attribution on the child's tool events.
+    model_info: Option<(String, String)>,
     execution_id: String,
     session_id: String,
     child_session_id: String,
@@ -1042,6 +1045,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
         executor,
         handle,
         request,
+        model_info,
         execution_id,
         session_id,
         child_session_id,
@@ -1096,6 +1100,7 @@ fn spawn_execution_task(ctx: SpawnContext) {
     let parent_conversation_id = request.parent_conversation_id.clone();
     let paths_for_snapshot = paths.clone();
     let session_id_for_snapshot = session_id.clone();
+    let model_info = model_info.clone();
     let child_agent_id_for_block = request.child_agent_id.clone();
 
     tokio::spawn(async move {
@@ -1150,7 +1155,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
             delegation_tx,
             paths.vault_dir().clone(),
         )
-        .with_batch_writer(batch_writer.clone());
+        .with_batch_writer(batch_writer.clone())
+        .with_model_info(model_info);
 
         let mut response_acc = ResponseAccumulator::new();
 

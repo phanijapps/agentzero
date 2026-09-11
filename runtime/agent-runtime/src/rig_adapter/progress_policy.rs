@@ -9,6 +9,20 @@ pub(super) struct ProgressConfig {
     pub input_budget: u64,
     pub warn_pct: u64,
 }
+/// The canonical example call for tools that publish one
+/// (`agent_tools::tools::examples`). Single-sourced with each tool's
+/// description — adding a tool there automatically extends the nudge.
+fn tool_example_call(tool_name: &str) -> Option<&'static str> {
+    use agent_tools::examples;
+    match tool_name {
+        "ward" => Some(examples::WARD_EXAMPLE_CALL),
+        "update_plan" => Some(examples::UPDATE_PLAN_EXAMPLE_CALL),
+        "multimodal_analyze" => Some(examples::MULTIMODAL_EXAMPLE_CALL),
+        "present_surface" => Some(examples::PRESENT_SURFACE_EXAMPLE_CALL),
+        _ => None,
+    }
+}
+
 pub(super) struct ProgressPolicy {
     tracker: ProgressTracker,
     prompt_tokens: u64,
@@ -96,8 +110,15 @@ impl ProgressPolicy {
                 } else {
                     format!(" Last error: {error}.")
                 };
+                // Error-as-affordance: when the failing tool publishes a
+                // canonical example call, echo it — the model gets the
+                // correct shape at the exact moment it needs it, so the
+                // retry lands instead of repeating the fumble.
+                let example_line = tool_example_call(name)
+                    .map(|example| format!(" Correct call shape: {example}"))
+                    .unwrap_or_default();
                 messages.push(ChatMessage::user(format!(
-                    "[SYSTEM: `{name}` has failed {count} times with these exact arguments.{error_line} \
+                    "[SYSTEM: `{name}` has failed {count} times with these exact arguments.{error_line}{example_line} \
                      Retrying the identical call will keep failing. Change the arguments, \
                      fix the underlying cause, or take a different approach.]"
                 )));
@@ -154,6 +175,41 @@ mod tests {
             input_budget: 0,
             warn_pct: 80,
         }
+    }
+
+    /// Remediation #4: the nudge echoes the tool's canonical example call
+    /// when the failing tool publishes one.
+    #[test]
+    fn failure_nudge_echoes_canonical_example_call() {
+        let mut policy = ProgressPolicy::default();
+        let args = serde_json::json!({"name": "financial-analysis"});
+        policy.tool("ward", &args, Some("Missing 'action' parameter"));
+        policy.tool("ward", &args, Some("Missing 'action' parameter"));
+        let mut messages = Vec::new();
+        policy.prepare(&cfg(), &mut messages).expect("prepare");
+        let nudged = messages.iter().map(|m| m.text_content()).any(|t| {
+            t.contains("has failed 2 times")
+                && t.contains("Correct call shape:")
+                && t.contains("\"action\": \"use\"")
+        });
+        assert!(nudged, "ward nudge must carry the example: {messages:#?}");
+    }
+
+    #[test]
+    fn failure_nudge_omits_example_for_tools_without_one() {
+        // recall has no published example — the nudge stays terse.
+        let mut policy = ProgressPolicy::default();
+        let args = serde_json::json!({"query": "x"});
+        policy.tool("recall", &args, Some("store unavailable"));
+        policy.tool("recall", &args, Some("store unavailable"));
+        let mut messages = Vec::new();
+        policy.prepare(&cfg(), &mut messages).expect("prepare");
+        let nudged: Vec<String> = messages.iter().map(|m| m.text_content()).collect();
+        assert!(nudged.iter().any(|t| t.contains("has failed 2 times")));
+        assert!(
+            !nudged.iter().any(|t| t.contains("Correct call shape:")),
+            "no example for unlisted tools: {nudged:?}"
+        );
     }
 
     #[test]

@@ -87,6 +87,8 @@ pub(super) struct SetupResult {
     /// Max durable `seq` of the rows composed into `history`.
     pub(super) scanned_input_cursor: i64,
     pub(super) recommended_skills: Vec<String>,
+    /// (provider, model) for trace attribution on tool events.
+    pub(super) model_info: Option<(String, String)>,
 }
 
 // ============================================================================
@@ -908,6 +910,7 @@ impl InvokeBootstrap {
             history,
             scanned_input_cursor,
             recommended_skills,
+            model_info: Some((provider.name.clone(), agent.model.clone())),
         })
     }
 

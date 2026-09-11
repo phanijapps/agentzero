@@ -514,7 +514,7 @@ fn trace_tool_result(
             tool_name: None,
             payload: Some(serde_json::Value::String(result.to_string())),
             usage: None,
-            model: None,
+            model: ctx.model_info.as_ref().map(|(_, model)| model.clone()),
         },
     );
 }

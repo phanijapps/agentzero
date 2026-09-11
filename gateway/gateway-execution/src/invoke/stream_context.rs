@@ -55,6 +55,9 @@ pub struct StreamContext {
     /// each as a goal artifact — so deliverables stay visible even when the
     /// model's respond omits them (sess-22816ad4 variance).
     pub output_write_calls: Arc<Mutex<HashMap<String, String>>>,
+    /// (provider, model) identity for trace attribution — tool_call and
+    /// tool_result events carry it so error rates split per model.
+    pub model_info: Option<(String, String)>,
 }
 
 impl StreamContext {
@@ -85,7 +88,15 @@ impl StreamContext {
             recommended_skills: Vec::new(),
             surface_ids: Arc::new(Mutex::new(HashSet::new())),
             output_write_calls: Arc::new(Mutex::new(HashMap::new())),
+            model_info: None,
         }
+    }
+
+    /// Stamp the (provider, model) identity on every trace event this
+    /// context emits.
+    pub fn with_model_info(mut self, model_info: Option<(String, String)>) -> Self {
+        self.model_info = model_info;
+        self
     }
 
     /// Attach a batch writer for non-blocking DB writes.

@@ -193,6 +193,7 @@ impl ExecutionRunner {
             authored_prompt_id: Some(setup.root_message_id),
             history: setup.history,
             recommended_skills: setup.recommended_skills,
+            model_info: setup.model_info.clone(),
         };
         let peer_registry = self.ctx.steering_registry.clone();
         let peer_execution_id = ctx.execution_id.clone();

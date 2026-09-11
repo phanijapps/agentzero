@@ -1123,58 +1123,43 @@ fn markdown_metadata(content: &str, path: &std::path::Path) -> (String, Vec<Stri
 
 /// Tool descriptions per audience — plain literals so `description()` keeps
 /// its `&'str` signature. Bodies differ only in the action-list tail.
-const WARD_DESC_FULL: &str = concat!(
-    "Manage code wards (named project directories). Wards persist across sessions.\n\
-             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
-             Arguments are action-specific; unknown fields are rejected.\n\
-             Actions:\n\
-             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
-             - create: Alias for use. Creates and switches to a new ward.\n\
-             - list: List all wards with descriptions.\n\
-             - info: Detailed info about a specific ward.\n\
-             - search: Search Markdown in the active ward by text and exact tags.",
-    "\n\
-             - lint: Check the active ward against its ward-conf.yaml snapshot.",
-    "\n\
-             - dry_run: Preview a template-directed create_concept operation.\n\
-             - create_concept: Create the concept node annotated by the active template."
-);
-const WARD_DESC_ROOT: &str = concat!(
-    "Manage code wards (named project directories). Wards persist across sessions.\n\
-             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
-             Arguments are action-specific; unknown fields are rejected.\n\
-             Actions:\n\
-             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
-             - create: Alias for use. Creates and switches to a new ward.\n\
-             - list: List all wards with descriptions.\n\
-             - info: Detailed info about a specific ward.\n\
-             - search: Search Markdown in the active ward by text and exact tags.",
-    "\n\
-             - dry_run: Preview a template-directed create_concept operation.\n\
-             - create_concept: Create the concept node annotated by the active template."
-);
-const WARD_DESC_PLANNER: &str = concat!(
-    "Manage code wards (named project directories). Wards persist across sessions.\n\
-             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
-             Arguments are action-specific; unknown fields are rejected.\n\
-             Actions:\n\
-             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
-             - create: Alias for use. Creates and switches to a new ward.\n\
-             - list: List all wards with descriptions.\n\
-             - info: Detailed info about a specific ward.\n\
-             - search: Search Markdown in the active ward by text and exact tags.",
-    "\n\
-             - lint: Check the active ward against its ward-conf.yaml snapshot."
-);
-const WARD_DESC_SUBAGENT: &str = "Manage code wards (named project directories). Wards persist across sessions.\n\
-             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
-             Arguments are action-specific; unknown fields are rejected.\n\
-             Actions:\n\
-             - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
-             - create: Alias for use. Creates and switches to a new ward.\n\
-             - list: List all wards with descriptions.\n\
-             - info: Detailed info about a specific ward.\n\
-             - search: Search Markdown in the active ward by text and exact tags.";
+fn ward_desc(actions_tail: &str) -> String {
+    format!(
+        "Manage code wards (named project directories). Wards persist across sessions.\n\
+         Example: {}\n\
+         Arguments are action-specific; unknown fields are rejected.\n\
+         Actions:\n\
+         - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
+         - create: Alias for use. Creates and switches to a new ward.\n\
+         - list: List all wards with descriptions.\n\
+         - info: Detailed info about a specific ward.\n\
+         - search: Search Markdown in the active ward by text and exact tags.{actions_tail}",
+        crate::tools::examples::WARD_EXAMPLE_CALL
+    )
+}
+
+static WARD_DESC_FULL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    ward_desc(
+        "\n\
+         - lint: Check the active ward against its ward-conf.yaml snapshot.\n\
+         - dry_run: Preview a template-directed create_concept operation.\n\
+         - create_concept: Create the concept node annotated by the active template.",
+    )
+});
+static WARD_DESC_ROOT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    ward_desc(
+        "\n\
+         - dry_run: Preview a template-directed create_concept operation.\n\
+         - create_concept: Create the concept node annotated by the active template.",
+    )
+});
+static WARD_DESC_PLANNER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    ward_desc(
+        "\n\
+         - lint: Check the active ward against its ward-conf.yaml snapshot.",
+    )
+});
+static WARD_DESC_SUBAGENT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| ward_desc(""));
 
 #[async_trait]
 impl Tool for WardTool {
@@ -1184,10 +1169,10 @@ impl Tool for WardTool {
 
     fn description(&self) -> &str {
         match self.audience {
-            WardAudience::Full => WARD_DESC_FULL,
-            WardAudience::Root => WARD_DESC_ROOT,
-            WardAudience::Planner => WARD_DESC_PLANNER,
-            WardAudience::Subagent => WARD_DESC_SUBAGENT,
+            WardAudience::Full => WARD_DESC_FULL.as_str(),
+            WardAudience::Root => WARD_DESC_ROOT.as_str(),
+            WardAudience::Planner => WARD_DESC_PLANNER.as_str(),
+            WardAudience::Subagent => WARD_DESC_SUBAGENT.as_str(),
         }
     }
 

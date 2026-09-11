@@ -25,13 +25,8 @@ impl Default for PresentSurfaceTool {
     }
 }
 
-#[async_trait]
-impl Tool for PresentSurfaceTool {
-    fn name(&self) -> &'static str {
-        "present_surface"
-    }
-
-    fn description(&self) -> &'static str {
+static PRESENT_SURFACE_DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
         "Use when a user-facing canonical response contains comparative, metric, status, \
          record, timeline, table, or chart-shaped data that is materially easier to \
          understand visually. Publish one coherent display-only surface, then still use \
@@ -54,7 +49,19 @@ impl Tool for PresentSurfaceTool {
          as [\"value\"]; PieChart(data_path, name_key, value_key). \
          Every component supports optional title and title_path. Prefer a specific \
          contextual title, or title_path when the heading should come from data; \
-         never rely on generic component type labels like LineChart or Callout."
+         never rely on generic component type labels like LineChart or Callout. Example: {}",
+        agent_tools::examples::PRESENT_SURFACE_EXAMPLE_CALL
+    )
+});
+
+#[async_trait]
+impl Tool for PresentSurfaceTool {
+    fn name(&self) -> &'static str {
+        "present_surface"
+    }
+
+    fn description(&self) -> &'static str {
+        PRESENT_SURFACE_DESC.as_str()
     }
 
     fn parameters_schema(&self) -> Option<Value> {

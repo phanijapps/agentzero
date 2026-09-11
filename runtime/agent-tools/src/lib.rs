@@ -14,6 +14,7 @@ mod tools;
 
 /// Re-exported guard predicates so other crates (gateway-execution
 /// bootstrap) share a single source of truth for ward-state checks.
+pub use tools::examples;
 pub use tools::guards;
 
 pub use tools::{

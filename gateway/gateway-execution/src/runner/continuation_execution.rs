@@ -477,6 +477,7 @@ pub(super) async fn invoke_continuation(
         authored_prompt_id: None,
         history,
         recommended_skills: Vec::new(),
+        model_info: Some((provider.name.clone(), agent.model.clone())),
     };
     tokio::spawn(async move {
         let _ = stream.run(ctx, executor).await;

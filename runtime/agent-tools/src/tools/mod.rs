@@ -4,6 +4,7 @@
 
 mod belief;
 mod connectors;
+pub mod examples;
 mod execution;
 mod file;
 mod goal;

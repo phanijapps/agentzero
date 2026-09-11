@@ -1125,6 +1125,7 @@ fn markdown_metadata(content: &str, path: &std::path::Path) -> (String, Vec<Stri
 /// its `&'str` signature. Bodies differ only in the action-list tail.
 const WARD_DESC_FULL: &str = concat!(
     "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
              Arguments are action-specific; unknown fields are rejected.\n\
              Actions:\n\
              - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
@@ -1140,6 +1141,7 @@ const WARD_DESC_FULL: &str = concat!(
 );
 const WARD_DESC_ROOT: &str = concat!(
     "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
              Arguments are action-specific; unknown fields are rejected.\n\
              Actions:\n\
              - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
@@ -1153,6 +1155,7 @@ const WARD_DESC_ROOT: &str = concat!(
 );
 const WARD_DESC_PLANNER: &str = concat!(
     "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
              Arguments are action-specific; unknown fields are rejected.\n\
              Actions:\n\
              - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\
@@ -1164,6 +1167,7 @@ const WARD_DESC_PLANNER: &str = concat!(
              - lint: Check the active ward against its ward-conf.yaml snapshot."
 );
 const WARD_DESC_SUBAGENT: &str = "Manage code wards (named project directories). Wards persist across sessions.\n\
+             Example: {\"action\": \"use\", \"name\": \"financial-analysis\"}\n\
              Arguments are action-specific; unknown fields are rejected.\n\
              Actions:\n\
              - use: Switch to a ward (creates if needed). Sets working directory for shell/write/edit.\n\

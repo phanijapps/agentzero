@@ -780,10 +780,34 @@ impl ExecutorBuilder {
         // Build final executor config with system instruction
         executor_config.system_instruction = Some(match remote_prompt {
             Some(prompt) => prompt.system_instruction().to_string(),
-            None => match ward_template_prompt {
-                Some(template) => format!("{}\n\n{}", agent.instructions, template),
-                None => agent.instructions.clone(),
-            },
+            None => {
+                let mut instruction = match ward_template_prompt {
+                    Some(template) => format!("{}\n\n{}", agent.instructions, template),
+                    None => agent.instructions.clone(),
+                };
+                // The planner must delegate by exact agent id (AGENTS.md
+                // contract) — inline the roster so discovery is deterministic.
+                // Previously its only surface was lookup_capabilities, which
+                // searches skills/mcps and structurally cannot return agents;
+                // planners burned 10+ queries re-phrasing against a corpus
+                // that never answered (observed: sess-fd588249, 12 calls).
+                if agent.id == "planner-agent" && !available_agents.is_empty() {
+                    instruction.push_str("\n\n## Available Agents\n\n");
+                    instruction.push_str(
+                        "Delegate ONLY to these ids (exact match). Use ward:<name> to \
+                         work inside an existing ward.\n\n",
+                    );
+                    for entry in available_agents {
+                        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                        let description = entry
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        instruction.push_str(&format!("- `{id}` — {description}\n"));
+                    }
+                }
+                instruction
+            }
         });
         executor_config.conversation_id = Some(conversation_id.to_string());
         executor_config.temperature = agent.temperature;

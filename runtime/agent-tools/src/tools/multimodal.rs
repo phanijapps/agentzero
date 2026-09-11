@@ -74,7 +74,7 @@ impl Tool for MultimodalAnalyzeTool {
     }
 
     fn description(&self) -> &str {
-        "Analyze images using a vision-capable model. \
+        "Analyze images using a vision-capable model. Example: {\"content\": [{\"type\": \"image\", \"source\": \"/path/img.png\"}], \"prompt\": \"describe\"} \
          Send one or more image content items (file path, URL, or data: URI) with a prompt, \
          get structured analysis back. Use when you need to understand visual content \
          but your current model doesn't support vision."

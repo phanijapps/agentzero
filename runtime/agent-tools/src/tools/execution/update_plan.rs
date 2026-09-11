@@ -41,7 +41,7 @@ impl Tool for UpdatePlanTool {
     }
 
     fn description(&self) -> &str {
-        "Track task progress with a lightweight checklist. Each step has a status: pending, in_progress, completed, or failed. Use for complex tasks (5+ steps). Skip for simple tasks."
+        "Track task progress with a lightweight checklist. Each step has a status: pending, in_progress, completed, or failed. Use for complex tasks (5+ steps). Skip for simple tasks. Example: {\"plan\": [{\"step\": \"fetch data\", \"status\": \"pending\"}]} — statuses: pending/in_progress/completed/blocked."
     }
 
     fn parameters_schema(&self) -> Option<Value> {

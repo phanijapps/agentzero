@@ -305,6 +305,7 @@ async fn build_planner_capability_catalog(
     skill_service: &SkillService,
     mcp_service: &McpService,
     intent_guidance: &[agent_primitives::event::AgentCapabilityAssignment],
+    available_agents: &[serde_json::Value],
 ) -> serde_json::Value {
     let mut skills = skill_service
         .list()
@@ -355,7 +356,8 @@ async fn build_planner_capability_catalog(
     serde_json::json!({
         "skills": skills,
         "mcps": mcps,
-        "intent_guidance": intent_guidance })
+        "intent_guidance": intent_guidance,
+        "agents": available_agents })
 }
 
 fn is_trivial_chat_prompt(message: &str) -> bool {
@@ -1672,6 +1674,11 @@ impl InvokeBootstrap {
                         &self.ctx.skill_service,
                         &self.ctx.mcp_service,
                         &analysis.recommended_capabilities,
+                        &crate::invoke::collect_agents_summary(
+                            &self.ctx.agent_service,
+                            &self.ctx.paths,
+                        )
+                        .await,
                     )
                     .await,
                 )

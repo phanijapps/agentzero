@@ -58,4 +58,4 @@ UI Message (with session_id) → WebSocket Handler → Runtime Service → Runne
 - [data-flow.md](./data-flow.md) — Complete call sequence with file paths, line numbers, DB operations, and events
 - [files.md](./files.md) — Every file involved with function-level references
 - [../intent-analysis/overview.md](../intent-analysis/overview.md) — Intent analysis middleware details
-- [../memory-layer/overview.md](../memory-layer/overview.md) — Memory recall and distillation details
+- ../memory-layer/overview.md — Memory recall and distillation details

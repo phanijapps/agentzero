@@ -14,7 +14,7 @@ Verify reuse and clean-start behavior across the middleware/tool/service seam.
 ## Constraints
 
 - Depends on the registry and create contract in
-  [`ward-archetype-registry-and-creation`](../ward-archetype-registry-and-creation/spec.md).
+  `ward-archetype-registry-and-creation`.
 - Follow RFC-0017's exact selection matrix and ADR-0002's snapshot boundary.
 - Model output is untrusted; no free-form structure survives as authority.
 

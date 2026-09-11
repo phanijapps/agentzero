@@ -3,7 +3,7 @@
 - **Status:** Implementing
 - **Owner:** @videogamer
 - **Plan:** [`plan.md`](plan.md)
-- **Constrained by:** [`durable-generic-agent-tasks`](../durable-generic-agent-tasks/spec.md), [`durable-work-queue`](../durable-work-queue/spec.md), [`durable-queue-worker-runtime`](../durable-queue-worker-runtime/spec.md)
+- **Constrained by:** `durable-generic-agent-tasks`, `durable-work-queue`, `durable-queue-worker-runtime`
 - **Brief:** none
 - **Discovery:** none
 - **Contract:** none — this changes the semantics of existing WebSocket `cancel` and `session_cancelled` messages.

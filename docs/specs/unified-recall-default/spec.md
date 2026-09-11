@@ -3,7 +3,7 @@
 - **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
-- **Constrained by:** [`RFC-0014`](../../rfc/0014-context-capability-registry-and-context-graph.md); [`dynamic-ontology-skos-taxonomy`](../dynamic-ontology-skos-taxonomy/spec.md); [`engram-memory-engine-cutover`](../engram-memory-engine-cutover/spec.md)
+- **Constrained by:** [`RFC-0014`](../../rfc/0014-context-capability-registry-and-context-graph.md); `dynamic-ontology-skos-taxonomy`; `engram-memory-engine-cutover`
 - **Brief:** none
 - **Contract:** [`contracts/jsonschema/unified-recall.schema.json`](../../../contracts/jsonschema/unified-recall.schema.json)
 - **Shape:** mixed

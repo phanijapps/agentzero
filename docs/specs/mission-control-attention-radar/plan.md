@@ -23,7 +23,7 @@ the approved Radar hierarchy.
 ## Constraints
 
 - The bounded summary and selected-detail patterns from
-  [`mission-control-performance`](../mission-control-performance/spec.md) stay
+  `mission-control-performance` stay
   in force.
 - The implementation must follow the Quiet Instrument token and accessibility
   vocabulary without applying its work to other routes in this feature.

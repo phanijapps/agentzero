@@ -4,9 +4,9 @@
 - **Owner:** phanijapps
 - **Plan:** [`plan.md`](plan.md)
 - **Constrained by:** [RFC-0020](../../rfc/0020-a2a-zbot-federation.md),
-  [Durable Work Queue](../durable-work-queue/spec.md),
-  [Durable Queue Worker Runtime](../durable-queue-worker-runtime/spec.md),
-  [Durable Generic Agent Tasks](../durable-generic-agent-tasks/spec.md)
+  Durable Work Queue,
+  Durable Queue Worker Runtime,
+  Durable Generic Agent Tasks
 - **Brief:** none
 - **Discovery:** none
 - **Contract:** [`contracts/openapi/a2a-federation.yaml`](../../../contracts/openapi/a2a-federation.yaml), [`contracts/jsonschema/a2a-outbound-task.schema.json`](../../../contracts/jsonschema/a2a-outbound-task.schema.json)

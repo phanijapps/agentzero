@@ -4,7 +4,7 @@
 - **Date:** 2026-07-28
 - **Deciders:** phanijapps, zbot maintainers
 - **Supersedes:** ADR-0001
-- **Related:** [RFC-0018](../rfc/0018-filesystem-authoritative-llm-wiki-wards.md), [RFC-0016](../rfc/0016-generic-ward-configuration-and-layout-resolution.md), [ADR-0002](0002-select-complete-ward-archetypes-at-creation.md), [LLM Wiki Ward Foundation](../specs/llm-wiki-ward-foundation/spec.md)
+- **Related:** [RFC-0018](../rfc/0018-filesystem-authoritative-llm-wiki-wards.md), [RFC-0016](../rfc/0016-generic-ward-configuration-and-layout-resolution.md), [ADR-0002](0002-select-complete-ward-archetypes-at-creation.md), LLM Wiki Ward Foundation
 
 ## Context
 

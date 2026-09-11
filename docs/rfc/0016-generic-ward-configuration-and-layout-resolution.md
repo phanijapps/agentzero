@@ -5,7 +5,7 @@
 - **Approver:** phanijapps
 - **Date opened:** 2026-07-19
 - **Date closed:** 2026-07-19
-- **Related:** [RFC-0005](0005-builder-delegation-and-ward-context-hygiene.md); [RFC-0015](0015-okf-aligned-ward-layout-and-capabilities.md); [`okf-ward-foundation`](../specs/okf-ward-foundation/spec.md); [`okf-mini-obsidian-ui`](../specs/okf-mini-obsidian-ui/spec.md)
+- **Related:** [RFC-0005](0005-builder-delegation-and-ward-context-hygiene.md); [RFC-0015](0015-okf-aligned-ward-layout-and-capabilities.md); `okf-ward-foundation`; `okf-mini-obsidian-ui`
 
 ## Accepted implementation delta (2026-07-19)
 
@@ -748,7 +748,7 @@ Repository precedent and conflicts:
 - [RFC-0015](0015-okf-aligned-ward-layout-and-capabilities.md) established the
   OKF wards root and clean break, but fixes the sibling concept layout and
   assigns work to `ward-designer`; this RFC narrows and supersedes those parts.
-- [`okf-ward-foundation`](../specs/okf-ward-foundation/spec.md) repeats that
+- `okf-ward-foundation` repeats that
   sibling layout and identifies the prompts and skills that need replacement.
 - [RFC-0005](0005-builder-delegation-and-ward-context-hygiene.md) established
   `ward_hygiene`, which this RFC retires.
@@ -793,12 +793,12 @@ After acceptance:
 - ADR: record `ward-conf.yaml` and only its explicitly referenced versioned
   profiles/renderers as the complete layout authority, plus snapshot lifecycle,
   constrained evaluation, and nudge-based enforcement.
-- Replace [`okf-ward-foundation`](../specs/okf-ward-foundation/spec.md) with two
+- Replace `okf-ward-foundation` with two
   implementation specs: configuration/resolution/conformance, then runtime
   injection/skill and delegation cutover.
 - Update `docs/CONVENTIONS.md` to define template-owned ward conventions and
   the RFC requirement for changes to the configuration language.
 - Update current-state architecture and product documentation after the
   implementation ships.
-- Keep the Phase 2 UI in [`okf-mini-obsidian-ui`](../specs/okf-mini-obsidian-ui/spec.md),
+- Keep the Phase 2 UI in `okf-mini-obsidian-ui`,
   revised to consume resolved roles rather than fixed paths.

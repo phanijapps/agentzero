@@ -3,7 +3,7 @@
 - **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** [plan.md](plan.md)
-- **Constrained by:** runtime/AGENTS.md; runtime/agent-runtime/AGENTS.md; gateway/gateway-execution/AGENTS.md; gateway/gateway-execution/src/runner/AGENTS.md; [Runtime Context Control](../runtime-context-control/spec.md); [MCP OAuth](../mcp-oauth/spec.md); [Subagent Role Gating](../subagent-role-gating/spec.md); [Agent Handoff Notes](../agent-handoff-notes/spec.md); [Builder Delegation Hygiene](../builder-delegation-hygiene/spec.md); [Provider Configuration](../simplified-provider-model-configuration/spec.md)
+- **Constrained by:** runtime/AGENTS.md; runtime/agent-runtime/AGENTS.md; gateway/gateway-execution/AGENTS.md; gateway/gateway-execution/src/runner/AGENTS.md; Runtime Context Control; MCP OAuth; Subagent Role Gating; Agent Handoff Notes; Builder Delegation Hygiene; Provider Configuration
 - **Contract:** none (existing Rust execution/event types and HTTP/WebSocket payloads remain compatible)
 - **Shape:** integration
 
@@ -69,4 +69,4 @@ Every local z-Bot root agent, delegated subagent, continuation, and recovered ex
 
 ## Related work
 
-[Rig Engine Migration](../rig-engine-migration/spec.md) is historical adapter/A-B migration context; its Shipped status does not establish Rig-only completion. This spec owns the outstanding hard cutover. The local gateway responsibility extraction and daemon-watch change are preserved, not silently bundled into the cutover's future implementation commits.
+Rig Engine Migration is historical adapter/A-B migration context; its Shipped status does not establish Rig-only completion. This spec owns the outstanding hard cutover. The local gateway responsibility extraction and daemon-watch change are preserved, not silently bundled into the cutover's future implementation commits.

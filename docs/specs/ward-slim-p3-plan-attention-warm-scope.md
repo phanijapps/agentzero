@@ -3,7 +3,7 @@
 - **Status:** Shipped
 - **Owner:** phanijapps
 - **Plan:** none (single-phase, light mode with live gate)
-- **Constrained by:** [ward-slim P3](../ward-slim-p3/spec.md) (deferred this exact item)
+- **Constrained by:** ward-slim P3 (deferred this exact item)
 - **Brief:** shard contradiction — planner-regeneration advice vs the warm route's prohibition
 - **Contract:** none
 - **Shape:** integration

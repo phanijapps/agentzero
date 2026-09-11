@@ -24,10 +24,10 @@ observable result that the user can verify before the next task begins.
 - [`RFC-0014`](../../rfc/0014-context-capability-registry-and-context-graph.md):
   gateway/runtime capability policy remains the enforcement layer; model tool
   visibility is staged and context remains traceable.
-- [`dynamic-ontology-skos-taxonomy`](../dynamic-ontology-skos-taxonomy/spec.md):
+- `dynamic-ontology-skos-taxonomy`:
   zbot owns dynamic policy, SKOS expansion is bounded, and ontology validation
   remains advisory unless separately approved.
-- [`engram-memory-engine-cutover`](../engram-memory-engine-cutover/spec.md):
+- `engram-memory-engine-cutover`:
   zbot talks to semantic storage through adapter/trait seams, not concrete DB
   types.
 - No new provider, database schema, user setting, REST route, WebSocket event,

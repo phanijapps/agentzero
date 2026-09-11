@@ -449,6 +449,6 @@ decision rather than being silently resolved in code.
 ## Follow-on artifacts
 
 - [ADR-0002: Select Complete Ward Archetypes at Creation](../adr/0002-select-complete-ward-archetypes-at-creation.md).
-- Spec: [`ward-archetype-registry-and-creation`](../specs/ward-archetype-registry-and-creation/spec.md).
+- Spec: `ward-archetype-registry-and-creation`.
 - Spec: [`intent-ward-archetype-selection`](../specs/intent-ward-archetype-selection/spec.md).
-- Spec: [`bundled-ward-archetypes`](../specs/bundled-ward-archetypes/spec.md).
+- Spec: `bundled-ward-archetypes`.

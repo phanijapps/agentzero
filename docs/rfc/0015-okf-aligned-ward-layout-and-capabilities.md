@@ -5,7 +5,7 @@
 - **Approver:** phanijapps
 - **Date opened:** 2026-07-19
 - **Date closed:** 2026-07-19
-- **Related:** [RFC-0005](0005-builder-delegation-and-ward-context-hygiene.md); [RFC-0006](0006-vault-obsidian-style-ward-browser.md); [RFC-0014](0014-context-capability-registry-and-context-graph.md); [`durable-ward-memory`](../specs/durable-ward-memory/spec.md); [`vault-layout-standardization`](../specs/vault-layout-standardization/spec.md); `gateway/templates/skills/spec-builder/`; `gateway/templates/skills/plan-composer/`; `gateway/templates/skills/ward-designer/`
+- **Related:** [RFC-0005](0005-builder-delegation-and-ward-context-hygiene.md); [RFC-0006](0006-vault-obsidian-style-ward-browser.md); [RFC-0014](0014-context-capability-registry-and-context-graph.md); `durable-ward-memory`; `vault-layout-standardization`; `gateway/templates/skills/spec-builder/`; `gateway/templates/skills/plan-composer/`; `gateway/templates/skills/ward-designer/`
 
 ## The ask
 

@@ -159,7 +159,7 @@ rots. See `CONVENTIONS.md` § 4 (Spec metadata contract).
   requirements are maintained in
   `~/Documents/engram-host-application-requirements.md`.
   The adapter-facing gap analysis and retirement order are documented in
-  [`architecture/future-state/engram-adapter-capability-gaps.md`](architecture/future-state/engram-adapter-capability-gaps.md).
+  `architecture/future-state/engram-adapter-capability-gaps.md`.
 
 ## spec-driven-research-development-contract-defect
 

@@ -251,6 +251,7 @@ impl AppState {
                 source_ref: None,
                 embedding: None,
                 last_accessed: None,
+                importance: None,
             };
 
             match memory_store.upsert_typed_fact(fact_value, None).await {

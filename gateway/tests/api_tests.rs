@@ -641,6 +641,7 @@ async fn memory_get_and_delete_reject_internal_facts_even_by_id() {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
         futures::executor::block_on(
             state

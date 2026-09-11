@@ -72,6 +72,15 @@ pub(crate) fn recency_decay(fact: &MemoryFact, now: DateTime<Utc>) -> f64 {
     0.5_f64.powf(age_days / half_life)
 }
 
+/// Importance mapped to a tie-breaker-grade multiplier in `[0.5, 1.5]`:
+/// `0.5 + importance`. A 0.9-importance correction outranks a
+/// same-relevance 0.5-importance domain fact; relevance still dominates
+/// everywhere else. Pinned facts resolve to importance 1.0 (see
+/// [`zbot_stores_domain::importance_of`]) → multiplier 1.5.
+fn importance_multiplier(fact: &MemoryFact) -> f64 {
+    0.5 + zbot_stores_domain::importance_of(fact)
+}
+
 /// One lane candidate: a fact with its lane-native score.
 pub(crate) struct LaneCandidate {
     pub fact: MemoryFact,
@@ -161,20 +170,23 @@ pub(crate) fn fuse_fact_lanes(
     limit: usize,
     now: DateTime<Utc>,
 ) -> Vec<FusedFact> {
-    // Lane intake is tie-aware: when lane scores are equal, the fresher
-    // fact takes the earlier lane rank, so weighted RRF's rank assignment
-    // lets recency break exact relevance ties (instead of vec order).
-    let recency_of = |fact: &MemoryFact| recency_decay(fact, now);
+    // Lane intake is tie-aware: when lane scores are equal, the fact with
+    // the stronger recency × importance composite takes the earlier lane
+    // rank, so weighted RRF's rank assignment lets the Generative-Agents
+    // non-relevance terms break exact relevance ties (instead of vec
+    // order). Importance maps to a [0.5, 1.5] tie-breaker multiplier —
+    // never dominating relevance, only separating equals.
     let mut semantic = semantic;
     let mut lexical = lexical;
+    let composite_of = |fact: &MemoryFact| recency_decay(fact, now) * importance_multiplier(fact);
     semantic.sort_by(|left, right| {
         right
             .score
             .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
-                recency_of(&right.fact)
-                    .partial_cmp(&recency_of(&left.fact))
+                composite_of(&right.fact)
+                    .partial_cmp(&composite_of(&left.fact))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     });
@@ -184,8 +196,8 @@ pub(crate) fn fuse_fact_lanes(
             .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
-                recency_of(&right.fact)
-                    .partial_cmp(&recency_of(&left.fact))
+                composite_of(&right.fact)
+                    .partial_cmp(&composite_of(&left.fact))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     });
@@ -228,10 +240,12 @@ pub(crate) fn fuse_fact_lanes(
         ));
     }
 
-    // Temporal lane over the matched set: recency-scored, newest-first.
+    // Temporal lane over the matched set: recency-scored, newest-first,
+    // scaled by the importance multiplier so a high-importance correction
+    // outranks an equally-fresh low-importance observation.
     let mut temporal: Vec<(String, f64)> = matched
         .iter()
-        .map(|(id, (_, _, _, recency))| (id.clone(), *recency))
+        .map(|(id, (fact, _, _, recency))| (id.clone(), *recency * importance_multiplier(fact)))
         .collect();
     temporal.sort_by(|left, right| {
         right
@@ -342,7 +356,19 @@ mod tests {
             created_at: String::new(),
             updated_at: (Utc::now() - chrono::Duration::days(updated_days_ago)).to_rfc3339(),
             last_accessed: None,
+            importance: None,
         }
+    }
+
+    fn fact_with_importance(
+        id: &str,
+        category: &str,
+        age: i64,
+        importance: Option<f64>,
+    ) -> MemoryFact {
+        let mut base = fact(id, category, age);
+        base.importance = importance;
+        base
     }
 
     fn now() -> DateTime<Utc> {
@@ -457,5 +483,70 @@ mod tests {
             now(),
         );
         assert_eq!(fused_two[0].fact.id, "shared2");
+    }
+
+    #[test]
+    fn importance_breaks_relevance_recency_ties() {
+        // Same relevance, same age — a correction (0.9 prior) must outrank
+        // a domain fact (0.6 prior) through the composite tie-break.
+        let high = fact("high", "correction", 0);
+        let low = fact("low", "domain", 0);
+        let semantic = vec![
+            LaneCandidate {
+                fact: low.clone(),
+                score: 0.60,
+            },
+            LaneCandidate {
+                fact: high.clone(),
+                score: 0.60,
+            },
+        ];
+        let fused = fuse_fact_lanes(semantic, Vec::new(), 5, now());
+        assert_eq!(fused.len(), 2);
+        assert_eq!(
+            fused[0].fact.id, "high",
+            "same relevance + recency: importance must decide"
+        );
+    }
+
+    #[test]
+    fn importance_never_dominates_relevance() {
+        // Strongly relevant domain fact vs weakly relevant correction:
+        // relevance still decides — importance only separates equals.
+        let strong = fact("strong", "domain", 0);
+        let weak = fact("weak", "correction", 0);
+        let semantic = vec![
+            LaneCandidate {
+                fact: strong.clone(),
+                score: 0.80,
+            },
+            LaneCandidate {
+                fact: weak.clone(),
+                score: 0.30,
+            },
+        ];
+        let fused = fuse_fact_lanes(semantic, Vec::new(), 5, now());
+        assert_eq!(fused[0].fact.id, "strong");
+    }
+
+    #[test]
+    fn explicit_importance_overrides_category_prior() {
+        let explicit_low = fact_with_importance("lo", "correction", 0, Some(0.1));
+        let prior_high = fact("hi", "domain", 0);
+        let semantic = vec![
+            LaneCandidate {
+                fact: explicit_low.clone(),
+                score: 0.60,
+            },
+            LaneCandidate {
+                fact: prior_high.clone(),
+                score: 0.60,
+            },
+        ];
+        let fused = fuse_fact_lanes(semantic, Vec::new(), 5, now());
+        assert_eq!(
+            fused[0].fact.id, "hi",
+            "explicit 0.1 correction must lose to prior-0.6 domain at equal relevance"
+        );
     }
 }

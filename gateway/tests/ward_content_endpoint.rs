@@ -46,6 +46,7 @@ async fn returns_four_content_types_with_age_buckets() {
         source_episode_id: None,
         source_ref: None,
         last_accessed: None,
+        importance: None,
     };
     futures::executor::block_on(
         state
@@ -216,6 +217,7 @@ async fn ward_content_filters_internal_reserved_memory_facts() {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
         futures::executor::block_on(
             state
@@ -271,6 +273,7 @@ async fn ward_list_ignores_reserved_only_wards() {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
         futures::executor::block_on(
             state

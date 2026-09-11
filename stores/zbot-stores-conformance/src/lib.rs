@@ -709,6 +709,7 @@ pub async fn memory_upsert_typed_fact_round_trip<S: MemoryFactStore>(store: &S) 
         source_episode_id: None,
         source_ref: None,
         last_accessed: None,
+        importance: None,
     };
 
     store

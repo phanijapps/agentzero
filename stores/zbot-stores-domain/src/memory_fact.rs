@@ -69,6 +69,47 @@ pub struct MemoryFact {
     /// plus `mention_count`. Absent on pre-reinforcement records.
     #[serde(default)]
     pub last_accessed: Option<String>,
+
+    /// Long-term importance, 0.0–1.0 — the Generative-Agents retrieval
+    /// triple's third term (relevance × recency × importance). Absent on
+    /// pre-importance records; resolved to a category prior at read time
+    /// via [`importance_of`]. The distiller may override with an LLM-scored
+    /// value; everyone else gets the prior.
+    #[serde(default)]
+    pub importance: Option<f64>,
+}
+
+/// Category priors for fact importance when no explicit value was set.
+/// Corrections and user preferences are the highest-value classes (they
+/// guard future behavior); domain observations decay in value; indexed
+/// capability entries (skill/agent) are lookup rows, not judgment.
+///
+/// Backward compatible: pre-importance records deserialize with
+/// `importance: None` and resolve through this table.
+#[must_use]
+pub fn importance_of(fact: &MemoryFact) -> f64 {
+    if fact.pinned {
+        return 1.0;
+    }
+    let explicit = fact
+        .importance
+        .filter(|value| (0.0..=1.0).contains(value))
+        .unwrap_or_else(|| category_importance_prior(&fact.category));
+    explicit.clamp(0.0, 1.0)
+}
+
+/// Default importance by fact category. Unknown categories fall back to
+/// the mid prior — neither boosted nor suppressed.
+#[must_use]
+pub fn category_importance_prior(category: &str) -> f64 {
+    match category {
+        "correction" | "instruction" => 0.9,
+        "user" => 0.85,
+        "pattern" | "strategy" => 0.7,
+        "domain" => 0.6,
+        "ctx" | "skill" | "agent" | "schema" | "primitive" => 0.5,
+        _ => 0.6,
+    }
 }
 
 /// A memory fact with a computed relevance score from hybrid search.
@@ -101,4 +142,72 @@ pub struct StrategyFactInsert {
     pub source_summary: Option<String>,
     pub embedding: Option<Vec<f32>>,
     pub source_episode_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fact(category: &str, importance: Option<f64>, pinned: bool) -> MemoryFact {
+        MemoryFact {
+            id: "f".into(),
+            session_id: None,
+            agent_id: "a".into(),
+            scope: "agent".into(),
+            category: category.into(),
+            key: "k".into(),
+            content: "c".into(),
+            confidence: 0.8,
+            mention_count: 1,
+            source_summary: None,
+            embedding: None,
+            ward_id: "__global__".into(),
+            contradicted_by: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+            expires_at: None,
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            pinned,
+            epistemic_class: None,
+            source_episode_id: None,
+            source_ref: None,
+            last_accessed: None,
+            importance,
+        }
+    }
+
+    #[test]
+    fn priors_by_category() {
+        assert_eq!(category_importance_prior("correction"), 0.9);
+        assert_eq!(category_importance_prior("user"), 0.85);
+        assert_eq!(category_importance_prior("pattern"), 0.7);
+        assert_eq!(category_importance_prior("domain"), 0.6);
+        assert_eq!(category_importance_prior("skill"), 0.5);
+        assert_eq!(category_importance_prior("mystery"), 0.6, "unknown → mid");
+    }
+
+    #[test]
+    fn explicit_importance_wins_and_clamps() {
+        assert_eq!(importance_of(&fact("domain", Some(0.95), false)), 0.95);
+        assert_eq!(
+            importance_of(&fact("correction", Some(2.0), false)),
+            0.9,
+            "out-of-range falls back to prior"
+        );
+        assert_eq!(
+            importance_of(&fact("user", Some(-1.0), false)),
+            0.85,
+            "out-of-range falls back to prior"
+        );
+        // out-of-range explicit falls back to the prior
+        assert_eq!(importance_of(&fact("user", None, false)), 0.85);
+    }
+
+    #[test]
+    fn pinned_resolves_to_max() {
+        assert_eq!(importance_of(&fact("ctx", None, true)), 1.0);
+        assert_eq!(importance_of(&fact("domain", Some(0.2), true)), 1.0);
+    }
 }

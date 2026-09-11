@@ -6,7 +6,7 @@ Return a JSON object with EXACTLY these five fields:
 
 {
   "facts": [
-    {"category": "...", "key": "category.subdomain.topic", "content": "one declarative sentence", "confidence": 0.0-1.0, "epistemic_class": "archival|current|convention|procedural"}
+    {"category": "...", "key": "category.subdomain.topic", "content": "one declarative sentence", "confidence": 0.0-1.0, "epistemic_class": "archival|current|convention|procedural", "importance": "optional 0.0-1.0 long-term importance; omit to use the category default"}
   ],
   "entities": [
     {"name": "entity name", "type": "person|organization|project|tool|concept|file", "properties": {}}

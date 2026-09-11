@@ -204,6 +204,7 @@ mod tests {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         }
     }
 

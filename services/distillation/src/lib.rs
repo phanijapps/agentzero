@@ -98,6 +98,10 @@ struct ExtractedFact {
     /// Defaults to "current" when omitted by the LLM.
     #[serde(default)]
     epistemic_class: Option<String>,
+    /// Optional LLM-scored long-term importance, 0.0-1.0 (Generative-Agents
+    /// third term). Clamped on use; omitted → category prior at the store.
+    #[serde(default)]
+    importance: Option<f64>,
 }
 
 /// An entity extracted by the distillation LLM call.
@@ -623,6 +627,7 @@ impl SessionDistiller {
                 source_episode_id: None,
                 source_ref: None,
                 last_accessed: None,
+                importance: ef.importance.map(|value| value.clamp(0.0, 1.0)),
             };
 
             if let Some(ref existing) = existing_fact {
@@ -1233,6 +1238,7 @@ impl SessionDistiller {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
 
         // Supersede old strategy if content differs
@@ -1383,6 +1389,7 @@ impl SessionDistiller {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
 
         // Supersede old correction if content differs
@@ -2793,6 +2800,7 @@ mod tests {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
 
         upsert_distilled_fact(Some(&store), &fact)

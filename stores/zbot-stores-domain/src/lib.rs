@@ -38,7 +38,10 @@ pub use kg_ops::{
     AggregateSummary, DecayCandidate, DuplicateCandidate, EntityNameEmbeddingHit, GraphView,
     HierarchySummary, InterClusterRelationHit, RelationshipContext, StrategyCandidate,
 };
-pub use memory_fact::{MemoryFact, ScoredFact, StrategyFactInsert, StrategyFactMatch};
+pub use memory_fact::{
+    category_importance_prior, importance_of, MemoryFact, ScoredFact, StrategyFactInsert,
+    StrategyFactMatch,
+};
 pub use procedure::{PatternProcedureInsert, PatternStep, Procedure, ProcedureSummary};
 pub use route_hint::{RouteHint, RouteSourceKind};
 pub use session_episode::{ScoredEpisode, SessionEpisode, SuccessfulEpisode};

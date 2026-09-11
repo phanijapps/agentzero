@@ -1929,6 +1929,7 @@ mod tests {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
             embedding: None,
         };
         let confidence = compute_confidence(&[fact], now);
@@ -1968,6 +1969,7 @@ mod tests {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
             embedding: None,
         }];
         let prompt = LlmBeliefSynthesizer::build_prompt("user.name", &facts);

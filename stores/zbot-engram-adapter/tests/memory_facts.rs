@@ -71,6 +71,7 @@ fn sample_fact() -> MemoryFact {
         source_episode_id: Some("episode-1".to_string()),
         source_ref: Some("manual://memory/fact-lossless-1".to_string()),
         last_accessed: None,
+        importance: None,
     }
 }
 

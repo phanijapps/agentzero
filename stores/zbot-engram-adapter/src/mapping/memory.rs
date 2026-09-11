@@ -214,6 +214,8 @@ pub fn memory_record_to_fact(record: &MemoryRecord) -> AdapterResult<MemoryFact>
         source_episode_id: metadata_string(metadata, "sourceEpisodeId"),
         source_ref: metadata_string(metadata, "sourceRef"),
         last_accessed: metadata_string(metadata, "lastAccessed"),
+        importance: metadata_string(metadata, "importance")
+            .and_then(|value| value.parse::<f64>().ok()),
     })
 }
 

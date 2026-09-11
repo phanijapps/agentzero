@@ -47,6 +47,7 @@ fn setup_with_seeded_fact(agent_id: &str) -> (TestServer, TempDir) {
         source_episode_id: None,
         source_ref: None,
         last_accessed: None,
+        importance: None,
     };
     futures::executor::block_on(
         state

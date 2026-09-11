@@ -42,6 +42,7 @@ fn seed_all_four_types(state: &AppState) {
         source_episode_id: None,
         source_ref: None,
         last_accessed: None,
+        importance: None,
     };
     futures::executor::block_on(
         state
@@ -209,6 +210,7 @@ async fn facts_lane_filters_internal_reserved_categories() {
             source_episode_id: None,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
         futures::executor::block_on(
             state

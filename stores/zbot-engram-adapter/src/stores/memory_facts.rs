@@ -216,6 +216,10 @@ impl EngramMemoryFactStore {
             self.ensure_embedding_write_identity(&embedding)?;
             fact.embedding = Some(embedding);
         }
+        // Importance resolution (Generative-Agents third term): an explicit
+        // LLM- or user-scored value wins; otherwise the category prior is
+        // materialized so every stored fact carries its importance.
+        fact.importance = Some(zbot_stores_domain::importance_of(&fact));
         validate_fact_content(&fact.category, &fact.content)?;
 
         let record = memory_fact_to_record_with_governance(
@@ -374,6 +378,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 source_episode_id: None,
                 source_ref: request.source_ref.clone(),
                 last_accessed: None,
+                importance: None,
             }
         };
 
@@ -512,6 +517,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 source_episode_id: None,
                 source_ref: None,
                 last_accessed: None,
+                importance: None,
             });
 
         fact.session_id = Some(session_id.to_string());
@@ -605,6 +611,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
                 source_episode_id: None,
                 source_ref: None,
                 last_accessed: None,
+                importance: None,
             });
 
         fact.content = content;
@@ -1023,6 +1030,7 @@ impl MemoryFactStore for EngramMemoryFactStore {
             source_episode_id: req.source_episode_id,
             source_ref: None,
             last_accessed: None,
+            importance: None,
         };
         let embedding = fact.embedding.clone();
         self.upsert_fact_record(fact, embedding).await?;

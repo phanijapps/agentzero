@@ -119,3 +119,13 @@ belief/episode/wiki/kg-episode/compaction/goal scenarios. One real parity
 bug fixed during E1-a: adapter `list_entities` now includes explicitly
 global (`__global__`) entities in per-agent listings, matching the sqlite
 contract (shared concepts stay visible in per-agent views).
+
+
+## Importance scoring (2026-09-11)
+
+Floors held exactly (30/30, correction 5/5, avoid 2/2, stale 3/3, pattern
+5/5); precision@5 unchanged at 76.7% — expected: corrections already ranked;
+importance protects them when recency/relevance tie (the corpus has no such
+ties today). The tie-break is pinned by unit tests (importance decides equal
+relevance+recency; never dominates relevance; explicit value overrides the
+category prior; pinned → 1.5× multiplier).

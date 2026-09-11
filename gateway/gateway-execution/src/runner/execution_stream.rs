@@ -319,7 +319,8 @@ impl ExecutionStream {
         )
         .with_batch_writer(batch_writer.clone())
         .with_recommended_skills(recommended_skills.clone())
-        .with_model_info(model_info);
+        .with_model_info(model_info)
+        .with_memory_store(self.memory_store.clone());
 
         let mut response_acc = ResponseAccumulator::new();
         let settings_service = gateway_services::SettingsService::new(self.paths.clone());

@@ -58,6 +58,9 @@ pub struct StreamContext {
     /// (provider, model) identity for trace attribution — tool_call and
     /// tool_result events carry it so error rates split per model.
     pub model_info: Option<(String, String)>,
+    /// Durable fact store for the in-session reflexion discharge
+    /// (recovered failures → pattern facts at respond).
+    pub memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
 }
 
 impl StreamContext {
@@ -89,6 +92,7 @@ impl StreamContext {
             surface_ids: Arc::new(Mutex::new(HashSet::new())),
             output_write_calls: Arc::new(Mutex::new(HashMap::new())),
             model_info: None,
+            memory_store: None,
         }
     }
 
@@ -96,6 +100,15 @@ impl StreamContext {
     /// context emits.
     pub fn with_model_info(mut self, model_info: Option<(String, String)>) -> Self {
         self.model_info = model_info;
+        self
+    }
+
+    /// Wire the fact store used by the reflexion discharge.
+    pub fn with_memory_store(
+        mut self,
+        memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
+    ) -> Self {
+        self.memory_store = memory_store;
         self
     }
 

@@ -81,7 +81,7 @@ pub mod logging;
 // CONVENIENT RE-EXPORTS
 // ============================================================================
 
-pub use types::{ChatMessage, StreamEvent, ToolCall, ToolError, ToolResult};
+pub use types::{ChatMessage, RecoveredFailureItem, StreamEvent, ToolCall, ToolError, ToolResult};
 
 pub use llm::{
     content_hash, ChatResponse, EmbeddingClient, EmbeddingConfig, EmbeddingError,

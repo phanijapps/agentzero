@@ -29,6 +29,7 @@ pub fn process_stream_event(
 ) -> (Option<GatewayEvent>, Option<String>) {
     handle_artifact_declarations(ctx, event);
     handle_delegation_event(ctx, event);
+    handle_recovered_failures(ctx, event);
     handle_side_effects(ctx, event);
     let plan_outcome = persist_current_plan(ctx, event);
     publish_projected_surface(ctx, event, plan_outcome.accepted());
@@ -519,6 +520,79 @@ fn trace_tool_result(
     );
 }
 
+/// In-session reflexion discharge: tool calls that failed 2+ times then
+/// succeeded land as durable pattern facts at respond — the learning is
+/// available to the NEXT session immediately instead of waiting for
+/// distillation. Idempotent by exact key; capped at 3 writes per drain.
+///
+/// This handler is async-free by design (spawned write); the fact store
+/// call happens on the runtime's blocking-friendly executor via
+/// `tokio::spawn`.
+fn handle_recovered_failures(ctx: &StreamContext, event: &StreamEvent) {
+    let StreamEvent::RecoveredFailures { items, .. } = event else {
+        return;
+    };
+    let Some(store) = ctx.memory_store.clone() else {
+        return;
+    };
+    let agent_id = ctx.agent_id.clone();
+    let session_id = ctx.session_id.clone();
+    let items: Vec<_> = items.iter().take(3).cloned().collect();
+    if items.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        for item in items {
+            let key = format!("pattern.recovered.{}", item.tool);
+            let error_snippet: String = item.last_error.chars().take(160).collect();
+            let content = format!(
+                "Calling `{}` initially failed with: {error_snippet}. Adjusting the approach succeeded: retry with corrected call succeeded.",
+                item.tool
+            );
+            let request = zbot_stores_traits::MemoryFactWriteRequest {
+                agent_id: agent_id.clone(),
+                category: "pattern".to_string(),
+                key: key.clone(),
+                content,
+                confidence: 0.8,
+                session_id: Some(session_id.clone()),
+                ward_id: Some("__global__".to_string()),
+                source_ref: None,
+                valid_from: None,
+            };
+            // Idempotency: skip when the same key already carries this
+            // learning (prior discharge or distillation overlap).
+            let existing = store
+                .recall_facts_prioritized(&agent_id, &key, 5, None)
+                .await
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("results")
+                        .and_then(|results| results.as_array())
+                        .map(|rows| !rows.is_empty())
+                })
+                .unwrap_or(false);
+            if existing {
+                continue;
+            }
+            if let Err(error) = store.save_fact_with_context(request).await {
+                tracing::debug!(
+                    session_id = %session_id,
+                    %error,
+                    "reflexion fact write skipped"
+                );
+            } else {
+                tracing::info!(
+                    session_id = %session_id,
+                    tool = %item.tool,
+                    "reflexion: recovered failure discharged as pattern fact"
+                );
+            }
+        }
+    });
+}
+
 fn handle_ward_changed(ctx: &StreamContext, ward_id: &str) {
     // Persist ward_id to session so it survives across continuations
     if let Err(e) = ctx
@@ -673,6 +747,161 @@ mod tests {
             delegation_tx,
             harness.paths.vault_dir().clone(),
         )
+    }
+
+    // ---- in-session reflexion discharge --------------------------------
+
+    struct ReflexionCaptureStore {
+        saved: std::sync::Mutex<Vec<zbot_stores_traits::MemoryFactWriteRequest>>,
+        existing_keys: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ReflexionCaptureStore {
+        fn new(existing: Vec<String>) -> Arc<Self> {
+            Arc::new(Self {
+                saved: std::sync::Mutex::new(Vec::new()),
+                existing_keys: std::sync::Mutex::new(existing),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl zbot_stores_traits::MemoryFactStore for ReflexionCaptureStore {
+        #[allow(clippy::too_many_arguments)]
+        async fn save_fact(
+            &self,
+            _agent_id: &str,
+            _category: &str,
+            _key: &str,
+            _content: &str,
+            _confidence: f64,
+            _ward_id: Option<&str>,
+            _valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
+            Err(zbot_stores_traits::StoreError::Unavailable(
+                "capture store: use save_fact_with_context".to_string(),
+            ))
+        }
+        async fn recall_facts(
+            &self,
+            _agent_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
+            Ok(serde_json::json!({"results": []}))
+        }
+        async fn save_fact_with_context(
+            &self,
+            request: zbot_stores_traits::MemoryFactWriteRequest,
+        ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
+            self.saved.lock().unwrap().push(request);
+            Ok(serde_json::json!({"status": "saved"}))
+        }
+        async fn recall_facts_prioritized(
+            &self,
+            _agent_id: &str,
+            query: &str,
+            _limit: usize,
+            _as_of: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> zbot_stores_traits::StoreResult<serde_json::Value> {
+            let hit = self
+                .existing_keys
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|k| k == query);
+            Ok(
+                serde_json::json!({"results": if hit { vec![serde_json::json!({"key": query})] } else { vec![] }}),
+            )
+        }
+    }
+
+    fn recovered_event(items: Vec<agent_runtime::RecoveredFailureItem>) -> StreamEvent {
+        StreamEvent::RecoveredFailures {
+            timestamp: 1,
+            items: items
+                .into_iter()
+                .map(|item| agent_runtime::types::RecoveredFailureItem {
+                    tool: item.tool,
+                    last_error: item.last_error,
+                })
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reflexion_writes_pattern_fact_with_learning_and_is_idempotent() {
+        let harness = setup();
+        let execution = AgentExecution::new_root("root-agent", &harness.session_id);
+        let store = ReflexionCaptureStore::new(Vec::new());
+        let ctx = context(&harness, &execution).with_memory_store(Some(store.clone()));
+        process_stream_event(
+            &ctx,
+            &recovered_event(vec![agent_runtime::RecoveredFailureItem {
+                tool: "read".to_string(),
+                last_error: "denied: path outside ward".to_string(),
+            }]),
+        );
+        // The write is spawned; give the runtime a beat.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let saved = store.saved.lock().unwrap().clone();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].category, "pattern");
+        assert_eq!(saved[0].key, "pattern.recovered.read");
+        assert!(saved[0].content.contains("denied: path outside ward"));
+        assert_eq!(saved[0].confidence, 0.8);
+
+        // Second discharge with the key now existing → skipped (idempotent).
+        let existing = ReflexionCaptureStore::new(vec!["pattern.recovered.read".to_string()]);
+        let ctx2 = context(&harness, &execution).with_memory_store(Some(existing.clone()));
+        process_stream_event(
+            &ctx2,
+            &recovered_event(vec![agent_runtime::RecoveredFailureItem {
+                tool: "read".to_string(),
+                last_error: "denied".to_string(),
+            }]),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            existing.saved.lock().unwrap().is_empty(),
+            "existing key must not be rewritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflexion_caps_at_three_writes_per_drain() {
+        let harness = setup();
+        let execution = AgentExecution::new_root("root-agent", &harness.session_id);
+        let store = ReflexionCaptureStore::new(Vec::new());
+        let ctx = context(&harness, &execution).with_memory_store(Some(store.clone()));
+        let items = (0..5)
+            .map(|i| agent_runtime::RecoveredFailureItem {
+                tool: format!("tool{i}"),
+                last_error: "boom".to_string(),
+            })
+            .collect();
+        process_stream_event(&ctx, &recovered_event(items));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            store.saved.lock().unwrap().len(),
+            3,
+            "at most 3 reflexion writes per drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflexion_without_store_is_a_noop() {
+        let harness = setup();
+        let execution = AgentExecution::new_root("root-agent", &harness.session_id);
+        let ctx = context(&harness, &execution); // no memory store
+        process_stream_event(
+            &ctx,
+            &recovered_event(vec![agent_runtime::RecoveredFailureItem {
+                tool: "read".to_string(),
+                last_error: "x".to_string(),
+            }]),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
     #[test]

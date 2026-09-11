@@ -22,6 +22,9 @@ pub fn convert_stream_event(
     execution_id: &str,
 ) -> Option<GatewayEvent> {
     match event {
+        // Reflexion signal is consumed by the stream processor (pattern-fact
+        // discharge), not broadcast to clients.
+        StreamEvent::RecoveredFailures { .. } => None,
         StreamEvent::WorkSurface { surface, .. } => validated_surface_event(surface, session_id, execution_id, false),
         StreamEvent::WorkSurfaceUpdated { surface, .. } => validated_surface_event(surface, session_id, execution_id, true),
         StreamEvent::WorkSurfaceDeleted { surface_id, .. } => Some(GatewayEvent::SurfaceDeleted { session_id: session_id.to_string(), execution_id: execution_id.to_string(), surface_id }),

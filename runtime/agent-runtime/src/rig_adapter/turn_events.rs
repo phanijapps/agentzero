@@ -153,6 +153,21 @@ pub(super) fn map_tool_result(
         signal = TurnSignal::Responded;
         if let Some(policy) = policy {
             policy.record_respond();
+            // In-session reflexion: discharge recovered failures at respond
+            // (event-only in the runtime; the gateway persists them).
+            let recovered = policy.drain_recovered();
+            if !recovered.is_empty() {
+                on_event(StreamEvent::RecoveredFailures {
+                    timestamp: current_timestamp(),
+                    items: recovered
+                        .into_iter()
+                        .map(|item| crate::RecoveredFailureItem {
+                            tool: item.tool,
+                            last_error: item.last_error,
+                        })
+                        .collect(),
+                });
+            }
         }
         on_event(StreamEvent::ActionRespond {
             timestamp: current_timestamp(),

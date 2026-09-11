@@ -63,6 +63,11 @@ impl ProgressPolicy {
         self.tracker.record_respond();
     }
 
+    /// Drain recovered failures for the reflexion discharge at respond.
+    pub fn drain_recovered(&mut self) -> Vec<crate::progress::RecoveredFailure> {
+        self.tracker.drain_recovered()
+    }
+
     pub fn prepare(
         &mut self,
         cfg: &ProgressConfig,

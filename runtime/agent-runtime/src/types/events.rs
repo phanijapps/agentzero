@@ -9,6 +9,16 @@ use serde_json::Value;
 
 /// Events emitted during agent execution
 ///
+/// Serde-friendly recovered-failure item (wire shape for the reflexion
+/// event).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveredFailureItem {
+    pub tool: String,
+    pub last_error: String,
+}
+
+/// Events emitted during agent execution
+///
 /// These events are streamed to the frontend/application layer
 /// to provide real-time feedback during agent execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +134,15 @@ pub enum StreamEvent {
     // ========================================================================
     // ACTION EVENTS
     // ========================================================================
+    /// In-session reflexion signal: tool calls that failed 2+ times then
+    /// succeeded. Emitted at respond; the gateway discharges them as
+    /// pattern facts so the learning lands mid-session, not only at
+    /// distillation.
+    #[serde(rename = "recovered_failures")]
+    RecoveredFailures {
+        timestamp: u64,
+        items: Vec<RecoveredFailureItem>,
+    },
     /// Respond action from the respond tool.
     /// Signals that a response should be sent to the originating hook.
     #[serde(rename = "action_respond")]
@@ -258,6 +277,7 @@ impl StreamEvent {
             | Self::WorkSurfaceUpdated { timestamp, .. }
             | Self::WorkSurfaceDeleted { timestamp, .. }
             | Self::ActionRespond { timestamp, .. }
+            | Self::RecoveredFailures { timestamp, .. }
             | Self::ActionDelegate { timestamp, .. }
             | Self::ActionPlanUpdate { timestamp, .. }
             | Self::TokenUpdate { timestamp, .. }

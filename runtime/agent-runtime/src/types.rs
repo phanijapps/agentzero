@@ -16,7 +16,7 @@ pub mod events;
 pub mod messages;
 
 // Re-export commonly used types
-pub use events::StreamEvent;
+pub use events::{RecoveredFailureItem, StreamEvent};
 pub use messages::{ChatMessage, ToolCall};
 
 /// Result type for tool operations

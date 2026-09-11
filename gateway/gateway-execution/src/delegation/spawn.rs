@@ -1156,7 +1156,8 @@ fn spawn_execution_task(ctx: SpawnContext) {
             paths.vault_dir().clone(),
         )
         .with_batch_writer(batch_writer.clone())
-        .with_model_info(model_info);
+        .with_model_info(model_info)
+        .with_memory_store(fact_store_for_ctx.clone());
 
         let mut response_acc = ResponseAccumulator::new();
 

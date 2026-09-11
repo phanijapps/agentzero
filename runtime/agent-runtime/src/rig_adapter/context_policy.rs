@@ -138,6 +138,11 @@ impl ContextPolicy {
         self.progress.lock().unwrap().respond();
     }
 
+    /// Drain recovered failures for the in-session reflexion discharge.
+    pub fn drain_recovered(&self) -> Vec<crate::progress::RecoveredFailure> {
+        self.progress.lock().unwrap().drain_recovered()
+    }
+
     pub fn text(&self, text: &str) {
         if let Some(run) = self.run.lock().unwrap().as_mut() {
             run.tail.text(text);

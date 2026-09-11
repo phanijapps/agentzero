@@ -6,10 +6,22 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// Max recovered failures retained for the reflexion discharge.
+const RECOVERED_CAP: usize = 5;
+
 /// Tracks execution progress to distinguish productive work from stuck loops.
 ///
 /// Scores each iteration based on tool diversity, success rate, and
 /// repetition patterns. Drives stuck-detection nudges and planning nudges.
+/// One recovered failure — the reflexion signal.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RecoveredFailure {
+    /// Tool that initially failed.
+    pub tool: String,
+    /// The last error text before recovery.
+    pub last_error: String,
+}
+
 pub(crate) struct ProgressTracker {
     /// Recent tool calls as (name, `args_hash`) for repetition detection
     pub(crate) recent_tool_calls: VecDeque<(String, u64)>,
@@ -33,6 +45,11 @@ pub(crate) struct ProgressTracker {
     pub(crate) plan_items_completed: u32,
     /// Whether the planning nudge has been injected (max 1)
     pub(crate) planning_nudge_sent: bool,
+    /// Recovered failures: a call that failed, then later succeeded
+    /// unchanged-in-key. Drained at respond for the in-session reflexion
+    /// discharge (learning lands immediately, not only at distillation).
+    pub(crate) recovered: VecDeque<RecoveredFailure>,
+
     /// Consecutive-failure tracking per (tool name, args hash): count
     /// plus the most recent error text. Cleared on success of the same
     /// call. Feeds the structured failure feedback nudge so the agent
@@ -63,6 +80,7 @@ impl ProgressTracker {
             plan_items_completed: 0,
             planning_nudge_sent: false,
             failing_calls: HashMap::new(),
+            recovered: VecDeque::with_capacity(RECOVERED_CAP),
             tool_calls_before_plan: 0,
             write_target_repeats: HashMap::new(),
         }
@@ -125,7 +143,17 @@ impl ProgressTracker {
         // agent. Success of the same call clears the counter.
         let key = (name.to_string(), args_hash);
         if succeeded {
-            self.failing_calls.remove(&key);
+            if let Some((_count, last_error)) = self.failing_calls.remove(&key) {
+                // Only failures that were nudged (count >= 2) carry a
+                // learning worth persisting; single-fumble-then-success is
+                // ordinary iteration.
+                if _count >= 2 && self.recovered.len() < RECOVERED_CAP {
+                    self.recovered.push_back(RecoveredFailure {
+                        tool: name.to_string(),
+                        last_error,
+                    });
+                }
+            }
         } else if let Some(entry) = self.failing_calls.get_mut(&key) {
             entry.0 += 1;
             if let Some(error) = error {
@@ -215,6 +243,11 @@ impl ProgressTracker {
         if self.recent_tool_calls.len() > 5 {
             self.recent_tool_calls.pop_front();
         }
+    }
+
+    /// Drain the recovered-failure backlog (in-session reflexion signal).
+    pub fn drain_recovered(&mut self) -> Vec<RecoveredFailure> {
+        self.recovered.drain(..).collect()
     }
 
     /// Record a tool error for repeated-error detection.
@@ -315,6 +348,62 @@ mod progress_tracker_tests {
     use crate::types::ChatMessage;
     use agent_primitives::types::Part;
     use serde_json::json;
+
+    #[test]
+    fn recovered_failure_recorded_only_after_nudged_failure_then_success() {
+        let mut tracker = ProgressTracker::new();
+        let args = json!({"path": "/etc/hosts"});
+        tracker.record_tool_call("read", &args, Some("denied"));
+        assert!(
+            tracker.drain_recovered().is_empty(),
+            "single failure is not yet a pattern"
+        );
+        tracker.record_tool_call("read", &args, Some("denied"));
+        assert!(
+            tracker.drain_recovered().is_empty(),
+            "second failure nudges but nothing recovered yet"
+        );
+        tracker.record_tool_call("read", &args, None);
+        let recovered = tracker.drain_recovered();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].tool, "read");
+        assert_eq!(recovered[0].last_error, "denied");
+        assert!(tracker.drain_recovered().is_empty(), "drain is destructive");
+    }
+
+    #[test]
+    fn success_without_prior_failure_yields_no_recovery() {
+        let mut tracker = ProgressTracker::new();
+        let args = json!({"cmd": "ls"});
+        tracker.record_tool_call("shell", &args, None);
+        tracker.record_tool_call("shell", &args, None);
+        assert!(tracker.drain_recovered().is_empty());
+    }
+
+    #[test]
+    fn single_fumble_then_success_is_not_a_reflexion_signal() {
+        let mut tracker = ProgressTracker::new();
+        let args = json!({"q": "x"});
+        tracker.record_tool_call("recall", &args, Some("timeout"));
+        tracker.record_tool_call("recall", &args, None);
+        assert!(
+            tracker.drain_recovered().is_empty(),
+            "count 1 recovery is ordinary iteration, not a learning"
+        );
+    }
+
+    #[test]
+    fn recovered_failures_cap_at_five() {
+        let mut tracker = ProgressTracker::new();
+        for i in 0..7 {
+            let args = json!({"i": i});
+            tracker.record_tool_call("shell", &args, Some("boom"));
+            tracker.record_tool_call("shell", &args, Some("boom"));
+            tracker.record_tool_call("shell", &args, None);
+        }
+        let recovered = tracker.drain_recovered();
+        assert_eq!(recovered.len(), 5, "cap 5, oldest dropped");
+    }
 
     #[test]
     fn test_diagnosis_stuck() {

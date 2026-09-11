@@ -43,6 +43,30 @@ impl MultimodalAnalyzeTool {
     }
 }
 
+fn truncate_for_error(text: &str) -> String {
+    if text.chars().count() > 60 {
+        let head: String = text.chars().take(57).collect();
+        format!("{head}...")
+    } else {
+        text.to_string()
+    }
+}
+
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::Array(_) => "an array (of non-objects?)",
+        serde_json::Value::String(_) | serde_json::Value::Object(_) => unreachable!(),
+    }
+}
+
+fn key_list(map: &serde_json::Map<String, serde_json::Value>) -> String {
+    let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    format!("[{}]", keys.join(", "))
+}
+
 #[async_trait]
 impl Tool for MultimodalAnalyzeTool {
     fn name(&self) -> &str {
@@ -88,7 +112,24 @@ impl Tool for MultimodalAnalyzeTool {
         let content_items = args
             .get("content")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| AgentError::Tool("'content' must be an array".to_string()))?;
+            .ok_or_else(|| {
+                let received = match args.get("content") {
+                    Some(value) => match value {
+                        serde_json::Value::String(text) => {
+                            format!("a string ({})", truncate_for_error(text))
+                        }
+                        serde_json::Value::Object(map) => {
+                            format!("an object with keys {}", key_list(map))
+                        }
+                        other => json_kind(other).to_string(),
+                    },
+                    None => "absent".to_string(),
+                };
+                AgentError::Tool(format!(
+                    "'content' must be an array of image items — received {received}. \
+                     Wrap it: content=[{{\"type\":\"image\",\"source\":\"/path/or/url\"}}]"
+                ))
+            })?;
 
         let prompt = args
             .get("prompt")

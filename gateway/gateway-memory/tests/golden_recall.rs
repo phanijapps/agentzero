@@ -561,6 +561,24 @@ async fn setup_corpus() -> Result<Corpus, String> {
 
     // --- recall stack -----------------------------------------------------
     let mut recall = MemoryRecall::new(Some(embedder), Arc::new(RecallConfig::default()));
+    // Deterministic cross-encoder stand-in: query/content token overlap.
+    // Mirrors the engram adapter's own OverlapScorer — good enough to
+    // measure the rerank stage's effect without an LLM in the harness.
+    struct OverlapScorer;
+    impl engram_rerank_cross_encoder::RerankScorer for OverlapScorer {
+        fn score(&self, query: &str, candidate: &str) -> engram_runtime::CoreResult<f32> {
+            use std::collections::HashSet;
+            let query_lower = query.to_lowercase();
+            let candidate_lower = candidate.to_lowercase();
+            let q: HashSet<&str> = query_lower.split_whitespace().collect();
+            let c: HashSet<&str> = candidate_lower.split_whitespace().collect();
+            Ok((q.intersection(&c).count() as f32) / (q.len().max(1) as f32))
+        }
+    }
+    recall.set_rerank_stage(gateway_memory::recall::rerank::RerankStage::new(
+        std::sync::Arc::new(OverlapScorer),
+        gateway_memory::recall::rerank::RerankConfig::default(),
+    ));
     recall.set_memory_store(memory_store);
     recall.set_procedure_store(procedure_store);
     recall.set_wiki_store(wiki_store);

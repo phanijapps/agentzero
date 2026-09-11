@@ -531,6 +531,37 @@ impl AppState {
         if let Some(recall) = memory_recall_inner.as_mut() {
             recall.set_mmr_config(mmr_cfg.clone());
         }
+
+        // Cross-encoder rerank (default-on; kill-switch `memory.rerank.enabled
+        // = false`). The stage shares the memory LLM factory — one cached
+        // client, tiny prompts, bounded pool. No factory/scorer → stage
+        // absent → recall keeps fused order (fail-open by construction).
+        let rerank_cfg: gateway_memory::RerankConfig =
+            gateway_services::SettingsService::new(paths.clone())
+                .load()
+                .map(|s| s.execution.memory.rerank.clone())
+                .unwrap_or_default();
+        if rerank_cfg.enabled {
+            let scorer_client = gateway_memory::CachedLlmClient::new(
+                memory_llm_factory.clone(),
+                gateway_memory::LlmClientConfig::new(0.0, 32),
+            );
+            if let Some(recall) = memory_recall_inner.as_mut() {
+                recall.set_rerank_stage(gateway_memory::recall::rerank::RerankStage::new(
+                    std::sync::Arc::new(gateway_memory::recall::rerank::LlmRerankScorer::new(
+                        std::sync::Arc::new(scorer_client),
+                    )),
+                    rerank_cfg.clone(),
+                ));
+            }
+            tracing::info!(
+                "Memory cross-encoder rerank: enabled (pool={}, timeout_ms={})",
+                rerank_cfg.pool,
+                rerank_cfg.timeout_ms,
+            );
+        } else {
+            tracing::debug!("Memory cross-encoder rerank: disabled");
+        }
         if mmr_cfg.enabled {
             tracing::info!(
                 "Memory MMR rerank: enabled (lambda={}, candidate_pool={})",

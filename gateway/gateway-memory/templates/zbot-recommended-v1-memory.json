@@ -78,5 +78,10 @@
     },
     "tenant": "agentzero",
     "wardScopeTarget": "workspace"
+  },
+  "rerank": {
+    "enabled": true,
+    "pool": 20,
+    "timeout_ms": 2000
   }
 }

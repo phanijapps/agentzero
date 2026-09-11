@@ -35,6 +35,7 @@ zbot-conversation = { path = "../../stores/zbot-conversation" }
 engram-domain = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-runtime = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-rerank-mmr = { git = "https://github.com/phanijapps/engram", branch = "main" }
+engram-rerank-cross-encoder = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-retrieval = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-belief = { git = "https://github.com/phanijapps/engram", branch = "main" }
 engram-hierarchy = { git = "https://github.com/phanijapps/engram", branch = "main" }

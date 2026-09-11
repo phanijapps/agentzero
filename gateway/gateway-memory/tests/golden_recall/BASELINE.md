@@ -129,3 +129,19 @@ importance protects them when recency/relevance tie (the corpus has no such
 ties today). The tie-break is pinned by unit tests (importance decides equal
 relevance+recency; never dominates relevance; explicit value overrides the
 category prior; pinned → 1.5× multiplier).
+
+
+## Rerank stage measurement (2026-09-11, deterministic scorer)
+
+With the cross-encoder stage wired (deterministic token-overlap stand-in for
+the LLM scorer, the same shape engram's own adapter tests use):
+
+- presence floor 30/30 (held); tag floors all held; corrections 5/5
+- **precision@5: 76.7% → 86.7% (+10.0pp)**
+- correction top-5: 5/5 (held)
+
+Without a scorer (stage absent / kill-switch off) the harness reproduces the
+76.7% fused-order baseline exactly — fail-open is order-preserving. The live
+LLM scorer (tiny 0–1 relevance prompt, bounded pool 20, 2000ms timeout)
+replaces the stand-in at runtime; the next daemon session provides the
+production measurement.

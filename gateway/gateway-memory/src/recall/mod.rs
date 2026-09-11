@@ -20,6 +20,7 @@
 pub mod adapters;
 pub mod context_atoms;
 pub mod previous_episodes;
+pub mod rerank;
 pub mod scored_item;
 pub use context_atoms::{
     dropped_candidate_for_superseded_fact, scored_fact_to_context_atom,
@@ -276,6 +277,9 @@ pub struct MemoryRecall {
     /// MMR diversity reranking. When `None` or `enabled = false`,
     /// `recall_unified` is byte-for-byte identical to pre-MMR behavior.
     mmr_config: Option<MmrConfig>,
+    /// Cross-encoder rerank stage. `None` (or `enabled = false`) keeps
+    /// the fused order — recall is byte-for-byte identical without it.
+    rerank: Option<Arc<rerank::RerankStage>>,
     taxonomy_expander: Option<Arc<dyn RecallTaxonomyExpander>>,
     taxonomy_limits: RecallSkosExpansionLimits,
     provider_scope: Option<RecallProviderScope>,
@@ -315,6 +319,7 @@ impl MemoryRecall {
             procedure_store: None,
             belief_store: None,
             mmr_config: None,
+            rerank: None,
             taxonomy_expander: None,
             taxonomy_limits: RecallSkosExpansionLimits::default(),
             provider_scope: None,
@@ -345,6 +350,13 @@ impl MemoryRecall {
     /// pre-MMR behavior.
     pub fn set_mmr_config(&mut self, cfg: MmrConfig) {
         self.mmr_config = Some(cfg);
+    }
+
+    /// Wire the cross-encoder rerank stage. When set and enabled, the
+    /// top `pool` fused candidates are query-scored and reordered before
+    /// MMR/truncation; failures keep fused order (fail-open).
+    pub fn set_rerank_stage(&mut self, stage: rerank::RerankStage) {
+        self.rerank = Some(Arc::new(stage));
     }
 
     pub fn set_taxonomy_expander(&mut self, expander: Arc<dyn RecallTaxonomyExpander>) {
@@ -1098,6 +1110,13 @@ impl MemoryRecall {
             if self.mmr_config.as_ref().is_some_and(|cfg| cfg.enabled) {
                 ranking_reasons.push("mmr_diversity".to_string());
             }
+            if self
+                .rerank
+                .as_ref()
+                .is_some_and(|stage| stage.config.enabled)
+            {
+                ranking_reasons.push("cross_encoder_rerank".to_string());
+            }
             if !taxonomy_candidates.is_empty() {
                 ranking_reasons.push("skos_taxonomy_expansion".to_string());
             }
@@ -1163,7 +1182,15 @@ impl MemoryRecall {
             _ => (generic_budget, false),
         };
 
-        let fused = fuse_source_lists(all_lists, fusion_budget, intent_boosted);
+        let mut fused = fuse_source_lists(all_lists, fusion_budget, intent_boosted);
+
+        // Cross-encoder precision stage: query-score the top pool and
+        // reorder, fail-open to fused order on any failure/timeout.
+        if let Some(stage) = self.rerank.as_ref() {
+            if stage.will_run(fused.len()) {
+                fused = stage.apply(retrieval_query, fused).await;
+            }
+        }
 
         let generic_items = if run_mmr {
             let lambda = self.mmr_config.as_ref().map(|c| c.lambda).unwrap_or(0.6);

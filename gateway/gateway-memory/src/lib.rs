@@ -17,8 +17,8 @@ pub use recall::context_atoms::{
 };
 pub use recall::scored_item::{intent_boost, GoalLite, ItemKind, Provenance, ScoredItem};
 pub use recall::{
-    MemoryRecall, RecallProviderScope, RecallSkosExpansionLimits, UnifiedRecallOutcome,
-    UnifiedRecallReasonCode, UnifiedRecallScope, UnifiedRecallSourceState,
+    rerank::RerankConfig, MemoryRecall, RecallProviderScope, RecallSkosExpansionLimits,
+    UnifiedRecallOutcome, UnifiedRecallReasonCode, UnifiedRecallScope, UnifiedRecallSourceState,
     UnifiedRecallSourceStatus, UnifiedRecallSourceSummary, UnifiedRecallTaxonomyCandidate,
     UnifiedRecallTaxonomyRelation, UnifiedRecallTaxonomyTrace,
 };
@@ -417,6 +417,12 @@ pub struct MemorySettings {
     /// identical to pre-MMR behavior.
     #[serde(default)]
     pub mmr: MmrConfig,
+    /// Cross-encoder rerank stage (the precision lever). Reranks the top
+    /// `pool` fused candidates with a query-aware LLM score before
+    /// MMR/truncation. Fail-open: any scorer error or timeout keeps the
+    /// fused order. Kill-switch: `memory.rerank.enabled = false`.
+    #[serde(default)]
+    pub rerank: crate::recall::rerank::RerankConfig,
     /// Hierarchical-memory builder (Phase H-3). Opt-in (`enabled: false`
     /// by default). When enabled, an extra sleep-time worker clusters
     /// the current layer-N entities, synthesises layer-N+1 aggregates
@@ -441,6 +447,7 @@ impl Default for MemorySettings {
     fn default() -> Self {
         Self {
             provider: MemoryProviderSettings::default(),
+            rerank: crate::recall::rerank::RerankConfig::default(),
             conflict_resolver_interval_hours: default_conflict_resolver_interval_hours(),
             belief_network: BeliefNetworkConfig::default(),
             mmr: MmrConfig::default(),

@@ -11,7 +11,6 @@ Quick reference for all system components. Check this before planning changes.
 | — Files | [execution-loop/files.md](execution-loop/files.md) | Every file across UI, gateway, runtime, services with function references |
 | Subagent Capability Policy | [subagent-capability-policy/overview.md](subagent-capability-policy/overview.md) | Runtime actor/tool boundary for root, delegated executors, delegated reviewers, and ward agents. Documents reviewer-agent seeding and why ward-as-agent remains full-tool. |
 | Agent Handoff Notes | [agent-handoff-notes/overview.md](agent-handoff-notes/overview.md) | Current-session agent roster and one-way handoff notes over existing steering. Not Pattern 4 peer messaging, persistence, or federation. |
-| Durable Peer Messaging | [durable-peer-messaging/overview.md](durable-peer-messaging/overview.md) | Durable same-session asynchronous messages and recipient-bound replies over the local work queue, with broker/federation adapters deferred. |
 | Intent Analysis | [intent-analysis/overview.md](intent-analysis/overview.md) | Pre-execution middleware: indexes resources, semantic search, LLM analysis, emits events. Root agent only. |
 | Ward Scaffolding | [ward-scaffolding/overview.md](ward-scaffolding/overview.md) | Post-execution: skill-driven directory scaffolding, AGENTS.md generation, core module indexing via language configs. |
 | — Data Flow | [intent-analysis/data-flow.md](intent-analysis/data-flow.md) | Live execution pipeline, session replay, WS event routing |
@@ -44,12 +43,8 @@ Quick reference for all system components. Check this before planning changes.
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| Memory Layer | [memory-layer/overview.md](memory-layer/overview.md) | The brain: facts, embeddings, knowledge graph, recall, distillation, ward knowledge sync. Six cooperating layers after Phases 1–6. |
-| — Cognitive Layers | [memory-layer/cognitive-layers.md](memory-layer/cognitive-layers.md) | Working memory (Phase 2), Ward wiki (Phase 3), Procedural memory (Phase 4), Intelligent micro-recall (Phase 5). How each layer works and how they compose. |
-| — Knowledge Graph | [memory-layer/knowledge-graph.md](memory-layer/knowledge-graph.md) | Phase 6 architecture: episodes, ward artifact indexer, expanded ontology (13 entity types / 27 relationship types), entity resolver, epistemic classes, MAGMA multi-view queries, real-time tool extraction. |
-| — Data Model | [memory-layer/data-model.md](memory-layer/data-model.md) | Every table, every column, schema version history (v1 → v21), lifecycle events, query patterns. |
-| — Backlog | [memory-layer/backlog.md](memory-layer/backlog.md) | Planned: policies UI, graph query tool, pruning, cross-ward synthesis, dashboard |
-
+| Memory Layer | [memory-layer/spec.md](memory-layer/spec.md) | Framework-agnostic implementation reference: episodic facts, KG, bi-temporal semantics, hierarchy, beliefs, procedures, sleep-time synthesis, recall engine. Implemented by the engram adapter. |
+| — Backlog 
 ## Adding New Components
 
 When adding a new component to `docs/architecture/components/`:

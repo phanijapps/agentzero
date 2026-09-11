@@ -504,7 +504,7 @@ right now?"
 The user-facing documentation, organized by [Diátaxis](https://diataxis.fr/).
 Four kinds of content, each in its own subdirectory, each serving a
 different user need. **Mixing kinds is the most common cause of bad
-docs** — see [`guides/README.md`](guides/README.md) for the framework
+docs** — see the how-to guides under [`guides/how-to/`](guides/how-to/) for the framework
 in detail.
 
 - `tutorials/` — *learning-oriented.* Lessons that take a beginner from
@@ -737,7 +737,7 @@ mutating JSON by hand.
 ### Model selection
 
 Every subagent file declares `model:` in its frontmatter explicitly. The
-[`lint-agent-artifacts.py`](../tools/lint-agent-artifacts.py) linter
+the artifact linter
 enforces this. Reasoning behind each current choice:
 
 | Subagent | Model | Why |
@@ -868,7 +868,7 @@ automatically, no manual paste. `pre-pr.py` stays consumer-wired,
 because Claude Code has no PR-open lifecycle event (`Stop` fires after
 every agent turn — wrong semantics). Wire `pre-pr.py` via
 `.git/hooks/pre-push` if you want it automatic, or run it by hand
-before opening a PR. See [`tools/hooks/README.md`](../tools/hooks/README.md)
+before opening a PR. See `tools/hooks/`
 for both surfaces.
 
 ### When to reach for an unattended loop
@@ -939,7 +939,7 @@ Most folders start carrying content.
 - `rfc/` may still be unused; PRs are enough for most decisions.
 - `adversarial-reviewer` subagent is worth using. `security-reviewer` and
   `quality-engineer` are worth reaching for when a PR warrants them — see
-  [`AGENTS.md § Specialist subagents`](../AGENTS.md#specialist-subagents).
+  the workspace AGENTS.md.
 
 ### Profile C — Medium platform / engine (10-50 contributors)
 
@@ -978,7 +978,7 @@ template adopter knows when to wire each one up.
   is actively populated (`docs/knowledge/patterns.jsonl`). The
   `session-start` hook is shipped pre-wired by the install pipeline,
   so the knowledge base shows up in Claude Code session context out
-  of the box; see [`tools/hooks/README.md`](../tools/hooks/README.md)
+  of the box; see `tools/hooks/`
   for what lands and where.
 
 ### Above Profile C
@@ -1012,14 +1012,14 @@ of adopting them — not as a precaution.
 
 Four lies an agent tells itself mid-loop, paired with the rebuttal that
 already lives in this repo. These are the in-loop counterparts to the
-[Excuses we don't accept](../AGENTS.md#excuses-we-dont-accept) table in
+the excuses table in
 `AGENTS.md`, which fires *before* the work-loop loads.
 
 | The lie | The rebuttal |
 | --- | --- |
-| "We'll update the spec after the PR." | Spec drift is a bug, not follow-up work — update spec and code in the same PR. See [`AGENTS.md` § How we work](../AGENTS.md#how-we-work) and the spec lifecycle rule in § 4 above. |
+| "We'll update the spec after the PR." | Spec drift is a bug, not follow-up work — update spec and code in the same PR. See the spec lifecycle rule in § 4 above. |
 | "I'll verify this manually, just this once." | Verification mode — TDD, goal-based, or manual QA — is declared in the plan task, not improvised at the keyboard. If manual QA is the right mode, write it down; if it isn't, pick TDD or a goal-based check. See the PLAN phase in the `work-loop` skill. |
-| "I can fix this while I'm here." | Out-of-scope changes need a separate PR or an explicit note in the plan. Scope creep is the most common cause of failed adversarial review. See [`AGENTS.md` § Keeping changes minimal](../AGENTS.md#keeping-changes-minimal). |
+| "I can fix this while I'm here." | Out-of-scope changes need a separate PR or an explicit note in the plan. Scope creep is the most common cause of failed adversarial review.  |
 | "This decision doesn't need an ADR — it's obvious." | If you're making it, it isn't obvious to the next person. Writing an ADR now costs less than someone re-litigating the decision in six months. See § 2 above and the `new-adr` skill. |
 
 ---
@@ -1069,7 +1069,7 @@ The keys live under `metadata:` rather than at top level because the
 [agentskills.io specification](https://agentskills.io/specification)
 pins the top-level frontmatter set to `name`, `description`,
 `license`, `compatibility`, `metadata`, `allowed-tools` and reserves
-`metadata:` as the project-specific escape hatch. `tools/lint-agent-artifacts.py`
+`metadata:` as the project-specific escape hatch. the artifact linter
 refuses any top-level key outside that set; `tools/lint_credentialed_skills.py`
 scopes its checks to skills with `metadata.credentialed: true`.
 
@@ -1081,10 +1081,7 @@ Security section must satisfy **both** brokers' don't-block phrase sets.
 ### Four brokers — pick one per skill
 
 `metadata.auth` names the broker that resolves the credential. The
-four ids are pinned by
-[ADR-0003](adr/0003-credential-broker-contract.md) and
-<!-- seed-content-lint-ignore: canonical RFC pointer for the four-broker contract -->
-[RFC-0013](rfc/0013-credential-broker-contract.md):
+four ids are:
 
 - **`env`** — the credential is a plain environment variable
   (`<NAMESPACE>_<KEY>`). Catalogue contributes naming convention and

@@ -19,6 +19,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent-driven intent analysis** — a small intent agent searches indexed
+  resources itself (skills, agents, wards, procedures) and returns a JSON
+  contract including `solution_path` (seeds the planner) and task
+  `complexity` (S/M/L/XL, drives iteration budget).
+- **Structured failure feedback** — a tool call failing twice with identical
+  arguments now injects an explicit nudge naming the call and the last error,
+  instead of a generic stuck warning.
+- **Failed-episode avoid-list** — sessions start with the ward's recent
+  failed episodes (and their learnings) marked `[AVOID]`, so the agent
+  doesn't repeat known-bad approaches.
+- **Belief Network reachable** — new `belief` tool surfaces synthesized
+  beliefs and contradictions to the model (previously wired but unreachable).
+
+### Changed
+
+- **Memory layer runs on engram end-to-end** — fact retrieval fuses
+  semantic, lexical, and recency lanes via engram's weighted reciprocal-rank
+  fusion; recall access reinforces facts (mention count + last-accessed
+  decay refresh). Measured on the production path: recall precision@5
+  46.7% → 76.7%, correction recall 2/5 → 5/5.
+- **Gateway decomposed** — the 49-field AppState god object became six
+  composed state groups (stores/services/execution/transport/workers/vault);
+  A2A and durable-agent tasks moved out of the shell root.
+- **Tool surface diet** — `glob`, `memory` (broad variant), `graph_query`,
+  and `query_resource` tools removed after production traces showed zero
+  usage; memory reads consolidated into `recall` (now with exact-key lookup);
+  agent-control tools hidden by default.
+- **Session fork on fast models fixed** — planner delegation no longer fails
+  when the model dispatches it milliseconds after ward creation.
+- **Procedure recall carries the call contract** — recalled procedures now
+  include their declared parameters and success record, so the model calls
+  them correctly the first time.
+
+### Removed
+
+- The legacy SQLite memory/knowledge store layer (~17,000 lines) is retired —
+  all memory persistence goes through the engram adapter.
+
+
+### Added
+
 - Optional A2A 1.0 federation lets explicitly paired zBots discover one
   another on a LAN/VPN and delegate bounded text work asynchronously. Remote
   work is durable, authenticated, peer-scoped, and restricted to a
@@ -45,9 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   canonical wikilink. Ward Markdown uses the filesystem-authoritative LLM Wiki
   model without mandatory OKF frontmatter.
 - Journal Ward templates now route daily material to one
-  `entries/YYYY/YYYY-MM-DD.md` file per source day and reject loose Markdown
-  directly under `entries/`, avoiding accidental single-document compilation.
-
 ### Deprecated
 
 - (nothing yet)

@@ -5,12 +5,17 @@
 ### Core Middleware
 | File | What |
 |------|------|
-| `gateway/gateway-execution/src/middleware/intent_analysis.rs` | Types, LLM prompt, `format_intent_injection()`, `analyze_intent()` (3 params), `index_resources()`, `search_resources()`, `strip_markdown_fences()`, unit tests |
+| `gateway/gateway-execution/src/middleware/intent/router.rs` | Trivial bypass, deterministic procedure match, agent dispatch |
+| `gateway/gateway-execution/src/middleware/intent/agent.rs` | Intent agent: MemorySearchTool + prompt → JSON conclusion |
+| `gateway/gateway-execution/src/middleware/intent/contract.rs` | IntentAnalysis contract (solution_path, complexity, …) |
+| `gateway/gateway-execution/src/middleware/intent/inject.rs` | `format_intent_injection()` — the `## Task Analysis` section |
+| `gateway/gateway-execution/src/middleware/intent/prompt.rs` | Intent agent prompt |
+| `gateway/gateway-execution/src/middleware/resource_index.rs` | Resource indexing feeding MemorySearchTool queries |
 
 ### Runner Integration
 | File | What |
 |------|------|
-| `gateway/gateway-execution/src/runner.rs` | `OnSessionReady` type alias, `invoke_with_callback()`, session gate (`has_intent_log`), `format_intent_injection` call, `index_resources` call, event emission, fallback handling |
+| `gateway/gateway-execution/src/runner/` (invoke bootstrap) | `OnSessionReady` type alias, `invoke_with_callback()`, session gate (`has_intent_log`), `format_intent_injection` call, `index_resources` call, event emission, fallback handling |
 
 ### Crate Exports
 | File | What |

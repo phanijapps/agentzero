@@ -71,7 +71,7 @@ Connect to external tools via Model Context Protocol servers. Configure in
 
 ### 6. Memory Brain — Persistent Intelligence
 
-The memory layer is z-Bot's cognitive system. Every session teaches it something. Agents learn from experience, avoid past mistakes, and reuse existing work. See [components/memory-layer/overview.md](components/memory-layer/overview.md) for full architecture.
+The memory layer is z-Bot's cognitive system. Every session teaches it something. Agents learn from experience, avoid past mistakes, and reuse existing work. See [components/memory-layer/spec.md](../architecture/components/memory-layer/spec.md) for the layer architecture.
 
 **Memory Loops** (all active):
 1. **System recall** — facts, episodes, knowledge-graph entities injected as system message on every first message
@@ -88,9 +88,9 @@ The memory layer is z-Bot's cognitive system. Every session teaches it something
 - **Hierarchical memory (HiRAG / LeanRAG)** — clusters of related facts roll up into summaries; recall walks down from the lowest-common-ancestor cluster
 - **Belief network** — multi-fact beliefs synthesized from episode clusters, with confidence propagation and contradiction graph
 - **Procedures** — replayable, named runbooks the agent learned by doing; dispatchable as first-class tool calls
-- **Corrections abstractor** — recurring fixes become high-priority "NEVER do X / ALWAYS do Y" rules
+- **Corrections** — recurring fixes become high-priority "NEVER do X / ALWAYS do Y" rules (distilled post-session)
 
-**Agent Tools**: All agents (root + subagents) have WardTool, MemoryTool, GrepTool, RunProcedureTool — they can enter wards, recall memory, replay procedures, and search code.
+**Agent Tools**: Tools are gated per actor (root, delegated planner/executor/reviewer, ward agent). The core surface: shell, read/write_file/edit_file, update_plan, memory_write, recall (with exact-key lookup), belief, goal, run_procedure, ward, load_skill, delegate_to_agent, present_surface, multimodal_analyze, connector tools — plus MCP tools from configuration.
 
 **Recall Output** (priority order):
 - Rules (corrections — ALWAYS followed)
@@ -108,7 +108,7 @@ The memory layer is z-Bot's cognitive system. Every session teaches it something
 
 **Policies**: High-priority rules injected as memory facts (correction category, confidence 1.0, global scope). Surface at top of every recall.
 
-**Storage**: SQLite (memory_facts, episodes, recall_log, embeddings, beliefs, hierarchy clusters) + Knowledge Graph (entities, relationships) + vec0 indexes for ANN search
+**Storage**: memory and knowledge (facts, episodes, procedures, beliefs, knowledge graph, hierarchy) persist through the engram adapter; conversations, executions, and checkpoints on SQLite
 - **Fact Dedup**: UNIQUE constraint on (agent_id, scope, key) — repeated mentions update content and bump mention_count
 
 ### 7. Wards — Domain-Scoped Delegatable Agents

@@ -11,24 +11,34 @@ are scaffolding around it; this file is the why.
 
 ## Mission
 
-<!-- One sentence. What this project is, in language anyone could understand.
-     Example: "A monorepo template that helps small-to-medium teams ship
-     faster by giving Claude Code and other AI agents the structure they
-     need to be reliable contributors." -->
-
-<replace with one sentence>
+z-Bot is a desktop AI agent that gets durable work done — researching,
+building, writing, and remembering across sessions — by connecting any
+OpenAI-compatible model to a memory, knowledge, and tool layer the user owns.
 
 ## Scope
 
 What this project does:
 
-- <bullet>
-- <bullet>
+- Runs locally as the `zbotd` daemon (HTTP/WebSocket on `:18791`) with a
+  React dashboard and a CLI (`zbot`).
+- Connects to any OpenAI-compatible provider — local (Ollama) or cloud.
+- Durable memory on [engram](https://github.com/phanijapps/engram): facts,
+  procedures, episodes, beliefs, knowledge graph, and hierarchy, with
+  recency- and usage-aware recall.
+- Delegated subagents and wards (persistent project workspaces the agent
+  creates and navigates).
+- Skills (markdown playbooks) and MCP tools; external connectors.
+- Session checkpoints and restart recovery.
+- Experimental: same-session peer messaging between agents; A2A zbot
+  federation behind the `--a2a` flag.
 
 What this project does **not** do:
 
-- <bullet>
-- <bullet>
+- Hosted or multi-tenant SaaS.
+- Model training or fine-tuning.
+- Non-OpenAI-compatible model backends.
+- Executing untrusted code outside the user's own machine.
+- Autonomous action without a configured owner.
 
 The "does not" list is at least as important as the "does" list. It's how
 we — and AI agents working in the repo — know when a request is out of
@@ -37,42 +47,27 @@ either list, that's a signal to refine this section, not to drift.
 
 ## Principles
 
-The values that resolve ties when reasonable people disagree. Five to
-seven, no more.
+The values that resolve ties when reasonable people disagree.
 
-1. **<principle>.** <one-sentence elaboration with a concrete example of
-   how we've applied it.>
-2. **<principle>.** ...
-3. **<principle>.** ...
-4. **<principle>.** ...
-5. **<principle>.** ...
+1. **Evidence over opinion.** Production traces and golden-set floors
+   decide. The tool diet deleted five zero-usage tools because traces said
+   so; every recall change must hold the golden recall floors
+   (30/30 presence, corrections 5/5) before it merges.
+2. **One engine, no duplicates.** Persistence and retrieval piggyback on
+   engram; when zbot and a dependency implement the same concept, zbot's
+   copy dies. The sqlite store layer (~17K lines) was retired this way.
+3. **No dead code survives.** Deletions are usage-audited (rg ground
+   truth), never assumed — and nothing still used gets deleted.
+4. **Typed boundaries.** Traits and typed errors at every seam —
+   `StoreError` at the persistence boundary, `ToolCapability` policy at
+   the tool boundary. Stringly interfaces don't ship.
+5. **Behavior is proven, not claimed.** Golden recall set, conformance
+   suites, and characterized-inventory tests back every migration wave;
+   a refactor lands with its proof attached.
 
 ## What's NOT in this charter
 
-To keep this file from becoming everything-and-the-kitchen-sink:
-
-- **Decision history** lives in [`adr/`](adr/). The charter is what we
-  believe; ADRs are the choices we made because of those beliefs.
-- **Current product state** lives in [`product/`](product/). The charter
-  is direction; product/ is where we are.
-- **Current architecture state** lives in [`architecture/`](architecture/).
-- **Conventions for how we work** live in [`CONVENTIONS.md`](CONVENTIONS.md).
-- **Governance** (roles, decision-making processes, voting) lives in
-  [`GOVERNANCE.md`](GOVERNANCE.md) if and when the project is large
-  enough to need it. Most small/medium projects don't — a single
-  maintainer or small group operating by consensus is fine, and forcing
-  governance ceremony on a project that doesn't need it produces theater,
-  not clarity.
-
-## When to revise
-
-Revise this charter when:
-
-- The mission has actually changed (rare — usually means a fork).
-- The scope has shifted enough that PRs are routinely landing for things
-  the current scope doesn't cover.
-- A principle has stopped resolving ties — it's being ignored, or it
-  contradicts another principle in ways we haven't acknowledged.
-
-Revise via RFC. Editing the charter directly without discussion is the
-single fastest way to lose the trust this document is meant to build.
+- Implementation choices (Rust, Axum, SQLite) — see
+  [`architecture/`](architecture/).
+- Process (how to contribute, PR rules) — see [`CONVENTIONS.md`](CONVENTIONS.md).
+- Direction and sequencing — see [`product/roadmap.md`](product/roadmap.md).

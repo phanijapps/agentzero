@@ -23,39 +23,50 @@
 │  │                         GATEWAY                                  │    │
 │  │  ┌──────────────────────────┐   ┌─────────────┐                  │    │
 │  │  │   HTTP + WebSocket       │   │   Static    │                  │    │
-│  │  │   :18791                 │   │   Files     │                  │    │
-│  │  │   (Axum + axum-ws)       │   │  (tower)    │                  │    │
-│  │  │   `/ws` upgrade route    │   │             │                  │    │
-│  │  └──────────────┬───────────┘   └─────────────┘                  │    │
-│  │                 │                                                 │    │
-│  │         ┌────────┴────────┐                                      │    │
-│  │         │    Event Bus    │ ◄─── Broadcast streaming events      │    │
-│  │         └────────┬────────┘                                      │    │
-│  └──────────────────┼───────────────────────────────────────────────┘    │
+│  │  │   :18791  (/ws)          │   │   Files     │                  │    │
+│  │  └──────────┬───────────────┘   └─────────────┘                  │    │
+│  │         AppState = 6 composed groups                              │    │
+│  │         stores · services · execution · transport · workers ·    │    │
+│  │         vault   (state/groups.rs; bootstrap builds, handlers      │    │
+│  │         read through group accessors)                             │    │
+│  │         tasks/ — a2a + durable agent tasks (gateway/src/tasks/)   │    │
+│  └──────────────────┼────────────────────────────────────────────┘    │
 │                     │                                                    │
 │  ┌──────────────────┴───────────────────────────────────────────────┐    │
-│  │                      AGENT RUNTIME                                │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │    │
-│  │  │  Executor   │  │ LLM Client  │  │    Tool     │              │    │
-│  │  │   (loop)    │──│  (per-task  │  │  Registry   │              │    │
-│  │  │  +stuck det │  │   routed)   │  │             │              │    │
-│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘              │    │
-│  │         │                │                │                     │    │
-│  │         │       ┌────────┴────────┐       │                     │    │
-│  │         └───────│  MCP / Plugins  │───────┘                     │    │
-│  │                 └─────────────────┘                             │    │
-│  │                                                                 │    │
-│  │  ┌──────────────────────────────────────────────────────────┐  │    │
-│  │  │           COGNITIVE SUBSTRATE                             │  │    │
-│  │  │ Wards (delegatable agents)  •  Ward Curator              │  │    │
-│  │  │ Memory Brain (facts, episodes, beliefs, procedures,      │  │    │
-│  │  │   knowledge graph, hierarchy, bi-temporal)               │  │    │
-│  │  │ Sleep-time pipeline (synth, beliefs, abstraction)        │  │    │
-│  │  │ Intent Analysis  •  Resource Indexer                     │  │    │
-│  │  │ Agent Pool (wait/kill/steer running subagents)           │  │    │
-│  │  └──────────────────────────────────────────────────────────┘  │    │
+│  │              AGENT RUNTIME (Rig — sole engine)                    │    │
+│  │  rig_adapter: engine loop + LLM clients + tool dispatch           │    │
+│  │  EngineHook / HookSet — ordered multi-slot extension points       │    │
+│  │  TurnSignal — pure stream-event mapping for the loop              │    │
+│  │  ProgressPolicy — turn budgets, complexity steering, structured   │    │
+│  │    failure feedback (repeat-call nudges), planning nudges         │    │
+│  └──────────────────┬───────────────────────────────────────────────┘    │
+│                     │                                                    │
+│  ┌──────────────────┴───────────────────────────────────────────────┐    │
+│  │           COGNITIVE SUBSTRATE                                     │    │
+│  │  Intent: router (trivial bypass + pinned-procedure match) →       │    │
+│  │    intent agent searching via MemorySearchTool → JSON contract    │    │
+│  │    (solution_path, complexity S/M/L/XL)   [middleware/intent/]    │    │
+│  │  Recall: unified — facts, procedures, wiki, graph, beliefs,       │    │
+│  │    episodes + avoid-list, fused by engram weighted RRF with       │    │
+│  │    recency decay + usage reinforcement (touch_facts)              │    │
+│  │  Memory store: engram adapter — semantic/lexical/temporal lanes   │    │
+│  │  Sleep-time consolidation behind engram ports (BeliefSynthesizer, │    │
+│  │    ContradictionDetector, HierarchyBuilder, extraction arms)      │    │
+│  │  Wards (persistent project workspaces) · Skills · MCP · Connectors│    │
 │  └──────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         STORES                                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  zbot-stores-traits + zbot-stores-domain  (contracts)                   │
+│  zbot-engram-adapter                      (the implementation)          │
+│  zbot-stores-conformance                  (cross-impl parity proof)     │
+│  zbot-runtime-sqlite + zbot-conversation  (execution persistence:       │
+│    conversations.db, checkpoints, traces)                                │
 └─────────────────────────────────────────────────────────────────────────┘
+
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -78,10 +89,11 @@
 │  │   │   └── OS.md                    #     Platform commands            │
 │  │   ├── agent-prompts/               #   Overridable prompt modules     │
 │  │   └── auth/mcp/                    #   OAuth pending state and tokens │
-│  ├── data/                            # SQLite databases                  │
-│  │   ├── conversations.db             #   Conversations, messages,       │
-│  │   │                                #   memory_facts, embedding_cache  │
-│  │   └── knowledge.db                 #   Knowledge graph + vec0 indexes │
+│  ├── data/                            # Databases                          │
+│  │   ├── conversations.db             #   Conversations, messages,         │
+│  │   │                                #   executions, checkpoints         │
+│  │   └── engram/                      #   Memory facts, KG, beliefs,       │
+│  │       └── engram_data.db           #   episodes, procedures (engram)    │
 │  ├── logs/                            # Daemon log files (when enabled)  │
 │  │   └── zbotd.YYYY-MM-DD.log         #   Rolling log files              │
 │  ├── agents/{name}/                   # Agent configurations             │
@@ -107,7 +119,7 @@
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Vault-path source of truth:** `gateway/gateway-services/src/paths.rs`. Startup creates only `config/`, `data/`, `logs/`, and `wards/`; other roots are created by their owning feature. Legacy filenames are copied forward at startup, never deleted, and canonical files win a conflict. Schema for `config/*.json` files lives in the consuming services (e.g. `gateway-services::SettingsService`, `gateway-cron::CronJobsStore`). System-wide skills also load from `~/.agents/skills/` outside the vault.
+> **Vault-path source of truth:** `runtime/agent-primitives/src/vault_paths.rs`. Startup creates only `config/`, `data/`, `logs/`, and `wards/`; other roots are created by their owning feature. Legacy filenames are copied forward at startup, never deleted, and canonical files win a conflict. Schema for `config/*.json` files lives in the consuming services (e.g. `gateway-services::SettingsService`, `gateway-cron::CronJobsStore`). System-wide skills also load from `~/.agents/skills/` outside the vault.
 >
 ### Layout migration and naming
 
@@ -135,7 +147,7 @@ explicit cleanup release.
 | HTTP Server | Axum | Async HTTP framework |
 | WebSocket | Axum WebSocket upgrade | Real-time streaming on `/ws` |
 | Async Runtime | tokio | Async I/O |
-| Database | SQLite (rusqlite + r2d2 pool) | Conversations, memory facts, embeddings (WAL mode) |
+| Database | SQLite (rusqlite + r2d2 pool) | Conversations/executions (WAL); memory + KG via the engram adapter |
 | Embeddings | fastembed (local ONNX) | Default: all-MiniLM-L6-v2 (384d), zero cost |
 | Serialization | serde + serde_json | JSON handling |
 | Logging | tracing + tracing-subscriber + tracing-appender | Structured logging with file rotation |
@@ -569,7 +581,7 @@ Wizard renders outside the app shell (no sidebar). State managed via `useReducer
 
 ## Memory Brain
 
-The memory layer is z-Bot's cognitive system. Full documentation: [components/memory-layer/overview.md](components/memory-layer/overview.md). Backlog: [components/memory-layer/backlog.md](components/memory-layer/backlog.md).
+The memory layer is z-Bot's cognitive system. Full reference: [components/memory-layer/spec.md](components/memory-layer/spec.md).
 
 ### Memory Loops
 
@@ -858,7 +870,7 @@ ROOT SESSION (parent_session_id = NULL)
 └── CHILD SESSION (parent_session_id = root session)
     ├── messages stream (ISOLATED — only subagent sees these)
     │   ├── user: "research X for the docx"
-    │   ├── assistant: [tool_calls: web_fetch]
+    │   ├── assistant: [tool_calls: shell]
     │   ├── tool: "fetched data..."
     │   └── assistant: "Found Y. Here's the summary."
     └── exec-{uuid} (root of child session)
@@ -1606,44 +1618,44 @@ CREATE INDEX idx_messages_session_created ON messages(session_id, created_at);
 
 ## Built-in Tools
 
-### Core Tools
+Tools are gated per actor by `ToolCapability` policy
+(`gateway/gateway-execution/src/invoke/policy.rs`); root gets the full set,
+delegated planners/executors get narrow sets. Current surface (verified
+against registrations and production traces):
 
-| Tool | Description | Permissions |
-|------|-------------|-------------|
-| `shell` | Primary execution — commands and scripts (file writes rejected — use write_file / edit_file) | Dangerous |
-| `write_file` | Create new files inside the active ward | Dangerous |
-| `edit_file` | Targeted find-and-replace edits on existing files | Dangerous |
-| `memory` | Persistent KV store + save_fact + recall + graph | Safe |
-| `ward` | Manage code wards (use, list, create, info) | Safe |
-| `update_plan` | Lightweight task checklist | Safe |
-| `set_session_title` | Set a human-readable session title | Safe |
-| `execution_graph` | DAG workflow engine for multi-step orchestration | Safe |
-| `list_skills` | List available skills | Safe |
-| `load_skill` | Load skill instructions | Safe |
-| `grep` | Search file contents | Safe |
+### File & execution
+| Tool | Description |
+|------|-------------|
+| `shell` | Run commands; subagent writes are blocked (use write_file/edit_file) |
+| `read` / `write_file` / `edit_file` | Ward-relative file I/O |
+| `update_plan` | Lightweight task plan the runtime tracks |
 
-### Action Tools (Always Enabled)
+### Memory & knowledge
+| Tool | Description |
+|------|-------------|
+| `memory_write` | The durable-fact writer |
+| `recall` | Unified retrieval — semantic, facts mode, bi-temporal `as_of`, exact-key ctx lookup |
+| `belief` | Belief-network reads (belief, contradictions) |
+| `goal` | Goal lifecycle |
+| `ingest` | Document ingestion into the knowledge graph |
+| `run_procedure` | Execute a learned procedure (with success/failure accounting) |
 
-| Tool | Description | Permissions |
-|------|-------------|-------------|
-| `respond` | Send response to user | Safe |
-| `delegate_to_agent` | Delegate task to subagent | Safe |
-| `list_agents` | List available agents | Safe |
+### Orchestration & UI
+| Tool | Description |
+|------|-------------|
+| `respond` | Final answer (ends the turn) |
+| `delegate_to_agent` | Spawn a subagent |
+| `lookup_capabilities` | Discover skills/agents |
+| `load_skill` | Load a skill's instructions |
+| `ward` | Ward lifecycle (use/create/info/lint/list/search) |
+| `present_surface` | Render UI work-surfaces |
+| `multimodal_analyze` | Analyze images/URLs |
+| `connector_resource` / `connector_invoke` | External connectors (read/invoke) |
+| Agent-control (`handoff_to_agent`, `message_agent`, `steer_agent`, `kill_agent`, `reply_to_agent`, `list_session_agents`) | Hidden by default — durable-peer surfaces, enabled per deployment |
+| A2A (`delegate_to_zbot`, `list_zbots`) | Registered only under `--a2a` |
 
-### Optional Tools (Configurable)
-
-| Tool | Description | Permissions |
-|------|-------------|-------------|
-| `read` | Read file contents | Safe |
-| `write` | Write content to file | Moderate |
-| `edit` | Edit file contents | Moderate |
-| `glob` | Find files by pattern | Safe |
-| `todos` | Heavyweight task persistence (SQLite) | Safe |
-| `python` | Execute Python code | Dangerous |
-| `web_fetch` | Fetch web content | Moderate |
-| `ui_tools` | UI manipulation tools | Moderate |
-| `create_agent` | Create new agents | Moderate |
-| `introspection` | Agent introspection (list_tools, list_mcps) | Safe |
+MCP tools from `config/mcp-servers.json` resolve at session build and join
+the registry namespaced per server.
 
 ## Resource Indexing System
 
@@ -1653,8 +1665,8 @@ Skills and agents are indexed for semantic search and relationship tracking. The
 
 | Storage | Purpose | Persistence |
 |---------|---------|-------------|
-| **Memory Fact Store** | Semantic search (BM25 + vector embeddings) | SQLite + FTS5 + embeddings |
-| **Knowledge Graph** | Entity/relationship storage | SQLite via GraphStorage |
+| **Memory Fact Store** | Semantic + lexical + temporal lanes, engram weighted-RRF fusion | engram adapter |
+| **Knowledge Graph** | Entity/relationship storage | engram adapter (kg sidecar tables) |
 | **Context State Cache** | Fast lookup during session | Per-session (index:skills, index:agents) |
 
 ### Indexing Flow
@@ -1732,76 +1744,25 @@ When `load_skill` or agent loading fails:
 
 ## Intent Analysis System
 
-Intent analysis is an **autonomous pre-execution middleware** — not a tool agents call. It indexes resources into `memory_facts` with local embeddings (fastembed), performs semantic search, sends only top-N relevant resources to a single LLM call, and injects the result as a `## Intent Analysis` section into the system prompt. See `docs/architecture/components/intent-analysis/overview.md` for full documentation.
+Intent analysis is **pre-execution middleware** for root-agent sessions. The
+current design (post-2026-09 rewrite, `gateway/gateway-execution/src/middleware/intent/`)
+is agent-driven — no resource pre-fetching into the prompt:
 
-Implementation: `gateway/gateway-execution/src/middleware/intent_analysis.rs`
+1. **Router** (`router.rs`) — greetings and non-task messages bypass entirely
+   (no LLM call); a deterministic procedure match pins the run; otherwise it
+   calls the intent agent.
+2. **Intent agent** (`agent.rs`) — a small agent with `MemorySearchTool` that
+   searches indexed resources (skills, agents, wards, procedures) itself and
+   reasons over the request.
+3. **JSON contract** (`contract.rs`) — the agent outputs plain JSON parsed
+   with serde (never `response_format`, which breaks on Ollama):
+   `primary_intent`, `hidden_intents`, `solution_path` (seeds the planner),
+   `complexity` (S/M/L/XL — sets iteration budgets), recommendations, ward
+   recommendation, execution strategy.
+4. **Injection** (`inject.rs`) — the analysis renders into a `## Task Analysis`
+   system-prompt section; events emit for the UI; failures are non-fatal.
 
-### Architecture
-
-| Aspect | Design |
-|--------|--------|
-| **Trigger** | Middleware, before root agent's first LLM call |
-| **Scope** | Root agent only — subagents and continuations skip it |
-| **Resource Discovery** | Autonomous: indexes skills/agents/wards into `memory_facts`, searches semantically |
-| **LLM Input** | Top-N relevant resources only (not full catalog) |
-| **Filtering** | Score threshold (0.15), per-category caps (8 skills, 5 agents, 5 wards) |
-| **Side Effects** | None — injects guidance text, does not load skills or delegate |
-| **Agent Visibility** | Sees `## Intent Analysis` section in system prompt from turn one |
-
-### Flow
-
-```
-User Message
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Step 1: Index resources (idempotent upsert)                 │
-│   Skills → memory_facts (category:"skill")                  │
-│   Agents → memory_facts (category:"agent")                  │
-│   Wards  → memory_facts (category:"ward", reads AGENTS.md) │
-└─────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Step 2: Semantic search (recall_facts with fastembed)        │
-│   Fetch top 50, filter by score ≥ 0.15                      │
-│   Cap: 8 skills, 5 agents, 5 wards                          │
-└─────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Step 3: LLM call with top-N resources                       │
-│   Output: IntentAnalysis { primary_intent, hidden_intents,  │
-│     recommended_skills, recommended_agents,                  │
-│     ward_recommendation { action, ward_name, subdirectory,  │
-│                           structure, reason },               │
-│     execution_strategy { approach, graph, explanation },     │
-│     rewritten_prompt }                                       │
-└─────────────────────────────────────────────────────────────┘
-     │
-     (parse failed? skip enrichment, continue with base prompt)
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ inject_intent_context()                                     │
-│  Appends "## Intent Analysis" section to system prompt      │
-└─────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Executor starts with enriched system prompt                 │
-│  - No conditional dispatch code in runner                   │
-│  - LLM reads the section and decides how to proceed         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Behavioral Contract
-
-- Enrichment is automatic and transparent — agents do not call `analyze_intent`
-- Resource discovery is autonomous — indexes into `memory_facts`, searches via embeddings
-- Hidden intents are actionable instructions, not category labels
-- Runner contains no conditional logic based on analysis output — LLM decides
-- Recommended skills/agents are guidance; agent retains full autonomy
-- Ward recommendation includes directory structure for domain-level workspaces
+See `docs/architecture/components/intent-analysis/overview.md`.
 
 ## System Prompt Architecture
 

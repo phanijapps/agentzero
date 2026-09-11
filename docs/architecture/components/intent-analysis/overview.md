@@ -2,43 +2,61 @@
 
 ## What It Is
 
-Intent analysis is a **pre-execution middleware** that runs automatically before the root agent's first LLM call. It analyzes the user's message to determine intent, recommend resources, and plan execution strategy. The result is:
+Intent analysis is **pre-execution middleware** for root-agent sessions. It
+runs before the first LLM call, decides the shape of the task, and injects a
+`## Task Analysis` section into the system prompt. The result is:
+
 - **Injected into the agent's system prompt** via `format_intent_injection()` so the agent follows ward/skill/strategy recommendations
 - **Emitted as WebSocket events** for the UI to display
 - **Persisted to execution logs** for session replay
 
+Source: `gateway/gateway-execution/src/middleware/intent/` (agent.rs,
+contract.rs, inject.rs, prompt.rs, router.rs).
+
 ## When It Runs
 
-- Only for root agent invocations (`is_root = true`)
-- Only when a fact store is available (memory_repo + embedding_client configured)
-- **Only on the first turn of a session** — skipped on continuation turns via `has_intent_log()` gate
-- Runs inside `create_executor()` in `runner.rs`, before the executor is built
+- Only for root agent invocations
+- Runs in the invoke bootstrap, before the executor is built
 
-## What It Does
+## What It Does (current design — agent-driven, post-2026-09 rewrite)
 
-1. **Index Resources** — Upserts skills, agents, and wards into `memory_facts` (idempotent, no LLM call)
-2. **Semantic Search** — Finds top-N relevant resources for the user's message using local embeddings
-3. **LLM Analysis** — Sends user message + relevant resources to LLM, gets structured JSON back
-4. **Emit Events** — Publishes `IntentAnalysisStarted` and `IntentAnalysisComplete` WebSocket events
-5. **Inject into Agent** — Appends `## Intent Analysis` section to `agent.instructions` via `format_intent_injection()`
-6. **Persist** — Logs full analysis to `execution_logs` with `LogCategory::Intent` for session replay
+1. **Route** (`router.rs`) — greetings and non-task messages bypass the LLM
+   entirely; a deterministic procedure match pins `run_procedure` directly;
+   everything else goes to the intent agent.
+2. **Intent agent** (`agent.rs`) — a small tool-carrying agent whose model
+   searches indexed resources itself via `MemorySearchTool` (skills, agents,
+   wards, procedures), reasons over the request, and writes its conclusion.
+3. **JSON contract** (`contract.rs`) — the agent's text output is parsed with
+   `serde_json::from_str`. Fields: `primary_intent`, `hidden_intents`,
+   `solution_path` (high-level steps that seed the planner), `complexity`
+   (S/M/L/XL — sets iteration budget), `recommended_skills`/`agents`/
+   `procedures`/`capabilities`, `ward_recommendation`, `execution_strategy`.
+   No `response_format` is used — structured-output modes break on Ollama.
+4. **Inject** (`inject.rs`) — renders the `## Task Analysis` prompt section;
+   pinned procedures get a "call run_procedure directly" instruction.
+5. **Emit + persist** — `IntentAnalysisStarted`/`Complete` events for the UI;
+   the analysis logs to `execution_logs` for replay.
 
 ## What It Does NOT Do
 
-- Does NOT auto-load skills or auto-delegate to agents
-- Does NOT run for subagents or continuation turns
+- Does NOT pre-fetch resources into the prompt (the agent searches)
+- Does NOT auto-load skills or auto-delegate
+- Does NOT run for subagents
 - Does NOT block execution on failure (all errors are non-fatal)
 
 ## Key Design Decisions
 
-- **Session-aware gate**: Uses `has_intent_log(execution_id)` to check if intent was already analyzed for this session. Prevents redundant LLM calls on follow-up messages.
-- **OnSessionReady callback**: The runner accepts an optional async callback that fires after session creation but before events emit. The WS handler uses this to subscribe the client before `IntentAnalysisStarted` fires, fixing a race condition where new sessions missed early events.
-- **Lean prompt**: The LLM prompt requests only essential fields. `rewritten_prompt`, `structure` map, and `mermaid` diagram were removed to reduce token usage and parse failures. Approach simplified to `simple | graph` (no `tracked`).
-- **No JSON repair**: Truncated JSON repair was removed. On parse failure, a clean fallback event is emitted instead.
+- **Plain-JSON parse over response_format**: `json_schema` response formats
+  produce empty responses on Ollama; the agent writes JSON as text and serde
+  parses it.
+- **Trivial bypass**: one-word greetings skip the LLM call entirely.
+- **Procedure pinning**: a deterministic name/trigger match short-circuits
+  planning — the model is told to run the procedure as-is.
 
 ## Related Docs
 
-- [data-flow.md](./data-flow.md) — Complete event and data pipeline
-- [types.md](./types.md) — All Rust and TypeScript types
-- [error-handling.md](./error-handling.md) — Fallbacks and degradation
-- [files.md](./files.md) — Every file involved with line numbers
+- [types.md](types.md) — Rust + TS types, field mapping (verify against
+  `contract.rs`; field set evolved with the rewrite)
+- [error-handling.md](error-handling.md) — degradation hierarchy
+- [files.md](files.md) — file reference
+- Contract source of truth: `gateway/gateway-execution/src/middleware/intent/contract.rs`

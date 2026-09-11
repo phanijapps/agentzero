@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Date:** 2026-05-24
-**Status:** Implementation-grade. This document is framework-agnostic; concrete code references point to the z-Bot Rust implementation as a canonical reference, but every interface, algorithm, and data structure described here can be implemented in any language with a SQL store (or equivalent), a vector index (or ANN service), a lexical search engine (BM25 or equivalent), and an LLM client.
+**Status:** Implementation-grade as a design reference. **Where it now lives (2026-09):** persistence and retrieval are implemented by the `zbot-engram-adapter` crate on [engram](https://github.com/phanijapps/engram) — semantic/lexical/temporal lanes fused by engram's weighted reciprocal-rank fusion with recency decay and usage reinforcement; sleep-time consolidation runs behind engram's port slots (BeliefSynthesizer, ContradictionDetector, HierarchyBuilder). This spec remains the conceptual map of the layers; code references below predate the engram migration. This document is framework-agnostic; concrete code references point to the z-Bot Rust implementation as a canonical reference, but every interface, algorithm, and data structure described here can be implemented in any language with a SQL store (or equivalent), a vector index (or ANN service), a lexical search engine (BM25 or equivalent), and an LLM client.
 
 ---
 

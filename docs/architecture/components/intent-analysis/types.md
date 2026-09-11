@@ -2,7 +2,7 @@
 
 ## Backend Types (Rust)
 
-All defined in `gateway/gateway-execution/src/middleware/intent_analysis.rs`.
+All defined in `gateway/gateway-execution/src/middleware/intent/contract.rs` (the 2026-09 rewrite split the middleware into router/agent/contract/inject/prompt).
 
 ### IntentAnalysis
 
@@ -17,7 +17,9 @@ pub struct IntentAnalysis {
     pub ward_recommendation: WardRecommendation,
     pub execution_strategy: ExecutionStrategy,
     #[serde(default)]
-    pub rewritten_prompt: String,  // Kept for backward compat, no longer requested from LLM
+    pub solution_path: Vec<String>,  // High-level steps; seeds the planner
+    #[serde(default)]
+    pub complexity: Option<String>,  // S / M / L / XL — sets iteration budget
 }
 ```
 

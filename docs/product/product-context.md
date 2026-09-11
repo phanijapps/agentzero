@@ -43,7 +43,7 @@ The core insight: most AI tools are designed around **control** (you tell it exa
 2. **Agent analyzes intent** — Determines complexity, selects specialist agents, identifies relevant skills and wards
 3. **Agent plans** — For non-trivial tasks, creates a structured plan before executing
 4. **Agent delegates** — Root orchestrator dispatches tasks to specialist subagents (planner, coder, researcher, tutor)
-5. **Subagents execute** — Each subagent works autonomously with tools (shell, file editing, web search, memory)
+5. **Subagents execute** — Each subagent works autonomously with tools (shell, file editing, memory)
 6. **Agents iterate** — If tests fail, the agent fixes and retries. Complexity budgets prevent infinite loops.
 7. **Results collected** — Subagent results flow back to root via callbacks. Root can delegate further or respond.
 8. **Memory distilled** — After session completes, facts, entities, and relationships are extracted into persistent memory

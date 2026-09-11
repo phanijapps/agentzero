@@ -20,20 +20,6 @@ pub const MAX_FIELD_KEY_BYTES: usize = 64;
 pub const MAX_RENDERED_STRING_BYTES: usize = 4_096;
 pub const MAX_BOUND_DEPTH: usize = 32;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct A2uiCapabilities {
-    pub version: String,
-    #[serde(default)]
-    pub catalogs: BTreeSet<String>,
-}
-
-impl A2uiCapabilities {
-    #[must_use]
-    pub fn supports(&self, catalog_id: &str) -> bool {
-        self.catalogs.contains(catalog_id)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct WorkSurface {
     pub surface_id: String,

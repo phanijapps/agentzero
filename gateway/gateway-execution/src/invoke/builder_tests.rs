@@ -1873,7 +1873,6 @@ fn catalog_for_actor(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
     )
 }
 
-
 fn catalog_for_actor_with_join_deps(actor_kind: RuntimeActorKind) -> ContextCapabilityCatalog {
     let dir = tempfile::tempdir().expect("tempdir");
     let paths = Arc::new(agent_primitives::vault_paths::VaultPaths::new(

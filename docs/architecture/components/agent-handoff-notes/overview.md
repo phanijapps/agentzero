@@ -45,7 +45,7 @@ tool access by design.
   database schema.
 - Not federation. Cross-daemon, role-addressed, or enterprise peer messaging
   remains parked in
-  `docs/architecture/future-state/2026-05-11-pattern4-peer-messaging-design.md`.
+  `docs/rfc/0020-a2a-zbot-federation.md` (federation) and the durable peer-messaging implementation in `gateway/gateway-execution/src/peer_messaging.rs`.
 
 ## Related Components
 

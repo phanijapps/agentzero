@@ -641,7 +641,7 @@ For reliable cross-platform builds, use GitHub Actions runners for each OS rathe
 
 ## Version Scheme
 
-Calendar Versioning (`YYYY.M.D`, no zero-padding) — single source of truth in `Cargo.toml [workspace.package].version`. See `docs/architecture/future-state/2026-05-03-versioning-and-rename-plan.md` for rationale.
+Calendar Versioning (`YYYY.M.D`, no zero-padding) — single source of truth in `Cargo.toml [workspace.package].version`. (Rationale: single-line `v` prefix, no zero-padding, matching release PRs #102/#106.)
 
 - **YYYY**: Four-digit year
 - **M**: Month, no leading zero (`5`, not `05`)

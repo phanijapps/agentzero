@@ -89,6 +89,44 @@ impl EngramSidecarStores {
         )
     }
 
+    /// Ids+names of active entities stored WITHOUT a name embedding —
+    /// the backfill worklist. The graph ANN recall lane and the duplicate
+    /// compactor are dark over these rows.
+    pub fn entities_missing_name_embeddings(
+        &self,
+        limit: u64,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, name FROM kg_entities \
+                 WHERE archived = 0 AND embedding_json IS NULL \
+                 ORDER BY last_seen_at DESC LIMIT ?1",
+            )
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let rows = statement
+            .query_map(params![limit], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::Backend(error.to_string()))
+    }
+
+    /// Write a name embedding for an existing entity (backfill path).
+    pub fn set_entity_name_embedding(&self, id: &str, embedding: &[f32]) -> Result<(), StoreError> {
+        let json =
+            serde_json::to_string(embedding).map_err(|error| StoreError::Backend(error.to_string()))?;
+        let identity = encode_identity(&self.embedding_identity);
+        self.connection()?
+            .execute(
+                "UPDATE kg_entities SET embedding_json = ?2, embedding_identity_json = ?3 WHERE id = ?1",
+                params![id, json, identity],
+            )
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        Ok(())
+    }
+
     fn open_path(
         path: &Path,
         embedding_identity: EmbeddingQueryIdentity,

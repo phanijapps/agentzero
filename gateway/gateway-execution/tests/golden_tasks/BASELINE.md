@@ -15,6 +15,20 @@ Run: `cargo test -p gateway-execution --features test-stubs --test golden_tasks 
 | `procedure_contract` | seeded procedure with declared parameters executes via `run_procedure` with supplied args; `{args.X}` interpolation end-to-end (shell stdout in `all_steps`); success/failure counters increment | sess-05ba0fd4 (procedure recalled without its Parameters contract → bare call → arg-validation error → turns of manual recovery) |
 | `memory_persistence` | `memory_write` fact durable in the store with the written shape (asserted via the `/api/memory` list path — the harness wires no embedding client, so semantic recall degrades by design) | the memory-into-the-void class (pre-consolidation KV writes nothing read) |
 | `simple_fast_path` | trivial prompt → direct respond; no delegation events; no ward directories created | regression guard for the fast-path routing (graph-path creep) |
+| `parallel_join` | two `parallel: true` delegations back-to-back: **both accepted** (second never hits the per-session claim rejection), both child sessions spawn with correct agents and parent linkage, **root resumes only after BOTH children complete** (continuation-watcher join, asserted by event-arrival order), final respond reached, no lookup_capabilities | silent per-session claim regression (parallel delegations suddenly queued/blocked); join/resume semantics drift |
+
+**Parallel semantics note**: the harness runs `max_parallel_agents: 1`, so
+the second child queues at the **dispatcher semaphore** (then runs) — never
+at the per-session delegation claim. A higher semaphore yields true
+concurrency; both orderings satisfy this scenario, which pins acceptance,
+completion, and join — not interleaving.
+
+**Layered coverage map for `parallel`**: tool layer —
+`delegate.rs::parallel_delegates_are_not_blocked_by_claim` (unit); task
+layer — `golden_task_parallel_join` (accept + join + resume); the flag's
+plumbing (dispatcher semaphore routing) — covered transitively by the
+scenario's acceptance assertions. Earlier research flagged the field
+unread (spawn.rs-only grep) — false positive; dispatcher reads it.
 
 ## Harness notes
 

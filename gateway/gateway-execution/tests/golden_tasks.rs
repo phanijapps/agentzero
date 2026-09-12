@@ -234,6 +234,7 @@ async fn build_harness(provider: ScriptedProvider) -> TaskHarness {
     for (id, instructions) in [
         ("planner-agent", "PLANNERMARK plan the work"),
         ("builder-agent", "BUILDERMARK build the work"),
+        ("research-agent", "RESEARCHMARK research the work"),
     ] {
         agent_service
             .create(Agent {
@@ -706,6 +707,155 @@ async fn golden_task_simple_fast_path() {
     // No ward directory created.
     let wards = std::fs::read_dir(harness.paths.wards_dir()).unwrap();
     assert_eq!(wards.count(), 0, "fast path must not create wards");
+}
+
+/// Scenario 5 — parallel delegation join: two `parallel: true` children
+/// fire back-to-back without per-session claim blocking, and the root
+/// resumes only after BOTH complete (the continuation-watcher join).
+///
+/// Harness semaphore is `max_parallel_agents: 1`, so the second child
+/// queues at the DISPATCHER (semaphore) — never at the per-session
+/// delegation claim. Both orderings (true-concurrent with a higher
+/// semaphore, dispatcher-queued with 1) satisfy this scenario; what it
+/// pins is: both accepted, both complete, root joins, no claim block.
+#[tokio::test]
+#[ignore = "full scripted session; use --ignored"]
+async fn golden_task_parallel_join() {
+    let mut scripts = HashMap::new();
+    scripts.insert(
+        "__root__",
+        vec![
+            turn(
+                "delegate_to_agent",
+                serde_json::json!({"agent_id": "builder-agent", "task": "build it", "wait_for_result": true, "parallel": true}),
+            ),
+            turn(
+                "delegate_to_agent",
+                serde_json::json!({"agent_id": "research-agent", "task": "research it", "wait_for_result": true, "parallel": true}),
+            ),
+            turn("respond", serde_json::json!({"message": "done after both"})),
+        ],
+    );
+    scripts.insert(
+        "BUILDERMARK",
+        vec![turn("respond", serde_json::json!({"message": "built"}))],
+    );
+    scripts.insert(
+        "RESEARCHMARK",
+        vec![turn(
+            "respond",
+            serde_json::json!({"message": "researched"}),
+        )],
+    );
+    let provider = ScriptedProvider::spawn(scripts).await;
+    let harness = build_harness(provider).await;
+
+    // Event ordering witness: subscribe BEFORE invoke; arrival order in a
+    // single subscription records the join semantics (root completion must
+    // arrive after both child completions).
+    let mut ordering = harness.event_bus.subscribe_all();
+    let session_id = harness
+        .run_to_completion("build and research in parallel")
+        .await;
+
+    // (a) Both children spawned: two distinct child sessions with the
+    // right agents, linked to the parent session.
+    let child_sessions = child_sessions_of(&harness, &session_id);
+    let builder = child_sessions
+        .iter()
+        .find(|(agent, _)| agent == "builder-agent")
+        .expect("builder child session");
+    let research = child_sessions
+        .iter()
+        .find(|(agent, _)| agent == "research-agent")
+        .expect("research child session");
+    assert_ne!(builder.1, research.1, "children are distinct sessions");
+
+    // (b) THE claim-bypass regression: the second parallel delegation must
+    // be accepted — its tool result confirms the delegation, never the
+    // per-session claim rejection ("You already have an active delegation").
+    let messages = harness
+        .state
+        .get_session_messages(
+            &session_id,
+            &execution_state::handlers::SessionMessagesQuery::default(),
+        )
+        .unwrap();
+    let tape: String = messages
+        .iter()
+        .map(|message| message.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !tape.contains("You already have an active delegation"),
+        "parallel delegation must bypass the per-session claim — tape={tape}"
+    );
+    assert!(
+        tape.contains("Task delegated to research-agent"),
+        "the second (parallel) delegation must be accepted; tape={tape}"
+    );
+
+    // (c) The join: root completion arrives AFTER both children complete.
+    // Drain the ordering witness; indices prove the continuation watcher
+    // resumed the root only once every child finished.
+    #[derive(Default)]
+    struct Seen {
+        builder_completed: Option<usize>,
+        research_completed: Option<usize>,
+        root_completed: Option<usize>,
+        delegations: Vec<String>,
+    }
+    let mut seen = Seen::default();
+    let mut index = 0usize;
+    while let Ok(event) = ordering.try_recv() {
+        match event {
+            GatewayEvent::AgentCompleted { agent_id, .. } => {
+                if agent_id == "builder-agent" {
+                    seen.builder_completed = Some(index);
+                } else if agent_id == "research-agent" {
+                    seen.research_completed = Some(index);
+                } else if agent_id == "root" {
+                    seen.root_completed = Some(index);
+                }
+            }
+            GatewayEvent::DelegationStarted { child_agent_id, .. } => {
+                seen.delegations.push(child_agent_id);
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    assert!(
+        seen.delegations
+            .iter()
+            .any(|agent| agent == "builder-agent")
+            && seen
+                .delegations
+                .iter()
+                .any(|agent| agent == "research-agent"),
+        "both delegations started: {:?}",
+        seen.delegations
+    );
+    let (builder_at, research_at, root_at) = (
+        seen.builder_completed.expect("builder completed event"),
+        seen.research_completed.expect("research completed event"),
+        seen.root_completed.expect("root completed event"),
+    );
+    assert!(
+        root_at > builder_at && root_at > research_at,
+        "root must resume only after BOTH children complete \
+         (builder@{builder_at}, research@{research_at}, root@{root_at})"
+    );
+
+    // (d) The final respond reached and no discovery groping.
+    assert!(
+        tape.contains("done after both"),
+        "root responded after the join"
+    );
+    assert!(
+        !tape.contains("lookup_capabilities"),
+        "no lookup_capabilities anywhere"
+    );
 }
 
 // ---------------------------------------------------------------------------

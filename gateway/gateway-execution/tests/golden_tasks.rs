@@ -187,6 +187,29 @@ async fn write_sse(stream: &mut tokio::net::TcpStream, body: &str) {
 // Harness
 // ---------------------------------------------------------------------------
 
+/// Recording distiller stub — the seam (gateway_execution::distill)
+/// lets the harness observe distillation calls without the concrete
+/// SessionDistiller (which needs a real provider + transcript loader).
+#[derive(Default, Clone)]
+struct DistillerStub {
+    calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+#[async_trait::async_trait]
+impl gateway_execution::distill::Distill for DistillerStub {
+    async fn distill(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<usize, distillation::DistillationError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), agent_id.to_string()));
+        Ok(0)
+    }
+}
+
 struct TaskHarness {
     _temp: tempfile::TempDir,
     runner: gateway_execution::ExecutionRunner,
@@ -196,6 +219,7 @@ struct TaskHarness {
     bodies: Arc<tokio::sync::Mutex<Vec<String>>>,
     fact_store: Arc<dyn MemoryFactStore>,
     procedure_store: Arc<dyn ProcedureStore>,
+    distill_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 
 async fn build_harness(provider: ScriptedProvider) -> TaskHarness {
@@ -291,6 +315,7 @@ async fn build_harness(provider: ScriptedProvider) -> TaskHarness {
     );
 
     let event_bus = Arc::new(EventBus::new());
+    let distiller_stub_calls: Arc<std::sync::Mutex<Vec<(String, String)>>> = Arc::default();
     let runner =
         gateway_execution::ExecutionRunner::with_config(gateway_execution::ExecutionRunnerConfig {
             event_bus: event_bus.clone(),
@@ -307,7 +332,9 @@ async fn build_harness(provider: ScriptedProvider) -> TaskHarness {
             checkpoints,
             connector_registry: None,
             memory_store: Some(fact_store.clone()),
-            distiller: None,
+            distiller: Some(Arc::new(DistillerStub {
+                calls: distiller_stub_calls.clone(),
+            })),
             handoff_writer: None,
             memory_recall: None,
             peer_messages: Some(peer_messages),
@@ -328,6 +355,7 @@ async fn build_harness(provider: ScriptedProvider) -> TaskHarness {
         bodies: provider.bodies,
         fact_store,
         procedure_store,
+        distill_calls: distiller_stub_calls,
     }
 }
 
@@ -675,6 +703,18 @@ async fn golden_task_memory_persistence() {
                 .is_some_and(|c| c.contains("golden-task fact persisted"))
     });
     assert!(hit, "memory_write fact must be durable: {rows:?}");
+
+    // Distillation seam: the completed session reaches the distiller.
+    // Root completion fires execution_stream's post-completion distill;
+    // the stub records (session_id, agent_id) — assert the session was
+    // offered for distillation with the root agent id.
+    let calls = harness.distill_calls.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .any(|(sid, aid)| sid == &session_id && aid == "root"),
+        "root completion must dispatch a distill call; got {calls:?}"
+    );
 }
 
 /// Scenario 4 — simple fast path: no delegation, no ward, direct respond.

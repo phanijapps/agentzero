@@ -89,7 +89,7 @@ pub struct ExecutionRunnerConfig {
     pub connector_registry: Option<Arc<gateway_connectors::ConnectorRegistry>>,
     /// Trait-routed memory store — wired.
     pub memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
-    pub distiller: Option<Arc<distillation::SessionDistiller>>,
+    pub distiller: Option<Arc<dyn crate::distill::Distill>>,
     pub handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,

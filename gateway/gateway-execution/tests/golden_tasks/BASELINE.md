@@ -66,3 +66,13 @@ unread (spawn.rs-only grep) — false positive; dispatcher reads it.
    messages tape (`get_session_messages`), captured request bodies
    (`harness.bodies`), store contents, event-bus events.
 4. Map it to the live bug it guards in the table above.
+
+## Distiller seam (added)
+
+`gateway_execution::distill::Distill` trait extracts the runner's single
+distillation operation; the concrete `SessionDistiller` implements it by
+delegation. The harness now wires a recording `DistillerStub` —
+`memory_persistence` asserts the root completion dispatches a distill call
+`(session_id, "root")`. Captured behavior: root completion fires exactly one
+root distill; per-wave subagent distills (spawn.rs) fire per child completion
+when children run (visible in ward_then_plan scenario logs).

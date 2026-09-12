@@ -161,7 +161,7 @@ impl RuntimeService {
             a2a_delegation,
             connector_registry,
             memory_store,
-            distiller,
+            distiller: gateway_execution::distill::distill_sink(distiller),
             handoff_writer,
             memory_recall,
             bridge_registry,

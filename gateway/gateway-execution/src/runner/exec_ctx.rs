@@ -48,7 +48,7 @@ pub struct ExecCtx {
     pub bridge_outbox: Option<Arc<gateway_bridge::OutboxRepository>>,
     pub memory_store: Option<Arc<dyn zbot_stores_traits::MemoryFactStore>>,
     pub embedding_client: Option<Arc<dyn agent_runtime::llm::embedding::EmbeddingClient>>,
-    pub distiller: Option<Arc<distillation::SessionDistiller>>,
+    pub distiller: Option<Arc<dyn crate::distill::Distill>>,
     pub handoff_writer: Option<Arc<crate::sleep::HandoffWriter>>,
     pub memory_recall: Option<Arc<crate::recall::MemoryRecall>>,
     pub peer_messages: Option<Arc<crate::peer_messaging::DurablePeerMessageService>>,

@@ -87,8 +87,30 @@ async fn match_procedure(
         .map(|(name, ward_id)| PinnedProcedure { name, ward_id })
 }
 
-fn fallback() -> IntentAnalysis {
-    trivial_analysis()
+/// Labeled fallback for a failed/empty intent-agent result.
+///
+/// The previous fallback returned trivial_analysis() verbatim: an EMPTY
+/// primary_intent logged downstream as "Intent analysis succeeded", and a
+/// ward recommendation of "general" that bootstrap's filesystem ground
+/// truth could "correct" into CREATE — active misdirection for a path that
+/// knows nothing (observed: sess-66582eff). The labeled fallback seeds the
+/// intent from the message head and marks the explanation so logs and the
+/// injection surface can distinguish it from a real analysis.
+fn fallback(user_message: &str) -> IntentAnalysis {
+    let mut analysis = trivial_analysis();
+    let seed: String = user_message
+        .trim()
+        .chars()
+        .take(60)
+        .collect::<String>()
+        .lines()
+        .next()
+        .unwrap_or("user request")
+        .to_string();
+    analysis.primary_intent = seed;
+    analysis.execution_strategy.explanation =
+        "intent agent unavailable or returned empty — fallback analysis".to_string();
+    analysis
 }
 
 /// Classify a user request. The agent searches and decides simple vs graph.
@@ -107,7 +129,7 @@ pub async fn analyze_intent(deps: &IntentAgentDeps, user_message: &str) -> Inten
 
     match run_intent_agent(deps, user_message).await {
         Some(analysis) => analysis,
-        None => fallback(),
+        None => fallback(user_message),
     }
 }
 

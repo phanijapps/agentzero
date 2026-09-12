@@ -1,4 +1,3 @@
-
 // One-time production backfill for entity name embeddings.
 //
 // Run manually (daemon stopped or idle — SQLite lock):
@@ -11,29 +10,29 @@
 async fn backfill_entity_name_embeddings() {
     // ZBOT_VAULT = the engram dir (contains engram_data.db); its parent is
     // the data root. Matches persistence_factory's construction.
-    let engram_dir =
-        std::env::var("ZBOT_VAULT").expect("ZBOT_VAULT must point at the engram dir (contains engram_data.db)");
+    let engram_dir = std::env::var("ZBOT_VAULT")
+        .expect("ZBOT_VAULT must point at the engram dir (contains engram_data.db)");
     let engram_dir = std::path::PathBuf::from(engram_dir);
     let data_root = engram_dir
         .parent()
         .map(std::path::Path::to_path_buf)
         .expect("engram dir must have a parent");
     // engram_path is RELATIVE under the data root (matches settings.engram_path).
-    let config = zbot_engram_adapter::config::AdapterConfig::engram_for_data_root(
-        data_root,
-        "engram",
-    );
+    let config =
+        zbot_engram_adapter::config::AdapterConfig::engram_for_data_root(data_root, "engram");
     // Embedding provider comes from the same config the daemon uses.
     let provider = zbot_engram_adapter::bootstrap::EngramProvider::open(config.clone())
         .expect("open engram provider");
-    let sidecars = zbot_engram_adapter::EngramSidecarStores::from_provider(config.clone(), &provider)
-        .expect("open sidecar stores");
+    let sidecars =
+        zbot_engram_adapter::EngramSidecarStores::from_provider(config.clone(), &provider)
+            .expect("open sidecar stores");
 
     // The embedding client: same OpenAI-compatible surface the daemon uses.
     // Source: memory facts' stored identity (ground truth for this vault).
     let base_url =
         std::env::var("ZBOT_EMBED_BASE_URL").unwrap_or_else(|_| "http://localhost:11434/v1".into());
-    let model = std::env::var("ZBOT_EMBED_MODEL").expect("ZBOT_EMBED_MODEL (e.g. nomic-embed-text)");
+    let model =
+        std::env::var("ZBOT_EMBED_MODEL").expect("ZBOT_EMBED_MODEL (e.g. nomic-embed-text)");
     use agent_runtime::llm::embedding::EmbeddingClient as _;
     let client = agent_runtime::llm::openai_embedding::OpenAiEmbeddingClient::new(
         base_url,

@@ -1630,11 +1630,22 @@ impl InvokeBootstrap {
             analysis.ward_recommendation.action = authoritative_action;
         }
 
-        tracing::info!(
-            primary_intent = %analysis.primary_intent,
-            approach = %analysis.execution_strategy.approach,
-            "Intent analysis succeeded"
-        );
+        if analysis
+            .execution_strategy
+            .explanation
+            .contains("fallback analysis")
+        {
+            tracing::warn!(
+                primary_intent = %analysis.primary_intent,
+                "Intent analysis FELL BACK — agent failed or returned empty; seeded from message"
+            );
+        } else {
+            tracing::info!(
+                primary_intent = %analysis.primary_intent,
+                approach = %analysis.execution_strategy.approach,
+                "Intent analysis succeeded"
+            );
+        }
 
         // Emit IntentAnalysisComplete event with the real analysis.
         self.ctx

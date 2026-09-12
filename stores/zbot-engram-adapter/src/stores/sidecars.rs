@@ -115,8 +115,8 @@ impl EngramSidecarStores {
 
     /// Write a name embedding for an existing entity (backfill path).
     pub fn set_entity_name_embedding(&self, id: &str, embedding: &[f32]) -> Result<(), StoreError> {
-        let json =
-            serde_json::to_string(embedding).map_err(|error| StoreError::Backend(error.to_string()))?;
+        let json = serde_json::to_string(embedding)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
         let identity = encode_identity(&self.embedding_identity);
         self.connection()?
             .execute(

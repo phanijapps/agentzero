@@ -25,7 +25,7 @@ Reason about:
 Respond with ONLY a JSON object matching this schema — no markdown, no prose, no explanation before or after:
 
 {
-  "primary_intent": "kebab-case description of the goal",
+  "primary_intent": "kebab-case description of the goal (MANDATORY: non-empty, always present)",
   "hidden_intents": ["implicit requirement 1", "implicit requirement 2"],
   "solution_path": ["step 1", "step 2", "step 3"],
   "recommended_skills": ["skill-name-from-resources"],

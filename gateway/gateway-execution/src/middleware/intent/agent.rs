@@ -51,9 +51,21 @@ pub async fn run_intent_agent(deps: &IntentAgentDeps, message: &str) -> Option<I
     match result {
         Ok(text) => {
             let content = text.trim();
-            // Model returns JSON after searching
-            match serde_json::from_str::<IntentAnalysis>(content) {
-                Ok(analysis) => {
+            // Model returns JSON after searching. An analysis whose
+            // primary_intent parses to empty is NOT a success — serde
+            // accepts "" and downstream silently degrades (observed:
+            // sess-b9ed1722, 25s of agent work logged "succeeded" with
+            // an empty intent and no Task Analysis injection). Treat it
+            // as a parse failure: try the fence-extract, then None.
+            let parsed = serde_json::from_str::<IntentAnalysis>(content)
+                .ok()
+                .or_else(|| {
+                    let start = content.find('{')?;
+                    let end = content.rfind('}')?;
+                    serde_json::from_str::<IntentAnalysis>(&content[start..=end]).ok()
+                });
+            match parsed {
+                Some(analysis) if !analysis.primary_intent.trim().is_empty() => {
                     tracing::info!(
                         primary_intent = %analysis.primary_intent,
                         approach = %analysis.execution_strategy.approach,
@@ -61,17 +73,34 @@ pub async fn run_intent_agent(deps: &IntentAgentDeps, message: &str) -> Option<I
                     );
                     Some(analysis)
                 }
-                Err(_) => {
-                    // Try extracting JSON from wrapped response
-                    let start = content.find('{')?;
-                    let end = content.rfind('}')?;
-                    serde_json::from_str::<IntentAnalysis>(&content[start..=end]).ok()
+                Some(_analysis) => {
+                    tracing::warn!(
+                        raw_chars = content.chars().count(),
+                        "Intent agent returned an empty primary_intent — treating as failure"
+                    );
+                    None
                 }
+                None => None,
             }
         }
         Err(e) => {
             tracing::warn!(error = %e, "Intent agent failed");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod empty_intent_tests {
+    use super::super::contract::IntentAnalysis;
+
+    #[test]
+    fn empty_primary_intent_is_detectable_at_parse_boundary() {
+        // The guard lives in run_intent_agent's match, but the contract
+        // shape it protects is asserted here: serde happily accepts an
+        // empty intent, which is why the explicit emptiness check exists.
+        let raw = r#"{"primary_intent":"","hidden_intents":[],"solution_path":[],"recommended_skills":[],"recommended_agents":[],"recommended_procedures":[],"recommended_capabilities":[],"ward_recommendation":{"action":"use_existing","ward_name":"general","subdirectory":null,"structure":{},"reason":""},"execution_strategy":{"approach":"simple","explanation":""},"complexity":null,"explanation":""}"#;
+        let analysis: IntentAnalysis = serde_json::from_str(raw).expect("parses");
+        assert!(analysis.primary_intent.trim().is_empty());
     }
 }

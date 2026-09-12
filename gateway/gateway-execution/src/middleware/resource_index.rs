@@ -88,18 +88,27 @@ async fn reindex_skills(fact_store: &dyn MemoryFactStore, skill_service: &SkillS
     tracing::info!(added, modified, unchanged, "Skill index refreshed");
 }
 
+/// Store-side fact-content cap (mirrors the engram adapter's
+/// MAX_FACT_CONTENT_CHARS). Long skill descriptions are TRUNCATED with a
+/// marker — dropping the fact entirely (the old behavior) silently holed
+/// the catalog the intent agent searches (observed: sess-b9ed1722 lost 7
+/// skills to 800-char rejections mid-analysis).
+const SKILL_FACT_CONTENT_CAP: usize = 800;
+
+fn cap_skill_content(content: &str) -> String {
+    if content.chars().count() <= SKILL_FACT_CONTENT_CAP {
+        return content.to_string();
+    }
+    let mut truncated: String = content.chars().take(SKILL_FACT_CONTENT_CAP - 15).collect();
+    truncated.push_str("… [truncated]");
+    truncated
+}
+
 async fn upsert_skill(fact_store: &dyn MemoryFactStore, info: &SkillFileInfo, now_unix: i64) {
     let key = format!("skill:{}", info.id);
+    let content = cap_skill_content(&info.indexed_content);
     if let Err(e) = fact_store
-        .save_fact(
-            "root",
-            "skill",
-            &key,
-            &info.indexed_content,
-            1.0,
-            None,
-            None,
-        )
+        .save_fact("root", "skill", &key, &content, 1.0, None, None)
         .await
     {
         tracing::warn!("save_fact failed for skill {}: {}", info.id, e);
@@ -169,7 +178,7 @@ pub async fn index_resources(
             tracing::info!(count = agents.len(), "Indexing agents into memory");
             for agent in &agents {
                 let key = format!("agent:{}", agent.id);
-                let content = format!("{} | {}", agent.id, agent.description);
+                let content = cap_skill_content(&format!("{} | {}", agent.id, agent.description));
                 if let Err(e) = fact_store
                     .save_fact("root", "agent", &key, &content, 1.0, None, None)
                     .await
@@ -211,7 +220,7 @@ pub async fn index_resources(
                 let content = if purpose.is_empty() {
                     name.clone()
                 } else {
-                    format!("{} | {}", name, purpose)
+                    cap_skill_content(&format!("{} | {}", name, purpose))
                 };
                 if let Err(e) = fact_store
                     .save_fact("root", "ward", &key, &content, 1.0, None, None)

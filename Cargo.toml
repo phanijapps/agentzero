@@ -42,7 +42,7 @@ members = [
     "gateway/gateway-bus",
     "gateway/gateway-ws-protocol",
     "gateway/gateway-bridge",
-    "gateway/gateway-a2a",
+    "services/a2a",
     "gateway",
 
     # Apps - Runnable applications

@@ -45,7 +45,7 @@ gateway-cron = { path = "gateway-cron" }
 gateway-bus = { path = "gateway-bus" }
 gateway-ws-protocol = { path = "gateway-ws-protocol" }
 gateway-bridge = { path = "gateway-bridge" }
-gateway-a2a = { path = "gateway-a2a" }
+gateway-a2a = { path = "../services/a2a" }
 discovery = { path = "../discovery" }
 a2a-lf = { workspace = true }
 

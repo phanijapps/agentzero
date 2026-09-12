@@ -666,7 +666,16 @@ impl SessionDistiller {
         relationships: &[ExtractedRelationship],
     ) -> GraphProjectionOutcome {
         let outcome = match self.kg_store.as_deref() {
-            Some(store) => project_distilled_graph(store, agent_id, entities, relationships).await,
+            Some(store) => {
+                project_distilled_graph(
+                    store,
+                    agent_id,
+                    entities,
+                    relationships,
+                    self.embedding_client.as_ref(),
+                )
+                .await
+            }
             None => GraphProjectionOutcome::default(),
         };
         if outcome.relationships_dropped_total() > 0 {
@@ -1606,6 +1615,7 @@ async fn project_distilled_graph(
     agent_id: &str,
     entities: &[ExtractedEntity],
     relationships: &[ExtractedRelationship],
+    embedding_client: Option<&Arc<dyn EmbeddingClient>>,
 ) -> GraphProjectionOutcome {
     let mut outcome = GraphProjectionOutcome::default();
     let mut entity_map = std::collections::HashMap::new();
@@ -1651,6 +1661,18 @@ async fn project_distilled_graph(
                     entity_candidate.name.trim().to_string(),
                 );
                 entity.properties = graph_entity_properties(&entity_candidate.properties);
+                // Name embedding at write: the graph ANN recall lane and the
+                // duplicate-compactor both query the name-embedding index —
+                // production entities were stored without it (all 2,484 NULL),
+                // leaving both surfaces dark. Best-effort: embedder absent →
+                // stored without (backfill covers history).
+                if let Some(client) = embedding_client {
+                    if let Ok(mut embeddings) = client.embed(&[entity.name.as_str()]).await {
+                        if !embeddings.is_empty() {
+                            entity.name_embedding = Some(embeddings.remove(0));
+                        }
+                    }
+                }
                 match store.upsert_entity(agent_id, entity).await {
                     Ok(id) => {
                         entity_map.insert(entity_key, id.0);
@@ -2668,7 +2690,8 @@ mod tests {
         ];
 
         let outcome =
-            project_distilled_graph(store.as_ref(), agent_id, &entities, &relationships).await;
+            project_distilled_graph(store.as_ref(), agent_id, &entities, &relationships, None)
+                .await;
 
         assert_eq!(outcome.relationships_stored, 1);
         assert_eq!(outcome.relationships_dropped_unresolved, 1);

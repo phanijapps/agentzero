@@ -9,10 +9,19 @@
 #[tokio::test]
 #[ignore = "production backfill — sets ZBOT_VAULT and run once"]
 async fn backfill_entity_name_embeddings() {
-    let vault = std::env::var("ZBOT_VAULT").expect("ZBOT_VAULT must point at the engram data dir");
+    // ZBOT_VAULT = the engram dir (contains engram_data.db); its parent is
+    // the data root. Matches persistence_factory's construction.
+    let engram_dir =
+        std::env::var("ZBOT_VAULT").expect("ZBOT_VAULT must point at the engram dir (contains engram_data.db)");
+    let engram_dir = std::path::PathBuf::from(engram_dir);
+    let data_root = engram_dir
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .expect("engram dir must have a parent");
+    // engram_path is RELATIVE under the data root (matches settings.engram_path).
     let config = zbot_engram_adapter::config::AdapterConfig::engram_for_data_root(
-        std::path::PathBuf::from(vault),
-        "engram.db",
+        data_root,
+        "engram",
     );
     // Embedding provider comes from the same config the daemon uses.
     let provider = zbot_engram_adapter::bootstrap::EngramProvider::open(config.clone())
